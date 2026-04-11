@@ -43,6 +43,16 @@ npm install -g @mohammednagy/graphify-ts
 graphify-ts --help
 ```
 
+If your shell still says `command not found: graphify-ts` immediately after the global install, open a new terminal and check where npm places global executables:
+
+```bash
+command -v graphify-ts
+npm prefix -g
+echo "$PATH"
+```
+
+On macOS with Homebrew-managed Node.js, the global executable is typically linked into `/opt/homebrew/bin/graphify-ts`. If `command -v graphify-ts` is empty, make sure `/opt/homebrew/bin` is on your `PATH`, then open a fresh terminal and try again.
+
 ## Use without installing globally
 
 If you prefer one-off execution:
@@ -70,6 +80,39 @@ npm install
 npm run build
 node dist/src/cli/bin.js --help
 ```
+
+## AI assistant integration
+
+There are two different kinds of install commands:
+
+- `graphify-ts install --platform claude` installs the home-level Claude skill for your user account
+- `graphify-ts claude install` installs project-local Claude integration for the current repository
+
+You do **not** have to run `graphify-ts generate .` before either install command for them to succeed.
+
+You run `graphify-ts generate .` because the installed Claude rules point Claude at graph artifacts inside `graphify-out/`, especially:
+
+- `graphify-out/graph.json`
+- `graphify-out/GRAPH_REPORT.md`
+- `graphify-out/wiki/index.md` (when wiki export exists)
+
+Without those files, the skill/rules are installed, but Claude has no generated graph context to read yet.
+
+Recommended order for Claude Code:
+
+```bash
+# once per machine
+npm install -g @mohammednagy/graphify-ts
+graphify-ts install --platform claude
+
+# once per repository
+graphify-ts claude install
+
+# run whenever you want Claude to use fresh graph context
+graphify-ts generate .
+```
+
+If you want Claude to benefit immediately in an existing repo, run `graphify-ts generate .` before you start asking codebase questions. If you are just setting up the integration, installing first and generating afterward is perfectly fine.
 
 ## Quick start on your own project
 
