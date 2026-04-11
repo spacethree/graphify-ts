@@ -2,6 +2,19 @@
 
 All notable changes to the TypeScript package will be documented in this file.
 
+## [0.1.3] - 2026-04-12
+
+### Added
+
+- Automatic overview-first HTML export for large graphs, with lightweight `graph.html` landing pages and focused per-community pages under `graph-pages/`
+- Deterministic semantic community naming based on dominant paths, file themes, and representative graph nodes
+- `community_labels` metadata in `graph.json` for downstream tooling and report consumers
+
+### Changed
+
+- Improved generated reports and HTML output to show meaningful community names instead of generic `Community N` placeholders when heuristics can infer a better label
+- Expanded regression coverage for semantic labels, overview-mode export behavior, and generator propagation of HTML mode choices
+
 ## [0.1.2] - 2026-04-11
 
 ### Changed
