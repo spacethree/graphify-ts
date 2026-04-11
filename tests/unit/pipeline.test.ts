@@ -1,0 +1,154 @@
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+import { godNodes, suggestQuestions, surprisingConnections } from '../../src/pipeline/analyze.js'
+import { buildFromJson } from '../../src/pipeline/build.js'
+import { cluster, scoreAll } from '../../src/pipeline/cluster.js'
+import { detect } from '../../src/pipeline/detect.js'
+import { toHtml, toJson, toObsidian } from '../../src/pipeline/export.js'
+import { extract } from '../../src/pipeline/extract.js'
+import { generate } from '../../src/pipeline/report.js'
+
+const FIXTURES_DIR = join(process.cwd(), 'tests', 'fixtures')
+
+function withTempDir<T>(callback: (tempDir: string) => T): T {
+  const tempDir = mkdtempSync(join(tmpdir(), 'graphify-ts-pipeline-'))
+  try {
+    return callback(tempDir)
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true })
+  }
+}
+
+function runPipeline(tempDir: string) {
+  const detection = detect(FIXTURES_DIR)
+  expect(detection.total_files).toBeGreaterThan(0)
+  expect(detection.files.code.length).toBeGreaterThan(0)
+
+  const extraction = extract([...detection.files.code, ...detection.files.document, ...detection.files.paper, ...detection.files.image])
+  expect(extraction.nodes.length).toBeGreaterThan(0)
+  expect(extraction.edges.length).toBeGreaterThan(0)
+
+  const graph = buildFromJson(extraction)
+  expect(graph.numberOfNodes()).toBeGreaterThan(0)
+  expect(graph.numberOfEdges()).toBeGreaterThan(0)
+
+  const communities = cluster(graph)
+  expect(Object.keys(communities).length).toBeGreaterThan(0)
+
+  const cohesion = scoreAll(graph, communities)
+  for (const score of Object.values(cohesion)) {
+    expect(score).toBeGreaterThanOrEqual(0)
+    expect(score).toBeLessThanOrEqual(1)
+  }
+
+  const gods = godNodes(graph)
+  expect(gods.length).toBeGreaterThan(0)
+
+  const surprises = surprisingConnections(graph, communities)
+  const labels = Object.fromEntries(Object.keys(communities).map((communityId) => [Number(communityId), `Group ${communityId}`]))
+  const questions = suggestQuestions(graph, communities, labels)
+  expect(Array.isArray(questions)).toBe(true)
+
+  const report = generate(
+    graph,
+    communities,
+    cohesion,
+    labels,
+    gods,
+    surprises,
+    detection as unknown as Record<string, unknown>,
+    { input: extraction.input_tokens, output: extraction.output_tokens },
+    FIXTURES_DIR,
+    questions,
+  )
+  expect(report).toContain('God Nodes')
+  expect(report).toContain('Communities')
+  expect(report.length).toBeGreaterThan(100)
+
+  const jsonPath = join(tempDir, 'graph.json')
+  toJson(graph, communities, jsonPath)
+  const jsonData = JSON.parse(readFileSync(jsonPath, 'utf8'))
+  expect(jsonData).toHaveProperty('nodes')
+  expect(jsonData).toHaveProperty('links')
+  for (const node of jsonData.nodes as Array<Record<string, unknown>>) {
+    expect(node).toHaveProperty('community')
+  }
+
+  const htmlPath = join(tempDir, 'graph.html')
+  toHtml(graph, communities, htmlPath, labels)
+  const html = readFileSync(htmlPath, 'utf8')
+  expect(html).toContain('vis-network')
+  expect(html).toContain('RAW_NODES')
+
+  const obsidianPath = join(tempDir, 'obsidian')
+  const noteCount = toObsidian(graph, communities, obsidianPath, labels, cohesion)
+  expect(noteCount).toBeGreaterThan(0)
+  expect(existsSync(join(obsidianPath, '.obsidian', 'graph.json'))).toBe(true)
+
+  return {
+    detection,
+    extraction,
+    graph,
+    communities,
+    cohesion,
+    gods,
+    surprises,
+    questions,
+    report,
+  }
+}
+
+describe('pipeline', () => {
+  it('runs end to end on the reference fixtures', () => {
+    withTempDir((tempDir) => {
+      const result = runPipeline(tempDir)
+      expect(result.graph.numberOfNodes()).toBeGreaterThan(0)
+    })
+  })
+
+  it('keeps node and edge counts stable across repeated runs', () => {
+    withTempDir((tempDir) => {
+      const first = runPipeline(tempDir)
+      const second = runPipeline(tempDir)
+      expect(first.graph.numberOfNodes()).toBe(second.graph.numberOfNodes())
+      expect(first.graph.numberOfEdges()).toBe(second.graph.numberOfEdges())
+    })
+  })
+
+  it('mentions the top god node in the generated report', () => {
+    withTempDir((tempDir) => {
+      const result = runPipeline(tempDir)
+      expect(result.report).toContain(result.gods[0]?.label ?? '')
+    })
+  })
+
+  it('detects both code and docs in the fixture corpus', () => {
+    withTempDir((tempDir) => {
+      const result = runPipeline(tempDir)
+      expect(result.detection.files.code.length).toBeGreaterThan(0)
+      expect(result.detection.files.document.length).toBeGreaterThan(0)
+      expect(result.extraction.nodes.some((node) => node.file_type === 'document')).toBe(true)
+    })
+  })
+
+  it('keeps extraction confidence labels within the expected set', () => {
+    withTempDir((tempDir) => {
+      const result = runPipeline(tempDir)
+      const valid = new Set(['EXTRACTED', 'INFERRED', 'AMBIGUOUS'])
+      for (const edge of result.extraction.edges) {
+        expect(valid.has(edge.confidence)).toBe(true)
+      }
+    })
+  })
+
+  it('does not introduce self loops into the built graph', () => {
+    withTempDir((tempDir) => {
+      const result = runPipeline(tempDir)
+      for (const [source, target] of result.graph.edgeEntries()) {
+        expect(source).not.toBe(target)
+      }
+    })
+  })
+})
