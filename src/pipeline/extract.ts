@@ -7,13 +7,16 @@ import * as ts from 'typescript'
 import type { ExtractionData, ExtractionEdge, ExtractionNode } from '../contracts/types.js'
 import { loadCached, saveCached } from '../infrastructure/cache.js'
 import { CODE_EXTENSIONS, FileType, classifyFile, detect } from './detect.js'
+import { _makeId, addEdge, addNode, addUniqueEdge, createEdge, createFileNode, createNode, indentationLevel, normalizeLabel, stripHashComment } from './extract/core.js'
+import { extractPythonRationale } from './extract/python-rationale.js'
 import { isRecord } from '../shared/guards.js'
 import { MAX_TEXT_BYTES, sanitizeLabel } from '../shared/security.js'
 import { createTreeSitterWasmParser, treeSitterWasmError, type TreeSitterNode } from './tree-sitter-wasm.js'
 
+export { _makeId } from './extract/core.js'
+
 const EXTRACTOR_CACHE_VERSION = 6
 const PYTHON_KEYWORDS = new Set(['if', 'elif', 'else', 'for', 'while', 'return', 'class', 'def', 'lambda', 'with', 'print', 'sum'])
-const PYTHON_RATIONALE_COMMENT_PATTERN = /^#\s*(NOTE|WHY|IMPORTANT|HACK|RATIONALE|TODO|FIXME)\s*:?\s*(.+)$/i
 const GENERIC_CODE_EXTENSIONS = new Set(['.go', '.rs', '.java', '.kt', '.kts', '.scala', '.cs', '.c', '.cc', '.cpp', '.cxx', '.h', '.hpp', '.swift', '.php', '.zig'])
 const GENERIC_CONTROL_KEYWORDS = new Set(['if', 'for', 'while', 'switch', 'catch', 'return', 'new', 'delete', 'throw', 'sizeof', 'case', 'do', 'else'])
 const RUBY_KEYWORDS = new Set(['if', 'elsif', 'else', 'unless', 'while', 'until', 'return', 'super', 'yield', 'class', 'def'])
@@ -53,11 +56,8 @@ const DOCX_MAX_PARAGRAPH_TEXT_CHARS = 32_768
 const DOI_CITATION_PATTERN = /\b10\.\d{4,9}\/[\-._;()/:A-Za-z0-9]{1,200}\b/gi
 const ARXIV_CITATION_PATTERN = /(?:\barxiv\s{0,5}:?\s{0,5}|arxiv\.org\/abs\/)([A-Za-z\-.]{1,50}\/\d{7}|\d{4}\.\d{4,5}(?:v\d{1,3})?)/gi
 const LATEX_CITATION_PATTERN = /\\cite\w{0,20}\{([^}]{1,512})\}/g
-// Cap pathological inheritance/conformance lists without affecting common code.
 const MAX_GENERIC_BASE_TARGETS = 10
-// Keep bibliography snippets descriptive without letting single references dominate labels.
 const MAX_REFERENCE_LABEL_CHARS = 220
-// Large \cite{...} lists are rare; this bounds abuse while preserving ordinary papers.
 const MAX_CITATION_KEYS_PER_LINE = 16
 const REFERENCE_SECTION_LABELS = new Set(['references', 'bibliography', 'works cited', 'citations'])
 const TREE_SITTER_FALLBACK_WARNINGS = new Set<string>()
@@ -96,324 +96,7 @@ interface ImportedPythonSymbol {
   targetId: string
 }
 
-function toLocation(line: number): string {
-  return `L${line}`
-}
-
-function normalizeLabel(label: string): string {
-  return label.replaceAll('(', '').replaceAll(')', '').replace(/^\./, '').toLowerCase()
-}
-
-function stripHashComment(line: string): string {
-  let inSingleQuote = false
-  let inDoubleQuote = false
-  let interpolationDepth = 0
-  let escaped = false
-
-  for (let index = 0; index < line.length; index += 1) {
-    const character = line[index]
-    if (!character) {
-      continue
-    }
-
-    if (escaped) {
-      escaped = false
-      continue
-    }
-
-    if (character === '\\' && (inSingleQuote || inDoubleQuote)) {
-      escaped = true
-      continue
-    }
-
-    if (inDoubleQuote && character === '#' && line[index + 1] === '{') {
-      interpolationDepth += 1
-      index += 1
-      continue
-    }
-
-    if (inDoubleQuote && interpolationDepth > 0 && character === '}') {
-      interpolationDepth -= 1
-      continue
-    }
-
-    if (character === "'" && !inDoubleQuote) {
-      inSingleQuote = !inSingleQuote
-      continue
-    }
-
-    if (character === '"' && !inSingleQuote) {
-      inDoubleQuote = !inDoubleQuote
-      continue
-    }
-
-    if (character === '#' && !inSingleQuote && !inDoubleQuote && interpolationDepth === 0) {
-      return line.slice(0, index)
-    }
-  }
-
-  return line
-}
-
-function createNode(id: string, label: string, sourceFile: string, line: number, fileType: ExtractionNode['file_type'] = 'code'): ExtractionNode {
-  return {
-    id,
-    label: sanitizeLabel(label),
-    file_type: fileType,
-    source_file: sourceFile,
-    source_location: toLocation(line),
-  }
-}
-
-function createFileNode(filePath: string, fileType: ExtractionNode['file_type']): ExtractionNode {
-  return createNode(_makeId(basename(filePath, extname(filePath))), basename(filePath), filePath, 1, fileType)
-}
-
-function createEdge(
-  source: string,
-  target: string,
-  relation: string,
-  sourceFile: string,
-  line: number,
-  confidence: ExtractionEdge['confidence'] = 'EXTRACTED',
-  weight = 1.0,
-): ExtractionEdge {
-  return {
-    source,
-    target,
-    relation,
-    confidence,
-    source_file: sourceFile,
-    source_location: toLocation(line),
-    weight,
-  }
-}
-
-function indentationLevel(line: string): number {
-  return line.length - line.trimStart().length
-}
-
-const MAX_PYTHON_DOCSTRING_LINES = 100
-const MAX_PYTHON_DOCSTRING_BYTES = 64 * 1024
 const MAX_TS_NESTED_FUNCTION_DEPTH = 10
-
-function compactRationaleText(text: string): string {
-  return sanitizeLabel(text.replace(/\s+/g, ' ').trim())
-}
-
-function pythonDocstringStart(trimmedLine: string): { delimiter: '"""' | "'''"; content: string } | null {
-  const match = trimmedLine.match(/^(?:[rRuUbBfF]{0,3})("""|''')([\s\S]*)$/)
-  if (!match?.[1]) {
-    return null
-  }
-
-  const delimiter = match[1] === '"""' ? '"""' : "'''"
-  return {
-    delimiter,
-    content: match[2] ?? '',
-  }
-}
-
-function consumePythonDocstring(lines: string[], startIndex: number, minIndent: number): { text: string; startIndex: number; endIndex: number } | null {
-  let index = startIndex
-
-  while (index < lines.length) {
-    const line = lines[index] ?? ''
-    const trimmed = line.trim()
-    if (!trimmed) {
-      index += 1
-      continue
-    }
-
-    if (indentationLevel(line) < minIndent) {
-      return null
-    }
-
-    const start = pythonDocstringStart(trimmed)
-    if (!start) {
-      return null
-    }
-
-    const parts: string[] = []
-    const singleLineCloseIndex = start.content.indexOf(start.delimiter)
-    if (singleLineCloseIndex >= 0) {
-      const text = compactRationaleText(start.content.slice(0, singleLineCloseIndex))
-      if (!text) {
-        return null
-      }
-
-      return {
-        text,
-        startIndex: index,
-        endIndex: index,
-      }
-    }
-
-    let totalDocstringBytes = 0
-    if (start.content.length > 0) {
-      totalDocstringBytes += Buffer.byteLength(start.content, 'utf8')
-      if (totalDocstringBytes > MAX_PYTHON_DOCSTRING_BYTES) {
-        return null
-      }
-      parts.push(start.content)
-    }
-
-    let endIndex = index
-    for (let cursor = index + 1; cursor < lines.length && cursor - index <= MAX_PYTHON_DOCSTRING_LINES; cursor += 1) {
-      const nextLine = lines[cursor] ?? ''
-      totalDocstringBytes += Buffer.byteLength(nextLine, 'utf8')
-      if (totalDocstringBytes > MAX_PYTHON_DOCSTRING_BYTES) {
-        break
-      }
-
-      const closeIndex = nextLine.indexOf(start.delimiter)
-      if (closeIndex >= 0) {
-        parts.push(nextLine.slice(0, closeIndex))
-        endIndex = cursor
-        break
-      }
-
-      parts.push(nextLine)
-    }
-
-    if (endIndex === index) {
-      return null
-    }
-
-    const text = compactRationaleText(parts.join(' '))
-    if (!text) {
-      return null
-    }
-
-    return {
-      text,
-      startIndex: index,
-      endIndex,
-    }
-  }
-
-  return null
-}
-
-function createRationaleNode(targetId: string, text: string, sourceFile: string, line: number, rationaleKind: 'docstring' | 'comment'): ExtractionNode {
-  return {
-    ...createNode(_makeId(targetId, 'rationale', String(line)), text, sourceFile, line, 'rationale'),
-    rationale_kind: rationaleKind,
-  }
-}
-
-function extractPythonRationale(filePath: string): ExtractionFragment {
-  const sourceText = readFileSync(filePath, 'utf8')
-  const lines = sourceText.split(/\r?\n/)
-  const stem = basename(filePath, extname(filePath))
-  const fileNodeId = _makeId(stem)
-  const nodes: ExtractionNode[] = []
-  const edges: ExtractionEdge[] = []
-  const seenIds = new Set<string>()
-  const seenEdges = new Set<string>()
-  const skippedLines = new Set<number>()
-  const classStack: Array<{ indent: number; id: string }> = []
-  const functionStack: Array<{ indent: number; id: string }> = []
-
-  const addRationale = (targetId: string, text: string, line: number, rationaleKind: 'docstring' | 'comment'): void => {
-    const cleaned = compactRationaleText(text)
-    if (!cleaned) {
-      return
-    }
-
-    const node = createRationaleNode(targetId, cleaned, filePath, line, rationaleKind)
-    addNode(nodes, seenIds, node)
-    addUniqueEdge(edges, seenEdges, createEdge(node.id, targetId, 'rationale_for', filePath, line))
-  }
-
-  const moduleDocstring = consumePythonDocstring(lines, 0, 0)
-  if (moduleDocstring) {
-    addRationale(fileNodeId, moduleDocstring.text, moduleDocstring.startIndex + 1, 'docstring')
-    for (let index = moduleDocstring.startIndex; index <= moduleDocstring.endIndex; index += 1) {
-      skippedLines.add(index)
-    }
-  }
-
-  for (let index = 0; index < lines.length; index += 1) {
-    if (skippedLines.has(index)) {
-      continue
-    }
-
-    const line = lines[index] ?? ''
-    const trimmed = line.trim()
-    if (!trimmed) {
-      continue
-    }
-
-    const indent = indentationLevel(line)
-    while (functionStack.length > 0 && indent <= (functionStack[functionStack.length - 1]?.indent ?? -1)) {
-      functionStack.pop()
-    }
-    while (classStack.length > 0 && indent <= (classStack[classStack.length - 1]?.indent ?? -1)) {
-      classStack.pop()
-    }
-
-    const commentMatch = trimmed.match(PYTHON_RATIONALE_COMMENT_PATTERN)
-    if (commentMatch?.[1] && commentMatch[2]) {
-      const prefix = commentMatch[1].toUpperCase()
-      const targetId = functionStack[functionStack.length - 1]?.id ?? classStack[classStack.length - 1]?.id ?? fileNodeId
-      addRationale(targetId, `${prefix}: ${commentMatch[2].trim()}`, index + 1, 'comment')
-      continue
-    }
-
-    const classMatch = trimmed.match(/^class\s+([A-Za-z_][A-Za-z0-9_]*)(?:\(([^)]+)\))?:/)
-    if (classMatch?.[1]) {
-      const classId = _makeId(stem, classMatch[1])
-      classStack.push({ indent, id: classId })
-
-      const docstring = consumePythonDocstring(lines, index + 1, indent + 1)
-      if (docstring) {
-        addRationale(classId, docstring.text, docstring.startIndex + 1, 'docstring')
-        for (let cursor = docstring.startIndex; cursor <= docstring.endIndex; cursor += 1) {
-          skippedLines.add(cursor)
-        }
-      }
-      continue
-    }
-
-    const functionMatch = trimmed.match(/^def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/)
-    if (functionMatch?.[1]) {
-      const parentClassId = classStack[classStack.length - 1]?.id
-      const functionId = parentClassId ? _makeId(parentClassId, functionMatch[1]) : _makeId(stem, functionMatch[1])
-      functionStack.push({ indent, id: functionId })
-
-      const docstring = consumePythonDocstring(lines, index + 1, indent + 1)
-      if (docstring) {
-        addRationale(functionId, docstring.text, docstring.startIndex + 1, 'docstring')
-        for (let cursor = docstring.startIndex; cursor <= docstring.endIndex; cursor += 1) {
-          skippedLines.add(cursor)
-        }
-      }
-    }
-  }
-
-  return { nodes, edges }
-}
-
-function addNode(nodes: ExtractionNode[], seenIds: Set<string>, node: ExtractionNode): void {
-  if (!seenIds.has(node.id)) {
-    seenIds.add(node.id)
-    nodes.push(node)
-  }
-}
-
-function addEdge(edges: ExtractionEdge[], edge: ExtractionEdge): void {
-  edges.push(edge)
-}
-
-function addUniqueEdge(edges: ExtractionEdge[], seen: Set<string>, edge: ExtractionEdge): void {
-  const key = `${edge.source}|${edge.target}|${edge.relation}`
-  if (seen.has(key)) {
-    return
-  }
-  seen.add(key)
-  edges.push(edge)
-}
 
 function resolveModuleName(specifier: string): string {
   const normalized = specifier.replaceAll('\\', '/').replace(/^\.\//, '').replace(/^\.\//, '')
@@ -822,28 +505,72 @@ function genericBaseNamesFromLine(line: string): string[] {
   return [...new Set(bases)].slice(0, MAX_GENERIC_BASE_TARGETS)
 }
 
+function genericContinuationBaseNamesFromLine(line: string): string[] {
+  const trimmed = stripHashComment(line)
+    .replace(/\{.*$/, '')
+    .replace(/\bwhere\b[\s\S]*$/, '')
+    .trim()
+
+  if (!trimmed) {
+    return []
+  }
+
+  if (/^with\b/.test(trimmed)) {
+    return parseBaseTypeList(trimmed.replace(/^with\b/, ' '))
+  }
+
+  if (/^implements\b/.test(trimmed)) {
+    return parseBaseTypeList(trimmed.replace(/^implements\b/, ' '))
+  }
+
+  if (trimmed.startsWith(',')) {
+    return parseBaseTypeList(trimmed.slice(1))
+  }
+
+  return []
+}
+
+function inlineBodyTextFromSignature(line: string): string | undefined {
+  const equalsIndex = line.indexOf('=')
+  if (equalsIndex >= 0) {
+    const inlineBodyText = line.slice(equalsIndex + 1).trim()
+    return inlineBodyText || undefined
+  }
+
+  const openBraceIndex = line.indexOf('{')
+  if (openBraceIndex >= 0) {
+    const inlineBodyText = line
+      .slice(openBraceIndex + 1)
+      .replace(/\}\s*$/, '')
+      .trim()
+    return inlineBodyText || undefined
+  }
+
+  return undefined
+}
+
 function lightweightFunctionSignature(line: string): { functionName: string; inlineBodyText?: string } | null {
-  const kotlinMatch = line.match(/\bfun\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>]+>)?\s*\([^)]*\)\s*(?::\s*[^={]+)?\s*(?:=\s*(.+)|\{(.*))$/)
+  const kotlinMatch = line.match(/\bfun\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>]+>)?\s*\([^)]*\)\s*(?::\s*[^={]+)?(?:\s*[={].*)?$/)
   if (kotlinMatch?.[1]) {
-    const inlineBodyText = kotlinMatch[2] ?? kotlinMatch[3]
+    const inlineBodyText = inlineBodyTextFromSignature(line)
     return {
       functionName: kotlinMatch[1],
       ...(inlineBodyText ? { inlineBodyText } : {}),
     }
   }
 
-  const scalaMatch = line.match(/\bdef\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[[^\]]*\])?\s*\([^)]*\)\s*(?::\s*[^={]+)?\s*(?:=\s*(.+)|\{(.*))$/)
+  const scalaMatch = line.match(/\bdef\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[[^\]]*\])?\s*\([^)]*\)\s*(?::\s*[^={]+)?(?:\s*[={].*)?$/)
   if (scalaMatch?.[1]) {
-    const inlineBodyText = scalaMatch[2] ?? scalaMatch[3]
+    const inlineBodyText = inlineBodyTextFromSignature(line)
     return {
       functionName: scalaMatch[1],
       ...(inlineBodyText ? { inlineBodyText } : {}),
     }
   }
 
-  const swiftMatch = line.match(/\bfunc\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>]+>)?\s*\([^)]*\)\s*(?:->\s*[^={]+)?\s*(?:=\s*(.+)|\{(.*))$/)
+  const swiftMatch = line.match(/\bfunc\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>]+>)?\s*\([^)]*\)\s*(?:->\s*[^={]+)?(?:\s*[={].*)?$/)
   if (swiftMatch?.[1]) {
-    const inlineBodyText = swiftMatch[2] ?? swiftMatch[3]
+    const inlineBodyText = inlineBodyTextFromSignature(line)
     return {
       functionName: swiftMatch[1],
       ...(inlineBodyText ? { inlineBodyText } : {}),
@@ -1519,6 +1246,7 @@ export function extractGenericCode(filePath: string): ExtractionFragment {
   let braceDepth = 0
   const classStack: Array<{ braceDepth: number; id: string; name: string }> = []
   const functionStack: Array<{ braceDepth: number; id: string; classId?: string }> = []
+  let pendingClassDeclaration: { id: string; name: string } | null = null
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? ''
@@ -1544,6 +1272,33 @@ export function extractGenericCode(filePath: string): ExtractionFragment {
     }
 
     const className = classNameFromLine(trimmed)
+    const continuationBaseNames = pendingClassDeclaration && !className ? genericContinuationBaseNamesFromLine(trimmed) : []
+    if (pendingClassDeclaration && !className) {
+      for (const baseName of continuationBaseNames) {
+        const baseId = _makeId(stem, baseName)
+        addNode(nodes, seenIds, createNode(baseId, baseName, filePath, lineNumber))
+        addEdge(edges, createEdge(pendingClassDeclaration.id, baseId, 'inherits', filePath, lineNumber))
+      }
+
+      const nextBraceDepth = braceDepth + braceDelta(line)
+      const opensPendingClassBody = trimmed === '{' || (continuationBaseNames.length > 0 && trimmed.includes('{'))
+      if (opensPendingClassBody) {
+        classStack.push({
+          braceDepth: Math.max(nextBraceDepth, braceDepth + 1),
+          id: pendingClassDeclaration.id,
+          name: pendingClassDeclaration.name,
+        })
+        pendingClassDeclaration = null
+        braceDepth = nextBraceDepth
+        continue
+      }
+
+      if (continuationBaseNames.length > 0) {
+        braceDepth = nextBraceDepth
+        continue
+      }
+    }
+
     if (className) {
       const classId = _makeId(stem, className)
       const parentOwnerId = classStack[classStack.length - 1]?.id ?? fileNodeId
@@ -1559,6 +1314,8 @@ export function extractGenericCode(filePath: string): ExtractionFragment {
       const nextBraceDepth = braceDepth + braceDelta(line)
       if (trimmed.includes('{') || /\bstruct\b/.test(trimmed)) {
         classStack.push({ braceDepth: Math.max(nextBraceDepth, braceDepth + 1), id: classId, name: className })
+      } else {
+        pendingClassDeclaration = { id: classId, name: className }
       }
 
       braceDepth = nextBraceDepth
@@ -1610,11 +1367,12 @@ export function extractGenericCode(filePath: string): ExtractionFragment {
     }
 
     if (functionName) {
-      const functionId = ownerClassId ? _makeId(ownerClassId, functionName) : _makeId(stem, functionName)
-      addNode(nodes, seenIds, createNode(functionId, `${ownerClassId ? '.' : ''}${functionName}()`, filePath, lineNumber))
-      addEdge(edges, createEdge(ownerClassId ?? fileNodeId, functionId, ownerClassId ? 'method' : 'contains', filePath, lineNumber))
-      if (ownerClassId) {
-        methodIdsByClass.set(`${ownerClassId}:${functionName.toLowerCase()}`, functionId)
+      const effectiveOwnerClassId = ownerClassId ?? pendingClassDeclaration?.id
+      const functionId = effectiveOwnerClassId ? _makeId(effectiveOwnerClassId, functionName) : _makeId(stem, functionName)
+      addNode(nodes, seenIds, createNode(functionId, `${effectiveOwnerClassId ? '.' : ''}${functionName}()`, filePath, lineNumber))
+      addEdge(edges, createEdge(effectiveOwnerClassId ?? fileNodeId, functionId, effectiveOwnerClassId ? 'method' : 'contains', filePath, lineNumber))
+      if (effectiveOwnerClassId) {
+        methodIdsByClass.set(`${effectiveOwnerClassId}:${functionName.toLowerCase()}`, functionId)
       }
 
       const nextBraceDepth = braceDepth + braceDelta(line)
@@ -1622,16 +1380,16 @@ export function extractGenericCode(filePath: string): ExtractionFragment {
         functionStack.push({
           braceDepth: Math.max(nextBraceDepth, braceDepth + 1),
           id: functionId,
-          ...(ownerClassId ? { classId: ownerClassId } : {}),
+          ...(effectiveOwnerClassId ? { classId: effectiveOwnerClassId } : {}),
         })
       }
 
       if (inlineBodyText && inlineBodyText.trim()) {
-        addGenericCallsFromText(inlineBodyText, functionId, lineNumber, pendingCalls, ownerClassId, stem)
+        addGenericCallsFromText(inlineBodyText, functionId, lineNumber, pendingCalls, effectiveOwnerClassId, stem)
       } else {
         const inlineBodyIndex = trimmed.indexOf('=>') >= 0 ? trimmed.indexOf('=>') + 2 : trimmed.indexOf('{') >= 0 ? trimmed.indexOf('{') + 1 : -1
         if (inlineBodyIndex >= 0) {
-          addGenericCallsFromText(trimmed.slice(inlineBodyIndex), functionId, lineNumber, pendingCalls, ownerClassId, stem)
+          addGenericCallsFromText(trimmed.slice(inlineBodyIndex), functionId, lineNumber, pendingCalls, effectiveOwnerClassId, stem)
         }
       }
 
@@ -1656,23 +1414,12 @@ export function extractGenericCode(filePath: string): ExtractionFragment {
   }
 }
 
-export function _makeId(...parts: string[]): string {
-  const combined = parts
-    .map((part) => part.replace(/^[_\.]+|[_\.]+$/g, ''))
-    .filter(Boolean)
-    .join('_')
-  return combined
-    .replace(/[^a-zA-Z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-    .toLowerCase()
-}
-
 export function collectFiles(root: string, options: CollectFilesOptions = {}): string[] {
   const result = detect(root, options.followSymlinks === undefined ? {} : { followSymlinks: options.followSymlinks })
   return result.files.code
 }
 
-export function extractPython(filePath: string): ExtractionFragment {
+function extractPythonRegex(filePath: string): ExtractionFragment {
   const sourceText = readFileSync(filePath, 'utf8')
   const lines = sourceText.split(/\r?\n/)
   const stem = basename(filePath, extname(filePath))
@@ -1746,7 +1493,7 @@ export function extractPython(filePath: string): ExtractionFragment {
       return
     }
 
-    const functionMatch = trimmed.match(/^def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/)
+    const functionMatch = trimmed.match(/^(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/)
     if (functionMatch) {
       const functionName = functionMatch[1]
       if (!functionName) {
@@ -1812,6 +1559,240 @@ export function extractPython(filePath: string): ExtractionFragment {
     nodes,
     edges: edges.filter((edge) => validNodeIds.has(edge.source) && (validNodeIds.has(edge.target) || edge.relation === 'imports' || edge.relation === 'imports_from')),
   }
+}
+
+function pythonDefinitionNode(node: TreeSitterNode): TreeSitterNode | null {
+  if (node.type !== 'decorated_definition') {
+    return node
+  }
+
+  return namedTreeSitterChildren(node).find((child) => child.type === 'class_definition' || child.type === 'function_definition') ?? null
+}
+
+function collectPythonCalls(node: TreeSitterNode, sourceText: string, callerId: string, pendingCalls: PendingCall[], currentOwnerId?: string, isRoot = true): void {
+  if (!isRoot && (node.type === 'function_definition' || node.type === 'class_definition' || node.type === 'decorated_definition')) {
+    return
+  }
+
+  if (node.type === 'call') {
+    const functionNode = node.childForFieldName('function')
+    const line = node.startPosition.row + 1
+
+    if (functionNode?.type === 'identifier') {
+      const calleeName = treeSitterNodeText(sourceText, functionNode)?.trim()
+      if (calleeName) {
+        addPendingCall(pendingCalls, {
+          callerId,
+          calleeName,
+          line,
+        })
+      }
+    } else if (functionNode?.type === 'attribute') {
+      const calleeName = treeSitterNodeText(sourceText, functionNode.childForFieldName('attribute'))?.trim()
+      const objectName = treeSitterNodeText(sourceText, functionNode.childForFieldName('object'))?.trim()
+      if (calleeName) {
+        addPendingCall(pendingCalls, {
+          callerId,
+          calleeName,
+          line,
+          preferredClassId: currentOwnerId && (objectName === 'self' || objectName === 'cls') ? currentOwnerId : undefined,
+        })
+      }
+    }
+  }
+
+  for (const child of namedTreeSitterChildren(node)) {
+    collectPythonCalls(child, sourceText, callerId, pendingCalls, currentOwnerId, false)
+  }
+}
+
+function extractPythonTreeSitter(filePath: string): ExtractionFragment | null {
+  const parser = createTreeSitterWasmParser('python')
+  if (!parser) {
+    return null
+  }
+
+  const sourceText = readFileSync(filePath, 'utf8')
+  const lines = sourceText.split(/\r?\n/)
+  const stem = basename(filePath, extname(filePath))
+  const fileNodeId = _makeId(stem)
+  const nodes: ExtractionNode[] = []
+  const edges: ExtractionEdge[] = []
+  const seenIds = new Set<string>()
+  const seenStructuralEdges = new Set<string>()
+  const methodIdsByClass = new Map<string, string>()
+  const pendingCalls: PendingCall[] = []
+  const pendingInherits: Array<{ sourceId: string; baseName: string; line: number }> = []
+  let tree: ReturnType<typeof parser.parse> | null = null
+
+  const ensureClassNode = (className: string, line: number, parentOwnerId?: string): string => {
+    const classId = _makeId(stem, className)
+    addNode(nodes, seenIds, createNode(classId, className, filePath, line))
+    addUniqueEdge(edges, seenStructuralEdges, createEdge(parentOwnerId ?? fileNodeId, classId, 'contains', filePath, line))
+    return classId
+  }
+
+  const addPythonImports = (): void => {
+    lines.forEach((line, index) => {
+      const lineNumber = index + 1
+      const trimmed = line.trim()
+      if (!trimmed || trimmed.startsWith('#')) {
+        return
+      }
+
+      const importMatch = trimmed.match(/^import\s+([A-Za-z0-9_.,\s]+)/)
+      if (importMatch?.[1]) {
+        for (const rawModule of importMatch[1].split(',')) {
+          const moduleName = rawModule.split(' as ')[0]?.trim().replace(/^\.+/, '')
+          if (!moduleName) {
+            continue
+          }
+
+          addUniqueEdge(edges, seenStructuralEdges, createEdge(fileNodeId, _makeId(moduleName), 'imports', filePath, lineNumber))
+        }
+        return
+      }
+
+      const importFromMatch = trimmed.match(/^from\s+([A-Za-z0-9_\.]+)\s+import\s+/)
+      if (importFromMatch?.[1]) {
+        const moduleName = importFromMatch[1].replace(/^\.+/, '')
+        if (moduleName) {
+          addUniqueEdge(edges, seenStructuralEdges, createEdge(fileNodeId, _makeId(moduleName), 'imports_from', filePath, lineNumber))
+        }
+      }
+    })
+  }
+
+  const processFunction = (node: TreeSitterNode, ownerId?: string): void => {
+    const functionName = treeSitterNodeText(sourceText, node.childForFieldName('name'))?.trim()
+    if (!functionName) {
+      return
+    }
+
+    const line = node.startPosition.row + 1
+    const functionId = ownerId ? _makeId(ownerId, functionName) : _makeId(stem, functionName)
+    addNode(nodes, seenIds, createNode(functionId, `${ownerId ? '.' : ''}${functionName}()`, filePath, line))
+    addUniqueEdge(edges, seenStructuralEdges, createEdge(ownerId ?? fileNodeId, functionId, ownerId ? 'method' : 'contains', filePath, line))
+    if (ownerId) {
+      methodIdsByClass.set(`${ownerId}:${functionName.toLowerCase()}`, functionId)
+    }
+
+    const bodyNode = node.childForFieldName('body')
+    if (bodyNode) {
+      collectPythonCalls(bodyNode, sourceText, functionId, pendingCalls, ownerId)
+    }
+  }
+
+  const walkClass = (node: TreeSitterNode, parentOwnerId?: string): void => {
+    const className = treeSitterNodeText(sourceText, node.childForFieldName('name'))?.trim()
+    if (!className) {
+      return
+    }
+
+    const line = node.startPosition.row + 1
+    const classId = ensureClassNode(className, line, parentOwnerId)
+
+    const superclassesNode = node.childForFieldName('superclasses')
+    if (superclassesNode) {
+      for (const child of namedTreeSitterChildren(superclassesNode)) {
+        const baseName = normalizeTypeName(treeSitterNodeText(sourceText, child)?.trim() ?? '')
+        if (!baseName) {
+          continue
+        }
+
+        pendingInherits.push({
+          sourceId: classId,
+          baseName,
+          line: child.startPosition.row + 1,
+        })
+      }
+    }
+
+    const bodyNode = node.childForFieldName('body')
+    if (!bodyNode) {
+      return
+    }
+
+    for (const child of namedTreeSitterChildren(bodyNode)) {
+      const definitionNode = pythonDefinitionNode(child)
+      if (!definitionNode) {
+        continue
+      }
+
+      if (definitionNode.type === 'class_definition') {
+        walkClass(definitionNode, classId)
+        continue
+      }
+
+      if (definitionNode.type === 'function_definition') {
+        processFunction(definitionNode, classId)
+      }
+    }
+  }
+
+  try {
+    tree = parser.parse(sourceText)
+    if (!tree) {
+      return null
+    }
+
+    addNode(nodes, seenIds, createNode(fileNodeId, basename(filePath), filePath, 1))
+    addPythonImports()
+
+    for (const child of namedTreeSitterChildren(tree.rootNode)) {
+      const definitionNode = pythonDefinitionNode(child)
+      if (!definitionNode) {
+        continue
+      }
+
+      if (definitionNode.type === 'class_definition') {
+        walkClass(definitionNode)
+        continue
+      }
+
+      if (definitionNode.type === 'function_definition') {
+        processFunction(definitionNode)
+      }
+    }
+
+    const labelToId = new Map<string, string>()
+    for (const node of nodes) {
+      labelToId.set(normalizeLabel(node.label), node.id)
+    }
+
+    for (const pendingInheritance of pendingInherits) {
+      const baseId = labelToId.get(normalizeLabel(pendingInheritance.baseName))
+      if (!baseId) {
+        continue
+      }
+
+      addUniqueEdge(edges, seenStructuralEdges, createEdge(pendingInheritance.sourceId, baseId, 'inherits', filePath, pendingInheritance.line))
+    }
+
+    addResolvedCalls(edges, pendingCalls, nodes, filePath, methodIdsByClass)
+    const rationale = extractPythonRationale(filePath)
+    nodes.push(...rationale.nodes)
+    edges.push(...rationale.edges)
+
+    const validNodeIds = new Set(nodes.map((node) => node.id))
+    return {
+      nodes,
+      edges: edges.filter((edge) => validNodeIds.has(edge.source) && (validNodeIds.has(edge.target) || edge.relation === 'imports' || edge.relation === 'imports_from')),
+    }
+  } finally {
+    tree?.delete()
+    parser.delete()
+  }
+}
+
+export function extractPython(filePath: string): ExtractionFragment {
+  const extraction = extractPythonTreeSitter(filePath)
+  if (extraction !== null) {
+    return extraction
+  }
+
+  warnTreeSitterFallback('python')
+  return extractPythonRegex(filePath)
 }
 
 export function extractRuby(filePath: string): ExtractionFragment {
@@ -2571,7 +2552,7 @@ function treeSitterNodeText(sourceText: string, node: TreeSitterNode | null | un
   return sourceText.slice(node.startIndex, node.endIndex)
 }
 
-function warnTreeSitterFallback(language: 'go' | 'java'): void {
+function warnTreeSitterFallback(language: 'go' | 'java' | 'python'): void {
   const runtimeError = treeSitterWasmError()
   const warningKey = `${language}:${runtimeError ?? 'parser-unavailable'}`
   if (TREE_SITTER_FALLBACK_WARNINGS.has(warningKey)) {

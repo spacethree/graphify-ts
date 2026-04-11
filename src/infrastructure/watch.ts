@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync, unlinkSync, watch as createFileSystemWatcher, writeFileSync } from 'node:fs'
 import { extname, join, resolve, sep } from 'node:path'
 
 import { CODE_EXTENSIONS, DOC_EXTENSIONS, IMAGE_EXTENSIONS, PAPER_EXTENSIONS } from '../pipeline/detect.js'
@@ -28,6 +28,11 @@ export interface WatchOptions extends RebuildCodeOptions {
   notifyOnly?: (watchPath: string, logger?: WatchLogger) => void
 }
 
+interface WatchLoopSignal {
+  wait(signal?: AbortSignal): Promise<void>
+  wake(): void
+}
+
 function defaultLogger(logger?: WatchLogger): WatchLogger {
   return logger ?? console
 }
@@ -36,26 +41,69 @@ function resolveWatchPath(watchPath: string): string {
   return resolve(watchPath)
 }
 
-function wait(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolvePromise) => {
-    if (signal?.aborted) {
-      resolvePromise()
-      return
-    }
+function createWatchLoopSignal(intervalMs: number): WatchLoopSignal {
+  let wakePending = false
+  let wakeResolver: (() => void) | null = null
 
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort)
-      resolvePromise()
-    }, ms)
+  return {
+    wait(signal?: AbortSignal): Promise<void> {
+      return new Promise((resolvePromise) => {
+        if (signal?.aborted) {
+          resolvePromise()
+          return
+        }
 
-    function onAbort(): void {
-      clearTimeout(timer)
-      signal?.removeEventListener('abort', onAbort)
-      resolvePromise()
-    }
+        if (wakePending) {
+          wakePending = false
+          resolvePromise()
+          return
+        }
+        let timer: ReturnType<typeof setTimeout> | undefined
 
-    signal?.addEventListener('abort', onAbort, { once: true })
-  })
+        function onAbort(): void {
+          finish()
+        }
+
+        function onWake(): void {
+          wakePending = false
+          finish()
+        }
+
+        function finish(): void {
+          clearTimeout(timer)
+          signal?.removeEventListener('abort', onAbort)
+          if (wakeResolver === onWake) {
+            wakeResolver = null
+          }
+          resolvePromise()
+        }
+
+        wakeResolver = onWake
+        signal?.addEventListener('abort', onAbort, { once: true })
+        timer = setTimeout(finish, intervalMs)
+      })
+    },
+    wake(): void {
+      wakePending = true
+      const resolver = wakeResolver
+      wakeResolver = null
+      resolver?.()
+    },
+  }
+}
+
+function startEventWatcher(watchPath: string, wake: () => void): { close(): void } | null {
+  try {
+    const watcher = createFileSystemWatcher(watchPath, { recursive: true, persistent: false }, () => {
+      wake()
+    })
+    watcher.on('error', () => {
+      wake()
+    })
+    return watcher
+  } catch {
+    return null
+  }
 }
 
 function isWithinRoot(rootRealPath: string, candidateRealPath: string): boolean {
@@ -205,9 +253,13 @@ export function hasNonCode(changedPaths: string[]): boolean {
 export function rebuildCode(watchPath: string, options: RebuildCodeOptions = {}): boolean {
   const resolvedWatchPath = resolveWatchPath(watchPath)
   const output = defaultLogger(options.logger)
+  const graphOutputDir = join(resolvedWatchPath, 'graphify-out')
+  const manifestPath = join(graphOutputDir, 'manifest.json')
+  const graphPath = join(graphOutputDir, 'graph.json')
 
   try {
     const result = generateGraph(resolvedWatchPath, {
+      ...(existsSync(manifestPath) && existsSync(graphPath) ? { update: true } : {}),
       ...(options.followSymlinks !== undefined ? { followSymlinks: options.followSymlinks } : {}),
       ...(options.noHtml !== undefined ? { noHtml: options.noHtml } : {}),
     })
@@ -239,6 +291,10 @@ export async function watch(watchPath: string, debounce = 3, options: WatchOptio
   const pollIntervalMs = Math.max(10, options.pollIntervalMs ?? 250)
   const runRebuild = options.rebuildCode ?? rebuildCode
   const runNotify = options.notifyOnly ?? notifyOnly
+  const loopSignal = createWatchLoopSignal(pollIntervalMs)
+  const eventWatcher = startEventWatcher(resolvedWatchPath, () => {
+    loopSignal.wake()
+  })
 
   let previousSnapshot = snapshotWatchedFiles(resolvedWatchPath, options.followSymlinks ?? false)
   let pending = false
@@ -246,12 +302,15 @@ export async function watch(watchPath: string, debounce = 3, options: WatchOptio
   const changed = new Set<string>()
 
   output.log(`[graphify watch] Watching ${resolvedWatchPath} - abort the process to stop`)
-  output.log('[graphify watch] Supported code, document, paper, and image changes rebuild graph automatically.')
+  output.log('[graphify watch] Code-only changes rebuild automatically; document, paper, and image changes require a manual generate --update refresh.')
   output.log(`[graphify watch] Debounce: ${debounce}s`)
+  if (eventWatcher) {
+    output.log('[graphify watch] Filesystem events enabled with polling fallback.')
+  }
 
   try {
     while (!options.signal?.aborted) {
-      await wait(pollIntervalMs, options.signal)
+      await loopSignal.wait(options.signal)
       if (options.signal?.aborted) {
         break
       }
@@ -274,6 +333,11 @@ export async function watch(watchPath: string, debounce = 3, options: WatchOptio
         changed.clear()
 
         output.log(`\n[graphify watch] ${batch.length} file(s) changed`)
+        if (hasNonCode(batch)) {
+          runNotify(resolvedWatchPath, output)
+          continue
+        }
+
         const rebuildOptions: RebuildCodeOptions = {
           logger: output,
           ...(options.followSymlinks !== undefined ? { followSymlinks: options.followSymlinks } : {}),
@@ -286,6 +350,11 @@ export async function watch(watchPath: string, debounce = 3, options: WatchOptio
       }
     }
   } finally {
+    try {
+      eventWatcher?.close()
+    } catch {
+      // Ignore watcher cleanup errors during shutdown.
+    }
     if (options.signal?.aborted) {
       output.log('\n[graphify watch] Stopped.')
     }

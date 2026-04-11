@@ -355,6 +355,7 @@ export function toHtml(graph: KnowledgeGraph, communities: Communities, outputPa
     label: String(attributes.relation ?? ''),
     title: escapeHtml(`${String(attributes.relation ?? '')} [${String(attributes.confidence ?? 'EXTRACTED')}]`),
     confidence: String(attributes.confidence ?? 'EXTRACTED'),
+    dashes: String(attributes.confidence ?? 'EXTRACTED') !== 'EXTRACTED',
   }))
   const legend = Object.entries(communities).map(([communityId, nodeIds]) => ({
     cid: Number(communityId),
@@ -592,7 +593,7 @@ const IS_DIRECTED = ${serializeForInlineScript(graph.isDirected())};
 const EDGE_ARROWS = ${serializeForInlineScript(graph.isDirected() ? { to: { enabled: true, scaleFactor: 0.45 } } : {})};
 
 const nodes = new vis.DataSet(RAW_NODES);
-const edges = new vis.DataSet(RAW_EDGES);
+const edges = new vis.DataSet(RAW_EDGES.map((edge) => ({ ...edge, arrows: EDGE_ARROWS, dashes: edge.dashes })));
 const nodeIndex = new Map(RAW_NODES.map((node) => [node.id, node]));
 const nodesByCommunity = new Map();
 RAW_NODES.forEach((node) => {

@@ -193,6 +193,29 @@ describe('export', () => {
     })
   })
 
+  it('writes html with confidence-based dash styling for inferred edges', () => {
+    const graph = buildFromJson(
+      {
+        nodes: [
+          { id: 'n1', label: 'Alpha', file_type: 'code', source_file: 'a.py' },
+          { id: 'n2', label: 'Beta', file_type: 'code', source_file: 'b.py' },
+        ],
+        edges: [{ source: 'n1', target: 'n2', relation: 'calls', confidence: 'INFERRED', source_file: 'a.py' }],
+      },
+      { directed: true },
+    )
+
+    withTempDir((tempDir) => {
+      const outputPath = join(tempDir, 'graph.html')
+      toHtml(graph, { 0: ['n1', 'n2'] }, outputPath)
+
+      const content = readFileSync(outputPath, 'utf8')
+
+      expect(content).toContain('dashes: edge.dashes')
+      expect(content).toContain('"confidence":"INFERRED","dashes":true')
+    })
+  })
+
   it('writes an Obsidian-style vault with community notes and graph config', () => {
     const graph = makeGraph()
     const communities = cluster(graph)

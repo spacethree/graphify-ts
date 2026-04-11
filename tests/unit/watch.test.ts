@@ -6,6 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { describe, expect, test, vi } from 'vitest'
 
 import { WATCHED_EXTENSIONS, hasNonCode, notifyOnly, rebuildCode, watch } from '../../src/infrastructure/watch.js'
+import { generateGraph } from '../../src/infrastructure/generate.js'
 
 function withTempDir(callback: (tempDir: string) => void): void {
   const tempDir = mkdtempSync(join(tmpdir(), 'graphify-ts-watch-'))
@@ -66,6 +67,32 @@ describe('rebuildCode', () => {
     })
   })
 
+  test('uses incremental generation when a manifest already exists', async () => {
+    await withTempDirAsync(async (tempDir) => {
+      writeFileSync(join(tempDir, 'main.py'), 'def hello():\n    return 1\n', 'utf8')
+      generateGraph(tempDir)
+
+      vi.resetModules()
+      const actualGenerateModule = await vi.importActual<typeof import('../../src/infrastructure/generate.js')>('../../src/infrastructure/generate.js')
+      const generateGraphSpy = vi.fn(actualGenerateModule.generateGraph)
+      vi.doMock('../../src/infrastructure/generate.js', () => ({
+        ...actualGenerateModule,
+        generateGraph: generateGraphSpy,
+      }))
+
+      try {
+        const watchModule = await import('../../src/infrastructure/watch.js')
+
+        expect(watchModule.rebuildCode(tempDir)).toBe(true)
+        expect(generateGraphSpy).toHaveBeenCalledTimes(1)
+        expect(generateGraphSpy.mock.calls[0]?.[1]).toMatchObject({ update: true })
+      } finally {
+        vi.doUnmock('../../src/infrastructure/generate.js')
+        vi.resetModules()
+      }
+    })
+  })
+
   test('rebuilds graph artifacts when only supported document files are present', () => {
     withTempDir((tempDir) => {
       writeFileSync(join(tempDir, 'README.md'), '# docs only\nSee [Guide](guide.md)\n', 'utf8')
@@ -106,14 +133,16 @@ describe('watch', () => {
     })
   })
 
-  test('triggers rebuild for supported non-code changes', async () => {
+  test('triggers notify-only for supported non-code changes', async () => {
     await withTempDirAsync(async (tempDir) => {
       const controller = new AbortController()
       const rebuild = vi.fn(() => {
         controller.abort()
         return true
       })
-      const notify = vi.fn()
+      const notify = vi.fn(() => {
+        controller.abort()
+      })
 
       writeFileSync(join(tempDir, 'main.py'), 'def hello():\n    return 1\n', 'utf8')
       const watcher = watch(tempDir, 0.02, {
@@ -129,8 +158,39 @@ describe('watch', () => {
 
       await watcher
 
-      expect(rebuild).toHaveBeenCalledTimes(1)
-      expect(notify).not.toHaveBeenCalled()
+      expect(rebuild).not.toHaveBeenCalled()
+      expect(notify).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  test('triggers notify-only for mixed code and non-code changes in one batch', async () => {
+    await withTempDirAsync(async (tempDir) => {
+      const controller = new AbortController()
+      const rebuild = vi.fn(() => {
+        controller.abort()
+        return true
+      })
+      const notify = vi.fn(() => {
+        controller.abort()
+      })
+
+      writeFileSync(join(tempDir, 'main.py'), 'def hello():\n    return 1\n', 'utf8')
+      const watcher = watch(tempDir, 0.02, {
+        signal: controller.signal,
+        pollIntervalMs: 10,
+        rebuildCode: rebuild,
+        notifyOnly: notify,
+        logger: { log() {}, error() {} },
+      })
+
+      await delay(30)
+      writeFileSync(join(tempDir, 'main.py'), 'def hello():\n    return 2\n', 'utf8')
+      writeFileSync(join(tempDir, 'README.md'), '# docs\n', 'utf8')
+
+      await watcher
+
+      expect(rebuild).not.toHaveBeenCalled()
+      expect(notify).toHaveBeenCalledTimes(1)
     })
   })
 

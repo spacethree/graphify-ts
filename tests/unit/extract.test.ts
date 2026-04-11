@@ -88,6 +88,46 @@ describe('extract', () => {
     }
   })
 
+  it('extracts async python functions and methods with rationale and call edges', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'async_client.py')
+      writeFileSync(
+        filePath,
+        [
+          'class AsyncClient:',
+          '    async def fetch(self):',
+          '        """Fetch records from the upstream service."""',
+          '        return await self._request()',
+          '',
+          '    async def _request(self):',
+          '        return await helper()',
+          '',
+          'async def helper():',
+          '    return 1',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([filePath])
+      const labels = result.nodes.map((node) => node.label)
+      const nodeById = new Map(result.nodes.map((node) => [node.id, node.label]))
+      const calls = new Set(result.edges.filter((edge) => edge.relation === 'calls').map((edge) => `${nodeById.get(edge.source)}->${nodeById.get(edge.target)}`))
+      const fetchId = result.nodes.find((node) => node.label === '.fetch()')?.id
+      const rationaleTargets = new Set(result.edges.filter((edge) => edge.relation === 'rationale_for').map((edge) => edge.target))
+
+      expect(labels).toContain('AsyncClient')
+      expect(labels).toContain('.fetch()')
+      expect(labels).toContain('._request()')
+      expect(labels).toContain('helper()')
+      expect(calls.has('.fetch()->._request()')).toBe(true)
+      expect(calls.has('._request()->helper()')).toBe(true)
+      expect(rationaleTargets.has(fetchId ?? '')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('extracts python calls without self loops or duplicates', () => {
     const result = extractPython(join(FIXTURES_DIR, 'sample_calls.py'))
     const callEdges = result.edges.filter((edge) => edge.relation === 'calls')
@@ -785,6 +825,26 @@ describe('extract', () => {
     }
   })
 
+  it('extracts optional-chaining js or ts method calls', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'optional-chain.ts')
+      writeFileSync(
+        filePath,
+        ['class Loader {', '  load() {', '    return this?.request?.()', '  }', '', '  request() {', '    return true', '  }', '}'].join('\n'),
+        'utf8',
+      )
+
+      const result = extractJs(filePath)
+      const nodeById = new Map(result.nodes.map((node) => [node.id, node.label]))
+      const calls = new Set(result.edges.filter((edge) => edge.relation === 'calls').map((edge) => `${nodeById.get(edge.source)}->${nodeById.get(edge.target)}`))
+
+      expect(calls.has('.load()->.request()')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('extracts typescript interface nodes plus extends and implements heritage edges', () => {
     const root = createTempRoot()
     try {
@@ -879,7 +939,6 @@ describe('extract', () => {
         const ownerId = result.nodes.find((node) => node.label === testCase.ownerLabel)?.id
         const nodeById = new Map(result.nodes.map((node) => [node.id, node.label]))
         const calls = new Set(result.edges.filter((edge) => edge.relation === 'calls').map((edge) => `${nodeById.get(edge.source)}->${nodeById.get(edge.target)}`))
-
         expect(ownerId).toBeTruthy()
         for (const baseLabel of testCase.inherits) {
           const baseId = result.nodes.find((node) => node.label === baseLabel)?.id
@@ -888,6 +947,43 @@ describe('extract', () => {
         }
         expect(calls.has(testCase.call)).toBe(true)
       }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts multiline scala inheritance and keeps methods owned by the class', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'processor.scala')
+      writeFileSync(
+        filePath,
+        [
+          'trait Logging',
+          'trait Serializable',
+          'class BaseHandler',
+          'class Processor extends BaseHandler',
+          '  with Logging',
+          '  with Serializable {',
+          '  def process(): Int = helper()',
+          '  def helper(): Int = 1',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([filePath])
+      const processorId = result.nodes.find((node) => node.label === 'Processor')?.id
+      const processId = result.nodes.find((node) => node.label === '.process()')?.id
+      const helperId = result.nodes.find((node) => node.label === '.helper()')?.id
+      const inherits = result.edges.filter((edge) => edge.source === processorId && edge.relation === 'inherits')
+      const containsMethod = result.edges.filter((edge) => edge.source === processorId && edge.relation === 'method').map((edge) => edge.target)
+
+      expect(processorId).toBeTruthy()
+      expect(processId).toBeTruthy()
+      expect(helperId).toBeTruthy()
+      expect(inherits).toHaveLength(3)
+      expect(containsMethod).toEqual(expect.arrayContaining([processId, helperId]))
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

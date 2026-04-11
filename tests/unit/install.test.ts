@@ -52,6 +52,14 @@ function withBundledPackageRoot(callback: (packageRoot: string) => void): void {
   })
 }
 
+function countOccurrences(content: string, needle: string): number {
+  if (needle.length === 0) {
+    return 0
+  }
+
+  return content.split(needle).length - 1
+}
+
 describe('install helpers', () => {
   it('chooses the default platform from the host OS', () => {
     expect(defaultInstallPlatform('win32')).toBe('windows')
@@ -104,6 +112,21 @@ describe('install helpers', () => {
         const secondHome = join(homeDir, 'other-home')
         installSkill('codex', { homeDir: secondHome, packageRoot, version: 'test-version' })
         expect(existsSync(join(secondHome, '.claude', 'CLAUDE.md'))).toBe(false)
+      })
+    })
+  })
+
+  it('does not duplicate the home CLAUDE.md registration when claude skill install runs twice', () => {
+    withBundledPackageRoot((packageRoot) => {
+      withTempDir((homeDir) => {
+        installSkill('claude', { homeDir, packageRoot, version: 'test-version' })
+        const firstClaudeMd = readFileSync(join(homeDir, '.claude', 'CLAUDE.md'), 'utf8')
+
+        installSkill('claude', { homeDir, packageRoot, version: 'test-version' })
+
+        const secondClaudeMd = readFileSync(join(homeDir, '.claude', 'CLAUDE.md'), 'utf8')
+        expect(secondClaudeMd).toBe(firstClaudeMd)
+        expect(countOccurrences(secondClaudeMd, '- **graphify**')).toBe(1)
       })
     })
   })
@@ -215,6 +238,25 @@ describe('install helpers', () => {
     })
   })
 
+  it('keeps Gemini project instructions and hooks idempotent across repeated installs', () => {
+    withBundledPackageRoot((packageRoot) => {
+      withTempDir((homeDir) => {
+        withTempDir((projectDir) => {
+          geminiInstall(projectDir, { homeDir, packageRoot, version: 'test-version' })
+          const firstGeminiMd = readFileSync(join(projectDir, 'GEMINI.md'), 'utf8')
+          const firstSettings = readFileSync(join(projectDir, '.gemini', 'settings.json'), 'utf8')
+
+          geminiInstall(projectDir, { homeDir, packageRoot, version: 'test-version' })
+
+          expect(readFileSync(join(projectDir, 'GEMINI.md'), 'utf8')).toBe(firstGeminiMd)
+          expect(readFileSync(join(projectDir, '.gemini', 'settings.json'), 'utf8')).toBe(firstSettings)
+          expect(countOccurrences(firstGeminiMd, '## graphify')).toBe(1)
+          expect(countOccurrences(firstSettings, 'graphify')).toBeGreaterThan(0)
+        })
+      })
+    })
+  })
+
   it('fails loudly for malformed existing Gemini JSON config files', () => {
     withTempDir((projectDir) => {
       const settingsPath = join(projectDir, '.gemini', 'settings.json')
@@ -253,6 +295,21 @@ describe('install helpers', () => {
     })
   })
 
+  it('keeps Claude project instructions and hooks idempotent across repeated installs', () => {
+    withTempDir((projectDir) => {
+      claudeInstall(projectDir)
+      const firstClaudeMd = readFileSync(join(projectDir, 'CLAUDE.md'), 'utf8')
+      const firstSettings = readFileSync(join(projectDir, '.claude', 'settings.json'), 'utf8')
+
+      claudeInstall(projectDir)
+
+      expect(readFileSync(join(projectDir, 'CLAUDE.md'), 'utf8')).toBe(firstClaudeMd)
+      expect(readFileSync(join(projectDir, '.claude', 'settings.json'), 'utf8')).toBe(firstSettings)
+      expect(countOccurrences(firstClaudeMd, '## graphify')).toBe(1)
+      expect(countOccurrences(firstSettings, 'graphify')).toBeGreaterThan(0)
+    })
+  })
+
   it('fails loudly for malformed existing JSON config files', () => {
     withTempDir((projectDir) => {
       const settingsPath = join(projectDir, '.claude', 'settings.json')
@@ -278,6 +335,26 @@ describe('install helpers', () => {
       expect(opencodeMessage).toMatch(/graphify section written|graphify already configured in AGENTS\.md/)
       expect(existsSync(join(projectDir, '.opencode', 'plugins', 'graphify.js'))).toBe(true)
       expect(existsSync(join(projectDir, 'opencode.json'))).toBe(true)
+    })
+  })
+
+  it('keeps codex and opencode project integrations idempotent across repeated installs', () => {
+    withTempDir((projectDir) => {
+      agentsInstall(projectDir, 'codex')
+      agentsInstall(projectDir, 'opencode')
+      const firstAgentsMd = readFileSync(join(projectDir, 'AGENTS.md'), 'utf8')
+      const firstCodexHooks = readFileSync(join(projectDir, '.codex', 'hooks.json'), 'utf8')
+      const firstOpenCodeConfig = readFileSync(join(projectDir, 'opencode.json'), 'utf8')
+
+      agentsInstall(projectDir, 'codex')
+      agentsInstall(projectDir, 'opencode')
+
+      expect(readFileSync(join(projectDir, 'AGENTS.md'), 'utf8')).toBe(firstAgentsMd)
+      expect(readFileSync(join(projectDir, '.codex', 'hooks.json'), 'utf8')).toBe(firstCodexHooks)
+      expect(readFileSync(join(projectDir, 'opencode.json'), 'utf8')).toBe(firstOpenCodeConfig)
+      expect(countOccurrences(firstAgentsMd, '## graphify')).toBe(1)
+      expect(countOccurrences(firstCodexHooks, 'graphify')).toBeGreaterThan(0)
+      expect(countOccurrences(firstOpenCodeConfig, '.opencode/plugins/graphify.js')).toBe(1)
     })
   })
 
