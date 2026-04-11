@@ -6,6 +6,7 @@ import type { ExtractionData, ExtractionEdge, ExtractionNode, Hyperedge } from '
 import { godNodes, suggestQuestions, surprisingConnections } from '../pipeline/analyze.js'
 import { buildFromJson } from '../pipeline/build.js'
 import { cluster, scoreAll } from '../pipeline/cluster.js'
+import { buildCommunityLabels } from '../pipeline/community-naming.js'
 import { type DetectResult, detect, detectIncremental, FileType, saveManifest } from '../pipeline/detect.js'
 import { toCypher, toGraphml, toHtml, toJson, toObsidian, toSvg } from '../pipeline/export.js'
 import { extract } from '../pipeline/extract.js'
@@ -19,6 +20,7 @@ export interface GenerateGraphOptions {
   directed?: boolean
   followSymlinks?: boolean
   noHtml?: boolean
+  htmlMode?: 'auto' | 'inline' | 'overview'
   wiki?: boolean
   obsidian?: boolean
   obsidianDir?: string | null
@@ -159,10 +161,6 @@ function isIncrementalDetectResult(detection: DetectResult | IncrementalDetectRe
   return 'new_total' in detection && 'new_files' in detection && 'deleted_files' in detection
 }
 
-function defaultCommunityLabels(communities: Record<number, string[]>): Record<number, string> {
-  return Object.fromEntries(Object.keys(communities).map((communityId) => [Number(communityId), `Community ${communityId}`]))
-}
-
 function outputDirectory(rootPath: string): string {
   return join(rootPath, 'graphify-out')
 }
@@ -270,7 +268,7 @@ export function generateGraph(rootPath = '.', options: GenerateGraphOptions = {}
 
   const communities = cluster(graph)
   const cohesionScores = scoreAll(graph, communities)
-  const communityLabels = defaultCommunityLabels(communities)
+  const communityLabels = buildCommunityLabels(graph, communities, { rootPath: resolvedRootPath })
   const godNodeList = godNodes(graph)
   const surpriseList = surprisingConnections(graph, communities)
   const suggestedQuestions = suggestQuestions(graph, communities, communityLabels)
@@ -288,9 +286,15 @@ export function generateGraph(rootPath = '.', options: GenerateGraphOptions = {}
   )
 
   writeFileSync(reportPath, `${report}\n`, 'utf8')
-  toJson(graph, communities, graphPath)
+  toJson(graph, communities, graphPath, communityLabels)
   if (!options.noHtml) {
-    toHtml(graph, communities, htmlPath, communityLabels)
+    const htmlResult = toHtml(graph, communities, htmlPath, communityLabels, {
+      mode: options.htmlMode ?? 'auto',
+      cohesionScores,
+    })
+    if (htmlResult.mode === 'overview') {
+      notes.push(`Large graph mode enabled: graph.html now opens an overview page with ${htmlResult.communityPageCount} community page(s).`)
+    }
   }
   if (wikiPath) {
     const articleCount = toWiki(graph, communities, wikiPath, {

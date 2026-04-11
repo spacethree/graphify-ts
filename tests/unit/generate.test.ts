@@ -207,6 +207,58 @@ describe('generateGraph', () => {
     })
   })
 
+  test('generates semantic community labels in reports and graph json metadata', () => {
+    withTempDir((tempDir) => {
+      mkdirSync(join(tempDir, 'src', 'infrastructure'), { recursive: true })
+      mkdirSync(join(tempDir, 'src', 'pipeline'), { recursive: true })
+      writeFileSync(
+        join(tempDir, 'src', 'infrastructure', 'install.ts'),
+        'export function claudeInstall() { return ensureArray() }\nexport function ensureArray() { return [] }\n',
+        'utf8',
+      )
+      writeFileSync(join(tempDir, 'src', 'pipeline', 'export.ts'), 'export function toHtml() { return toSvg() }\nexport function toSvg() { return 1 }\n', 'utf8')
+
+      const result = generateGraph(tempDir, { noHtml: true })
+      const report = readFileSync(result.reportPath, 'utf8')
+      const graphData = JSON.parse(readFileSync(result.graphPath, 'utf8')) as {
+        community_labels?: Record<string, string>
+      }
+
+      expect(report).toContain('Infrastructure Install')
+      expect(report).toContain('Pipeline Export')
+      expect(report).not.toContain('Community 0 - "Community 0"')
+      expect(graphData.community_labels).toMatchObject({
+        0: expect.any(String),
+      })
+      expect(Object.values(graphData.community_labels ?? {})).toEqual(expect.arrayContaining(['Infrastructure Install', 'Pipeline Export']))
+    })
+  })
+
+  test('propagates forced overview html mode through generateGraph', () => {
+    withTempDir((tempDir) => {
+      mkdirSync(join(tempDir, 'src', 'infrastructure'), { recursive: true })
+      mkdirSync(join(tempDir, 'src', 'pipeline'), { recursive: true })
+      writeFileSync(
+        join(tempDir, 'src', 'infrastructure', 'install.ts'),
+        'export function claudeInstall() { return ensureArray() }\nexport function ensureArray() { return [] }\n',
+        'utf8',
+      )
+      writeFileSync(join(tempDir, 'src', 'pipeline', 'export.ts'), 'export function toHtml() { return toSvg() }\nexport function toSvg() { return 1 }\n', 'utf8')
+
+      const result = generateGraph(tempDir, { htmlMode: 'overview' })
+      expect(result.htmlPath).not.toBeNull()
+      if (!result.htmlPath) {
+        throw new Error('Expected htmlPath to be written when HTML export is enabled')
+      }
+
+      const overview = readFileSync(result.htmlPath, 'utf8')
+
+      expect(result.notes).toEqual(expect.arrayContaining([expect.stringContaining('Large graph mode enabled')]))
+      expect(overview).toContain('Overview-first large-graph mode')
+      expect(readFileSync(join(tempDir, 'graphify-out', 'graph-pages', 'community-0.html'), 'utf8')).toContain('Back to overview')
+    })
+  })
+
   test('writes and reloads directed graphs when requested', () => {
     withTempDir((tempDir) => {
       writeFileSync(join(tempDir, 'main.py'), 'class Greeter:\n    def hello(self):\n        return helper()\n\ndef helper():\n    return 1\n', 'utf8')

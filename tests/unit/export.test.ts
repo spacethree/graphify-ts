@@ -164,6 +164,74 @@ describe('export', () => {
     })
   })
 
+  it('writes overview-first html with self-contained community pages when requested', () => {
+    const graph = buildFromJson(
+      {
+        nodes: [
+          { id: 'alpha', label: 'claudeInstall()', file_type: 'code', source_file: '/repo/src/infrastructure/install.ts' },
+          { id: 'beta', label: 'cursorInstall()', file_type: 'code', source_file: '/repo/src/infrastructure/install.ts' },
+          { id: 'gamma', label: 'toHtml()', file_type: 'code', source_file: '/repo/src/pipeline/export.ts' },
+        ],
+        edges: [
+          { source: 'alpha', target: 'beta', relation: 'calls', confidence: 'EXTRACTED', source_file: '/repo/src/infrastructure/install.ts' },
+          { source: 'beta', target: 'alpha', relation: 'returns_to', confidence: 'INFERRED', source_file: '/repo/src/infrastructure/install.ts' },
+        ],
+      },
+      { directed: true },
+    )
+
+    withTempDir((tempDir) => {
+      const outputPath = join(tempDir, 'graph.html')
+      const result = toHtml(
+        graph,
+        { 0: ['alpha', 'beta'], 1: ['gamma'] },
+        outputPath,
+        { 0: 'Infrastructure Install', 1: 'Pipeline Export' },
+        { mode: 'overview', cohesionScores: { 0: 1, 1: 1 } },
+      )
+
+      const overview = readFileSync(outputPath, 'utf8')
+      const communityPage = readFileSync(join(tempDir, 'graph-pages', 'community-0.html'), 'utf8')
+
+      expect(result.mode).toBe('overview')
+      expect(result.communityPageCount).toBe(2)
+      expect(overview).toContain('Overview-first large-graph mode')
+      expect(overview).toContain('Open community')
+      expect(overview).toContain('graph-pages/community-0.html')
+      expect(overview).not.toContain('const RAW_EDGES =')
+      expect(communityPage).toContain('Back to overview')
+      expect(communityPage).toContain('claudeInstall()')
+      expect(communityPage).not.toContain('toHtml()')
+    })
+  })
+
+  it('automatically switches to overview mode when the graph exceeds inline thresholds', () => {
+    const graph = buildFromJson(
+      {
+        nodes: Array.from({ length: 2100 }, (_, index) => ({
+          id: `node-${index}`,
+          label: `Node${index}`,
+          file_type: 'code',
+          source_file: '/repo/src/pipeline/export.ts',
+        })),
+        edges: [],
+      },
+      { directed: true },
+    )
+
+    withTempDir((tempDir) => {
+      const outputPath = join(tempDir, 'graph.html')
+      const result = toHtml(graph, { 0: graph.nodeIds() }, outputPath, { 0: 'Pipeline Export' })
+
+      const overview = readFileSync(outputPath, 'utf8')
+
+      expect(result.mode).toBe('overview')
+      expect(result.reason).toContain('thresholds')
+      expect(overview).toContain('Overview-first large-graph mode')
+      expect(readdirSync(join(tempDir, 'graph-pages'))).toContain('community-0.html')
+    })
+  })
+
   it('writes html edge arrow config that matches graph directedness', () => {
     const undirectedGraph = makeGraph()
     const directedGraph = buildFromJson(

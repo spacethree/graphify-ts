@@ -1,5 +1,5 @@
-import { mkdirSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { dirname, join, relative } from 'node:path'
 
 import { KnowledgeGraph } from '../contracts/graph.js'
 import { validateUrl } from '../shared/security.js'
@@ -35,6 +35,103 @@ const INLINE_SCRIPT_ESCAPES: Record<string, string> = {
   '&': '\\u0026',
   '\u2028': '\\u2028',
   '\u2029': '\\u2029',
+}
+
+const HTML_MODE_THRESHOLDS = {
+  maxInlineNodes: 1200,
+  maxInlineEdges: 2400,
+  maxInlineBytes: 2_500_000,
+} as const
+
+const COMMUNITY_PAGES_DIRNAME = 'graph-pages'
+
+type HtmlExportMode = 'auto' | 'inline' | 'overview'
+
+interface HtmlExportOptions {
+  mode?: HtmlExportMode
+  cohesionScores?: Record<number, number>
+}
+
+interface HtmlExportResult {
+  mode: 'inline' | 'overview'
+  communityPageCount: number
+  reason: string
+}
+
+interface HtmlNodeRecord {
+  id: string
+  label: string
+  title: string
+  color: {
+    background: string
+    border: string
+  }
+  community: number
+  community_name: string
+  source_file: string
+  source_location: string
+  source_url: string
+  safe_source_url: string
+  document_title: string
+  author: string
+  contributor: string
+  captured_at: string
+  question: string
+  arxiv_id: string
+  file_type: string
+  degree: number
+  confidence: string
+}
+
+interface HtmlEdgeRecord {
+  from: string
+  to: string
+  label: string
+  title: string
+  confidence: string
+  dashes: boolean
+}
+
+interface HtmlLegendEntry {
+  cid: number
+  color: string
+  label: string
+  count: number
+}
+
+interface HtmlStats {
+  nodes: number
+  edges: number
+  communities: number
+}
+
+interface HtmlPayload {
+  nodes: HtmlNodeRecord[]
+  edges: HtmlEdgeRecord[]
+  legend: HtmlLegendEntry[]
+  stats: HtmlStats
+}
+
+interface InteractiveHtmlPageOptions {
+  pageTitle?: string
+  heading?: string
+  lede?: string
+  backLinkHref?: string
+  backLinkLabel?: string
+}
+
+interface OverviewCommunitySummary {
+  id: number
+  label: string
+  count: number
+  cohesion: number | null
+  href: string
+  topNodes: Array<{
+    id: string
+    label: string
+    degree: number
+    href: string
+  }>
 }
 
 function escapeHtml(value: string): string {
@@ -160,7 +257,75 @@ function connectionPrefix(direction: ConnectionDirection): string {
   return ''
 }
 
-export function toJson(graph: KnowledgeGraph, communities: Communities, outputPath: string): void {
+function communityColor(communityId: number): string {
+  return COMMUNITY_COLORS[communityId % COMMUNITY_COLORS.length] ?? '#4E79A7'
+}
+
+function buildHtmlPayload(graph: KnowledgeGraph, communities: Communities, communityLabels: Record<number, string>): HtmlPayload {
+  const nodeCommunity = _nodeCommunityMap(communities)
+  return {
+    nodes: graph.nodeEntries().map(([id, attributes]) => {
+      const communityId = nodeCommunity[id] ?? 0
+      const color = communityColor(communityId)
+      const sourceUrl = String(attributes.source_url ?? '')
+      const safeSourceUrl = (() => {
+        if (!sourceUrl) {
+          return ''
+        }
+
+        try {
+          return validateUrl(sourceUrl)
+        } catch {
+          return ''
+        }
+      })()
+      return {
+        id,
+        label: String(attributes.label ?? id),
+        title: escapeHtml(String(attributes.label ?? id)),
+        color: { background: color, border: color },
+        community: communityId,
+        community_name: communityLabels[communityId] ?? `Community ${communityId}`,
+        source_file: String(attributes.source_file ?? ''),
+        source_location: String(attributes.source_location ?? ''),
+        source_url: sourceUrl,
+        safe_source_url: safeSourceUrl,
+        document_title: String(attributes.title ?? ''),
+        author: String(attributes.author ?? attributes.paper_authors ?? ''),
+        contributor: String(attributes.contributor ?? ''),
+        captured_at: String(attributes.captured_at ?? attributes.date ?? ''),
+        question: String(attributes.question ?? ''),
+        arxiv_id: String(attributes.arxiv_id ?? ''),
+        file_type: String(attributes.file_type ?? ''),
+        degree: graph.degree(id),
+        confidence: dominantConfidence(graph, id),
+      }
+    }),
+    edges: graph.edgeEntries().map(([source, target, attributes]) => ({
+      from: source,
+      to: target,
+      label: String(attributes.relation ?? ''),
+      title: escapeHtml(`${String(attributes.relation ?? '')} [${String(attributes.confidence ?? 'EXTRACTED')}]`),
+      confidence: String(attributes.confidence ?? 'EXTRACTED'),
+      dashes: String(attributes.confidence ?? 'EXTRACTED') !== 'EXTRACTED',
+    })),
+    legend: Object.entries(communities)
+      .map(([communityId, nodeIds]) => ({
+        cid: Number(communityId),
+        color: communityColor(Number(communityId)),
+        label: communityLabels[Number(communityId)] ?? `Community ${communityId}`,
+        count: nodeIds.length,
+      }))
+      .sort((left, right) => left.cid - right.cid),
+    stats: {
+      nodes: graph.numberOfNodes(),
+      edges: graph.numberOfEdges(),
+      communities: Object.keys(communities).length,
+    },
+  }
+}
+
+export function toJson(graph: KnowledgeGraph, communities: Communities, outputPath: string, communityLabels: Record<number, string> = {}): void {
   const nodeCommunity = _nodeCommunityMap(communities)
   const data = {
     directed: graph.isDirected(),
@@ -176,224 +341,75 @@ export function toJson(graph: KnowledgeGraph, communities: Communities, outputPa
       confidence_score: confidenceScore(attributes),
     })),
     hyperedges: Array.isArray(graph.graph.hyperedges) ? graph.graph.hyperedges : [],
+    community_labels: communityLabels,
   }
 
   writeFileSync(outputPath, `${JSON.stringify(data, null, 2)}\n`, 'utf8')
 }
 
-export function toCypher(graph: KnowledgeGraph, outputPath: string): void {
-  const lines = ['// Neo4j Cypher import - generated by graphify-ts', '']
+function subgraphFromNodes(graph: KnowledgeGraph, nodeIds: string[]): KnowledgeGraph {
+  const selectedNodeIds = new Set(nodeIds)
+  const subgraph = new KnowledgeGraph({ directed: graph.isDirected() })
 
-  for (const [nodeId, attributes] of graph.nodeEntries()) {
-    const label = escapeCypher(String(attributes.label ?? nodeId))
-    const fileTypeRaw = String(attributes.file_type ?? 'entity').replace(/[^A-Za-z0-9_]/g, '')
-    const fileType = fileTypeRaw && /^[A-Za-z]/.test(fileTypeRaw) ? `${fileTypeRaw.charAt(0).toUpperCase()}${fileTypeRaw.slice(1)}` : 'Entity'
-    lines.push(`MERGE (n:${fileType} {id: '${escapeCypher(nodeId)}', label: '${label}'});`)
+  for (const nodeId of nodeIds) {
+    if (!graph.hasNode(nodeId)) {
+      continue
+    }
+    subgraph.addNode(nodeId, graph.nodeAttributes(nodeId))
   }
 
-  lines.push('')
   for (const [source, target, attributes] of graph.edgeEntries()) {
-    const relation =
-      String(attributes.relation ?? 'RELATES_TO')
-        .toUpperCase()
-        .replace(/[^A-Z0-9_]/g, '_') || 'RELATES_TO'
-    const confidence = escapeCypher(String(attributes.confidence ?? 'EXTRACTED'))
-    lines.push(`MATCH (a {id: '${escapeCypher(source)}'}), (b {id: '${escapeCypher(target)}'}) MERGE (a)-[:${relation} {confidence: '${confidence}'}]->(b);`)
+    if (selectedNodeIds.has(source) && selectedNodeIds.has(target)) {
+      subgraph.addEdge(source, target, attributes)
+    }
   }
 
-  writeFileSync(outputPath, lines.join('\n'), 'utf8')
+  const hyperedges = (Array.isArray(graph.graph.hyperedges) ? graph.graph.hyperedges : []).filter((hyperedge) => {
+    return Array.isArray((hyperedge as { nodes?: unknown[] }).nodes)
+      ? (hyperedge as { nodes: unknown[] }).nodes.every((nodeId) => typeof nodeId === 'string' && selectedNodeIds.has(nodeId))
+      : false
+  })
+  if (hyperedges.length > 0) {
+    subgraph.graph.hyperedges = hyperedges
+  }
+
+  return subgraph
 }
 
-export function toGraphml(graph: KnowledgeGraph, communities: Communities, outputPath: string): void {
-  const nodeCommunity = _nodeCommunityMap(communities)
-  const edgeDefault = graph.isDirected() ? 'directed' : 'undirected'
-  const lines = [
-    '<?xml version="1.0" encoding="UTF-8"?>',
-    '<graphml xmlns="http://graphml.graphdrawing.org/xmlns">',
-    `  <graph id="graphify" edgedefault="${edgeDefault}">`,
-  ]
-
-  for (const [nodeId, attributes] of graph.nodeEntries()) {
-    lines.push(`    <node id="${escapeXml(nodeId)}">`)
-    lines.push(`      <data key="label">${escapeXml(String(attributes.label ?? nodeId))}</data>`)
-    lines.push(`      <data key="community">${nodeCommunity[nodeId] ?? -1}</data>`)
-    lines.push(`      <data key="source_file">${escapeXml(String(attributes.source_file ?? ''))}</data>`)
-    lines.push('    </node>')
+function resolveHtmlExportMode(payload: HtmlPayload, requestedMode: HtmlExportOptions['mode'] = 'auto'): HtmlExportResult {
+  if (requestedMode === 'inline') {
+    return { mode: 'inline', communityPageCount: 0, reason: 'forced inline mode' }
   }
 
-  let edgeIndex = 0
-  for (const [source, target, attributes] of graph.edgeEntries()) {
-    lines.push(`    <edge id="e${edgeIndex}" source="${escapeXml(source)}" target="${escapeXml(target)}">`)
-    lines.push(`      <data key="relation">${escapeXml(String(attributes.relation ?? ''))}</data>`)
-    lines.push(`      <data key="confidence">${escapeXml(String(attributes.confidence ?? 'EXTRACTED'))}</data>`)
-    lines.push('    </edge>')
-    edgeIndex += 1
+  if (requestedMode === 'overview') {
+    return { mode: 'overview', communityPageCount: payload.legend.length, reason: 'forced overview mode' }
   }
 
-  lines.push('  </graph>')
-  lines.push('</graphml>')
-  writeFileSync(outputPath, lines.join('\n'), 'utf8')
+  const serializedBytes =
+    Buffer.byteLength(JSON.stringify(payload.nodes), 'utf8') +
+    Buffer.byteLength(JSON.stringify(payload.edges), 'utf8') +
+    Buffer.byteLength(JSON.stringify(payload.legend), 'utf8')
+  const shouldUseOverview =
+    payload.nodes.length > HTML_MODE_THRESHOLDS.maxInlineNodes ||
+    payload.edges.length > HTML_MODE_THRESHOLDS.maxInlineEdges ||
+    serializedBytes > HTML_MODE_THRESHOLDS.maxInlineBytes
+
+  return shouldUseOverview
+    ? { mode: 'overview', communityPageCount: payload.legend.length, reason: 'graph exceeded inline HTML thresholds' }
+    : { mode: 'inline', communityPageCount: 0, reason: 'graph fits inline HTML thresholds' }
 }
 
-/**
- * Export the graph as a static SVG with a deterministic, dependency-free layout.
- *
- * Communities are arranged in a grid and nodes are positioned on a circle inside
- * each community cell, which keeps output stable across runs for the same input.
- */
-export function toSvg(graph: KnowledgeGraph, communities: Communities, outputPath: string, communityLabels: Record<number, string> = {}): void {
-  const communityIds = Object.keys(communities)
-    .map(Number)
-    .sort((left, right) => left - right)
-  const totalCommunities = Math.max(communityIds.length, 1)
-  const columns = Math.max(1, Math.ceil(Math.sqrt(totalCommunities)))
-  const rows = Math.max(1, Math.ceil(totalCommunities / columns))
-  const width = SVG_LAYOUT.padding * 2 + columns * SVG_LAYOUT.cellWidth + SVG_LAYOUT.legendWidth
-  const height = SVG_LAYOUT.padding * 2 + rows * SVG_LAYOUT.cellHeight
-  const degreeByNode = new Map(graph.nodeIds().map((nodeId) => [nodeId, graph.degree(nodeId)]))
-  const maxDegree = Math.max(...degreeByNode.values(), 1)
-  const positions = new Map<string, { x: number; y: number }>()
+function buildInteractiveHtml(payload: HtmlPayload, isDirected: boolean, options: InteractiveHtmlPageOptions = {}): string {
+  const backLinkMarkup =
+    typeof options.backLinkHref === 'string' && options.backLinkHref.length > 0
+      ? `<p class="muted" style="margin-bottom:10px;"><a class="back-link" href="${escapeHtml(options.backLinkHref)}">${escapeHtml(options.backLinkLabel ?? '← Back')}</a></p>`
+      : ''
 
-  communityIds.forEach((communityId, index) => {
-    const nodeIds = [...(communities[communityId] ?? [])].sort((left, right) => {
-      return String(graph.nodeAttributes(left).label ?? left).localeCompare(String(graph.nodeAttributes(right).label ?? right))
-    })
-    const column = index % columns
-    const row = Math.floor(index / columns)
-    const centerX = SVG_LAYOUT.padding + column * SVG_LAYOUT.cellWidth + SVG_LAYOUT.cellWidth / 2
-    const centerY = SVG_LAYOUT.padding + row * SVG_LAYOUT.cellHeight + SVG_LAYOUT.cellHeight / 2
-
-    if (nodeIds.length === 1) {
-      positions.set(nodeIds[0]!, { x: centerX, y: centerY })
-      return
-    }
-
-    const radius = Math.min(SVG_LAYOUT.communityRadiusCap, SVG_LAYOUT.communityBaseRadius + nodeIds.length * SVG_LAYOUT.communityRadiusIncrement)
-    nodeIds.forEach((nodeId, nodeIndex) => {
-      const angle = -Math.PI / 2 + (nodeIndex / nodeIds.length) * Math.PI * 2
-      positions.set(nodeId, {
-        x: centerX + Math.cos(angle) * radius,
-        y: centerY + Math.sin(angle) * radius,
-      })
-    })
-  })
-
-  const nodeElements = graph.nodeEntries().map(([nodeId, attributes]) => {
-    const communityId = communityIds.find((id) => communities[id]?.includes(nodeId)) ?? 0
-    const color = COMMUNITY_COLORS[communityId % COMMUNITY_COLORS.length] ?? COMMUNITY_COLORS[0]
-    const position = positions.get(nodeId) ?? { x: SVG_LAYOUT.padding + 40, y: SVG_LAYOUT.padding + 40 }
-    const radius = SVG_LAYOUT.nodeBaseRadius + SVG_LAYOUT.nodeRadiusScale * ((degreeByNode.get(nodeId) ?? 0) / maxDegree)
-    const label = escapeXml(String(attributes.label ?? nodeId))
-    return [
-      `  <circle cx="${position.x.toFixed(2)}" cy="${position.y.toFixed(2)}" r="${radius.toFixed(2)}" fill="${color}" fill-opacity="0.9" stroke="#ffffff" stroke-width="1.5" />`,
-      `  <text x="${position.x.toFixed(2)}" y="${(position.y + radius + SVG_LAYOUT.nodeLabelOffset).toFixed(2)}" font-family="Inter, Arial, sans-serif" font-size="12" text-anchor="middle" fill="#f8fafc">${label}</text>`,
-    ].join('\n')
-  })
-
-  const edgeElements = graph.edgeEntries().map(([source, target, attributes]) => {
-    const sourcePosition = positions.get(source)
-    const targetPosition = positions.get(target)
-    if (!sourcePosition || !targetPosition) {
-      return ''
-    }
-
-    const confidence = String(attributes.confidence ?? 'EXTRACTED')
-    const dashArray = confidence === 'EXTRACTED' ? '' : ' stroke-dasharray="6 4"'
-    const opacity = confidence === 'EXTRACTED' ? '0.65' : '0.35'
-    return `  <line x1="${sourcePosition.x.toFixed(2)}" y1="${sourcePosition.y.toFixed(2)}" x2="${targetPosition.x.toFixed(2)}" y2="${targetPosition.y.toFixed(2)}" stroke="#94a3b8" stroke-width="1.5" stroke-opacity="${opacity}"${dashArray} />`
-  })
-
-  const legendElements = communityIds.map((communityId, index) => {
-    const color = COMMUNITY_COLORS[communityId % COMMUNITY_COLORS.length] ?? COMMUNITY_COLORS[0]
-    const label = escapeXml(communityLabels[communityId] ?? `Community ${communityId}`)
-    const y = SVG_LAYOUT.padding + 28 + index * SVG_LAYOUT.legendRowHeight
-    return [
-      `  <circle cx="${width - SVG_LAYOUT.legendWidth + 20}" cy="${y}" r="6" fill="${color}" />`,
-      `  <text x="${width - SVG_LAYOUT.legendWidth + 34}" y="${y + 4}" font-family="Inter, Arial, sans-serif" font-size="12" fill="#e2e8f0">${label} (${communities[communityId]?.length ?? 0})</text>`,
-    ].join('\n')
-  })
-
-  const svg = [
-    '<?xml version="1.0" encoding="UTF-8"?>',
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="graphify-ts knowledge graph export">`,
-    `  <rect width="${width}" height="${height}" fill="#111827" />`,
-    '  <text x="48" y="32" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="600" fill="#f8fafc">graphify-ts</text>',
-    '  <text x="48" y="54" font-family="Inter, Arial, sans-serif" font-size="12" fill="#94a3b8">Static SVG knowledge graph export</text>',
-    ...edgeElements.filter((line) => line.length > 0),
-    ...nodeElements,
-    `  <text x="${width - SVG_LAYOUT.legendWidth + 12}" y="${SVG_LAYOUT.padding}" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="600" fill="#f8fafc">Communities</text>`,
-    ...legendElements,
-    '</svg>',
-    '',
-  ].join('\n')
-
-  writeFileSync(outputPath, svg, 'utf8')
-}
-
-export function toHtml(graph: KnowledgeGraph, communities: Communities, outputPath: string, communityLabels: Record<number, string> = {}): void {
-  const nodeCommunity = _nodeCommunityMap(communities)
-  const nodes = graph.nodeEntries().map(([id, attributes]) => {
-    const communityId = nodeCommunity[id] ?? 0
-    const color = COMMUNITY_COLORS[communityId % COMMUNITY_COLORS.length] ?? COMMUNITY_COLORS[0]
-    const sourceUrl = String(attributes.source_url ?? '')
-    const safeSourceUrl = (() => {
-      if (!sourceUrl) {
-        return ''
-      }
-
-      try {
-        return validateUrl(sourceUrl)
-      } catch {
-        return ''
-      }
-    })()
-    return {
-      id,
-      label: String(attributes.label ?? id),
-      title: escapeHtml(String(attributes.label ?? id)),
-      color: { background: color, border: color },
-      community: communityId,
-      community_name: communityLabels[communityId] ?? `Community ${communityId}`,
-      source_file: String(attributes.source_file ?? ''),
-      source_location: String(attributes.source_location ?? ''),
-      source_url: sourceUrl,
-      safe_source_url: safeSourceUrl,
-      document_title: String(attributes.title ?? ''),
-      author: String(attributes.author ?? attributes.paper_authors ?? ''),
-      contributor: String(attributes.contributor ?? ''),
-      captured_at: String(attributes.captured_at ?? attributes.date ?? ''),
-      question: String(attributes.question ?? ''),
-      arxiv_id: String(attributes.arxiv_id ?? ''),
-      file_type: String(attributes.file_type ?? ''),
-      degree: graph.degree(id),
-      confidence: dominantConfidence(graph, id),
-    }
-  })
-  const edges = graph.edgeEntries().map(([source, target, attributes]) => ({
-    from: source,
-    to: target,
-    label: String(attributes.relation ?? ''),
-    title: escapeHtml(`${String(attributes.relation ?? '')} [${String(attributes.confidence ?? 'EXTRACTED')}]`),
-    confidence: String(attributes.confidence ?? 'EXTRACTED'),
-    dashes: String(attributes.confidence ?? 'EXTRACTED') !== 'EXTRACTED',
-  }))
-  const legend = Object.entries(communities).map(([communityId, nodeIds]) => ({
-    cid: Number(communityId),
-    color: COMMUNITY_COLORS[Number(communityId) % COMMUNITY_COLORS.length] ?? COMMUNITY_COLORS[0],
-    label: communityLabels[Number(communityId)] ?? `Community ${communityId}`,
-    count: nodeIds.length,
-  }))
-  const stats = {
-    nodes: graph.numberOfNodes(),
-    edges: graph.numberOfEdges(),
-    communities: Object.keys(communities).length,
-  }
-
-  const html = `<!DOCTYPE html>
+  return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>graphify-ts</title>
+<title>${escapeHtml(options.pageTitle ?? 'graphify-ts')}</title>
 <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
 <style>
   :root {
@@ -463,6 +479,7 @@ export function toHtml(graph: KnowledgeGraph, communities: Communities, outputPa
   }
 
   .muted { color: var(--text-muted); font-size: 0.85rem; }
+  .back-link { color: var(--accent); text-decoration: none; }
 
   #search {
     width: 100%;
@@ -560,8 +577,9 @@ export function toHtml(graph: KnowledgeGraph, communities: Communities, outputPa
 <div id="graph"></div>
 <div id="sidebar">
   <section class="panel">
-    <h1>graphify-ts</h1>
-    <p class="lede">Explore the generated graph, inspect node evidence, and hop through neighbors without leaving the HTML export.</p>
+    ${backLinkMarkup}
+    <h1>${escapeHtml(options.heading ?? 'graphify-ts')}</h1>
+    <p class="lede">${escapeHtml(options.lede ?? 'Explore the generated graph, inspect node evidence, and hop through neighbors without leaving the HTML export.')}</p>
     <div class="stats" id="stats"></div>
   </section>
 
@@ -613,12 +631,12 @@ export function toHtml(graph: KnowledgeGraph, communities: Communities, outputPa
   </section>
 </div>
 <script>
-const RAW_NODES = ${serializeForInlineScript(nodes)};
-const RAW_EDGES = ${serializeForInlineScript(edges)};
-const LEGEND = ${serializeForInlineScript(legend)};
-const STATS = ${serializeForInlineScript(stats)};
-const IS_DIRECTED = ${serializeForInlineScript(graph.isDirected())};
-const EDGE_ARROWS = ${serializeForInlineScript(graph.isDirected() ? { to: { enabled: true, scaleFactor: 0.45 } } : {})};
+const RAW_NODES = ${serializeForInlineScript(payload.nodes)};
+const RAW_EDGES = ${serializeForInlineScript(payload.edges)};
+const LEGEND = ${serializeForInlineScript(payload.legend)};
+const STATS = ${serializeForInlineScript(payload.stats)};
+const IS_DIRECTED = ${serializeForInlineScript(isDirected)};
+const EDGE_ARROWS = ${serializeForInlineScript(isDirected ? { to: { enabled: true, scaleFactor: 0.45 } } : {})};
 
 const nodes = new vis.DataSet(RAW_NODES);
 const edges = new vis.DataSet(RAW_EDGES.map((edge) => ({ ...edge, arrows: EDGE_ARROWS, dashes: edge.dashes })));
@@ -1005,8 +1023,496 @@ if (initialHash && nodeIndex.has(initialHash)) {
 </script>
 </body>
 </html>`
+}
 
-  writeFileSync(outputPath, html, 'utf8')
+function buildOverviewHtml(
+  stats: HtmlStats,
+  searchIndex: Array<{ label: string; source_file: string; community_name: string; href: string }>,
+  communities: OverviewCommunitySummary[],
+): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>graphify-ts overview</title>
+<style>
+  :root {
+    color-scheme: light;
+    --panel-border: #d7dce5;
+    --panel-bg: #fbfcfe;
+    --text-muted: #5b6473;
+    --accent: #2553d8;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    color: #111827;
+    background: #eef2f7;
+  }
+
+  main {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 24px;
+  }
+
+  .panel {
+    border: 1px solid var(--panel-border);
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.94);
+    padding: 18px;
+    margin-bottom: 16px;
+    box-shadow: 0 4px 14px rgba(15, 23, 42, 0.04);
+  }
+
+  h1, h2, h3, p { margin: 0; }
+  h1 { font-size: 1.45rem; }
+  h2 { font-size: 1rem; margin-bottom: 12px; }
+  .lede { color: var(--text-muted); line-height: 1.55; margin-top: 8px; }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 12px;
+    padding: 6px 10px;
+    border-radius: 999px;
+    background: #e8efff;
+    color: var(--accent);
+    font-size: 0.82rem;
+    font-weight: 600;
+  }
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+    margin-top: 16px;
+  }
+  .stat {
+    border-radius: 12px;
+    padding: 12px;
+    background: white;
+    border: 1px solid #e6ebf2;
+  }
+  .muted { color: var(--text-muted); font-size: 0.88rem; }
+  .stat strong { display: block; margin-top: 4px; font-size: 1.1rem; }
+  #search {
+    width: 100%;
+    padding: 12px 14px;
+    margin-bottom: 12px;
+    border-radius: 12px;
+    border: 1px solid #cdd6e3;
+    background: white;
+  }
+  .list {
+    display: grid;
+    gap: 10px;
+  }
+  .community-card,
+  .match-link {
+    display: block;
+    border: 1px solid #d7dce5;
+    border-radius: 12px;
+    padding: 12px 14px;
+    background: white;
+    color: inherit;
+    text-decoration: none;
+  }
+  .community-card:hover,
+  .match-link:hover {
+    border-color: var(--accent);
+  }
+  .community-meta,
+  .match-meta {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-top: 4px;
+  }
+  .top-nodes {
+    margin-top: 8px;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+  }
+  .empty {
+    color: var(--text-muted);
+    font-size: 0.92rem;
+    line-height: 1.5;
+  }
+</style>
+</head>
+<body>
+<main>
+  <section class="panel">
+    <div class="badge">Overview-first large-graph mode</div>
+    <h1>graphify-ts</h1>
+    <p class="lede">This export is using an overview-first layout so large projects stay fast to open. Start from a named community, then drill into its self-contained page for interactive node inspection.</p>
+    <div class="stats" id="stats"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Search nodes and files</h2>
+    <input id="search" placeholder="Search labels, files, or communities..." />
+    <div id="matches" class="list"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Communities</h2>
+    <p class="lede">Open a focused community page to render only a manageable slice of the graph.</p>
+    <div id="communities" class="list"></div>
+  </section>
+</main>
+<script>
+const STATS = ${serializeForInlineScript(stats)};
+const SEARCH_INDEX = ${serializeForInlineScript(searchIndex)};
+const COMMUNITIES = ${serializeForInlineScript(communities)};
+
+const elements = {
+  stats: document.getElementById('stats'),
+  search: document.getElementById('search'),
+  matches: document.getElementById('matches'),
+  communities: document.getElementById('communities'),
+};
+
+function renderStats() {
+  [
+    { label: 'Nodes', value: STATS.nodes },
+    { label: 'Edges', value: STATS.edges },
+    { label: 'Communities', value: STATS.communities },
+  ].forEach((item) => {
+    const card = document.createElement('div');
+    card.className = 'stat';
+    const label = document.createElement('div');
+    label.className = 'muted';
+    label.textContent = item.label;
+    const value = document.createElement('strong');
+    value.textContent = String(item.value);
+    card.append(label, value);
+    elements.stats.appendChild(card);
+  });
+}
+
+function renderCommunities(query) {
+  const trimmed = query.trim().toLowerCase();
+  elements.communities.replaceChildren();
+
+  const matches = COMMUNITIES.filter((community) => {
+    if (!trimmed) {
+      return true;
+    }
+
+    return (
+      community.label.toLowerCase().includes(trimmed) ||
+      community.topNodes.some((node) => node.label.toLowerCase().includes(trimmed))
+    );
+  });
+
+  matches.forEach((community) => {
+    const link = document.createElement('a');
+    link.className = 'community-card';
+    link.href = community.href;
+
+    const title = document.createElement('strong');
+    title.textContent = community.label;
+    const meta = document.createElement('div');
+    meta.className = 'community-meta';
+    meta.textContent = community.count + ' node' + (community.count === 1 ? '' : 's') + (community.cohesion === null ? '' : ' · cohesion ' + community.cohesion);
+    const topNodes = document.createElement('div');
+    topNodes.className = 'top-nodes';
+    topNodes.textContent = 'Top nodes: ' + (community.topNodes.map((node) => node.label).join(', ') || 'No node summary yet');
+
+    const action = document.createElement('div');
+    action.className = 'top-nodes';
+    action.textContent = 'Open community →';
+
+    link.append(title, meta, topNodes, action);
+    elements.communities.appendChild(link);
+  });
+}
+
+function renderMatches(query) {
+  const trimmed = query.trim().toLowerCase();
+  elements.matches.replaceChildren();
+  if (!trimmed) {
+    const hint = document.createElement('p');
+    hint.className = 'empty';
+    hint.textContent = 'Search results link directly into the relevant community page and node.';
+    elements.matches.appendChild(hint);
+    return;
+  }
+
+  const matches = SEARCH_INDEX.filter((entry) => {
+    return (
+      entry.label.toLowerCase().includes(trimmed) ||
+      entry.source_file.toLowerCase().includes(trimmed) ||
+      entry.community_name.toLowerCase().includes(trimmed)
+    );
+  }).slice(0, 12);
+
+  if (matches.length === 0) {
+    const hint = document.createElement('p');
+    hint.className = 'empty';
+    hint.textContent = 'No matches yet. Try a file name, class, function, or community.';
+    elements.matches.appendChild(hint);
+    return;
+  }
+
+  matches.forEach((entry) => {
+    const link = document.createElement('a');
+    link.className = 'match-link';
+    link.href = entry.href;
+
+    const title = document.createElement('strong');
+    title.textContent = entry.label;
+    const meta = document.createElement('div');
+    meta.className = 'match-meta';
+    meta.textContent = entry.community_name + ' · ' + entry.source_file;
+
+    link.append(title, meta);
+    elements.matches.appendChild(link);
+  });
+}
+
+renderStats();
+renderCommunities('');
+renderMatches('');
+
+elements.search.addEventListener('input', (event) => {
+  const value = event.target.value || '';
+  renderMatches(value);
+  renderCommunities(value);
+});
+</script>
+</body>
+</html>`
+}
+
+export function toCypher(graph: KnowledgeGraph, outputPath: string): void {
+  const lines = ['// Neo4j Cypher import - generated by graphify-ts', '']
+
+  for (const [nodeId, attributes] of graph.nodeEntries()) {
+    const label = escapeCypher(String(attributes.label ?? nodeId))
+    const fileTypeRaw = String(attributes.file_type ?? 'entity').replace(/[^A-Za-z0-9_]/g, '')
+    const fileType = fileTypeRaw && /^[A-Za-z]/.test(fileTypeRaw) ? `${fileTypeRaw.charAt(0).toUpperCase()}${fileTypeRaw.slice(1)}` : 'Entity'
+    lines.push(`MERGE (n:${fileType} {id: '${escapeCypher(nodeId)}', label: '${label}'});`)
+  }
+
+  lines.push('')
+  for (const [source, target, attributes] of graph.edgeEntries()) {
+    const relation =
+      String(attributes.relation ?? 'RELATES_TO')
+        .toUpperCase()
+        .replace(/[^A-Z0-9_]/g, '_') || 'RELATES_TO'
+    const confidence = escapeCypher(String(attributes.confidence ?? 'EXTRACTED'))
+    lines.push(`MATCH (a {id: '${escapeCypher(source)}'}), (b {id: '${escapeCypher(target)}'}) MERGE (a)-[:${relation} {confidence: '${confidence}'}]->(b);`)
+  }
+
+  writeFileSync(outputPath, lines.join('\n'), 'utf8')
+}
+
+export function toGraphml(graph: KnowledgeGraph, communities: Communities, outputPath: string): void {
+  const nodeCommunity = _nodeCommunityMap(communities)
+  const edgeDefault = graph.isDirected() ? 'directed' : 'undirected'
+  const lines = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<graphml xmlns="http://graphml.graphdrawing.org/xmlns">',
+    `  <graph id="graphify" edgedefault="${edgeDefault}">`,
+  ]
+
+  for (const [nodeId, attributes] of graph.nodeEntries()) {
+    lines.push(`    <node id="${escapeXml(nodeId)}">`)
+    lines.push(`      <data key="label">${escapeXml(String(attributes.label ?? nodeId))}</data>`)
+    lines.push(`      <data key="community">${nodeCommunity[nodeId] ?? -1}</data>`)
+    lines.push(`      <data key="source_file">${escapeXml(String(attributes.source_file ?? ''))}</data>`)
+    lines.push('    </node>')
+  }
+
+  let edgeIndex = 0
+  for (const [source, target, attributes] of graph.edgeEntries()) {
+    lines.push(`    <edge id="e${edgeIndex}" source="${escapeXml(source)}" target="${escapeXml(target)}">`)
+    lines.push(`      <data key="relation">${escapeXml(String(attributes.relation ?? ''))}</data>`)
+    lines.push(`      <data key="confidence">${escapeXml(String(attributes.confidence ?? 'EXTRACTED'))}</data>`)
+    lines.push('    </edge>')
+    edgeIndex += 1
+  }
+
+  lines.push('  </graph>')
+  lines.push('</graphml>')
+  writeFileSync(outputPath, lines.join('\n'), 'utf8')
+}
+
+/**
+ * Export the graph as a static SVG with a deterministic, dependency-free layout.
+ *
+ * Communities are arranged in a grid and nodes are positioned on a circle inside
+ * each community cell, which keeps output stable across runs for the same input.
+ */
+export function toSvg(graph: KnowledgeGraph, communities: Communities, outputPath: string, communityLabels: Record<number, string> = {}): void {
+  const communityIds = Object.keys(communities)
+    .map(Number)
+    .sort((left, right) => left - right)
+  const totalCommunities = Math.max(communityIds.length, 1)
+  const columns = Math.max(1, Math.ceil(Math.sqrt(totalCommunities)))
+  const rows = Math.max(1, Math.ceil(totalCommunities / columns))
+  const width = SVG_LAYOUT.padding * 2 + columns * SVG_LAYOUT.cellWidth + SVG_LAYOUT.legendWidth
+  const height = SVG_LAYOUT.padding * 2 + rows * SVG_LAYOUT.cellHeight
+  const degreeByNode = new Map(graph.nodeIds().map((nodeId) => [nodeId, graph.degree(nodeId)]))
+  const maxDegree = Math.max(...degreeByNode.values(), 1)
+  const positions = new Map<string, { x: number; y: number }>()
+
+  communityIds.forEach((communityId, index) => {
+    const nodeIds = [...(communities[communityId] ?? [])].sort((left, right) => {
+      return String(graph.nodeAttributes(left).label ?? left).localeCompare(String(graph.nodeAttributes(right).label ?? right))
+    })
+    const column = index % columns
+    const row = Math.floor(index / columns)
+    const centerX = SVG_LAYOUT.padding + column * SVG_LAYOUT.cellWidth + SVG_LAYOUT.cellWidth / 2
+    const centerY = SVG_LAYOUT.padding + row * SVG_LAYOUT.cellHeight + SVG_LAYOUT.cellHeight / 2
+
+    if (nodeIds.length === 1) {
+      positions.set(nodeIds[0]!, { x: centerX, y: centerY })
+      return
+    }
+
+    const radius = Math.min(SVG_LAYOUT.communityRadiusCap, SVG_LAYOUT.communityBaseRadius + nodeIds.length * SVG_LAYOUT.communityRadiusIncrement)
+    nodeIds.forEach((nodeId, nodeIndex) => {
+      const angle = -Math.PI / 2 + (nodeIndex / nodeIds.length) * Math.PI * 2
+      positions.set(nodeId, {
+        x: centerX + Math.cos(angle) * radius,
+        y: centerY + Math.sin(angle) * radius,
+      })
+    })
+  })
+
+  const nodeElements = graph.nodeEntries().map(([nodeId, attributes]) => {
+    const communityId = communityIds.find((id) => communities[id]?.includes(nodeId)) ?? 0
+    const color = COMMUNITY_COLORS[communityId % COMMUNITY_COLORS.length] ?? COMMUNITY_COLORS[0]
+    const position = positions.get(nodeId) ?? { x: SVG_LAYOUT.padding + 40, y: SVG_LAYOUT.padding + 40 }
+    const radius = SVG_LAYOUT.nodeBaseRadius + SVG_LAYOUT.nodeRadiusScale * ((degreeByNode.get(nodeId) ?? 0) / maxDegree)
+    const label = escapeXml(String(attributes.label ?? nodeId))
+    return [
+      `  <circle cx="${position.x.toFixed(2)}" cy="${position.y.toFixed(2)}" r="${radius.toFixed(2)}" fill="${color}" fill-opacity="0.9" stroke="#ffffff" stroke-width="1.5" />`,
+      `  <text x="${position.x.toFixed(2)}" y="${(position.y + radius + SVG_LAYOUT.nodeLabelOffset).toFixed(2)}" font-family="Inter, Arial, sans-serif" font-size="12" text-anchor="middle" fill="#f8fafc">${label}</text>`,
+    ].join('\n')
+  })
+
+  const edgeElements = graph.edgeEntries().map(([source, target, attributes]) => {
+    const sourcePosition = positions.get(source)
+    const targetPosition = positions.get(target)
+    if (!sourcePosition || !targetPosition) {
+      return ''
+    }
+
+    const confidence = String(attributes.confidence ?? 'EXTRACTED')
+    const dashArray = confidence === 'EXTRACTED' ? '' : ' stroke-dasharray="6 4"'
+    const opacity = confidence === 'EXTRACTED' ? '0.65' : '0.35'
+    return `  <line x1="${sourcePosition.x.toFixed(2)}" y1="${sourcePosition.y.toFixed(2)}" x2="${targetPosition.x.toFixed(2)}" y2="${targetPosition.y.toFixed(2)}" stroke="#94a3b8" stroke-width="1.5" stroke-opacity="${opacity}"${dashArray} />`
+  })
+
+  const legendElements = communityIds.map((communityId, index) => {
+    const color = COMMUNITY_COLORS[communityId % COMMUNITY_COLORS.length] ?? COMMUNITY_COLORS[0]
+    const label = escapeXml(communityLabels[communityId] ?? `Community ${communityId}`)
+    const y = SVG_LAYOUT.padding + 28 + index * SVG_LAYOUT.legendRowHeight
+    return [
+      `  <circle cx="${width - SVG_LAYOUT.legendWidth + 20}" cy="${y}" r="6" fill="${color}" />`,
+      `  <text x="${width - SVG_LAYOUT.legendWidth + 34}" y="${y + 4}" font-family="Inter, Arial, sans-serif" font-size="12" fill="#e2e8f0">${label} (${communities[communityId]?.length ?? 0})</text>`,
+    ].join('\n')
+  })
+
+  const svg = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="graphify-ts knowledge graph export">`,
+    `  <rect width="${width}" height="${height}" fill="#111827" />`,
+    '  <text x="48" y="32" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="600" fill="#f8fafc">graphify-ts</text>',
+    '  <text x="48" y="54" font-family="Inter, Arial, sans-serif" font-size="12" fill="#94a3b8">Static SVG knowledge graph export</text>',
+    ...edgeElements.filter((line) => line.length > 0),
+    ...nodeElements,
+    `  <text x="${width - SVG_LAYOUT.legendWidth + 12}" y="${SVG_LAYOUT.padding}" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="600" fill="#f8fafc">Communities</text>`,
+    ...legendElements,
+    '</svg>',
+    '',
+  ].join('\n')
+
+  writeFileSync(outputPath, svg, 'utf8')
+}
+
+export function toHtml(
+  graph: KnowledgeGraph,
+  communities: Communities,
+  outputPath: string,
+  communityLabels: Record<number, string> = {},
+  options: HtmlExportOptions = {},
+): HtmlExportResult {
+  const payload = buildHtmlPayload(graph, communities, communityLabels)
+  const htmlResult = resolveHtmlExportMode(payload, options.mode ?? 'auto')
+  const communityPagesDir = join(dirname(outputPath), COMMUNITY_PAGES_DIRNAME)
+
+  if (htmlResult.mode === 'inline') {
+    rmSync(communityPagesDir, { recursive: true, force: true })
+    writeFileSync(outputPath, buildInteractiveHtml(payload, graph.isDirected()), 'utf8')
+    return htmlResult
+  }
+
+  rmSync(communityPagesDir, { recursive: true, force: true })
+  mkdirSync(communityPagesDir, { recursive: true })
+
+  const communitySummaries: OverviewCommunitySummary[] = Object.entries(communities)
+    .map(([communityIdRaw, nodeIds]) => {
+      const communityId = Number(communityIdRaw)
+      const pagePath = join(communityPagesDir, `community-${communityId}.html`)
+      const communityName = communityLabels[communityId] ?? `Community ${communityId}`
+      const subgraph = subgraphFromNodes(graph, nodeIds)
+      const subgraphCommunities = { 0: [...nodeIds] }
+      const subgraphLabels = { 0: communityName }
+      const pagePayload = buildHtmlPayload(subgraph, subgraphCommunities, subgraphLabels)
+
+      writeFileSync(
+        pagePath,
+        buildInteractiveHtml(pagePayload, graph.isDirected(), {
+          pageTitle: `${communityName} · graphify-ts`,
+          heading: communityName,
+          lede: 'Focused community view. Use this page for interactive exploration without loading the entire graph at once.',
+          backLinkHref: relative(dirname(pagePath), outputPath).replaceAll('\\', '/'),
+          backLinkLabel: '← Back to overview',
+        }),
+        'utf8',
+      )
+
+      const topNodes = [...nodeIds]
+        .map((nodeId) => ({
+          id: nodeId,
+          label: String(graph.nodeAttributes(nodeId).label ?? nodeId),
+          degree: graph.degree(nodeId),
+          href: `${COMMUNITY_PAGES_DIRNAME}/community-${communityId}.html#${encodeURIComponent(nodeId)}`,
+        }))
+        .sort((left, right) => right.degree - left.degree || left.label.localeCompare(right.label))
+        .slice(0, 4)
+
+      return {
+        id: communityId,
+        label: communityName,
+        count: nodeIds.length,
+        cohesion: options.cohesionScores?.[communityId] ?? null,
+        href: `${COMMUNITY_PAGES_DIRNAME}/community-${communityId}.html`,
+        topNodes,
+      }
+    })
+    .sort((left, right) => right.count - left.count || left.label.localeCompare(right.label))
+
+  const searchIndex = payload.nodes
+    .map((node) => ({
+      label: node.label,
+      source_file: node.source_file,
+      community_name: node.community_name,
+      href: `${COMMUNITY_PAGES_DIRNAME}/community-${node.community}.html#${encodeURIComponent(node.id)}`,
+    }))
+    .sort((left, right) => left.label.localeCompare(right.label))
+
+  writeFileSync(outputPath, buildOverviewHtml(payload.stats, searchIndex, communitySummaries), 'utf8')
+  return {
+    ...htmlResult,
+    communityPageCount: communitySummaries.length,
+  }
 }
 
 export function toObsidian(

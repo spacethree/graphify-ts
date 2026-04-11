@@ -10,13 +10,16 @@ After a successful `generate` run, `graphify-ts` writes artifacts into `graphify
 
 ```text
 graphify-out/
-├── graph.html       interactive graph explorer
+├── graph.html       interactive graph explorer (or overview page for large graphs)
 ├── GRAPH_REPORT.md  summary report with god nodes and suggested questions
 ├── graph.json       machine-readable graph for query/serve flows
+├── graph-pages/     focused community explorer pages for large graphs
 └── cache/           content-addressed extraction cache
 ```
 
 Optional exports are also available for wiki, Obsidian, SVG, GraphML, and Neo4j workflows.
+
+For smaller graphs, `graph.html` stays self-contained and opens the full interactive explorer directly. For larger graphs, `graphify-ts` now switches to an overview-first HTML mode that opens quickly, shows semantic community names, and links into focused per-community pages under `graph-pages/`.
 
 ## Best fit today
 
@@ -113,6 +116,8 @@ Then inspect the outputs:
 - open `graphify-out/graph.html` in a browser
 - read `graphify-out/GRAPH_REPORT.md`
 - keep `graphify-out/graph.json` for CLI queries and server flows
+
+If the graph is large, `graph.html` becomes a lightweight overview page with named communities and search results that link into `graphify-out/graph-pages/community-*.html` instead of trying to render the whole graph at once.
 
 ### Useful next commands
 
