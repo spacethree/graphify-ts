@@ -20,7 +20,7 @@ Implemented and verified in this workspace:
   - PowerShell and Objective-C via lightweight platform-aware source scanners
   - JavaScript / TypeScript via the TypeScript compiler API, including static imports, re-exports, `import = require(...)`, CommonJS `require(...)`, dynamic `import()`, and direct call-graph coverage
   - remaining brace-style languages (currently including Kotlin, Scala, C#, Rust, Swift, PHP, Zig, and C/C++-style signatures) via a portable regex-based structural extractor with common inheritance/conformance support, including multiline Scala/Kotlin/Swift signature coverage from the fixture-backed parity cases
-  - Markdown / text / RST documents via deterministic section parsing, frontmatter metadata lifting (`title`, `source_url`, `captured_at`, `author`, `contributor`, `source_nodes`, etc.), source-node reference edges, local-reference detection, DOI/arXiv/LaTeX-citation extraction, and bibliography-reference nodes
+  - Markdown / text / RST documents via deterministic section parsing, frontmatter metadata lifting (`title`, `source_url`, `captured_at`, `author`, `contributor`, `source_nodes`, etc.), source-node reference edges, local-reference detection, DOI/arXiv/LaTeX-citation extraction, numbered-citation resolution, and bibliography-reference nodes enriched with local reference metadata
   - DOCX documents via synchronous zip/XML heading extraction plus local citation detection
   - text-like paper corpora plus heuristic PDF title/section extraction and citation detection
   - image assets as first-class graph nodes
@@ -34,7 +34,7 @@ Implemented and verified in this workspace:
 - benchmark helpers for token-reduction reporting
 - a built TypeScript CLI for top-level graph generation plus `watch`, `serve`, `query`, `path`, `explain`, `add`, `install`, `save-result`, `benchmark`, and `hook`, including optional `generate --update`, `--directed`, `--wiki`, `--obsidian`, `--svg`, `--graphml`, `--neo4j`, direct `--neo4j-push` graph export/push support, and broader `serve` transport selection via `--transport`, `--http`, `--stdio`, and `--mcp`
 - direct Neo4j push support via the official `neo4j-driver`, with credentials resolved from `--neo4j-user` / `--neo4j-password` / `--neo4j-database` flags or `NEO4J_*` values in the local environment / `.env` (copy `.env.example` to `.env` as a starting point)
-- the `serve` command can now run as either a lightweight HTTP runtime or a stdio runtime via `--transport http|stdio`, `--http`, `--stdio`, or `--mcp`, including an MCP-compatible `initialize`, `prompts/list`, `prompts/get`, `resources/list`, `resources/read`, `tools/list`, and `tools/call` surface with snake_case tool arguments and `god_nodes` graph summaries
+- the `serve` command can now run as either a lightweight HTTP runtime or a stdio runtime via `--transport http|stdio`, `--http`, `--stdio`, or `--mcp`, including an MCP-compatible `initialize`, `prompts/list`, `prompts/get`, `resources/list`, `resources/read`, `tools/list`, `tools/call`, `completion/complete`, and `logging/setLevel` surface with snake_case tool arguments, prompt completions, log notifications, and `god_nodes` graph summaries
 - local platform/project configuration commands for `claude`, `gemini`, `cursor`, `codex`, `opencode`, `aider`, `copilot`, `claw`, `droid`, `trae`, and `trae-cn`
 - self-contained installer skill templates managed in the TypeScript package, without any Python runtime or nested reference checkout dependency
 - git hook install / uninstall / status helpers
@@ -57,8 +57,8 @@ Verified locally:
 The strict roadmap items tracked in this workspace are implemented and verified. Remaining follow-ups are broader stretch goals rather than blockers for the current TypeScript port:
 
 - widen portable tree-sitter coverage beyond the current Python/Go/Java AST-backed slice
-- deepen bibliography/metadata resolution beyond the current frontmatter/query-memory lift and deterministic citation coverage
-- broaden MCP/stdIO protocol breadth beyond today’s lightweight prompt/resource/tool runtime
+- deepen bibliography/metadata resolution beyond the current frontmatter/query-memory lift, local reference metadata parsing, and deterministic citation/link resolution
+- broaden MCP/stdIO protocol breadth beyond today’s lightweight prompt/resource/tool runtime, prompt completions, and logging controls
 
 ## Known limitations
 
@@ -68,7 +68,7 @@ The strict roadmap items tracked in this workspace are implemented and verified.
 - JavaScript / TypeScript extraction now covers classes, interfaces, heritage clauses (`extends` / `implements`), methods, nested function declarations/closures, top-level and class-field arrow/function-expression bindings, static imports, re-exports, `import = require(...)`, CommonJS `require(...)`, dynamic `import()` usage, and direct call relationships. More advanced decorator-heavy metadata and some uncommon AST edge cases are still lighter than a fuller parser-backed implementation.
 - Go and Java extraction now run through the same portable WASM tree-sitter path used for Python. The current AST-backed slice focuses on common type, interface, record, method, import, and call-graph patterns already covered by tests; deeper language-specific edge cases still need more parity work.
 - The remaining portable multi-language extractor is intentionally heuristic. It now emits useful structure for several brace-style languages, including owner-aware method extraction for common `impl` / `extension` blocks, common inheritance/conformance clauses, Kotlin / Scala expression-bodied definitions, Swift `func ... -> ...` signatures, Zig `@import`/`struct`/`fn` patterns, and qualified `Type::method` definitions, but it is still regex-based rather than AST-backed, so deeply nested signatures, macros, or language-specific edge cases can still be missed.
-- Document and text-like paper extraction is still deterministic rather than generative, but it now models headings, containment, markdown links, lifted frontmatter/query-memory metadata, source-node references, local filename mentions, DOI/arXiv identifiers, LaTeX-style `\cite{...}` keys, and numbered bibliography references. It detects those citations locally; it does not yet resolve external paper metadata.
+- Document and text-like paper extraction is still deterministic rather than generative, but it now models headings, containment, markdown links, lifted frontmatter/query-memory metadata, source-node references, local filename mentions, DOI/arXiv identifiers, LaTeX-style `\cite{...}` keys, numbered bibliography references, and inline numeric-citation links back to local bibliography nodes. It also lifts basic local reference metadata such as year/title/DOI/arXiv when those are present, but it does not yet resolve external paper metadata.
 - DOCX documents now get a lightweight synchronous zip/XML pass for title, heading structure, local filename mention references, and inline citation detection, while richer office formats such as spreadsheets still land more shallowly in the graph.
 - PDF papers now get a lightweight heuristic pass for metadata title, common section labels, local filename mention references, and inline citation detection, but binary office-style documents are still not parsed as deeply as the richer text/document formats.
 - The HTML visualization export now supports a selected-node details panel, clickable neighbor navigation, searchable node matches, community focus controls, URL-hash deep links, confidence-aware inferred-edge styling, and lifted metadata/source URL display (validated before links are made clickable). It is still lighter than the richer Python reference UI overall, but it no longer lacks the basic inspection/navigation surface.
@@ -79,8 +79,8 @@ The strict roadmap items tracked in this workspace are implemented and verified.
 - The watch layer now rebuilds supported code changes automatically, wakes promptly on filesystem events, reuses incremental generation when graph artifacts already exist, and notifies for document/paper/image changes so a manual `generate --update` can refresh the broader corpus safely. Mixed code/non-code change batches currently also take that notify-only path instead of partially rebuilding code while broader corpus inputs are dirty.
 - `generate --update` now reuses the existing graph as incremental context, re-extracts only changed/new supported files, drops deleted-source graph records, and ignores generated `graphify-out/` artifacts while still allowing saved memory notes under `graphify-out/memory/` to flow back into the corpus.
 - The new `serve` command is a lightweight HTTP runtime over generated artifacts and query helpers. It is useful today, but it is not yet a full MCP/stdIO replacement.
-- The new `serve --transport http|stdio` surface (plus `--http`, `--stdio`, and `--mcp`) now supports an MCP-compatible handshake plus `prompts/list` / `prompts/get`, `resources/list` / `resources/read`, `tools/list` / `tools/call`, snake_case tool arguments, and `god_nodes`, alongside direct JSON-line query methods. It is still a lightweight runtime rather than a full reference MCP implementation.
-- Implemented MCP capabilities today: `initialize`, prompt discovery/retrieval, artifact resource discovery/reading, and graph query tools including `query_graph`, `get_node`, `get_neighbors`, `shortest_path`, `explain_node`, `graph_stats`, `god_nodes`, and `get_community`. Not implemented yet: richer reference-server features such as subscriptions, completions, sampling, logging control, and broader protocol breadth.
+- The new `serve --transport http|stdio` surface (plus `--http`, `--stdio`, and `--mcp`) now supports an MCP-compatible handshake plus `prompts/list` / `prompts/get`, `resources/list` / `resources/read`, `tools/list` / `tools/call`, `completion/complete`, `logging/setLevel`, snake_case tool arguments, and `god_nodes`, alongside direct JSON-line query methods and JSON-RPC log notifications. It is still a lightweight runtime rather than a full reference MCP implementation.
+- Implemented MCP capabilities today: `initialize`, prompt discovery/retrieval, prompt-argument completions, artifact resource discovery/reading, logging level control, JSON-RPC log notifications, and graph query tools including `query_graph`, `get_node`, `get_neighbors`, `shortest_path`, `explain_node`, `graph_stats`, `god_nodes`, and `get_community`. Not implemented yet: richer reference-server features such as subscriptions, sampling, and broader protocol breadth.
 
 ## Repository layout
 
@@ -91,6 +91,6 @@ The strict roadmap items tracked in this workspace are implemented and verified.
 ## Next likely steps
 
 - widen portable tree-sitter coverage beyond the current Python/Go/Java slice
-- deepen bibliography/metadata resolution beyond the current frontmatter/query-memory lift and deterministic citation coverage
-- add MCP/stdIO runtime parity on top of the new Node serve surface
+- deepen bibliography/metadata resolution beyond the current frontmatter/query-memory lift, local reference metadata parsing, and deterministic citation/link resolution
+- add MCP/stdIO runtime parity on top of the new Node serve surface, especially subscriptions and broader protocol breadth
 - keep extending integration-style coverage as broader runtime surfaces land

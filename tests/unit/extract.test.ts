@@ -1166,6 +1166,55 @@ describe('extract', () => {
     }
   })
 
+  it('resolves inline numeric citations to numbered references and enriches reference metadata', () => {
+    const root = createTempRoot()
+    try {
+      const paperPath = join(root, 'paper.md')
+      writeFileSync(
+        paperPath,
+        [
+          '# Abstract',
+          'We build on [1] and extend the comparison in [2-3].',
+          '## References',
+          '[1] Smith et al. (2020). Foundational Work. DOI:10.5555/foundational',
+          '[2] Doe and Roe (2021). Follow Up Study. arXiv:2401.12345',
+          '[3] Lee (2022). Another Paper.',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([paperPath])
+      const abstractId = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'Abstract')?.id
+      const referenceOne = result.nodes.find((node) => node.file_type === 'paper' && node.reference_index === 1)
+      const referenceTwo = result.nodes.find((node) => node.file_type === 'paper' && node.reference_index === 2)
+      const referenceThree = result.nodes.find((node) => node.file_type === 'paper' && node.reference_index === 3)
+
+      expect(abstractId).toBeTruthy()
+      expect(referenceOne).toMatchObject({
+        reference_index: 1,
+        reference_year: 2020,
+        reference_title: 'Foundational Work',
+        doi: '10.5555/foundational',
+      })
+      expect(referenceTwo).toMatchObject({
+        reference_index: 2,
+        reference_year: 2021,
+        reference_title: 'Follow Up Study',
+        arxiv_id: '2401.12345',
+      })
+      expect(referenceThree).toMatchObject({
+        reference_index: 3,
+        reference_year: 2022,
+        reference_title: 'Another Paper',
+      })
+      expect(result.edges.some((edge) => edge.source === abstractId && edge.target === referenceOne?.id && edge.relation === 'cites')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === abstractId && edge.target === referenceTwo?.id && edge.relation === 'cites')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === abstractId && edge.target === referenceThree?.id && edge.relation === 'cites')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('extracts heuristic title and section nodes from simple pdf papers', () => {
     const root = createTempRoot()
     try {

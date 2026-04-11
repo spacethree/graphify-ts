@@ -68,6 +68,8 @@ describe('stdio runtime', () => {
         result: {
           protocolVersion: '2025-11-25',
           capabilities: {
+            completions: {},
+            logging: {},
             prompts: { listChanged: false },
             resources: { subscribe: false, listChanged: false },
             tools: { listChanged: false },
@@ -88,6 +90,94 @@ describe('stdio runtime', () => {
       expect((promptGet?.result as { messages: Array<{ content: { text: string } }> }).messages[0]?.content.text).toContain('How does auth reach transport?')
       expect((resourceRead?.result as { contents: Array<{ text: string }> }).contents[0]?.text).toContain('# Graph Report')
       expect(initializedNotification).toBeNull()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('supports completion requests for prompt arguments', () => {
+    const root = createGraphFixtureRoot()
+    try {
+      const graphPath = join(root, 'graph.json')
+
+      const labelCompletion = handleStdioRequest(graphPath, {
+        id: 8,
+        method: 'completion/complete',
+        params: {
+          ref: { type: 'ref/prompt', name: 'graph_explain_prompt' },
+          argument: { name: 'label', value: 'Auth' },
+        },
+      })
+      const modeCompletion = handleStdioRequest(graphPath, {
+        id: 9,
+        method: 'completion/complete',
+        params: {
+          ref: { type: 'ref/prompt', name: 'graph_query_prompt' },
+          argument: { name: 'mode', value: 'd' },
+        },
+      })
+
+      expect(labelCompletion).toMatchObject({
+        jsonrpc: '2.0',
+        id: 8,
+        result: {
+          completion: {
+            values: expect.arrayContaining(['AuthService']),
+          },
+        },
+      })
+      expect(modeCompletion).toMatchObject({
+        jsonrpc: '2.0',
+        id: 9,
+        result: {
+          completion: {
+            values: ['dfs'],
+            hasMore: false,
+          },
+        },
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('supports logging/setLevel and emits JSON-RPC log notifications for stdio errors', async () => {
+    const root = createGraphFixtureRoot()
+    try {
+      const graphPath = join(root, 'graph.json')
+      const input = new PassThrough()
+      const output = new PassThrough()
+      let outputText = ''
+      output.on('data', (chunk) => {
+        outputText += chunk.toString('utf8')
+      })
+
+      input.end([JSON.stringify({ id: 1, method: 'logging/setLevel', params: { level: 'error' } }), '{bad json'].join('\n'))
+
+      await serveGraphStdio({
+        graphPath,
+        input,
+        output,
+      })
+
+      const messages = outputText
+        .trim()
+        .split(/\n+/)
+        .filter(Boolean)
+        .map((line) => JSON.parse(line))
+
+      expect(messages).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ jsonrpc: '2.0', id: 1, result: {} }),
+          expect.objectContaining({
+            jsonrpc: '2.0',
+            method: 'notifications/message',
+            params: expect.objectContaining({
+              level: 'error',
+            }),
+          }),
+        ]),
+      )
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -273,13 +363,26 @@ describe('stdio runtime', () => {
         .trim()
         .split('\n')
         .map((line) => JSON.parse(line))
+      const rpcResponses = responses.filter((message) => 'id' in message)
+      const notifications = responses.filter((message) => message.method === 'notifications/message')
 
       expect(loggerMessages[0]).toContain('[graphify serve] stdio ready')
-      expect(responses[0]).toMatchObject({ jsonrpc: '2.0', id: 1 })
-      expect(responses[0].result).toContain('Nodes: 3')
-      expect(responses[1]).toEqual({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } })
-      expect(responses[2]).toMatchObject({ jsonrpc: '2.0', id: 2 })
-      expect(responses[2].result).toContain('Node: AuthService')
+      expect(notifications).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            jsonrpc: '2.0',
+            method: 'notifications/message',
+            params: expect.objectContaining({
+              level: 'error',
+            }),
+          }),
+        ]),
+      )
+      expect(rpcResponses[0]).toMatchObject({ jsonrpc: '2.0', id: 1 })
+      expect(rpcResponses[0].result).toContain('Nodes: 3')
+      expect(rpcResponses[1]).toEqual({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } })
+      expect(rpcResponses[2]).toMatchObject({ jsonrpc: '2.0', id: 2 })
+      expect(rpcResponses[2].result).toContain('Node: AuthService')
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

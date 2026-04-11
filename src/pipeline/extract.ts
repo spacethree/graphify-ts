@@ -15,7 +15,7 @@ import { createTreeSitterWasmParser, treeSitterWasmError, type TreeSitterNode } 
 
 export { _makeId } from './extract/core.js'
 
-const EXTRACTOR_CACHE_VERSION = 7
+const EXTRACTOR_CACHE_VERSION = 8
 const PYTHON_KEYWORDS = new Set(['if', 'elif', 'else', 'for', 'while', 'return', 'class', 'def', 'lambda', 'with', 'print', 'sum'])
 const GENERIC_CODE_EXTENSIONS = new Set(['.go', '.rs', '.java', '.kt', '.kts', '.scala', '.cs', '.c', '.cc', '.cpp', '.cxx', '.h', '.hpp', '.swift', '.php', '.zig'])
 const GENERIC_CONTROL_KEYWORDS = new Set(['if', 'for', 'while', 'switch', 'catch', 'return', 'new', 'delete', 'throw', 'sizeof', 'case', 'do', 'else'])
@@ -89,6 +89,12 @@ interface PendingCallInput {
 
 interface CachedExtractionPayload extends ExtractionFragment {
   __graphifyTsExtractorVersion: number
+}
+
+interface PendingReferenceCitation {
+  sourceId: string
+  lineNumber: number
+  referenceIndices: number[]
 }
 
 interface ImportedPythonSymbol {
@@ -453,6 +459,159 @@ function addPaperCitationNode(
   return nodeId
 }
 
+function parseInlineReferenceCitationIndices(text: string): number[] {
+  const citationText = stripInlineCodeSpans(text)
+  if (/^\[(\d{1,3})\]\s+/.test(citationText.trim())) {
+    return []
+  }
+
+  const indices: number[] = []
+  const seen = new Set<number>()
+  for (const match of citationText.matchAll(/\[(\d{1,3}(?:\s*(?:,|-)\s*\d{1,3})*)\](?!\()/g)) {
+    const rawBlock = match[1]
+    if (!rawBlock) {
+      continue
+    }
+
+    for (const rawPart of rawBlock.split(',')) {
+      const part = rawPart.trim()
+      if (!part) {
+        continue
+      }
+
+      if (part.includes('-')) {
+        const [startPart, endPart] = part.split('-', 2)
+        const startRaw = startPart ? Number.parseInt(startPart.trim(), 10) : Number.NaN
+        const endRaw = endPart ? Number.parseInt(endPart.trim(), 10) : Number.NaN
+        if (!Number.isFinite(startRaw) || !Number.isFinite(endRaw) || startRaw < 1 || endRaw < startRaw) {
+          continue
+        }
+
+        for (let index = startRaw; index <= endRaw && indices.length < 32; index += 1) {
+          if (seen.has(index)) {
+            continue
+          }
+          seen.add(index)
+          indices.push(index)
+        }
+        continue
+      }
+
+      const referenceIndex = Number.parseInt(part, 10)
+      if (!Number.isFinite(referenceIndex) || referenceIndex < 1 || seen.has(referenceIndex)) {
+        continue
+      }
+
+      seen.add(referenceIndex)
+      indices.push(referenceIndex)
+      if (indices.length >= 32) {
+        break
+      }
+    }
+  }
+
+  return indices
+}
+
+function addInlineReferenceCitationEdgesFromText(
+  edges: ExtractionEdge[],
+  seenEdges: Set<string>,
+  text: string,
+  sourceId: string,
+  filePath: string,
+  lineNumber: number,
+  referenceNodeIdsByIndex: ReadonlyMap<number, string>,
+  pendingReferenceCitations: PendingReferenceCitation[],
+): void {
+  const unresolvedIndices: number[] = []
+  for (const referenceIndex of parseInlineReferenceCitationIndices(text)) {
+    const referenceNodeId = referenceNodeIdsByIndex.get(referenceIndex)
+    if (referenceNodeId) {
+      addUniqueEdge(edges, seenEdges, createEdge(sourceId, referenceNodeId, 'cites', filePath, lineNumber))
+      continue
+    }
+    unresolvedIndices.push(referenceIndex)
+  }
+
+  if (unresolvedIndices.length > 0) {
+    pendingReferenceCitations.push({ sourceId, lineNumber, referenceIndices: unresolvedIndices })
+  }
+}
+
+function flushPendingReferenceCitations(
+  edges: ExtractionEdge[],
+  seenEdges: Set<string>,
+  filePath: string,
+  referenceNodeIdsByIndex: ReadonlyMap<number, string>,
+  pendingReferenceCitations: readonly PendingReferenceCitation[],
+): void {
+  for (const pending of pendingReferenceCitations) {
+    for (const referenceIndex of pending.referenceIndices) {
+      const referenceNodeId = referenceNodeIdsByIndex.get(referenceIndex)
+      if (!referenceNodeId) {
+        continue
+      }
+      addUniqueEdge(edges, seenEdges, createEdge(pending.sourceId, referenceNodeId, 'cites', filePath, pending.lineNumber))
+    }
+  }
+}
+
+function parseNumberedReferenceEntry(text: string): { rawIndex: string; referenceIndex: number; summary: string } | null {
+  const match = text.match(/^\[(\d{1,3})\]\s+(.{1,400})$/)
+  if (!match?.[1] || !match[2]) {
+    return null
+  }
+
+  const referenceIndex = Number.parseInt(match[1], 10)
+  if (Number.isNaN(referenceIndex) || referenceIndex < 1 || referenceIndex > 999) {
+    return null
+  }
+
+  const summary = sanitizeLabel(match[2].replace(/\s+/g, ' ').trim()).slice(0, MAX_REFERENCE_LABEL_CHARS)
+  if (!summary) {
+    return null
+  }
+
+  return { rawIndex: match[1], referenceIndex, summary }
+}
+
+function parseReferenceMetadata(summary: string): Record<string, unknown> {
+  const metadata: Record<string, unknown> = {}
+  const doi = summary.match(/\b10\.\d{4,9}\/[\-._;()/:A-Za-z0-9]{1,200}\b/i)?.[0]
+  const arxivId = summary.match(/(?:\barxiv\s{0,5}:?\s{0,5}|arxiv\.org\/abs\/)([A-Za-z\-.]{1,50}\/\d{7}|\d{4}\.\d{4,5}(?:v\d{1,3})?)/i)?.[1]
+  const yearMatch = summary.match(/\b(19|20)\d{2}\b/)
+
+  if (doi) {
+    metadata.doi = trimCitationValue(doi)
+  }
+  if (arxivId) {
+    metadata.arxiv_id = trimCitationValue(arxivId)
+  }
+  if (yearMatch?.[0]) {
+    const parsedYear = Number.parseInt(yearMatch[0], 10)
+    if (Number.isFinite(parsedYear)) {
+      metadata.reference_year = parsedYear
+    }
+
+    const authors = sanitizeLabel(summary.slice(0, yearMatch.index ?? 0).replace(/[\s.,;:-]+$/g, ''))
+    if (authors) {
+      metadata.reference_authors = authors
+    }
+
+    const titleSource = summary
+      .slice((yearMatch.index ?? 0) + yearMatch[0].length)
+      .replace(/^[\])}.:;\s-]+/, '')
+      .replace(/\b(?:doi|arxiv)\s*:?[\s\S]*$/i, '')
+      .trim()
+    const title = sanitizeLabel(titleSource.split(/\.(?:\s|$)/, 1)[0] ?? '')
+    if (title) {
+      metadata.reference_title = title
+    }
+  }
+
+  return metadata
+}
+
 function addCitationEdgesFromText(
   nodes: ExtractionNode[],
   edges: ExtractionEdge[],
@@ -521,26 +680,18 @@ function addReferenceNodeFromText(
   lineNumber: number,
   containerId: string,
 ): string | null {
-  const match = text.match(/^\[(\d{1,3})\]\s+(.{1,400})$/)
-  if (!match?.[1] || !match[2]) {
+  const entry = parseNumberedReferenceEntry(text)
+  if (!entry) {
     return null
   }
 
-  const referenceIndex = Number.parseInt(match[1], 10)
-  if (Number.isNaN(referenceIndex) || referenceIndex < 1 || referenceIndex > 999) {
-    return null
-  }
-  const summary = sanitizeLabel(match[2].replace(/\s+/g, ' ').trim()).slice(0, MAX_REFERENCE_LABEL_CHARS)
-  if (!summary) {
-    return null
-  }
-
-  const referenceId = _makeId(basename(filePath, extname(filePath)), 'reference', match[1])
+  const referenceId = _makeId(basename(filePath, extname(filePath)), 'reference', entry.rawIndex)
   addNode(
     nodes,
     seenIds,
-    createSemanticPaperNode(referenceId, `[${match[1]}] ${summary}`, filePath, lineNumber, 'reference', {
-      reference_index: referenceIndex,
+    createSemanticPaperNode(referenceId, `[${entry.rawIndex}] ${entry.summary}`, filePath, lineNumber, 'reference', {
+      reference_index: entry.referenceIndex,
+      ...parseReferenceMetadata(entry.summary),
     }),
   )
   addUniqueEdge(edges, seenEdges, createEdge(containerId, referenceId, 'contains', filePath, lineNumber))
@@ -734,6 +885,8 @@ function extractStructuredText(filePath: string, fileType: Extract<NonCodeFileTy
   }
 
   const headingStack: Array<{ level: number; id: string; label: string }> = []
+  const referenceNodeIdsByIndex = new Map<number, string>()
+  const pendingReferenceCitations: PendingReferenceCitation[] = []
   let fenceMarker: '```' | '~~~' | null = null
 
   for (let index = contentStartIndex; index < lines.length; index += 1) {
@@ -779,15 +932,19 @@ function extractStructuredText(filePath: string, fileType: Extract<NonCodeFileTy
 
     const currentSectionId = headingStack[headingStack.length - 1]?.id ?? fileNode.id
     const currentSectionLabel = headingStack[headingStack.length - 1]?.label
-    const referenceNodeId =
-      currentSectionLabel && REFERENCE_SECTION_LABELS.has(currentSectionLabel)
-        ? addReferenceNodeFromText(nodes, edges, seenIds, seenSemanticEdges, line, filePath, lineNumber, currentSectionId)
-        : null
+    const referenceEntry = currentSectionLabel && REFERENCE_SECTION_LABELS.has(currentSectionLabel) ? parseNumberedReferenceEntry(line) : null
+    const referenceNodeId = referenceEntry ? addReferenceNodeFromText(nodes, edges, seenIds, seenSemanticEdges, line, filePath, lineNumber, currentSectionId) : null
+    if (referenceEntry && referenceNodeId) {
+      referenceNodeIdsByIndex.set(referenceEntry.referenceIndex, referenceNodeId)
+    }
 
     addLocalReferenceEdges(edges, line, filePath, currentSectionId, lineNumber, allowedTargets, seenSemanticEdges)
     addMentionReferenceEdges(edges, line, filePath, currentSectionId, lineNumber, allowedTargets, seenSemanticEdges)
     addCitationEdgesFromText(nodes, edges, seenIds, seenSemanticEdges, line, referenceNodeId ?? currentSectionId, filePath, lineNumber)
+    addInlineReferenceCitationEdgesFromText(edges, seenSemanticEdges, line, currentSectionId, filePath, lineNumber, referenceNodeIdsByIndex, pendingReferenceCitations)
   }
+
+  flushPendingReferenceCitations(edges, seenSemanticEdges, filePath, referenceNodeIdsByIndex, pendingReferenceCitations)
 
   return { nodes, edges }
 }
@@ -880,6 +1037,8 @@ function extractDocxDocument(filePath: string, allowedTargets: ReadonlySet<strin
 
   const documentXml = strFromU8(documentXmlBytes)
   const headingStack: Array<{ level: number; id: string; label: string }> = []
+  const referenceNodeIdsByIndex = new Map<number, string>()
+  const pendingReferenceCitations: PendingReferenceCitation[] = []
   let syntheticLine = title ? 2 : 1
   let paragraphCount = 0
 
@@ -919,21 +1078,36 @@ function extractDocxDocument(filePath: string, allowedTargets: ReadonlySet<strin
     } else if (headingStack.length > 0) {
       const currentSectionId = headingStack[headingStack.length - 1]!.id
       const currentSectionLabel = headingStack[headingStack.length - 1]!.label
-      const referenceNodeId = REFERENCE_SECTION_LABELS.has(currentSectionLabel)
-        ? addReferenceNodeFromText(nodes, edges, seenIds, seenSemanticEdges, text, filePath, syntheticLine, currentSectionId)
-        : null
+      const referenceEntry = REFERENCE_SECTION_LABELS.has(currentSectionLabel) ? parseNumberedReferenceEntry(text) : null
+      const referenceNodeId = referenceEntry ? addReferenceNodeFromText(nodes, edges, seenIds, seenSemanticEdges, text, filePath, syntheticLine, currentSectionId) : null
+      if (referenceEntry && referenceNodeId) {
+        referenceNodeIdsByIndex.set(referenceEntry.referenceIndex, referenceNodeId)
+      }
 
       addLocalReferenceEdges(edges, text, filePath, currentSectionId, syntheticLine, allowedTargets, seenSemanticEdges)
       addMentionReferenceEdges(edges, text, filePath, currentSectionId, syntheticLine, allowedTargets, seenSemanticEdges)
       addCitationEdgesFromText(nodes, edges, seenIds, seenSemanticEdges, text, referenceNodeId ?? currentSectionId, filePath, syntheticLine)
+      addInlineReferenceCitationEdgesFromText(
+        edges,
+        seenSemanticEdges,
+        text,
+        currentSectionId,
+        filePath,
+        syntheticLine,
+        referenceNodeIdsByIndex,
+        pendingReferenceCitations,
+      )
     } else {
       addLocalReferenceEdges(edges, text, filePath, fileNode.id, syntheticLine, allowedTargets, seenSemanticEdges)
       addMentionReferenceEdges(edges, text, filePath, fileNode.id, syntheticLine, allowedTargets, seenSemanticEdges)
       addCitationEdgesFromText(nodes, edges, seenIds, seenSemanticEdges, text, fileNode.id, filePath, syntheticLine)
+      addInlineReferenceCitationEdgesFromText(edges, seenSemanticEdges, text, fileNode.id, filePath, syntheticLine, referenceNodeIdsByIndex, pendingReferenceCitations)
     }
 
     syntheticLine += 1
   }
+
+  flushPendingReferenceCitations(edges, seenSemanticEdges, filePath, referenceNodeIdsByIndex, pendingReferenceCitations)
 
   return { nodes, edges }
 }
@@ -984,6 +1158,8 @@ function extractPdfPaper(filePath: string, allowedTargets: ReadonlySet<string>):
   }
 
   const sectionLabels = new Set<string>()
+  const referenceNodeIdsByIndex = new Map<number, string>()
+  const pendingReferenceCitations: PendingReferenceCitation[] = []
   let currentSectionId = fileNode.id
   let currentSectionLabel: string | undefined
   let syntheticLine = 2
@@ -1005,15 +1181,28 @@ function extractPdfPaper(filePath: string, allowedTargets: ReadonlySet<string>):
       continue
     }
 
-    const referenceNodeId =
-      currentSectionLabel && REFERENCE_SECTION_LABELS.has(currentSectionLabel)
-        ? addReferenceNodeFromText(nodes, edges, seenIds, seenSemanticEdges, label, filePath, syntheticLine, currentSectionId)
-        : null
+    const referenceEntry = currentSectionLabel && REFERENCE_SECTION_LABELS.has(currentSectionLabel) ? parseNumberedReferenceEntry(label) : null
+    const referenceNodeId = referenceEntry ? addReferenceNodeFromText(nodes, edges, seenIds, seenSemanticEdges, label, filePath, syntheticLine, currentSectionId) : null
+    if (referenceEntry && referenceNodeId) {
+      referenceNodeIdsByIndex.set(referenceEntry.referenceIndex, referenceNodeId)
+    }
 
     addMentionReferenceEdges(edges, label, filePath, currentSectionId, syntheticLine, allowedTargets, seenSemanticEdges)
     addCitationEdgesFromText(nodes, edges, seenIds, seenSemanticEdges, label, referenceNodeId ?? currentSectionId, filePath, syntheticLine)
+    addInlineReferenceCitationEdgesFromText(
+      edges,
+      seenSemanticEdges,
+      label,
+      currentSectionId,
+      filePath,
+      syntheticLine,
+      referenceNodeIdsByIndex,
+      pendingReferenceCitations,
+    )
     syntheticLine += 1
   }
+
+  flushPendingReferenceCitations(edges, seenSemanticEdges, filePath, referenceNodeIdsByIndex, pendingReferenceCitations)
 
   return { nodes, edges }
 }

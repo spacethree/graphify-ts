@@ -22,6 +22,32 @@ const MAX_STDIO_DEPTH = 20
 const MAX_STDIO_HOPS = 20
 const MAX_STDIO_RESOURCE_BYTES = 5_000_000
 const graphCache = new Map<string, { mtimeMs: number; graph: ReturnType<typeof loadGraph> }>()
+const MAX_COMPLETION_VALUES = 25
+const MAX_LOG_NOTIFICATION_CHARS = 10_000
+
+type McpLogLevel = 'debug' | 'info' | 'notice' | 'warning' | 'error' | 'critical' | 'alert' | 'emergency'
+
+interface StdioSessionState {
+  logLevel: McpLogLevel
+}
+
+interface JsonRpcNotification {
+  jsonrpc: '2.0'
+  method: string
+  params?: unknown
+}
+
+const DEFAULT_STDIO_LOG_LEVEL: McpLogLevel = 'info'
+const LOG_LEVEL_PRIORITY: Record<McpLogLevel, number> = {
+  debug: 10,
+  info: 20,
+  notice: 30,
+  warning: 40,
+  error: 50,
+  critical: 60,
+  alert: 70,
+  emergency: 80,
+}
 
 interface StdioRequest {
   id?: string | number | null
@@ -216,6 +242,14 @@ function failure(id: string | number | null, code: number, message: string): Std
   }
 }
 
+function notification(method: string, params?: unknown): JsonRpcNotification {
+  return {
+    jsonrpc: '2.0',
+    method,
+    ...(params !== undefined ? { params } : {}),
+  }
+}
+
 function requestId(request: StdioRequest): string | number | null {
   return typeof request.id === 'string' || typeof request.id === 'number' ? request.id : null
 }
@@ -276,6 +310,54 @@ function recordParam(params: unknown, key: string): Record<string, unknown> | nu
     return null
   }
   return value as Record<string, unknown>
+}
+
+function shouldEmitLog(level: McpLogLevel, currentLevel: McpLogLevel): boolean {
+  return LOG_LEVEL_PRIORITY[level] >= LOG_LEVEL_PRIORITY[currentLevel]
+}
+
+function parseLogLevel(value: string | null): McpLogLevel | null {
+  switch (value) {
+    case 'debug':
+    case 'info':
+    case 'notice':
+    case 'warning':
+    case 'error':
+    case 'critical':
+    case 'alert':
+    case 'emergency':
+      return value
+    default:
+      return null
+  }
+}
+
+function emitLogNotification(output: Writable, state: StdioSessionState, level: McpLogLevel, data: unknown, logger = MCP_SERVER_NAME): void {
+  if (!shouldEmitLog(level, state.logLevel)) {
+    return
+  }
+
+  let payloadData: unknown
+  try {
+    const serialized = JSON.stringify(data)
+    payloadData = serialized.length <= MAX_LOG_NOTIFICATION_CHARS ? data : `${serialized.slice(0, MAX_LOG_NOTIFICATION_CHARS)}... [truncated]`
+  } catch {
+    payloadData = String(data).slice(0, MAX_LOG_NOTIFICATION_CHARS)
+  }
+
+  try {
+    output.write(
+      `${JSON.stringify(
+        notification('notifications/message', {
+          level,
+          logger,
+          data: payloadData,
+        }),
+      )}\n`,
+    )
+  } catch {
+    // Ignore broken pipe / closed stream cases; the client has already gone away.
+  }
 }
 
 function textToolResult(text: string): { content: Array<{ type: 'text'; text: string }> } {
@@ -434,6 +516,106 @@ function handlePromptGet(id: string | number | null, params: unknown): StdioResp
   }
 }
 
+function completionValuesForPrefix(values: Iterable<string>, prefix: string): string[] {
+  const normalizedPrefix = prefix.trim().toLowerCase()
+  const matches: string[] = []
+  const seen = new Set<string>()
+  const scanLimit = MAX_COMPLETION_VALUES * 4
+
+  for (const rawValue of values) {
+    const value = rawValue.trim()
+    if (!value) {
+      continue
+    }
+
+    const normalizedValue = value.toLowerCase()
+    if (seen.has(normalizedValue)) {
+      continue
+    }
+    if (normalizedPrefix.length > 0 && !normalizedValue.startsWith(normalizedPrefix)) {
+      continue
+    }
+
+    seen.add(normalizedValue)
+    matches.push(value)
+    if (matches.length >= scanLimit) {
+      break
+    }
+  }
+
+  return matches.sort((left, right) => left.localeCompare(right)).slice(0, MAX_COMPLETION_VALUES)
+}
+
+function graphNodeLabels(graph: ReturnType<typeof loadGraph>): string[] {
+  return graph
+    .nodeEntries()
+    .map(([, attributes]) => String(attributes.label ?? '').trim())
+    .filter(Boolean)
+}
+
+function graphRelations(graph: ReturnType<typeof loadGraph>): string[] {
+  return graph
+    .edgeEntries()
+    .map(([, , attributes]) => String(attributes.relation ?? '').trim())
+    .filter(Boolean)
+}
+
+function handleCompletion(id: string | number | null, graphPath: string, params: unknown): StdioResponse {
+  const ref = recordParam(params, 'ref')
+  const argument = recordParam(params, 'argument')
+  if (!ref || !argument) {
+    return failure(id, JSONRPC_INVALID_PARAMS, 'completion/complete requires ref and argument objects')
+  }
+
+  const refType = stringParam(ref, 'type')
+  const refName = stringParamAlias(ref, ['name', 'id'])
+  const argumentName = stringParam(argument, 'name')
+  const argumentValue = stringParam(argument, 'value') ?? ''
+  if (!refType || !refName || !argumentName) {
+    return failure(id, JSONRPC_INVALID_PARAMS, 'completion/complete requires string ref.type, ref.name, and argument.name values')
+  }
+  if (refType !== 'ref/prompt' && refType !== 'prompt') {
+    return failure(id, JSONRPC_INVALID_PARAMS, `Unsupported completion ref type: ${refType}`)
+  }
+
+  const graph = loadGraphCached(graphPath)
+  let values: string[]
+  switch (refName) {
+    case 'graph_query_prompt':
+      if (argumentName !== 'mode') {
+        return failure(id, JSONRPC_INVALID_PARAMS, `Unsupported completion argument for ${refName}: ${argumentName}`)
+      }
+      values = completionValuesForPrefix(['bfs', 'dfs'], argumentValue)
+      break
+    case 'graph_path_prompt':
+      if (argumentName !== 'source' && argumentName !== 'target') {
+        return failure(id, JSONRPC_INVALID_PARAMS, `Unsupported completion argument for ${refName}: ${argumentName}`)
+      }
+      values = completionValuesForPrefix(graphNodeLabels(graph), argumentValue)
+      break
+    case 'graph_explain_prompt':
+      if (argumentName === 'label') {
+        values = completionValuesForPrefix(graphNodeLabels(graph), argumentValue)
+        break
+      }
+      if (argumentName === 'relation') {
+        values = completionValuesForPrefix(graphRelations(graph), argumentValue)
+        break
+      }
+      return failure(id, JSONRPC_INVALID_PARAMS, `Unsupported completion argument for ${refName}: ${argumentName}`)
+    default:
+      return failure(id, JSONRPC_INVALID_PARAMS, `Unknown completion reference: ${refName}`)
+  }
+
+  return ok(id, {
+    completion: {
+      values,
+      total: values.length,
+      hasMore: false,
+    },
+  })
+}
+
 function handleDirectQuery(graphPath: string, id: string | number | null, params: unknown): StdioResponse {
   const graph = loadGraphCached(graphPath)
   const question = stringParam(params, 'question')
@@ -526,7 +708,7 @@ function handleToolCall(id: string | number | null, graphPath: string, params: u
   }
 }
 
-export function handleStdioRequest(graphPath: string, payload: unknown): StdioResponse | null {
+export function handleStdioRequest(graphPath: string, payload: unknown, sessionState: StdioSessionState = { logLevel: DEFAULT_STDIO_LOG_LEVEL }): StdioResponse | null {
   if (!payload || typeof payload !== 'object') {
     return failure(null, JSONRPC_INVALID_REQUEST, 'Invalid request')
   }
@@ -546,6 +728,8 @@ export function handleStdioRequest(graphPath: string, payload: unknown): StdioRe
         return ok(id, {
           protocolVersion: MCP_PROTOCOL_VERSION,
           capabilities: {
+            completions: {},
+            logging: {},
             prompts: { listChanged: false },
             resources: { subscribe: false, listChanged: false },
             tools: { listChanged: false },
@@ -559,6 +743,16 @@ export function handleStdioRequest(graphPath: string, payload: unknown): StdioRe
         })
       case 'notifications/initialized':
         return null
+      case 'completion/complete':
+        return handleCompletion(id, graphPath, params)
+      case 'logging/setLevel': {
+        const requestedLevel = parseLogLevel(stringParam(params, 'level'))
+        if (!requestedLevel) {
+          return failure(id, JSONRPC_INVALID_PARAMS, 'logging/setLevel requires level to be one of debug, info, notice, warning, error, critical, alert, emergency')
+        }
+        sessionState.logLevel = requestedLevel
+        return ok(id, {})
+      }
       case 'prompts/list':
         return ok(id, { prompts: MCP_PROMPTS })
       case 'prompts/get':
@@ -639,6 +833,7 @@ export async function serveGraphStdio(options: ServeGraphStdioOptions): Promise<
   const input = options.input ?? process.stdin
   const output = options.output ?? process.stdout
   const logger = options.logger ?? console
+  const sessionState: StdioSessionState = { logLevel: DEFAULT_STDIO_LOG_LEVEL }
 
   logger.log(`[graphify serve] stdio ready for ${options.graphPath}`)
 
@@ -661,12 +856,16 @@ export async function serveGraphStdio(options: ServeGraphStdioOptions): Promise<
       payload = JSON.parse(trimmed)
     } catch {
       const response = failure(null, JSONRPC_PARSE_ERROR, 'Parse error')
+      emitLogNotification(output, sessionState, 'error', { message: response.error?.message ?? 'Parse error', code: JSONRPC_PARSE_ERROR })
       output.write(`${JSON.stringify(response)}\n`)
       continue
     }
 
-    const response = handleStdioRequest(options.graphPath, payload)
+    const response = handleStdioRequest(options.graphPath, payload, sessionState)
     if (response) {
+      if (response.error) {
+        emitLogNotification(output, sessionState, 'error', { message: response.error.message, code: response.error.code })
+      }
       output.write(`${JSON.stringify(response)}\n`)
     }
   }
