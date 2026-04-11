@@ -1,8 +1,42 @@
 # graphify-ts
 
-Build a local knowledge graph from a codebase or mixed project folder, then explore it through an interactive HTML view, CLI queries, or a lightweight server. `graphify-ts` is the Node/TypeScript implementation of the graphify workflow and does **not** require a Python runtime.
+`graphify` is a workflow for turning a codebase, documentation set, or mixed project folder into a local knowledge graph. Instead of treating a repository as a pile of disconnected files, graphify extracts files, symbols, concepts, and relationships so you can explore the project as a connected system.
+
+`graphify-ts` is the Node/TypeScript implementation of that workflow. It lets you generate graph artifacts locally, inspect them in HTML, query them from the CLI, serve them to tools, and use them to give AI platforms like Claude Code a much better map of your repository — all without requiring a Python runtime.
 
 The npm package name is `@mohammednagy/graphify-ts`, and the installed command is `graphify-ts`.
+
+## What is graphify?
+
+Graphify helps you move from raw files to connected understanding.
+
+Instead of manually opening dozens of files just to answer questions like:
+
+- Where does this feature start and end?
+- What are the most important modules in this repo?
+- Which files, functions, or concepts are tightly connected?
+- How is this project organized at a high level?
+
+Graphify builds a reusable graph of the project and saves it as artifacts you can browse, query, and reuse.
+
+That makes it useful for:
+
+- onboarding into an unfamiliar codebase
+- understanding architecture and dependencies
+- exploring mixed repos with code, docs, and notes
+- creating persistent context for AI coding assistants
+- keeping a local, regeneratable knowledge layer for a project
+
+## How graphify helps
+
+Graphify is especially helpful when you want to:
+
+- **Understand a repository faster** by surfacing important nodes, communities, and relationships.
+- **See structure instead of noise** through reports, graph views, and focused exports.
+- **Explore large projects safely** with overview-first HTML for large graphs instead of trying to render everything at once.
+- **Query the codebase semantically** with commands like `query`, `explain`, and `path` on top of generated graph artifacts.
+- **Reuse the same context across tools** because the graph is saved locally as files that humans and automation can both consume.
+- **Refresh understanding after changes** by regenerating the graph whenever the repo evolves.
 
 ## What you get
 
@@ -62,7 +96,25 @@ If you prefer one-off execution:
 npx @mohammednagy/graphify-ts --help
 ```
 
-## AI assistant integration
+## How graphify helps Claude Code and other AI platforms
+
+AI coding assistants are powerful, but they usually begin with incomplete repository context. Graphify helps by generating a local knowledge layer that the assistant can read instead of forcing it to infer everything from raw file browsing alone.
+
+In practice, graphify gives AI platforms a better starting point:
+
+- `graphify-out/GRAPH_REPORT.md` explains the repo at a higher level, including god nodes, communities, and suggested questions.
+- `graphify-out/graph.json` provides machine-readable structure for query, explain, path, and serve workflows.
+- `graphify-out/wiki/index.md` (when you generate wiki output) gives assistants a linked markdown view that is often easier to navigate than raw source trees.
+- `graphify-out/graph.html` and `graphify-out/graph-pages/` let you inspect the same structure visually.
+
+That helps AI platforms like Claude Code:
+
+- orient themselves in an unfamiliar repository faster
+- answer architecture and dependency questions with better grounding
+- spend less context budget on blind file hunting
+- reuse fresh graph artifacts after code changes instead of starting from scratch each time
+
+`graphify-ts` also includes installer commands for local platform integrations such as Claude, Cursor, and Copilot.
 
 There are two different kinds of install commands:
 
@@ -78,6 +130,12 @@ You run `graphify-ts generate .` because the installed Claude rules point Claude
 - `graphify-out/wiki/index.md` (when wiki export exists)
 
 Without those files, the skill/rules are installed, but Claude has no generated graph context to read yet.
+
+For Claude Code specifically, the workflow is simple:
+
+1. install the Claude integration
+2. generate graph artifacts for the repository
+3. run the slash command so Claude can use the fresh graph context
 
 Recommended order for Claude Code:
 
@@ -100,6 +158,10 @@ Then inside Claude Code, use the installed slash command:
 ```
 
 That is the current `graphify-ts` command name for the Claude skill.
+
+When you run that command, Claude Code invokes the local `graphify-ts` workflow for the current repository and reads the generated artifacts under `graphify-out/`. That is what makes the integration useful: Claude gets a repo-specific map instead of relying only on ad-hoc file reads.
+
+Because the slash command runs a local command and updates files under `graphify-out/`, Claude Code may ask for permission the first time or when its sandbox settings require confirmation. That prompt is expected.
 
 If you want Claude to benefit immediately in an existing repo, run `graphify-ts generate .` before you start asking codebase questions. If you are just setting up the integration, installing first and generating afterward is perfectly fine.
 
