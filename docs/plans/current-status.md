@@ -39,7 +39,7 @@ Implemented and verified in this workspace:
 - self-contained installer skill templates managed in the TypeScript package, without any Python runtime or nested reference checkout dependency
 - git hook install / uninstall / status helpers
 - npm publication prep for a scoped `@mohammednagy/graphify-ts` package with a global `graphify-ts` executable, a prepack build, and a publish-time file allowlist
-- local tarball/global-install validation for the publish-ready CLI, with the actual registry publish still pending npm write-time 2FA (OTP) or a granular access token with bypass-2FA enabled for the target scope
+- local tarball/global-install validation for the publish-ready CLI, with the scoped npm package still needing a successful first registry publish that shows up under `npm view @mohammednagy/graphify-ts`
 - portable watch helpers for extension filtering and code-focused automatic rebuilds, with non-code corpus changes surfaced as manual `generate --update` notifications through the CLI; mixed code/non-code batches currently prefer the safer notify-only path
 - a lightweight Node HTTP runtime that serves `graph.html`, `graph.json`, `GRAPH_REPORT.md`, and graph query endpoints from the CLI
 - security utilities for graph path validation, URL validation, safe fetch, and label sanitization
@@ -56,6 +56,7 @@ Implemented and verified in this workspace:
 - `npm pack --dry-run`
 - `npm install -g ./mohammednagy-graphify-ts-0.1.0.tgz && graphify-ts --help`
 - `npm run publish:public -- --otp <6-digit-code>`
+- `npm view @mohammednagy/graphify-ts version name` currently returns `404 Not Found`
 
 ## Future work beyond the completed roadmap slice
 

@@ -2,7 +2,7 @@
 
 Build a local knowledge graph from a codebase or mixed project folder, then explore it through an interactive HTML view, CLI queries, or a lightweight server. `graphify-ts` is the Node/TypeScript implementation of the graphify workflow and does **not** require a Python runtime.
 
-The npm package name is `@mohammednagy/graphify-ts`, and the installed command is `graphify-ts`.
+The intended npm package name is `@mohammednagy/graphify-ts`, and the installed command is `graphify-ts`.
 
 > Note: the npm scope follows the npm account name (`mohammednagy`), while the GitHub repository is `mohanagy/graphify-ts`.
 
@@ -44,16 +44,16 @@ npm install -g .
 graphify-ts --help
 ```
 
-## Install from npm after publish
+## Install from npm once the scoped package is live
 
-This repository is now prepared for a scoped npm publish. Once the package is published to npm, install it globally with:
+This repository is configured for a scoped npm publish. Once `@mohammednagy/graphify-ts` is visible on npm, install it globally with:
 
 ```bash
 npm install -g @mohammednagy/graphify-ts
 graphify-ts --help
 ```
 
-## Use without installing globally after publish
+## Use without installing globally once the package is live
 
 If you prefer one-off execution:
 
@@ -185,3 +185,13 @@ npm run typecheck
 npm run build
 npm pack --dry-run
 ```
+
+## Publish status
+
+At the moment, the repository is configured for npm publication, but you should verify that `@mohammednagy/graphify-ts` is visible on npm before treating the npm install path as the primary onboarding flow:
+
+```bash
+npm view @mohammednagy/graphify-ts version name
+```
+
+If that command still returns `404`, continue using `npm install -g .` from a checkout or publish the package again with the correct npm account/scope.
