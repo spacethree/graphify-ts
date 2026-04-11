@@ -39,6 +39,28 @@ describe('detect', () => {
     expect(result.warning).not.toBeNull()
   })
 
+  it('includes saved graphify memory notes while keeping generated artifacts ignored', () => {
+    const root = createTempRoot()
+    try {
+      mkdirSync(join(root, 'graphify-out', 'memory'), { recursive: true })
+      writeFileSync(join(root, 'graphify-out', 'memory', 'query_auth.md'), '# Saved query\n', 'utf8')
+      writeFileSync(join(root, 'graphify-out', 'graph.json'), '{}\n', 'utf8')
+      writeFileSync(join(root, 'graphify-out', 'GRAPH_REPORT.md'), '# Report\n', 'utf8')
+
+      const result = detect(root)
+
+      expect(result.files.document).toContain(join(root, 'graphify-out', 'memory', 'query_auth.md'))
+      expect(result.files.document.some((filePath) => filePath.endsWith('GRAPH_REPORT.md'))).toBe(false)
+      expect(
+        Object.values(result.files)
+          .flat()
+          .some((filePath) => filePath.endsWith('graph.json')),
+      ).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('skips hidden files during detection', () => {
     const result = detect(FIXTURES_DIR)
     for (const files of Object.values(result.files)) {

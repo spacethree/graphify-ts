@@ -248,6 +248,42 @@ describe('extract', () => {
     }
   })
 
+  it('extracts js/ts re-exports, import-equals, and CommonJS require imports', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'barrel.ts')
+      writeFileSync(
+        filePath,
+        [
+          "export { HttpClient } from './http-client'",
+          "export * from './shared'",
+          "import Config = require('./config')",
+          "const path = require('node:path')",
+          '',
+          'function load() {',
+          "  return require('./lazy')",
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extractJs(filePath)
+      const fileNodeId = result.nodes.find((node) => node.label === 'barrel.ts')?.id
+      const loadId = result.nodes.find((node) => node.label === 'load()')?.id
+      const imports = new Set(result.edges.filter((edge) => edge.relation === 'imports_from').map((edge) => `${edge.source}->${edge.target}`))
+
+      expect(fileNodeId).toBeTruthy()
+      expect(loadId).toBeTruthy()
+      expect(imports.has(`${fileNodeId}->${_makeId('http-client')}`)).toBe(true)
+      expect(imports.has(`${fileNodeId}->${_makeId('shared')}`)).toBe(true)
+      expect(imports.has(`${fileNodeId}->${_makeId('config')}`)).toBe(true)
+      expect(imports.has(`${fileNodeId}->${_makeId('path')}`)).toBe(true)
+      expect(imports.has(`${loadId}->${_makeId('lazy')}`)).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('extracts go structs, methods, functions, and calls', () => {
     const root = createTempRoot()
     try {
@@ -1012,6 +1048,53 @@ describe('extract', () => {
       expect(relations.has(`${nodeByKey.get('document:README.md')}:contains:${nodeByKey.get('document:Overview')}`)).toBe(true)
       expect(relations.has(`${nodeByKey.get('document:Overview')}:references:${nodeByKey.get('document:guide.md')}`)).toBe(true)
       expect(relations.has(`${nodeByKey.get('document:Overview')}:embeds:${nodeByKey.get('image:diagram.svg')}`)).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('lifts markdown frontmatter metadata and resolves source_nodes into references', () => {
+    const root = createTempRoot()
+    try {
+      const authPath = join(root, 'auth.ts')
+      const clientPath = join(root, 'client.ts')
+      const notePath = join(root, 'notes.md')
+      writeFileSync(authPath, 'export function authenticate() {\n  return true\n}\n', 'utf8')
+      writeFileSync(clientPath, 'export function requestToken() {\n  return authenticate()\n}\n', 'utf8')
+      writeFileSync(
+        notePath,
+        [
+          '---',
+          'title: "Auth notebook"',
+          'source_url: "https://example.com/auth"',
+          'captured_at: "2026-04-11T00:00:00Z"',
+          'author: "Jane Doe"',
+          'contributor: "copilot"',
+          'source_nodes: ["authenticate()", "requestToken()"]',
+          '---',
+          '',
+          '# Notes',
+          '',
+          'See the linked source nodes for the full auth flow.',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([authPath, clientPath, notePath])
+      const noteNode = result.nodes.find((node) => node.label === 'notes.md')
+      const authenticateId = result.nodes.find((node) => node.label === 'authenticate()')?.id
+      const requestTokenId = result.nodes.find((node) => node.label === 'requestToken()')?.id
+
+      expect(noteNode).toMatchObject({
+        title: 'Auth notebook',
+        source_url: 'https://example.com/auth',
+        captured_at: '2026-04-11T00:00:00Z',
+        author: 'Jane Doe',
+        contributor: 'copilot',
+      })
+      expect(Array.isArray(noteNode?.source_nodes)).toBe(true)
+      expect(result.edges.some((edge) => edge.source === noteNode?.id && edge.target === authenticateId && edge.relation === 'references')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === noteNode?.id && edge.target === requestTokenId && edge.relation === 'references')).toBe(true)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -68,6 +68,47 @@ describe('generateGraph', () => {
       expect(result.notes.join('\n')).not.toContain('semantic extraction')
       expect(graphData.nodes.some((node) => node.file_type === 'document')).toBe(true)
       expect(graphData.nodes.some((node) => node.file_type === 'image')).toBe(true)
+    })
+  })
+
+  test('includes saved memory notes from graphify-out/memory with frontmatter metadata and references', () => {
+    withTempDir((tempDir) => {
+      writeFileSync(join(tempDir, 'auth.ts'), 'export function authenticate() {\n  return true\n}\n', 'utf8')
+      mkdirSync(join(tempDir, 'graphify-out', 'memory'), { recursive: true })
+      writeFileSync(
+        join(tempDir, 'graphify-out', 'memory', 'query_auth.md'),
+        [
+          '---',
+          'title: "Auth result"',
+          'source_url: "https://example.com/auth"',
+          'captured_at: "2026-04-11T00:00:00Z"',
+          'source_nodes: ["authenticate()"]',
+          '---',
+          '',
+          '# Q: How does auth work?',
+          '',
+          '## Answer',
+          '',
+          'Authentication starts in authenticate().',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = generateGraph(tempDir, { noHtml: true })
+      const graphData = JSON.parse(readFileSync(result.graphPath, 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+        links: Array<Record<string, unknown>>
+      }
+      const noteNode = graphData.nodes.find((node) => node.label === 'query_auth.md')
+      const authNode = graphData.nodes.find((node) => node.label === 'authenticate()')
+
+      expect(noteNode).toMatchObject({
+        title: 'Auth result',
+        source_url: 'https://example.com/auth',
+        captured_at: '2026-04-11T00:00:00Z',
+      })
+      expect(authNode).toBeTruthy()
+      expect(graphData.links.some((edge) => edge.source === noteNode?.id && edge.target === authNode?.id && edge.relation === 'references')).toBe(true)
     })
   })
 

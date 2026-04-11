@@ -15,7 +15,7 @@ import { createTreeSitterWasmParser, treeSitterWasmError, type TreeSitterNode } 
 
 export { _makeId } from './extract/core.js'
 
-const EXTRACTOR_CACHE_VERSION = 6
+const EXTRACTOR_CACHE_VERSION = 7
 const PYTHON_KEYWORDS = new Set(['if', 'elif', 'else', 'for', 'while', 'return', 'class', 'def', 'lambda', 'with', 'print', 'sum'])
 const GENERIC_CODE_EXTENSIONS = new Set(['.go', '.rs', '.java', '.kt', '.kts', '.scala', '.cs', '.c', '.cc', '.cpp', '.cxx', '.h', '.hpp', '.swift', '.php', '.zig'])
 const GENERIC_CONTROL_KEYWORDS = new Set(['if', 'for', 'while', 'switch', 'catch', 'return', 'new', 'delete', 'throw', 'sizeof', 'case', 'do', 'else'])
@@ -99,10 +99,137 @@ interface ImportedPythonSymbol {
 const MAX_TS_NESTED_FUNCTION_DEPTH = 10
 
 function resolveModuleName(specifier: string): string {
-  const normalized = specifier.replaceAll('\\', '/').replace(/^\.\//, '').replace(/^\.\//, '')
+  const normalized = specifier
+    .replaceAll('\\', '/')
+    .replace(/^node:/, '')
+    .replace(/^\.\//, '')
+    .replace(/^\.\//, '')
   const lastSegment = normalized.split('/').filter(Boolean).at(-1) ?? normalized
   const extension = extname(lastSegment)
   return extension ? lastSegment.slice(0, -extension.length) : lastSegment
+}
+
+function parseFrontmatterScalar(value: string): string {
+  const trimmed = value.trim()
+  if (trimmed.length < 2) {
+    return trimmed
+  }
+
+  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+    return trimmed.slice(1, -1).replace(/\\(["'])/g, '$1')
+  }
+
+  return trimmed
+}
+
+function parseFrontmatterList(value: string): string[] {
+  const inner = value.trim().slice(1, -1)
+  const entries: string[] = []
+  let current = ''
+  let quote: '"' | "'" | null = null
+
+  for (let index = 0; index < inner.length; index += 1) {
+    const character = inner[index]
+    if (!character) {
+      continue
+    }
+
+    if (quote) {
+      if (character === '\\' && index + 1 < inner.length) {
+        current += inner[index + 1] ?? ''
+        index += 1
+        continue
+      }
+
+      if (character === quote) {
+        quote = null
+        continue
+      }
+
+      current += character
+      continue
+    }
+
+    if (character === '"' || character === "'") {
+      quote = character
+      continue
+    }
+
+    if (character === ',') {
+      const parsed = parseFrontmatterScalar(current)
+      if (parsed) {
+        entries.push(parsed)
+      }
+      current = ''
+      continue
+    }
+
+    current += character
+  }
+
+  const parsed = parseFrontmatterScalar(current)
+  if (parsed) {
+    entries.push(parsed)
+  }
+
+  return entries
+}
+
+function parseFrontmatterValue(rawValue: string): string | string[] {
+  const trimmed = rawValue.trim()
+  if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+    return parseFrontmatterList(trimmed)
+  }
+
+  return parseFrontmatterScalar(trimmed)
+}
+
+function parseStructuredTextFrontmatter(lines: string[]): { metadata: Record<string, unknown>; contentStartIndex: number } {
+  if (lines[0]?.trim() !== '---') {
+    return { metadata: {}, contentStartIndex: 0 }
+  }
+
+  const metadata: Record<string, unknown> = {}
+  for (let index = 1; index < lines.length; index += 1) {
+    const line = lines[index] ?? ''
+    const trimmed = line.trim()
+
+    if (trimmed === '---') {
+      return { metadata, contentStartIndex: index + 1 }
+    }
+
+    if (!trimmed || trimmed.startsWith('#')) {
+      continue
+    }
+
+    const separatorIndex = line.indexOf(':')
+    if (separatorIndex <= 0) {
+      continue
+    }
+
+    const key = line.slice(0, separatorIndex).trim()
+    if (!key) {
+      continue
+    }
+
+    metadata[key] = parseFrontmatterValue(line.slice(separatorIndex + 1))
+  }
+
+  return { metadata, contentStartIndex: lines.length }
+}
+
+function lineNumberFromSourceLocation(location: unknown): number {
+  if (typeof location !== 'string') {
+    return 1
+  }
+
+  const match = location.match(/^L(\d+)$/)
+  if (!match?.[1]) {
+    return 1
+  }
+
+  const line = Number.parseInt(match[1], 10)
+  return Number.isFinite(line) && line > 0 ? line : 1
 }
 
 function normalizeSectionLabel(label: string): string {
@@ -599,22 +726,20 @@ function extractStructuredText(filePath: string, fileType: Extract<NonCodeFileTy
 
   const sourceText = readFileSync(filePath, 'utf8')
   const lines = sourceText.split(/\r?\n/)
+  const { metadata: frontmatterMetadata, contentStartIndex } = parseStructuredTextFrontmatter(lines)
+
+  if (Object.keys(frontmatterMetadata).length > 0) {
+    const enrichedFileNode: ExtractionNode = { ...fileNode, ...frontmatterMetadata }
+    nodes[0] = enrichedFileNode
+  }
 
   const headingStack: Array<{ level: number; id: string; label: string }> = []
-  let inFrontmatter = lines[0]?.trim() === '---'
   let fenceMarker: '```' | '~~~' | null = null
 
-  for (let index = 0; index < lines.length; index += 1) {
+  for (let index = contentStartIndex; index < lines.length; index += 1) {
     const line = lines[index] ?? ''
     const trimmed = line.trim()
     const lineNumber = index + 1
-
-    if (inFrontmatter) {
-      if (index > 0 && trimmed === '---') {
-        inFrontmatter = false
-      }
-      continue
-    }
 
     if (trimmed.startsWith('```') || trimmed.startsWith('~~~')) {
       const marker = trimmed.startsWith('```') ? '```' : '~~~'
@@ -912,6 +1037,24 @@ function extractDocument(filePath: string, allowedTargets: ReadonlySet<string>):
 
 function isCachedExtraction(value: unknown): value is CachedExtractionPayload {
   return isRecord(value) && value.__graphifyTsExtractorVersion === EXTRACTOR_CACHE_VERSION && Array.isArray(value.nodes) && Array.isArray(value.edges)
+}
+
+function moduleSpecifierFromRequireCall(node: ts.CallExpression): string | null {
+  if (!ts.isIdentifier(node.expression) || node.expression.text !== 'require') {
+    return null
+  }
+
+  const [specifier] = node.arguments
+  return specifier && ts.isStringLiteralLike(specifier) ? specifier.text : null
+}
+
+function addTsImportEdge(edges: ExtractionEdge[], seenImportEdges: Set<string>, sourceId: string, specifier: string, filePath: string, line: number): void {
+  const trimmedSpecifier = specifier.trim()
+  if (!trimmedSpecifier || trimmedSpecifier.length > 512) {
+    return
+  }
+
+  addUniqueEdge(edges, seenImportEdges, createEdge(sourceId, _makeId(resolveModuleName(trimmedSpecifier)), 'imports_from', filePath, line))
 }
 
 function readCachedExtraction(filePath: string): ExtractionFragment | null {
@@ -2922,8 +3065,10 @@ export function extractJs(filePath: string): ExtractionFragment {
       if (expression.kind === ts.SyntaxKind.ImportKeyword) {
         const [specifier] = node.arguments
         if (specifier && ts.isStringLiteralLike(specifier)) {
-          addUniqueEdge(edges, seenImportEdges, createEdge(callerId, _makeId(resolveModuleName(specifier.text)), 'imports_from', filePath, line))
+          addTsImportEdge(edges, seenImportEdges, callerId, specifier.text, filePath, line)
         }
+      } else if (moduleSpecifierFromRequireCall(node)) {
+        addTsImportEdge(edges, seenImportEdges, callerId, moduleSpecifierFromRequireCall(node) ?? '', filePath, line)
       } else if (ts.isIdentifier(expression)) {
         addPendingCall(pendingCalls, {
           callerId,
@@ -2990,16 +3135,51 @@ export function extractJs(filePath: string): ExtractionFragment {
 
   const visitTopLevel = (node: ts.Node): void => {
     if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
-      addEdge(
+      addTsImportEdge(
         edges,
-        createEdge(
-          fileNodeId,
-          _makeId(resolveModuleName(node.moduleSpecifier.text)),
-          'imports_from',
-          filePath,
-          sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1,
-        ),
+        seenImportEdges,
+        fileNodeId,
+        node.moduleSpecifier.text,
+        filePath,
+        sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1,
       )
+      return
+    }
+
+    if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteralLike(node.moduleSpecifier)) {
+      addTsImportEdge(
+        edges,
+        seenImportEdges,
+        fileNodeId,
+        node.moduleSpecifier.text,
+        filePath,
+        sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1,
+      )
+      return
+    }
+
+    if (
+      ts.isImportEqualsDeclaration(node) &&
+      ts.isExternalModuleReference(node.moduleReference) &&
+      node.moduleReference.expression &&
+      ts.isStringLiteralLike(node.moduleReference.expression)
+    ) {
+      addTsImportEdge(
+        edges,
+        seenImportEdges,
+        fileNodeId,
+        node.moduleReference.expression.text,
+        filePath,
+        sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1,
+      )
+      return
+    }
+
+    if (ts.isExpressionStatement(node) && ts.isCallExpression(node.expression)) {
+      const requireSpecifier = moduleSpecifierFromRequireCall(node.expression)
+      if (requireSpecifier) {
+        addTsImportEdge(edges, seenImportEdges, fileNodeId, requireSpecifier, filePath, sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1)
+      }
       return
     }
 
@@ -3115,6 +3295,14 @@ export function extractJs(filePath: string): ExtractionFragment {
       for (const declaration of node.declarationList.declarations) {
         if (!ts.isIdentifier(declaration.name) || !declaration.initializer) {
           continue
+        }
+
+        if (ts.isCallExpression(declaration.initializer)) {
+          const requireSpecifier = moduleSpecifierFromRequireCall(declaration.initializer)
+          if (requireSpecifier) {
+            const importLine = sourceFile.getLineAndCharacterOfPosition(declaration.name.getStart(sourceFile)).line + 1
+            addTsImportEdge(edges, seenImportEdges, fileNodeId, requireSpecifier, filePath, importLine)
+          }
         }
 
         if (!ts.isArrowFunction(declaration.initializer) && !ts.isFunctionExpression(declaration.initializer)) {
@@ -3294,6 +3482,49 @@ export function extract(files: string[], options: ExtractOptions = {}): Extracti
     })
   } else {
     resolveCrossFilePythonImports(files, combined)
+  }
+
+  const allNodes = options.contextNodes && options.contextNodes.length > 0 ? [...combined.nodes, ...options.contextNodes] : combined.nodes
+  const nodeIdsByKey = new Map<string, string[]>()
+  const addNodeReferenceKey = (key: string, nodeId: string): void => {
+    const existing = nodeIdsByKey.get(key) ?? []
+    if (!existing.includes(nodeId)) {
+      nodeIdsByKey.set(key, [...existing, nodeId])
+    }
+  }
+
+  for (const node of allNodes) {
+    addNodeReferenceKey(node.id, node.id)
+    addNodeReferenceKey(normalizeLabel(String(node.label ?? '')), node.id)
+  }
+
+  const seenEdges = new Set(combined.edges.map((edge) => `${edge.source}|${edge.target}|${edge.relation}`))
+  for (const node of combined.nodes) {
+    const rawSourceNodes = node.source_nodes
+    if (!Array.isArray(rawSourceNodes) || rawSourceNodes.length === 0) {
+      continue
+    }
+
+    for (const sourceNodeReference of rawSourceNodes) {
+      if (typeof sourceNodeReference !== 'string') {
+        continue
+      }
+
+      const normalizedReference = sourceNodeReference.trim()
+      if (!normalizedReference) {
+        continue
+      }
+
+      const candidateIds = new Set([...(nodeIdsByKey.get(normalizedReference) ?? []), ...(nodeIdsByKey.get(normalizeLabel(normalizedReference)) ?? [])])
+
+      for (const targetId of candidateIds) {
+        if (targetId === node.id) {
+          continue
+        }
+
+        addUniqueEdge(combined.edges, seenEdges, createEdge(node.id, targetId, 'references', node.source_file, lineNumberFromSourceLocation(node.source_location)))
+      }
+    }
   }
 
   return combined

@@ -216,6 +216,69 @@ describe('export', () => {
     })
   })
 
+  it('writes html that surfaces source urls and metadata fields in the selected node panel', () => {
+    const graph = buildFromJson({
+      nodes: [
+        {
+          id: 'note',
+          label: 'query_auth.md',
+          file_type: 'document',
+          source_file: 'graphify-out/memory/query_auth.md',
+          source_url: 'https://example.com/auth',
+          title: 'Auth result',
+          author: 'Jane Doe',
+          contributor: 'copilot',
+          captured_at: '2026-04-11T00:00:00Z',
+        },
+      ],
+      edges: [],
+    })
+
+    withTempDir((tempDir) => {
+      const outputPath = join(tempDir, 'graph.html')
+      toHtml(graph, { 0: ['note'] }, outputPath)
+
+      const content = readFileSync(outputPath, 'utf8')
+
+      expect(content).toContain('Source URL')
+      expect(content).toContain('selectedSourceUrl')
+      expect(content).toContain('selectedAuthor')
+      expect(content).toContain('selectedContributor')
+      expect(content).toContain('selectedCapturedAt')
+      expect(content).toContain('node.safe_source_url')
+      expect(content).toContain('node.document_title')
+      expect(content).toContain('node.author')
+      expect(content).toContain('node.contributor')
+      expect(content).toContain('node.captured_at')
+    })
+  })
+
+  it('writes html that blocks unsafe source urls from becoming clickable links', () => {
+    const graph = buildFromJson({
+      nodes: [
+        {
+          id: 'note',
+          label: 'query_auth.md',
+          file_type: 'document',
+          source_file: 'graphify-out/memory/query_auth.md',
+          source_url: 'javascript:alert(1)',
+        },
+      ],
+      edges: [],
+    })
+
+    withTempDir((tempDir) => {
+      const outputPath = join(tempDir, 'graph.html')
+      toHtml(graph, { 0: ['note'] }, outputPath)
+
+      const content = readFileSync(outputPath, 'utf8')
+
+      expect(content).toContain('"source_url":"javascript:alert(1)"')
+      expect(content).toContain('"safe_source_url":""')
+      expect(content).toContain('node.safe_source_url')
+    })
+  })
+
   it('writes an Obsidian-style vault with community notes and graph config', () => {
     const graph = makeGraph()
     const communities = cluster(graph)

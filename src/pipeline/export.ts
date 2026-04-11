@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { KnowledgeGraph } from '../contracts/graph.js'
+import { validateUrl } from '../shared/security.js'
 import { _nodeCommunityMap } from './analyze.js'
 import type { Communities } from './cluster.js'
 
@@ -334,6 +335,18 @@ export function toHtml(graph: KnowledgeGraph, communities: Communities, outputPa
   const nodes = graph.nodeEntries().map(([id, attributes]) => {
     const communityId = nodeCommunity[id] ?? 0
     const color = COMMUNITY_COLORS[communityId % COMMUNITY_COLORS.length] ?? COMMUNITY_COLORS[0]
+    const sourceUrl = String(attributes.source_url ?? '')
+    const safeSourceUrl = (() => {
+      if (!sourceUrl) {
+        return ''
+      }
+
+      try {
+        return validateUrl(sourceUrl)
+      } catch {
+        return ''
+      }
+    })()
     return {
       id,
       label: String(attributes.label ?? id),
@@ -343,7 +356,14 @@ export function toHtml(graph: KnowledgeGraph, communities: Communities, outputPa
       community_name: communityLabels[communityId] ?? `Community ${communityId}`,
       source_file: String(attributes.source_file ?? ''),
       source_location: String(attributes.source_location ?? ''),
-      source_url: String(attributes.source_url ?? ''),
+      source_url: sourceUrl,
+      safe_source_url: safeSourceUrl,
+      document_title: String(attributes.title ?? ''),
+      author: String(attributes.author ?? attributes.paper_authors ?? ''),
+      contributor: String(attributes.contributor ?? ''),
+      captured_at: String(attributes.captured_at ?? attributes.date ?? ''),
+      question: String(attributes.question ?? ''),
+      arxiv_id: String(attributes.arxiv_id ?? ''),
       file_type: String(attributes.file_type ?? ''),
       degree: graph.degree(id),
       confidence: dominantConfidence(graph, id),
@@ -515,6 +535,7 @@ export function toHtml(graph: KnowledgeGraph, communities: Communities, outputPa
 
   .meta-grid dt { color: var(--text-muted); }
   .meta-grid dd { margin: 0; word-break: break-word; }
+  .meta-grid a { color: var(--accent); word-break: break-all; }
 
   .empty {
     color: var(--text-muted);
@@ -562,6 +583,13 @@ export function toHtml(graph: KnowledgeGraph, communities: Communities, outputPa
       <p id="selectedSummary" class="lede"></p>
       <dl class="meta-grid">
         <dt>Source</dt><dd id="selectedSource"></dd>
+        <dt id="selectedDocumentTitleLabel" hidden>Title</dt><dd id="selectedDocumentTitle" hidden></dd>
+        <dt id="selectedSourceUrlLabel" hidden>Source URL</dt><dd id="selectedSourceUrl" hidden></dd>
+        <dt id="selectedAuthorLabel" hidden>Author</dt><dd id="selectedAuthor" hidden></dd>
+        <dt id="selectedContributorLabel" hidden>Contributor</dt><dd id="selectedContributor" hidden></dd>
+        <dt id="selectedCapturedAtLabel" hidden>Captured</dt><dd id="selectedCapturedAt" hidden></dd>
+        <dt id="selectedQuestionLabel" hidden>Question</dt><dd id="selectedQuestion" hidden></dd>
+        <dt id="selectedArxivIdLabel" hidden>arXiv</dt><dd id="selectedArxivId" hidden></dd>
         <dt>Type</dt><dd id="selectedType"></dd>
         <dt>Community</dt><dd id="selectedCommunity"></dd>
         <dt>Confidence</dt><dd id="selectedConfidence"></dd>
@@ -624,6 +652,20 @@ const elements = {
   selectedLabel: document.getElementById('selectedLabel'),
   selectedSummary: document.getElementById('selectedSummary'),
   selectedSource: document.getElementById('selectedSource'),
+  selectedDocumentTitleLabel: document.getElementById('selectedDocumentTitleLabel'),
+  selectedDocumentTitle: document.getElementById('selectedDocumentTitle'),
+  selectedSourceUrlLabel: document.getElementById('selectedSourceUrlLabel'),
+  selectedSourceUrl: document.getElementById('selectedSourceUrl'),
+  selectedAuthorLabel: document.getElementById('selectedAuthorLabel'),
+  selectedAuthor: document.getElementById('selectedAuthor'),
+  selectedContributorLabel: document.getElementById('selectedContributorLabel'),
+  selectedContributor: document.getElementById('selectedContributor'),
+  selectedCapturedAtLabel: document.getElementById('selectedCapturedAtLabel'),
+  selectedCapturedAt: document.getElementById('selectedCapturedAt'),
+  selectedQuestionLabel: document.getElementById('selectedQuestionLabel'),
+  selectedQuestion: document.getElementById('selectedQuestion'),
+  selectedArxivIdLabel: document.getElementById('selectedArxivIdLabel'),
+  selectedArxivId: document.getElementById('selectedArxivId'),
   selectedType: document.getElementById('selectedType'),
   selectedCommunity: document.getElementById('selectedCommunity'),
   selectedConfidence: document.getElementById('selectedConfidence'),
@@ -663,6 +705,30 @@ function createMeta(text, className) {
   span.className = className;
   span.textContent = text;
   return span;
+}
+
+function setOptionalMeta(labelElement, valueElement, value, options = {}) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  const hasValue = text.length > 0;
+  labelElement.hidden = !hasValue;
+  valueElement.hidden = !hasValue;
+  valueElement.replaceChildren();
+
+  if (!hasValue) {
+    return;
+  }
+
+  if (options.link === true) {
+    const link = document.createElement('a');
+    link.href = text;
+    link.textContent = text;
+    link.target = '_blank';
+    link.rel = 'noreferrer noopener';
+    valueElement.appendChild(link);
+    return;
+  }
+
+  valueElement.textContent = text;
 }
 
 function getNeighborEntries(nodeId) {
@@ -792,6 +858,13 @@ function renderSelection(nodeId) {
     elements.selectedLabel.textContent = '';
     elements.selectedSummary.textContent = '';
     elements.selectedSource.textContent = '';
+    setOptionalMeta(elements.selectedDocumentTitleLabel, elements.selectedDocumentTitle, '');
+    setOptionalMeta(elements.selectedSourceUrlLabel, elements.selectedSourceUrl, '');
+    setOptionalMeta(elements.selectedAuthorLabel, elements.selectedAuthor, '');
+    setOptionalMeta(elements.selectedContributorLabel, elements.selectedContributor, '');
+    setOptionalMeta(elements.selectedCapturedAtLabel, elements.selectedCapturedAt, '');
+    setOptionalMeta(elements.selectedQuestionLabel, elements.selectedQuestion, '');
+    setOptionalMeta(elements.selectedArxivIdLabel, elements.selectedArxivId, '');
     elements.selectedType.textContent = '';
     elements.selectedCommunity.textContent = '';
     elements.selectedConfidence.textContent = '';
@@ -805,8 +878,15 @@ function renderSelection(nodeId) {
   elements.selectionEmpty.hidden = true;
   elements.selectionDetails.hidden = false;
   elements.selectedLabel.textContent = node.label;
-  elements.selectedSummary.textContent = 'Inspect evidence, jump to neighbors, or focus this local neighborhood.';
+  elements.selectedSummary.textContent = node.document_title || node.question || 'Inspect evidence, jump to neighbors, or focus this local neighborhood.';
   elements.selectedSource.textContent = [node.source_file, node.source_location].filter(Boolean).join(': ') || 'Unknown source';
+  setOptionalMeta(elements.selectedDocumentTitleLabel, elements.selectedDocumentTitle, node.document_title || '');
+  setOptionalMeta(elements.selectedSourceUrlLabel, elements.selectedSourceUrl, node.safe_source_url || '', { link: Boolean(node.safe_source_url) });
+  setOptionalMeta(elements.selectedAuthorLabel, elements.selectedAuthor, node.author || '');
+  setOptionalMeta(elements.selectedContributorLabel, elements.selectedContributor, node.contributor || '');
+  setOptionalMeta(elements.selectedCapturedAtLabel, elements.selectedCapturedAt, node.captured_at || '');
+  setOptionalMeta(elements.selectedQuestionLabel, elements.selectedQuestion, node.question || '');
+  setOptionalMeta(elements.selectedArxivIdLabel, elements.selectedArxivId, node.arxiv_id || '');
   elements.selectedType.textContent = node.file_type || 'unknown';
   elements.selectedCommunity.textContent = node.community_name;
   elements.selectedConfidence.textContent = node.confidence;

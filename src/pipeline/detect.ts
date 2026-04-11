@@ -1,4 +1,4 @@
-import { Dirent, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import { Dirent, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, extname, relative, resolve, sep } from 'node:path'
 
 export const FileType = {
@@ -341,7 +341,13 @@ function collectFiles(root: string, followSymlinks: boolean, ignorePatterns: str
   }
 
   visitDirectory(resolvedRoot, resolvedRoot, followSymlinks, ignorePatterns, [rootRealPath], rootRealPath, files)
-  return files.sort()
+
+  const memoryDir = resolve(resolvedRoot, 'graphify-out', 'memory')
+  if (existsSync(memoryDir)) {
+    visitDirectory(memoryDir, resolvedRoot, followSymlinks, ignorePatterns, [rootRealPath], rootRealPath, files)
+  }
+
+  return [...new Set(files)].sort()
 }
 
 function inferOutputBase(outputPath: string): string {
