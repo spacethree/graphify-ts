@@ -1,5 +1,5 @@
 {
-    "name": "@mohanagy/graphify-ts",
+    "name": "@mohammednagy/graphify-ts",
     "version": "0.1.0",
     "description": "Build local knowledge graphs from code, docs, and mixed project folders with a TypeScript CLI.",
     "license": "MIT",
@@ -46,6 +46,7 @@
         "test:coverage": "vitest run --coverage",
         "prepack": "npm run clean && npm run build",
         "pack:dry-run": "npm pack --dry-run",
+        "publish:public": "npm publish --access public",
         "publish:dry-run": "npm publish --dry-run"
     },
     "devDependencies": {

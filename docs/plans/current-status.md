@@ -38,8 +38,8 @@ Implemented and verified in this workspace:
 - local platform/project configuration commands for `claude`, `gemini`, `cursor`, `codex`, `opencode`, `aider`, `copilot`, `claw`, `droid`, `trae`, and `trae-cn`
 - self-contained installer skill templates managed in the TypeScript package, without any Python runtime or nested reference checkout dependency
 - git hook install / uninstall / status helpers
-- npm publication prep for a scoped `@mohanagy/graphify-ts` package with a global `graphify-ts` executable, a prepack build, and a publish-time file allowlist
-- local tarball/global-install validation for the publish-ready CLI, with the actual registry publish still pending npm authentication for the target scope
+- npm publication prep for a scoped `@mohammednagy/graphify-ts` package with a global `graphify-ts` executable, a prepack build, and a publish-time file allowlist
+- local tarball/global-install validation for the publish-ready CLI, with the actual registry publish still pending npm write-time 2FA (OTP) or a granular access token with bypass-2FA enabled for the target scope
 - portable watch helpers for extension filtering and code-focused automatic rebuilds, with non-code corpus changes surfaced as manual `generate --update` notifications through the CLI; mixed code/non-code batches currently prefer the safer notify-only path
 - a lightweight Node HTTP runtime that serves `graph.html`, `graph.json`, `GRAPH_REPORT.md`, and graph query endpoints from the CLI
 - security utilities for graph path validation, URL validation, safe fetch, and label sanitization
@@ -54,7 +54,8 @@ Implemented and verified in this workspace:
 - `npm run build`
 - `node dist/src/cli/bin.js --help`
 - `npm pack --dry-run`
-- `npm install -g ./mohanagy-graphify-ts-0.1.0.tgz && graphify-ts --help`
+- `npm install -g ./mohammednagy-graphify-ts-0.1.0.tgz && graphify-ts --help`
+- `npm run publish:public -- --otp <6-digit-code>`
 
 ## Future work beyond the completed roadmap slice
 

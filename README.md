@@ -2,7 +2,9 @@
 
 Build a local knowledge graph from a codebase or mixed project folder, then explore it through an interactive HTML view, CLI queries, or a lightweight server. `graphify-ts` is the Node/TypeScript implementation of the graphify workflow and does **not** require a Python runtime.
 
-The prepared npm package name is `@mohanagy/graphify-ts`, and the installed command is `graphify-ts`.
+The npm package name is `@mohammednagy/graphify-ts`, and the installed command is `graphify-ts`.
+
+> Note: the npm scope follows the npm account name (`mohammednagy`), while the GitHub repository is `mohanagy/graphify-ts`.
 
 ## What you get
 
@@ -47,7 +49,7 @@ graphify-ts --help
 This repository is now prepared for a scoped npm publish. Once the package is published to npm, install it globally with:
 
 ```bash
-npm install -g @mohanagy/graphify-ts
+npm install -g @mohammednagy/graphify-ts
 graphify-ts --help
 ```
 
@@ -56,7 +58,7 @@ graphify-ts --help
 If you prefer one-off execution:
 
 ```bash
-npx @mohanagy/graphify-ts --help
+npx @mohammednagy/graphify-ts --help
 ```
 
 ## Run from a repo checkout
@@ -105,7 +107,7 @@ graphify-ts explain HttpClient --graph tests/fixtures/graphify-out/graph.json
 graphify-ts query "HttpClient buildHeaders" --graph tests/fixtures/graphify-out/graph.json
 ```
 
-If you do not want a global install, replace `graphify-ts` with `npx @mohanagy/graphify-ts` in the same commands.
+If you do not want a global install, replace `graphify-ts` with `npx @mohammednagy/graphify-ts` in the same commands.
 
 What you should see:
 
