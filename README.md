@@ -4,8 +4,6 @@ Build a local knowledge graph from a codebase or mixed project folder, then expl
 
 The npm package name is `@mohammednagy/graphify-ts`, and the installed command is `graphify-ts`.
 
-> Note: the npm scope follows the npm account name (`mohammednagy`), while the GitHub repository is `mohanagy/graphify-ts`.
-
 ## What you get
 
 After a successful `generate` run, `graphify-ts` writes artifacts into `graphify-out/`:
@@ -59,26 +57,6 @@ If you prefer one-off execution:
 
 ```bash
 npx @mohammednagy/graphify-ts --help
-```
-
-## Use it globally from this checkout
-
-From this repository root, install the CLI globally on your machine:
-
-```bash
-npm install
-npm install -g .
-graphify-ts --help
-```
-
-## Run from a repo checkout
-
-If you are developing locally from this repository:
-
-```bash
-npm install
-npm run build
-node dist/src/cli/bin.js --help
 ```
 
 ## AI assistant integration
@@ -140,7 +118,7 @@ graphify-ts serve graphify-out/graph.json --mcp
 
 Replace `SomeNodeLabel`, `SourceConcept`, and `TargetConcept` with labels that actually exist in your generated graph.
 
-## How to test it as an end user
+## Try it out
 
 If you want a deterministic smoke test using the bundled fixture corpus in this repo, run:
 
@@ -224,35 +202,16 @@ Contributions are welcome — especially parser fixes, fixture-backed regression
 
 Before opening a pull request, please read:
 
-- [`CONTRIBUTING.md`](https://github.com/mohanagy/graphify-ts/blob/main/CONTRIBUTING.md)
-- [`SECURITY.md`](https://github.com/mohanagy/graphify-ts/blob/main/SECURITY.md)
+- [`CONTRIBUTING.md`](CONTRIBUTING.md)
+- [`SECURITY.md`](SECURITY.md)
 
 The repository now includes:
 
 - GitHub issue forms for bugs and feature requests
 - a pull request template
 - `CODEOWNERS`
-- a CI workflow that runs typecheck, tests, build, and `npm pack --dry-run`
+- a CI workflow for pull requests
 
 If you maintain the repository, apply the recommended GitHub branch protection and open-source safety settings from:
 
 - [`docs/maintainers/repository-settings.md`](docs/maintainers/repository-settings.md)
-
-## Verifying the repo checkout itself
-
-If you want to validate the checkout in addition to the end-user smoke test, run:
-
-```bash
-npm run test:run
-npm run typecheck
-npm run build
-npm pack --dry-run
-```
-
-## Verify the published package
-
-If you want to verify the live npm release directly:
-
-```bash
-npm view @mohammednagy/graphify-ts version name
-```

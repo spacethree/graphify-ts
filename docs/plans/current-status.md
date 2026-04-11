@@ -1,10 +1,10 @@
 # graphify-ts current status and roadmap
 
-This document keeps the implementation status, internal verification notes, limitations, and next-step planning details that were moved out of the top-level `README.md` so the README can stay end-user focused.
+This document keeps the implementation status, scope notes, limitations, and next-step planning details that were moved out of the top-level `README.md` so the README can stay end-user focused.
 
 ## Current status
 
-Implemented and verified in this workspace:
+Implemented in this repository:
 
 - project scaffold with strict TypeScript + Vitest
 - extraction schema contracts and validation
@@ -38,8 +38,7 @@ Implemented and verified in this workspace:
 - local platform/project configuration commands for `claude`, `gemini`, `cursor`, `codex`, `opencode`, `aider`, `copilot`, `claw`, `droid`, `trae`, and `trae-cn`
 - self-contained installer skill templates managed in the TypeScript package, without any Python runtime or nested reference checkout dependency
 - git hook install / uninstall / status helpers
-- published npm package for the scoped `@mohammednagy/graphify-ts` release, with a global `graphify-ts` executable, a prepack build, and a publish-time file allowlist
-- registry visibility and end-user global-install validation for the live `@mohammednagy/graphify-ts` package
+- npm distribution with the global `graphify-ts` executable, a prepack build, and a publish-time file allowlist
 - open-source contributor / maintainer scaffolding via `CONTRIBUTING.md`, `SECURITY.md`, GitHub issue forms, a pull request template, `CODEOWNERS`, a CI workflow, and a maintainer-facing GitHub settings checklist
 - release-tag handling via a `v*`-triggered GitHub release workflow plus maintainer docs for protected tags and version/changelog alignment
 - portable watch helpers for extension filtering and code-focused automatic rebuilds, with non-code corpus changes surfaced as manual `generate --update` notifications through the CLI; mixed code/non-code batches currently prefer the safer notify-only path
@@ -49,21 +48,9 @@ Implemented and verified in this workspace:
 - end-to-end pipeline coverage across detect → extract → build → cluster → analyze → report → export
 - local test fixtures owned by this repository under `tests/fixtures/`, so the test suite does not depend on a separate Python checkout
 
-## Verified locally
-
-- `npm run test:run`
-- `npm run typecheck`
-- `npm run build`
-- `node dist/src/cli/bin.js --help`
-- `npm pack --dry-run`
-- `npm install -g ./mohammednagy-graphify-ts-0.1.0.tgz && graphify-ts --help`
-- `npm run publish:public -- --dry-run`
-- `npm view @mohammednagy/graphify-ts version name` returns `0.1.0`
-- `npm install -g @mohammednagy/graphify-ts && graphify-ts --help`
-
 ## Future work beyond the completed roadmap slice
 
-The strict roadmap items tracked in this workspace are implemented and verified. Remaining follow-ups are broader stretch goals rather than blockers for the current TypeScript port:
+The roadmap slice tracked for this repository is implemented. Remaining follow-ups are broader stretch goals rather than blockers for the current TypeScript port:
 
 - widen portable tree-sitter coverage beyond the current Python/Go/Java AST-backed slice
 - deepen bibliography/metadata resolution beyond the current frontmatter/query-memory lift, local reference metadata parsing, and deterministic citation/link resolution
