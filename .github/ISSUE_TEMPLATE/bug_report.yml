@@ -1,0 +1,84 @@
+name: Bug report
+description: Report a reproducible problem in graph extraction, CLI behavior, docs, or integrations.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Please include a minimal repro when possible.
+
+  - type: input
+    id: summary
+    attributes:
+      label: Summary
+      description: One-sentence description of the problem.
+      placeholder: graphify-ts drops cross-file call edges for ...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: graphify-ts version
+      description: Output from `graphify-ts --help` or the installed package version.
+      placeholder: 0.1.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-mode
+    attributes:
+      label: How are you running graphify-ts?
+      options:
+        - npm global install
+        - npx
+        - local checkout build
+        - CI / automation
+        - other
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Command or workflow
+      description: Paste the exact command(s) that reproduce the problem.
+      placeholder: |
+        graphify-ts generate .
+        graphify-ts query "..." --graph graphify-out/graph.json
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include stack traces, screenshots, or snippets if useful.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: A small repo, fixture, or code sample that demonstrates the problem.
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Node.js version, npm version, shell, and any relevant context.
+      placeholder: |
+        macOS 15
+        Node.js 20.x
+        npm 10.x
+        zsh
+    validations:
+      required: true

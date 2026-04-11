@@ -40,6 +40,7 @@ Implemented and verified in this workspace:
 - git hook install / uninstall / status helpers
 - published npm package for the scoped `@mohammednagy/graphify-ts` release, with a global `graphify-ts` executable, a prepack build, and a publish-time file allowlist
 - registry visibility and end-user global-install validation for the live `@mohammednagy/graphify-ts` package
+- open-source contributor / maintainer scaffolding via `CONTRIBUTING.md`, `SECURITY.md`, GitHub issue forms, a pull request template, `CODEOWNERS`, a CI workflow, and a maintainer-facing GitHub settings checklist
 - portable watch helpers for extension filtering and code-focused automatic rebuilds, with non-code corpus changes surfaced as manual `generate --update` notifications through the CLI; mixed code/non-code batches currently prefer the safer notify-only path
 - a lightweight Node HTTP runtime that serves `graph.html`, `graph.json`, `GRAPH_REPORT.md`, and graph query endpoints from the CLI
 - security utilities for graph path validation, URL validation, safe fetch, and label sanitization
@@ -94,6 +95,8 @@ The strict roadmap items tracked in this workspace are implemented and verified.
 - `src/` — standalone TypeScript implementation
 - `tests/fixtures/` — local fixture corpus owned by this repository
 - `tests/unit/` — TypeScript tests, including an end-to-end pipeline suite
+- `.github/` — issue forms, pull request template, code ownership, and CI workflow
+- `docs/maintainers/` — maintainer-only repository settings and protection guidance
 
 ## Next likely steps
 

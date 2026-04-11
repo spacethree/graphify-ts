@@ -218,6 +218,26 @@ For the detailed implementation status, limitations, and roadmap material that u
 
 - [`docs/plans/current-status.md`](docs/plans/current-status.md)
 
+## Contributing
+
+Contributions are welcome — especially parser fixes, fixture-backed regression coverage, docs improvements, install-flow polish, and graph-quality improvements.
+
+Before opening a pull request, please read:
+
+- [`CONTRIBUTING.md`](https://github.com/mohanagy/graphify-ts/blob/main/CONTRIBUTING.md)
+- [`SECURITY.md`](https://github.com/mohanagy/graphify-ts/blob/main/SECURITY.md)
+
+The repository now includes:
+
+- GitHub issue forms for bugs and feature requests
+- a pull request template
+- `CODEOWNERS`
+- a CI workflow that runs typecheck, tests, build, and `npm pack --dry-run`
+
+If you maintain the repository, apply the recommended GitHub branch protection and open-source safety settings from:
+
+- [`docs/maintainers/repository-settings.md`](docs/maintainers/repository-settings.md)
+
 ## Verifying the repo checkout itself
 
 If you want to validate the checkout in addition to the end-user smoke test, run:

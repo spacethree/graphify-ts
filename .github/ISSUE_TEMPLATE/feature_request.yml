@@ -1,0 +1,53 @@
+name: Feature request
+description: Suggest a new capability, parser improvement, workflow, or maintenance enhancement.
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea. Please focus on the user problem first, then the proposed solution.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: What is hard, missing, or frustrating today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What do you want graphify-ts to do?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds, competing tools, or lower-scope options.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - extraction / parsers
+        - graph analysis / clustering
+        - CLI / install flow
+        - AI assistant integration
+        - docs / examples
+        - CI / release / maintainer tooling
+        - other
+    validations:
+      required: true
+
+  - type: textarea
+    id: success
+    attributes:
+      label: What would success look like?
+      description: Describe the outcome from an end-user perspective.
+    validations:
+      required: true
