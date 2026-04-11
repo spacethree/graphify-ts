@@ -33,7 +33,10 @@ export interface GraphDiffResult {
   summary: string
 }
 
-function edgeKey(left: string, right: string, relation: string): string {
+function edgeKey(left: string, right: string, relation: string, directed = false): string {
+  if (directed) {
+    return `${left}\u0000${right}\u0000${relation}`
+  }
   return [left, right].sort().join('\u0000') + `\u0000${relation}`
 }
 
@@ -569,12 +572,12 @@ export function graphDiff(oldGraph: KnowledgeGraph, newGraph: KnowledgeGraph): G
   const newNodesList = [...newNodes].filter((nodeId) => !oldNodes.has(nodeId)).map((nodeId) => ({ id: nodeId, label: nodeLabel(newGraph, nodeId) }))
   const removedNodesList = [...oldNodes].filter((nodeId) => !newNodes.has(nodeId)).map((nodeId) => ({ id: nodeId, label: nodeLabel(oldGraph, nodeId) }))
 
-  const oldEdges = new Set(oldGraph.edgeEntries().map(([source, target, attrs]) => edgeKey(source, target, String(attrs.relation ?? ''))))
-  const newEdges = new Set(newGraph.edgeEntries().map(([source, target, attrs]) => edgeKey(source, target, String(attrs.relation ?? ''))))
+  const oldEdges = new Set(oldGraph.edgeEntries().map(([source, target, attrs]) => edgeKey(source, target, String(attrs.relation ?? ''), oldGraph.isDirected())))
+  const newEdges = new Set(newGraph.edgeEntries().map(([source, target, attrs]) => edgeKey(source, target, String(attrs.relation ?? ''), newGraph.isDirected())))
 
   const newEdgesList = newGraph
     .edgeEntries()
-    .filter(([source, target, attrs]) => !oldEdges.has(edgeKey(source, target, String(attrs.relation ?? ''))))
+    .filter(([source, target, attrs]) => !oldEdges.has(edgeKey(source, target, String(attrs.relation ?? ''), newGraph.isDirected())))
     .map(([source, target, attrs]) => ({
       source,
       target,
@@ -583,7 +586,7 @@ export function graphDiff(oldGraph: KnowledgeGraph, newGraph: KnowledgeGraph): G
     }))
   const removedEdgesList = oldGraph
     .edgeEntries()
-    .filter(([source, target, attrs]) => !newEdges.has(edgeKey(source, target, String(attrs.relation ?? ''))))
+    .filter(([source, target, attrs]) => !newEdges.has(edgeKey(source, target, String(attrs.relation ?? ''), oldGraph.isDirected())))
     .map(([source, target, attrs]) => ({
       source,
       target,

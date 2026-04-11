@@ -1,14 +1,18 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getBuiltInSkillContent } from './install-skill-templates.js'
 
-export const INSTALL_PLATFORMS = ['claude', 'codex', 'opencode', 'claw', 'droid', 'trae', 'trae-cn', 'windows'] as const
+export const SKILL_INSTALL_PLATFORMS = ['claude', 'gemini', 'codex', 'opencode', 'aider', 'claw', 'droid', 'trae', 'trae-cn', 'copilot', 'windows'] as const
+
+export type SkillInstallPlatform = (typeof SKILL_INSTALL_PLATFORMS)[number]
+
+export const INSTALL_PLATFORMS = [...SKILL_INSTALL_PLATFORMS, 'cursor'] as const
 
 export type InstallPlatform = (typeof INSTALL_PLATFORMS)[number]
 
-export const AGENT_PLATFORMS = ['codex', 'opencode', 'claw', 'droid', 'trae', 'trae-cn'] as const
+export const AGENT_PLATFORMS = ['codex', 'opencode', 'aider', 'claw', 'droid', 'trae', 'trae-cn'] as const
 
 export type AgentPlatform = (typeof AGENT_PLATFORMS)[number]
 
@@ -24,15 +28,30 @@ interface InstallSkillOptions {
   version?: string
 }
 
-const PLATFORM_CONFIG: Record<InstallPlatform, InstallPlatformConfig> = {
+const PLATFORM_CONFIG: Record<SkillInstallPlatform, InstallPlatformConfig> = {
   claude: {
     skillFile: 'skill.md',
     skillDestination: '.claude/skills/graphify/SKILL.md',
     registerClaudeMd: true,
   },
+  gemini: {
+    skillFile: 'skill.md',
+    skillDestination: '.gemini/skills/graphify/SKILL.md',
+    registerClaudeMd: false,
+  },
+  aider: {
+    skillFile: 'skill-aider.md',
+    skillDestination: '.aider/graphify/SKILL.md',
+    registerClaudeMd: false,
+  },
   codex: {
     skillFile: 'skill-codex.md',
     skillDestination: '.agents/skills/graphify/SKILL.md',
+    registerClaudeMd: false,
+  },
+  copilot: {
+    skillFile: 'skill-copilot.md',
+    skillDestination: '.copilot/skills/graphify/SKILL.md',
     registerClaudeMd: false,
   },
   opencode: {
@@ -99,6 +118,20 @@ const CODEX_HOOK = {
   },
 }
 
+const GEMINI_HOOK = {
+  // SECURITY: Keep this command static. Do not interpolate user-controlled input here.
+  matcher: 'read_file|list_directory',
+  hooks: [
+    {
+      type: 'command',
+      command:
+        `[ -f graphify-out/graph.json ] && ` +
+        `echo '{"decision":"allow","additionalContext":"graphify: Knowledge graph exists. Read graphify-out/GRAPH_REPORT.md for god nodes and community structure before searching raw files."}' || ` +
+        `echo '{"decision":"allow"}'`,
+    },
+  ],
+}
+
 const SKILL_REGISTRATION =
   '\n# graphify\n' +
   '- **graphify** (`~/.claude/skills/graphify/SKILL.md`) - any input to knowledge graph. Trigger: `/graphify`\n' +
@@ -126,11 +159,23 @@ Rules:
 - After modifying code files in this session, refresh graph artifacts with this repository's TypeScript graphify-ts workflow only.
 `
 
+const GEMINI_MD_SECTION = `## graphify
+
+This project has a graphify knowledge graph at graphify-out/.
+
+Rules:
+- Before answering architecture or codebase questions, read graphify-out/GRAPH_REPORT.md for god nodes and community structure
+- If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
+- Use only Node.js / TypeScript tooling in this repository. Do not install or invoke Python, pip, a legacy Python package, or a deleted reference checkout.
+- After modifying code files in this session, refresh graph artifacts with this repository's TypeScript graphify-ts workflow only.
+`
+
 const SECTION_MARKER = '## graphify'
 const SKILL_REGISTRATION_MARKER = '- **graphify**'
 const LOCAL_SKILL_ASSET_DIRECTORY = join('assets', 'skills')
 const OPENCODE_PLUGIN_RELATIVE_PATH = '.opencode/plugins/graphify.js'
 const OPENCODE_CONFIG_PATH = 'opencode.json'
+const CURSOR_RULE_RELATIVE_PATH = '.cursor/rules/graphify.mdc'
 const OPENCODE_PLUGIN_JS = `// graphify OpenCode plugin
 // Injects a knowledge graph reminder before bash tool calls when the graph exists.
 import { existsSync } from "fs";
@@ -153,6 +198,19 @@ export const GraphifyPlugin = async ({ directory }) => {
     },
   };
 };
+`
+
+const CURSOR_RULE = `---
+description: graphify knowledge graph context
+alwaysApply: true
+---
+
+This project has a graphify knowledge graph at graphify-out/.
+
+- Before answering architecture or codebase questions, read graphify-out/GRAPH_REPORT.md for god nodes and community structure
+- If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
+- Use only Node.js / TypeScript tooling in this repository. Do not install or invoke Python, pip, a legacy Python package, or a deleted reference checkout.
+- After modifying code files in this session, refresh graph artifacts with this repository's TypeScript graphify-ts workflow only.
 `
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -207,6 +265,14 @@ function ensureArray(parent: Record<string, unknown>, key: string): unknown[] {
   return next
 }
 
+function sectionFileDisplayName(targetPath: string): string {
+  const fileName = basename(targetPath)
+  if (fileName === 'CLAUDE.md' || fileName === 'GEMINI.md' || fileName === 'AGENTS.md') {
+    return fileName
+  }
+  return 'AGENTS.md'
+}
+
 function removeSection(content: string, marker: string): string {
   return content.replace(/\n*## graphify\n[\s\S]*?(?=\n## |$)/, '').trimEnd()
 }
@@ -228,6 +294,51 @@ function findPackageRoot(startDirectory = dirname(fileURLToPath(import.meta.url)
   }
 }
 
+function formatPlatformDisplayName(platform: AgentPlatform): string {
+  if (platform === 'codex') {
+    return 'Codex'
+  }
+  if (platform === 'opencode') {
+    return 'OpenCode'
+  }
+  if (platform === 'aider') {
+    return 'Aider'
+  }
+  if (platform === 'claw') {
+    return 'OpenClaw'
+  }
+  if (platform === 'droid') {
+    return 'Factory Droid'
+  }
+  if (platform === 'trae') {
+    return 'Trae'
+  }
+  return 'Trae CN'
+}
+
+function removeEmptyDirectories(startDirectory: string, stopDirectory: string): void {
+  let currentDirectory = resolve(startDirectory)
+  const resolvedStopDirectory = resolve(stopDirectory)
+
+  while (currentDirectory.startsWith(`${resolvedStopDirectory}/`) || currentDirectory === resolvedStopDirectory) {
+    if (currentDirectory === resolvedStopDirectory) {
+      break
+    }
+
+    try {
+      rmdirSync(currentDirectory)
+    } catch {
+      break
+    }
+
+    const parentDirectory = dirname(currentDirectory)
+    if (parentDirectory === currentDirectory) {
+      break
+    }
+    currentDirectory = parentDirectory
+  }
+}
+
 function readPackageVersion(packageRoot: string): string {
   try {
     const packageJson = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'))
@@ -241,7 +352,7 @@ function readPackageVersion(packageRoot: string): string {
   return 'unknown'
 }
 
-function resolveSkillSourcePath(platform: InstallPlatform, packageRoot: string): string | undefined {
+function resolveSkillSourcePath(platform: SkillInstallPlatform, packageRoot: string): string | undefined {
   const config = PLATFORM_CONFIG[platform]
   const candidatePaths = [join(packageRoot, LOCAL_SKILL_ASSET_DIRECTORY, config.skillFile)]
 
@@ -254,7 +365,7 @@ function resolveSkillSourcePath(platform: InstallPlatform, packageRoot: string):
   return undefined
 }
 
-function resolveSkillContent(platform: InstallPlatform, packageRoot: string): string {
+function resolveSkillContent(platform: SkillInstallPlatform, packageRoot: string): string {
   const sourcePath = resolveSkillSourcePath(platform, packageRoot)
   if (sourcePath) {
     const content = readFileSync(sourcePath, 'utf8')
@@ -322,6 +433,41 @@ function uninstallClaudeHook(projectDir: string): string | undefined {
   hooks.PreToolUse = filtered
   writeJson(settingsPath, settings)
   return '.claude/settings.json -> PreToolUse hook removed'
+}
+
+function installGeminiHook(projectDir: string): string {
+  const settingsPath = join(projectDir, '.gemini', 'settings.json')
+  const settings = readJsonObject(settingsPath)
+  const hooks = ensureRecord(settings, 'hooks')
+  const beforeTool = ensureArray(hooks, 'BeforeTool')
+
+  if (beforeTool.some((hook) => JSON.stringify(hook).includes('graphify'))) {
+    return '.gemini/settings.json -> BeforeTool hook already registered (no change)'
+  }
+
+  beforeTool.push(GEMINI_HOOK)
+  writeJson(settingsPath, settings)
+  return '.gemini/settings.json -> BeforeTool hook registered'
+}
+
+function uninstallGeminiHook(projectDir: string): string | undefined {
+  const settingsPath = join(projectDir, '.gemini', 'settings.json')
+  if (!existsSync(settingsPath)) {
+    return undefined
+  }
+
+  const settings = readJsonObject(settingsPath)
+  const hooks = ensureRecord(settings, 'hooks')
+  const beforeTool = ensureArray(hooks, 'BeforeTool')
+  const filtered = beforeTool.filter((hook) => !JSON.stringify(hook).includes('graphify'))
+
+  if (filtered.length === beforeTool.length) {
+    return undefined
+  }
+
+  hooks.BeforeTool = filtered
+  writeJson(settingsPath, settings)
+  return '.gemini/settings.json -> BeforeTool hook removed'
 }
 
 function installCodexHook(projectDir: string): string {
@@ -417,6 +563,7 @@ function uninstallOpencodePlugin(projectDir: string): string[] {
 
 function writeSection(targetPath: string, section: string): string {
   ensureParentDirectory(targetPath)
+  const fileLabel = sectionFileDisplayName(targetPath)
 
   if (!existsSync(targetPath)) {
     writeFileSync(targetPath, section, 'utf8')
@@ -425,7 +572,7 @@ function writeSection(targetPath: string, section: string): string {
 
   const content = readFileSync(targetPath, 'utf8')
   if (content.includes(SECTION_MARKER)) {
-    return `graphify already configured in ${targetPath.endsWith('CLAUDE.md') ? 'CLAUDE.md' : 'AGENTS.md'}`
+    return `graphify already configured in ${fileLabel}`
   }
 
   writeFileSync(targetPath, `${content.trimEnd()}\n\n${section}`, 'utf8')
@@ -433,13 +580,15 @@ function writeSection(targetPath: string, section: string): string {
 }
 
 function removeSectionFromFile(targetPath: string): string {
+  const fileLabel = sectionFileDisplayName(targetPath)
+
   if (!existsSync(targetPath)) {
-    return `No ${targetPath.endsWith('CLAUDE.md') ? 'CLAUDE.md' : 'AGENTS.md'} found in current directory - nothing to do`
+    return `No ${fileLabel} found in current directory - nothing to do`
   }
 
   const content = readFileSync(targetPath, 'utf8')
   if (!content.includes(SECTION_MARKER)) {
-    return `graphify section not found in ${targetPath.endsWith('CLAUDE.md') ? 'CLAUDE.md' : 'AGENTS.md'} - nothing to do`
+    return `graphify section not found in ${fileLabel} - nothing to do`
   }
 
   const cleaned = removeSection(content, SECTION_MARKER)
@@ -449,7 +598,7 @@ function removeSectionFromFile(targetPath: string): string {
   }
 
   rmSync(targetPath, { force: true })
-  return `${targetPath.endsWith('CLAUDE.md') ? 'CLAUDE.md' : 'AGENTS.md'} was empty after removal - deleted ${targetPath}`
+  return `${fileLabel} was empty after removal - deleted ${targetPath}`
 }
 
 export function defaultInstallPlatform(nodePlatform = process.platform): InstallPlatform {
@@ -464,7 +613,7 @@ export function isAgentPlatform(value: string): value is AgentPlatform {
   return AGENT_PLATFORMS.includes(value as AgentPlatform)
 }
 
-export function installSkill(platform: InstallPlatform, options: InstallSkillOptions = {}): string {
+export function installSkill(platform: SkillInstallPlatform, options: InstallSkillOptions = {}): string {
   const homeDir = resolve(options.homeDir ?? homedir())
   const packageRoot = resolve(options.packageRoot ?? findPackageRoot())
   const version = options.version ?? readPackageVersion(packageRoot)
@@ -481,6 +630,74 @@ export function installSkill(platform: InstallPlatform, options: InstallSkillOpt
   }
   messages.push('', 'Done. Open your AI coding assistant and type:', '', '  /graphify .')
   return messages.join('\n')
+}
+
+export function uninstallSkill(platform: SkillInstallPlatform, options: Pick<InstallSkillOptions, 'homeDir'> = {}): string {
+  const homeDir = resolve(options.homeDir ?? homedir())
+  const destinationPath = join(homeDir, PLATFORM_CONFIG[platform].skillDestination)
+  const versionPath = join(dirname(destinationPath), '.graphify_version')
+  const messages: string[] = []
+
+  if (existsSync(destinationPath)) {
+    unlinkSync(destinationPath)
+    messages.push(`skill removed -> ${destinationPath}`)
+  }
+
+  if (existsSync(versionPath)) {
+    unlinkSync(versionPath)
+  }
+
+  removeEmptyDirectories(dirname(destinationPath), homeDir)
+
+  if (messages.length === 0) {
+    return 'nothing to remove'
+  }
+
+  return messages.join('\n')
+}
+
+export function geminiInstall(projectDir = '.', options: InstallSkillOptions = {}): string {
+  const resolvedProjectDir = resolve(projectDir)
+  const messages = [installSkill('gemini', options), writeSection(join(resolvedProjectDir, 'GEMINI.md'), GEMINI_MD_SECTION), installGeminiHook(resolvedProjectDir)]
+  messages.push('', 'Gemini CLI will now check the knowledge graph before answering', 'codebase questions and rebuild it after code changes.')
+  return messages.join('\n')
+}
+
+export function geminiUninstall(projectDir = '.', options: Pick<InstallSkillOptions, 'homeDir'> = {}): string {
+  const resolvedProjectDir = resolve(projectDir)
+  const messages: string[] = []
+  const skillMessage = uninstallSkill('gemini', options)
+  if (skillMessage !== 'nothing to remove') {
+    messages.push(skillMessage)
+  }
+  messages.push(removeSectionFromFile(join(resolvedProjectDir, 'GEMINI.md')))
+  const hookMessage = uninstallGeminiHook(resolvedProjectDir)
+  if (hookMessage) {
+    messages.push(hookMessage)
+  }
+  return messages.join('\n')
+}
+
+export function cursorInstall(projectDir = '.'): string {
+  const rulePath = join(resolve(projectDir), CURSOR_RULE_RELATIVE_PATH)
+  ensureParentDirectory(rulePath)
+
+  if (existsSync(rulePath)) {
+    return `graphify Cursor rule already exists at ${rulePath} (no change)`
+  }
+
+  writeFileSync(rulePath, CURSOR_RULE, 'utf8')
+  return `graphify Cursor rule written to ${rulePath}`
+}
+
+export function cursorUninstall(projectDir = '.'): string {
+  const rulePath = join(resolve(projectDir), CURSOR_RULE_RELATIVE_PATH)
+  if (!existsSync(rulePath)) {
+    return 'No graphify Cursor rule found - nothing to do'
+  }
+
+  unlinkSync(rulePath)
+  return `graphify Cursor rule removed from ${rulePath}`
 }
 
 export function claudeInstall(projectDir = '.'): string {
@@ -502,6 +719,7 @@ export function claudeUninstall(projectDir = '.'): string {
 
 export function agentsInstall(projectDir = '.', platform: AgentPlatform): string {
   const resolvedProjectDir = resolve(projectDir)
+  const displayName = formatPlatformDisplayName(platform)
   const messages = [writeSection(join(resolvedProjectDir, 'AGENTS.md'), AGENTS_MD_SECTION)]
 
   if (platform === 'codex') {
@@ -510,9 +728,9 @@ export function agentsInstall(projectDir = '.', platform: AgentPlatform): string
     messages.push(...installOpencodePlugin(resolvedProjectDir))
   }
 
-  messages.push('', `${platform} will now check the knowledge graph before answering`, 'codebase questions and rebuild it after code changes.')
+  messages.push('', `${displayName} will now check the knowledge graph before answering`, 'codebase questions and rebuild it after code changes.')
   if (platform !== 'codex' && platform !== 'opencode') {
-    messages.push('', `Note: unlike Claude Code, there is no PreToolUse hook equivalent for ${platform} - the AGENTS.md rules are the always-on mechanism.`)
+    messages.push('', `Note: unlike Claude Code, there is no PreToolUse hook equivalent for ${displayName} - the AGENTS.md rules are the always-on mechanism.`)
   }
   return messages.join('\n')
 }

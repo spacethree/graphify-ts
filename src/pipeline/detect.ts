@@ -98,6 +98,7 @@ const SKIP_DIRS = new Set([
   '.venv',
   'env',
   '.env',
+  'graphify-out',
   'node_modules',
   '__pycache__',
   '.git',

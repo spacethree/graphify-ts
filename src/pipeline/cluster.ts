@@ -26,7 +26,7 @@ function connectedComponents(graph: KnowledgeGraph, blockedEdges: Set<string> = 
       }
       component.push(current)
 
-      for (const neighbor of graph.neighbors(current)) {
+      for (const neighbor of graph.incidentNeighbors(current)) {
         if (blockedEdges.has(edgeKey(current, neighbor)) || visited.has(neighbor)) {
           continue
         }
@@ -52,7 +52,7 @@ function bridgeEdges(graph: KnowledgeGraph): Set<string> {
     discovery.set(nodeId, time)
     low.set(nodeId, time)
 
-    for (const neighbor of graph.neighbors(nodeId)) {
+    for (const neighbor of graph.incidentNeighbors(nodeId)) {
       if (neighbor === parentId) {
         continue
       }
@@ -100,15 +100,15 @@ export function cohesionScore(graph: KnowledgeGraph, communityNodes: string[]): 
   }
 
   const communitySet = new Set(communityNodes)
-  let actualEdges = 0
+  const actualEdges = new Set<string>()
   for (const [source, target] of graph.edgeEntries()) {
     if (communitySet.has(source) && communitySet.has(target)) {
-      actualEdges += 1
+      actualEdges.add(edgeKey(source, target))
     }
   }
 
   const possibleEdges = (nodeCount * (nodeCount - 1)) / 2
-  return possibleEdges > 0 ? Math.round((actualEdges / possibleEdges) * 100) / 100 : 0
+  return possibleEdges > 0 ? Math.round((actualEdges.size / possibleEdges) * 100) / 100 : 0
 }
 
 export function scoreAll(graph: KnowledgeGraph, communities: Communities): Record<number, number> {

@@ -179,6 +179,23 @@ describe('analyze', () => {
     expect(graphDiff(graphA, graphB).summary).toBe('no changes')
   })
 
+  it('treats opposite edge directions as different changes for directed graphs', () => {
+    const oldGraph = new KnowledgeGraph(true)
+    oldGraph.addNode('n1', { label: 'Alpha', source_file: 'test.py', file_type: 'code' })
+    oldGraph.addNode('n2', { label: 'Beta', source_file: 'test.py', file_type: 'code' })
+    oldGraph.addEdge('n1', 'n2', { relation: 'calls', confidence: 'EXTRACTED', source_file: 'test.py' })
+
+    const newGraph = new KnowledgeGraph(true)
+    newGraph.addNode('n1', { label: 'Alpha', source_file: 'test.py', file_type: 'code' })
+    newGraph.addNode('n2', { label: 'Beta', source_file: 'test.py', file_type: 'code' })
+    newGraph.addEdge('n2', 'n1', { relation: 'calls', confidence: 'EXTRACTED', source_file: 'test.py' })
+
+    const diff = graphDiff(oldGraph, newGraph)
+
+    expect(diff.new_edges).toEqual([{ source: 'n2', target: 'n1', relation: 'calls', confidence: 'EXTRACTED' }])
+    expect(diff.removed_edges).toEqual([{ source: 'n1', target: 'n2', relation: 'calls', confidence: 'EXTRACTED' }])
+  })
+
   it('generates suggested questions from graph signals', () => {
     const graph = new KnowledgeGraph()
     for (const [nodeId, label, sourceFile] of [

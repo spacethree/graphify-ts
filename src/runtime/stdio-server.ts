@@ -3,7 +3,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import type { Readable, Writable } from 'node:stream'
 
-import { communitiesFromGraph, getCommunity, getNeighbors, getNode, graphStats, loadGraph, queryGraph, shortestPath } from './serve.js'
+import { communitiesFromGraph, getCommunity, getNeighbors, getNode, godNodesSummary, graphStats, loadGraph, queryGraph, shortestPath } from './serve.js'
 import { validateGraphPath } from '../shared/security.js'
 
 const JSONRPC_PARSE_ERROR = -32700
@@ -13,6 +13,7 @@ const JSONRPC_METHOD_NOT_FOUND = -32601
 const JSONRPC_SERVER_ERROR = -32000
 const MCP_PROTOCOL_VERSION = '2025-11-25'
 const MCP_SERVER_NAME = 'graphify-ts'
+const MCP_SERVER_TITLE = 'Graphify TS'
 const MCP_SERVER_VERSION = '0.1.0'
 const MAX_STDIO_LINE_BYTES = 1_000_000
 const MAX_STDIO_TEXT_LENGTH = 512
@@ -90,7 +91,7 @@ const MCP_TOOLS: McpToolDefinition[] = [
         question: { type: 'string' },
         mode: { type: 'string', enum: ['bfs', 'dfs'] },
         depth: { type: 'number' },
-        tokenBudget: { type: 'number' },
+        token_budget: { type: 'number' },
       },
     },
   },
@@ -113,7 +114,7 @@ const MCP_TOOLS: McpToolDefinition[] = [
       required: ['label'],
       properties: {
         label: { type: 'string' },
-        relation: { type: 'string' },
+        relation_filter: { type: 'string' },
       },
     },
   },
@@ -126,7 +127,7 @@ const MCP_TOOLS: McpToolDefinition[] = [
       properties: {
         source: { type: 'string' },
         target: { type: 'string' },
-        maxHops: { type: 'number' },
+        max_hops: { type: 'number' },
       },
     },
   },
@@ -138,7 +139,7 @@ const MCP_TOOLS: McpToolDefinition[] = [
       required: ['label'],
       properties: {
         label: { type: 'string' },
-        relation: { type: 'string' },
+        relation_filter: { type: 'string' },
       },
     },
   },
@@ -151,13 +152,23 @@ const MCP_TOOLS: McpToolDefinition[] = [
     },
   },
   {
+    name: 'god_nodes',
+    description: 'Return the most connected non-file nodes in the graph.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        top_n: { type: 'number' },
+      },
+    },
+  },
+  {
     name: 'get_community',
     description: 'Return the members of a community by numeric id.',
     inputSchema: {
       type: 'object',
-      required: ['communityId'],
+      required: ['community_id'],
       properties: {
-        communityId: { type: 'number' },
+        community_id: { type: 'number' },
       },
     },
   },
@@ -217,6 +228,17 @@ function stringParam(params: unknown, key: string): string | null {
   return typeof value === 'string' && value.length <= MAX_STDIO_TEXT_LENGTH ? value : null
 }
 
+function stringParamAlias(params: unknown, keys: readonly string[]): string | null {
+  for (const key of keys) {
+    const value = stringParam(params, key)
+    if (value !== null) {
+      return value
+    }
+  }
+
+  return null
+}
+
 function numberParam(params: unknown, key: string, options: { min?: number; max?: number } = {}): number | null {
   if (!params || typeof params !== 'object' || !(key in params)) {
     return null
@@ -232,6 +254,17 @@ function numberParam(params: unknown, key: string, options: { min?: number; max?
     return null
   }
   return value
+}
+
+function numberParamAlias(params: unknown, keys: readonly string[], options: { min?: number; max?: number } = {}): number | null {
+  for (const key of keys) {
+    const value = numberParam(params, key, options)
+    if (value !== null) {
+      return value
+    }
+  }
+
+  return null
 }
 
 function recordParam(params: unknown, key: string): Record<string, unknown> | null {
@@ -269,7 +302,10 @@ function sanitizePromptValue(value: string | null, fallback: string): string {
     return fallback
   }
 
-  const sanitized = value.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim()
+  const sanitized = value
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
   return sanitized.length > 0 ? sanitized : fallback
 }
 
@@ -407,7 +443,7 @@ function handleDirectQuery(graphPath: string, id: string | number | null, params
 
   const mode = stringParam(params, 'mode') === 'dfs' ? 'dfs' : 'bfs'
   const depth = numberParam(params, 'depth', { min: 0, max: MAX_STDIO_DEPTH })
-  const tokenBudget = numberParam(params, 'tokenBudget', { min: 1, max: MAX_STDIO_TOKEN_BUDGET })
+  const tokenBudget = numberParamAlias(params, ['token_budget', 'tokenBudget'], { min: 1, max: MAX_STDIO_TOKEN_BUDGET })
   const queryOptions: { mode?: 'bfs' | 'dfs'; depth?: number; tokenBudget?: number } = {
     mode,
     ...(depth !== null ? { depth } : {}),
@@ -435,7 +471,7 @@ function handleToolCall(id: string | number | null, graphPath: string, params: u
 
       const mode = stringParam(toolArguments, 'mode') === 'dfs' ? 'dfs' : 'bfs'
       const depth = numberParam(toolArguments, 'depth', { min: 0, max: MAX_STDIO_DEPTH })
-      const tokenBudget = numberParam(toolArguments, 'tokenBudget', { min: 1, max: MAX_STDIO_TOKEN_BUDGET })
+      const tokenBudget = numberParamAlias(toolArguments, ['token_budget', 'tokenBudget'], { min: 1, max: MAX_STDIO_TOKEN_BUDGET })
       const queryOptions: { mode?: 'bfs' | 'dfs'; depth?: number; tokenBudget?: number } = {
         mode,
         ...(depth !== null ? { depth } : {}),
@@ -456,7 +492,7 @@ function handleToolCall(id: string | number | null, graphPath: string, params: u
       if (!label) {
         return failure(id, JSONRPC_INVALID_PARAMS, `get_neighbors requires a string label parameter <= ${MAX_STDIO_TEXT_LENGTH} characters`)
       }
-      return ok(id, textToolResult(getNeighbors(graph, label, stringParam(toolArguments, 'relation') ?? '')))
+      return ok(id, textToolResult(getNeighbors(graph, label, stringParamAlias(toolArguments, ['relation_filter', 'relation']) ?? '')))
     }
     case 'shortest_path': {
       const source = stringParam(toolArguments, 'source')
@@ -464,22 +500,24 @@ function handleToolCall(id: string | number | null, graphPath: string, params: u
       if (!source || !target) {
         return failure(id, JSONRPC_INVALID_PARAMS, `shortest_path requires string source and target parameters <= ${MAX_STDIO_TEXT_LENGTH} characters`)
       }
-      return ok(id, textToolResult(shortestPath(graph, source, target, numberParam(toolArguments, 'maxHops', { min: 1, max: MAX_STDIO_HOPS }) ?? 8)))
+      return ok(id, textToolResult(shortestPath(graph, source, target, numberParamAlias(toolArguments, ['max_hops', 'maxHops'], { min: 1, max: MAX_STDIO_HOPS }) ?? 8)))
     }
     case 'explain_node': {
       const label = stringParam(toolArguments, 'label')
       if (!label) {
         return failure(id, JSONRPC_INVALID_PARAMS, `explain_node requires a string label parameter <= ${MAX_STDIO_TEXT_LENGTH} characters`)
       }
-      const relation = stringParam(toolArguments, 'relation') ?? ''
+      const relation = stringParamAlias(toolArguments, ['relation_filter', 'relation']) ?? ''
       return ok(id, textToolResult(`${getNode(graph, label)}\n\n${getNeighbors(graph, label, relation)}`))
     }
     case 'graph_stats':
       return ok(id, textToolResult(graphStats(graph)))
+    case 'god_nodes':
+      return ok(id, textToolResult(godNodesSummary(graph, numberParamAlias(toolArguments, ['top_n', 'topN'], { min: 1, max: 100 }) ?? 10)))
     case 'get_community': {
-      const communityId = numberParam(toolArguments, 'communityId', { min: 0 })
+      const communityId = numberParamAlias(toolArguments, ['community_id', 'communityId'], { min: 0 })
       if (communityId === null) {
-        return failure(id, JSONRPC_INVALID_PARAMS, 'get_community requires a numeric communityId parameter >= 0')
+        return failure(id, JSONRPC_INVALID_PARAMS, 'get_community requires a numeric community_id parameter >= 0')
       }
       return ok(id, textToolResult(getCommunity(graph, communitiesFromGraph(graph), communityId)))
     }
@@ -514,6 +552,7 @@ export function handleStdioRequest(graphPath: string, payload: unknown): StdioRe
           },
           serverInfo: {
             name: MCP_SERVER_NAME,
+            title: MCP_SERVER_TITLE,
             version: MCP_SERVER_VERSION,
           },
           instructions: 'Use tools/list to discover graph tools, then tools/call to query the generated graph.',
@@ -552,7 +591,7 @@ export function handleStdioRequest(graphPath: string, payload: unknown): StdioRe
         if (!label) {
           return failure(id, JSONRPC_INVALID_PARAMS, `neighbors requires a string label parameter <= ${MAX_STDIO_TEXT_LENGTH} characters`)
         }
-        return ok(id, getNeighbors(graph, label, stringParam(params, 'relation') ?? ''))
+        return ok(id, getNeighbors(graph, label, stringParamAlias(params, ['relation_filter', 'relation']) ?? ''))
       }
       case 'path': {
         const graph = loadGraphCached(graphPath)
@@ -561,7 +600,7 @@ export function handleStdioRequest(graphPath: string, payload: unknown): StdioRe
         if (!source || !target) {
           return failure(id, JSONRPC_INVALID_PARAMS, `path requires string source and target parameters <= ${MAX_STDIO_TEXT_LENGTH} characters`)
         }
-        return ok(id, shortestPath(graph, source, target, numberParam(params, 'maxHops', { min: 1, max: MAX_STDIO_HOPS }) ?? 8))
+        return ok(id, shortestPath(graph, source, target, numberParamAlias(params, ['max_hops', 'maxHops'], { min: 1, max: MAX_STDIO_HOPS }) ?? 8))
       }
       case 'explain': {
         const graph = loadGraphCached(graphPath)
@@ -569,18 +608,22 @@ export function handleStdioRequest(graphPath: string, payload: unknown): StdioRe
         if (!label) {
           return failure(id, JSONRPC_INVALID_PARAMS, `explain requires a string label parameter <= ${MAX_STDIO_TEXT_LENGTH} characters`)
         }
-        const relation = stringParam(params, 'relation') ?? ''
+        const relation = stringParamAlias(params, ['relation_filter', 'relation']) ?? ''
         return ok(id, `${getNode(graph, label)}\n\n${getNeighbors(graph, label, relation)}`)
       }
       case 'stats': {
         const graph = loadGraphCached(graphPath)
         return ok(id, graphStats(graph))
       }
+      case 'god_nodes': {
+        const graph = loadGraphCached(graphPath)
+        return ok(id, godNodesSummary(graph, numberParamAlias(params, ['top_n', 'topN'], { min: 1, max: 100 }) ?? 10))
+      }
       case 'community': {
         const graph = loadGraphCached(graphPath)
-        const communityId = numberParam(params, 'communityId', { min: 0 })
+        const communityId = numberParamAlias(params, ['community_id', 'communityId'], { min: 0 })
         if (communityId === null) {
-          return failure(id, JSONRPC_INVALID_PARAMS, 'community requires a numeric communityId parameter >= 0')
+          return failure(id, JSONRPC_INVALID_PARAMS, 'community requires a numeric community_id parameter >= 0')
         }
         return ok(id, getCommunity(graph, communitiesFromGraph(graph), communityId))
       }

@@ -1,10 +1,25 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 import { KnowledgeGraph } from '../contracts/graph.js'
 import { _nodeCommunityMap } from './analyze.js'
 import type { Communities } from './cluster.js'
 
 const COMMUNITY_COLORS = ['#4E79A7', '#F28E2B', '#E15759', '#76B7B2', '#59A14F', '#EDC948', '#B07AA1', '#FF9DA7', '#9C755F', '#BAB0AC']
+
+const SVG_LAYOUT = {
+  cellWidth: 360,
+  cellHeight: 280,
+  padding: 48,
+  legendWidth: 240,
+  communityBaseRadius: 42,
+  communityRadiusIncrement: 8,
+  communityRadiusCap: 92,
+  nodeBaseRadius: 10,
+  nodeRadiusScale: 16,
+  nodeLabelOffset: 14,
+  legendRowHeight: 24,
+} as const
 
 const FILE_TYPE_TAGS: Record<string, string> = {
   code: 'graphify/code',
@@ -100,9 +115,54 @@ function dominantConfidence(graph: KnowledgeGraph, nodeId: string): string {
   return winner
 }
 
+type ConnectionDirection = 'incoming' | 'outgoing' | 'undirected'
+
+interface NodeConnection {
+  neighborId: string
+  direction: ConnectionDirection
+  attributes: Record<string, unknown>
+}
+
+function nodeConnections(graph: KnowledgeGraph, nodeId: string): NodeConnection[] {
+  const directionForUndirected = 'undirected' as const
+  const connections: NodeConnection[] = []
+
+  for (const [source, target, attributes] of graph.edgeEntries()) {
+    if (source === nodeId) {
+      connections.push({
+        neighborId: target,
+        direction: graph.isDirected() ? 'outgoing' : directionForUndirected,
+        attributes,
+      })
+      continue
+    }
+
+    if (target === nodeId) {
+      connections.push({
+        neighborId: source,
+        direction: graph.isDirected() ? 'incoming' : directionForUndirected,
+        attributes,
+      })
+    }
+  }
+
+  return connections
+}
+
+function connectionPrefix(direction: ConnectionDirection): string {
+  if (direction === 'incoming') {
+    return '← '
+  }
+  if (direction === 'outgoing') {
+    return '→ '
+  }
+  return ''
+}
+
 export function toJson(graph: KnowledgeGraph, communities: Communities, outputPath: string): void {
   const nodeCommunity = _nodeCommunityMap(communities)
   const data = {
+    directed: graph.isDirected(),
     nodes: graph.nodeEntries().map(([id, attributes]) => ({
       id,
       ...attributes,
@@ -145,7 +205,12 @@ export function toCypher(graph: KnowledgeGraph, outputPath: string): void {
 
 export function toGraphml(graph: KnowledgeGraph, communities: Communities, outputPath: string): void {
   const nodeCommunity = _nodeCommunityMap(communities)
-  const lines = ['<?xml version="1.0" encoding="UTF-8"?>', '<graphml xmlns="http://graphml.graphdrawing.org/xmlns">', '  <graph id="graphify" edgedefault="undirected">']
+  const edgeDefault = graph.isDirected() ? 'directed' : 'undirected'
+  const lines = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<graphml xmlns="http://graphml.graphdrawing.org/xmlns">',
+    `  <graph id="graphify" edgedefault="${edgeDefault}">`,
+  ]
 
   for (const [nodeId, attributes] of graph.nodeEntries()) {
     lines.push(`    <node id="${escapeXml(nodeId)}">`)
@@ -167,6 +232,101 @@ export function toGraphml(graph: KnowledgeGraph, communities: Communities, outpu
   lines.push('  </graph>')
   lines.push('</graphml>')
   writeFileSync(outputPath, lines.join('\n'), 'utf8')
+}
+
+/**
+ * Export the graph as a static SVG with a deterministic, dependency-free layout.
+ *
+ * Communities are arranged in a grid and nodes are positioned on a circle inside
+ * each community cell, which keeps output stable across runs for the same input.
+ */
+export function toSvg(graph: KnowledgeGraph, communities: Communities, outputPath: string, communityLabels: Record<number, string> = {}): void {
+  const communityIds = Object.keys(communities)
+    .map(Number)
+    .sort((left, right) => left - right)
+  const totalCommunities = Math.max(communityIds.length, 1)
+  const columns = Math.max(1, Math.ceil(Math.sqrt(totalCommunities)))
+  const rows = Math.max(1, Math.ceil(totalCommunities / columns))
+  const width = SVG_LAYOUT.padding * 2 + columns * SVG_LAYOUT.cellWidth + SVG_LAYOUT.legendWidth
+  const height = SVG_LAYOUT.padding * 2 + rows * SVG_LAYOUT.cellHeight
+  const degreeByNode = new Map(graph.nodeIds().map((nodeId) => [nodeId, graph.degree(nodeId)]))
+  const maxDegree = Math.max(...degreeByNode.values(), 1)
+  const positions = new Map<string, { x: number; y: number }>()
+
+  communityIds.forEach((communityId, index) => {
+    const nodeIds = [...(communities[communityId] ?? [])].sort((left, right) => {
+      return String(graph.nodeAttributes(left).label ?? left).localeCompare(String(graph.nodeAttributes(right).label ?? right))
+    })
+    const column = index % columns
+    const row = Math.floor(index / columns)
+    const centerX = SVG_LAYOUT.padding + column * SVG_LAYOUT.cellWidth + SVG_LAYOUT.cellWidth / 2
+    const centerY = SVG_LAYOUT.padding + row * SVG_LAYOUT.cellHeight + SVG_LAYOUT.cellHeight / 2
+
+    if (nodeIds.length === 1) {
+      positions.set(nodeIds[0]!, { x: centerX, y: centerY })
+      return
+    }
+
+    const radius = Math.min(SVG_LAYOUT.communityRadiusCap, SVG_LAYOUT.communityBaseRadius + nodeIds.length * SVG_LAYOUT.communityRadiusIncrement)
+    nodeIds.forEach((nodeId, nodeIndex) => {
+      const angle = -Math.PI / 2 + (nodeIndex / nodeIds.length) * Math.PI * 2
+      positions.set(nodeId, {
+        x: centerX + Math.cos(angle) * radius,
+        y: centerY + Math.sin(angle) * radius,
+      })
+    })
+  })
+
+  const nodeElements = graph.nodeEntries().map(([nodeId, attributes]) => {
+    const communityId = communityIds.find((id) => communities[id]?.includes(nodeId)) ?? 0
+    const color = COMMUNITY_COLORS[communityId % COMMUNITY_COLORS.length] ?? COMMUNITY_COLORS[0]
+    const position = positions.get(nodeId) ?? { x: SVG_LAYOUT.padding + 40, y: SVG_LAYOUT.padding + 40 }
+    const radius = SVG_LAYOUT.nodeBaseRadius + SVG_LAYOUT.nodeRadiusScale * ((degreeByNode.get(nodeId) ?? 0) / maxDegree)
+    const label = escapeXml(String(attributes.label ?? nodeId))
+    return [
+      `  <circle cx="${position.x.toFixed(2)}" cy="${position.y.toFixed(2)}" r="${radius.toFixed(2)}" fill="${color}" fill-opacity="0.9" stroke="#ffffff" stroke-width="1.5" />`,
+      `  <text x="${position.x.toFixed(2)}" y="${(position.y + radius + SVG_LAYOUT.nodeLabelOffset).toFixed(2)}" font-family="Inter, Arial, sans-serif" font-size="12" text-anchor="middle" fill="#f8fafc">${label}</text>`,
+    ].join('\n')
+  })
+
+  const edgeElements = graph.edgeEntries().map(([source, target, attributes]) => {
+    const sourcePosition = positions.get(source)
+    const targetPosition = positions.get(target)
+    if (!sourcePosition || !targetPosition) {
+      return ''
+    }
+
+    const confidence = String(attributes.confidence ?? 'EXTRACTED')
+    const dashArray = confidence === 'EXTRACTED' ? '' : ' stroke-dasharray="6 4"'
+    const opacity = confidence === 'EXTRACTED' ? '0.65' : '0.35'
+    return `  <line x1="${sourcePosition.x.toFixed(2)}" y1="${sourcePosition.y.toFixed(2)}" x2="${targetPosition.x.toFixed(2)}" y2="${targetPosition.y.toFixed(2)}" stroke="#94a3b8" stroke-width="1.5" stroke-opacity="${opacity}"${dashArray} />`
+  })
+
+  const legendElements = communityIds.map((communityId, index) => {
+    const color = COMMUNITY_COLORS[communityId % COMMUNITY_COLORS.length] ?? COMMUNITY_COLORS[0]
+    const label = escapeXml(communityLabels[communityId] ?? `Community ${communityId}`)
+    const y = SVG_LAYOUT.padding + 28 + index * SVG_LAYOUT.legendRowHeight
+    return [
+      `  <circle cx="${width - SVG_LAYOUT.legendWidth + 20}" cy="${y}" r="6" fill="${color}" />`,
+      `  <text x="${width - SVG_LAYOUT.legendWidth + 34}" y="${y + 4}" font-family="Inter, Arial, sans-serif" font-size="12" fill="#e2e8f0">${label} (${communities[communityId]?.length ?? 0})</text>`,
+    ].join('\n')
+  })
+
+  const svg = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="graphify-ts knowledge graph export">`,
+    `  <rect width="${width}" height="${height}" fill="#111827" />`,
+    '  <text x="48" y="32" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="600" fill="#f8fafc">graphify-ts</text>',
+    '  <text x="48" y="54" font-family="Inter, Arial, sans-serif" font-size="12" fill="#94a3b8">Static SVG knowledge graph export</text>',
+    ...edgeElements.filter((line) => line.length > 0),
+    ...nodeElements,
+    `  <text x="${width - SVG_LAYOUT.legendWidth + 12}" y="${SVG_LAYOUT.padding}" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="600" fill="#f8fafc">Communities</text>`,
+    ...legendElements,
+    '</svg>',
+    '',
+  ].join('\n')
+
+  writeFileSync(outputPath, svg, 'utf8')
 }
 
 export function toHtml(graph: KnowledgeGraph, communities: Communities, outputPath: string, communityLabels: Record<number, string> = {}): void {
@@ -428,6 +588,8 @@ const RAW_NODES = ${serializeForInlineScript(nodes)};
 const RAW_EDGES = ${serializeForInlineScript(edges)};
 const LEGEND = ${serializeForInlineScript(legend)};
 const STATS = ${serializeForInlineScript(stats)};
+const IS_DIRECTED = ${serializeForInlineScript(graph.isDirected())};
+const EDGE_ARROWS = ${serializeForInlineScript(graph.isDirected() ? { to: { enabled: true, scaleFactor: 0.45 } } : {})};
 
 const nodes = new vis.DataSet(RAW_NODES);
 const edges = new vis.DataSet(RAW_EDGES);
@@ -487,7 +649,7 @@ const network = new vis.Network(
       scaling: { min: 12, max: 34 },
     },
     edges: {
-      arrows: { to: { enabled: true, scaleFactor: 0.45 } },
+      arrows: EDGE_ARROWS,
       font: { align: 'middle', size: 10 },
       color: { inherit: false, color: '#94a3b8', highlight: '#334155' },
       smooth: { type: 'dynamic' },
@@ -523,7 +685,7 @@ function getNeighborEntries(nodeId) {
       label: other.label,
       relation: edge.label || 'related_to',
       confidence: edge.confidence || 'EXTRACTED',
-      direction: isOutgoing ? 'outgoing' : 'incoming',
+      direction: IS_DIRECTED ? (isOutgoing ? 'outgoing' : 'incoming') : 'connected',
       community: other.community_name,
       degree: other.degree,
     });
@@ -813,22 +975,24 @@ export function toObsidian(
 
     lines.push('---', '', `# ${label}`, '')
 
-    const neighbors = graph
-      .neighbors(nodeId)
-      .sort((left, right) => String(graph.nodeAttributes(left).label ?? left).localeCompare(String(graph.nodeAttributes(right).label ?? right)))
-    if (neighbors.length > 0) {
+    const connections = nodeConnections(graph, nodeId).sort((left, right) => {
+      const leftLabel = String(graph.nodeAttributes(left.neighborId).label ?? left.neighborId)
+      const rightLabel = String(graph.nodeAttributes(right.neighborId).label ?? right.neighborId)
+      return leftLabel.localeCompare(rightLabel)
+    })
+    if (connections.length > 0) {
       lines.push('## Connections')
-      for (const neighborId of neighbors) {
-        const edgeData = graph.edgeAttributes(nodeId, neighborId)
+      for (const connection of connections) {
+        const neighborId = connection.neighborId
         lines.push(
-          `- [[${nodeFilename.get(neighborId) ?? safeName(String(graph.nodeAttributes(neighborId).label ?? neighborId))}]] - \`${escapeMarkdownInline(String(edgeData.relation ?? ''))}\` [${escapeMarkdownInline(String(edgeData.confidence ?? 'EXTRACTED'))}]`,
+          `- ${connectionPrefix(connection.direction)}[[${nodeFilename.get(neighborId) ?? safeName(String(graph.nodeAttributes(neighborId).label ?? neighborId))}]] - \`${escapeMarkdownInline(String(connection.attributes.relation ?? ''))}\` [${escapeMarkdownInline(String(connection.attributes.confidence ?? 'EXTRACTED'))}]`,
         )
       }
       lines.push('')
     }
 
     lines.push(tags.map((tag) => `#${tag}`).join(' '))
-    writeFileSync(`${outputDir}/${nodeFilename.get(nodeId) ?? safeName(label)}.md`, `${lines.join('\n')}\n`, 'utf8')
+    writeFileSync(join(outputDir, `${nodeFilename.get(nodeId) ?? safeName(label)}.md`), `${lines.join('\n')}\n`, 'utf8')
   }
 
   const interCommunityEdges: Record<number, Record<number, number>> = {}
@@ -852,9 +1016,8 @@ export function toObsidian(
   const communityReach = (nodeId: string): number => {
     const currentCommunity = nodeCommunity[nodeId]
     return new Set(
-      graph
-        .neighbors(nodeId)
-        .map((neighborId) => nodeCommunity[neighborId])
+      nodeConnections(graph, nodeId)
+        .map((connection) => nodeCommunity[connection.neighborId])
         .filter((neighborCommunityId): neighborCommunityId is number => neighborCommunityId !== undefined && neighborCommunityId !== currentCommunity),
     ).size
   }
@@ -910,11 +1073,11 @@ export function toObsidian(
       }
     }
 
-    writeFileSync(`${outputDir}/_COMMUNITY_${safeName(communityName)}.md`, `${lines.join('\n')}\n`, 'utf8')
+    writeFileSync(join(outputDir, `_COMMUNITY_${safeName(communityName)}.md`), `${lines.join('\n')}\n`, 'utf8')
     communityNotesWritten += 1
   }
 
-  mkdirSync(`${outputDir}/.obsidian`, { recursive: true })
+  mkdirSync(join(outputDir, '.obsidian'), { recursive: true })
   const colorGroups = Object.entries(communities)
     .map(([communityIdRaw]) => Number(communityIdRaw))
     .sort((left, right) => left - right)
@@ -925,7 +1088,7 @@ export function toObsidian(
         color: { a: 1, rgb: Number.parseInt(color.slice(1), 16) },
       }
     })
-  writeFileSync(`${outputDir}/.obsidian/graph.json`, `${JSON.stringify({ colorGroups }, null, 2)}\n`, 'utf8')
+  writeFileSync(join(outputDir, '.obsidian', 'graph.json'), `${JSON.stringify({ colorGroups }, null, 2)}\n`, 'utf8')
 
   return graph.numberOfNodes() + communityNotesWritten
 }

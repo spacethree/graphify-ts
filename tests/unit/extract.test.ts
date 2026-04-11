@@ -42,6 +42,52 @@ describe('extract', () => {
     }
   })
 
+  it('extracts python docstrings and rationale comments into rationale nodes', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'auth.py')
+      writeFileSync(
+        filePath,
+        [
+          '"""This module handles authentication and session management."""',
+          '',
+          '# NOTE: Keep the login flow small for interactive use.',
+          '',
+          'class AuthClient:',
+          '    """HTTP client for OAuth2 flows with PKCE support."""',
+          '',
+          '    def login(self):',
+          '        """Use a short-lived token for browser sign-ins."""',
+          '        # WHY: Retry after 429 responses to respect upstream throttling.',
+          '        return helper()',
+          '',
+          'def helper():',
+          '    pass',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extractPython(filePath)
+      const rationaleNodes = result.nodes.filter((node) => node.file_type === 'rationale')
+      const rationaleLabels = rationaleNodes.map((node) => node.label)
+      const rationaleTargets = new Set(result.edges.filter((edge) => edge.relation === 'rationale_for').map((edge) => edge.target))
+      const fileNodeId = result.nodes.find((node) => node.label === 'auth.py')?.id
+      const classNodeId = result.nodes.find((node) => node.label === 'AuthClient')?.id
+      const methodNodeId = result.nodes.find((node) => node.label === '.login()')?.id
+
+      expect(rationaleLabels.some((label) => label.includes('This module handles authentication'))).toBe(true)
+      expect(rationaleLabels.some((label) => label.includes('NOTE: Keep the login flow small'))).toBe(true)
+      expect(rationaleLabels.some((label) => label.includes('HTTP client for OAuth2 flows'))).toBe(true)
+      expect(rationaleLabels.some((label) => label.includes('Use a short-lived token'))).toBe(true)
+      expect(rationaleLabels.some((label) => label.includes('WHY: Retry after 429 responses'))).toBe(true)
+      expect(rationaleTargets.has(fileNodeId ?? '')).toBe(true)
+      expect(rationaleTargets.has(classNodeId ?? '')).toBe(true)
+      expect(rationaleTargets.has(methodNodeId ?? '')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('extracts python calls without self loops or duplicates', () => {
     const result = extractPython(join(FIXTURES_DIR, 'sample_calls.py'))
     const callEdges = result.edges.filter((edge) => edge.relation === 'calls')
@@ -73,17 +119,7 @@ describe('extract', () => {
       const modelsPath = join(root, 'models.py')
       const authPath = join(root, 'auth.py')
 
-      writeFileSync(
-        modelsPath,
-        [
-          'class Response:',
-          '    pass',
-          '',
-          'class BaseAuth:',
-          '    pass',
-        ].join('\n'),
-        'utf8',
-      )
+      writeFileSync(modelsPath, ['class Response:', '    pass', '', 'class BaseAuth:', '    pass'].join('\n'), 'utf8')
 
       writeFileSync(
         authPath,
@@ -105,15 +141,11 @@ describe('extract', () => {
       expect(digestAuthId).toBeTruthy()
       expect(responseId).toBeTruthy()
       expect(baseAuthId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === digestAuthId && edge.target === responseId && edge.relation === 'uses' && edge.confidence === 'INFERRED')).toBe(
+        true,
+      )
       expect(
-        result.edges.some(
-          (edge) => edge.source === digestAuthId && edge.target === responseId && edge.relation === 'uses' && edge.confidence === 'INFERRED',
-        ),
-      ).toBe(true)
-      expect(
-        result.edges.some(
-          (edge) => edge.source === digestAuthId && edge.target === baseAuthId && edge.relation === 'inherits' && edge.confidence === 'INFERRED',
-        ),
+        result.edges.some((edge) => edge.source === digestAuthId && edge.target === baseAuthId && edge.relation === 'inherits' && edge.confidence === 'INFERRED'),
       ).toBe(true)
     } finally {
       rmSync(root, { recursive: true, force: true })
@@ -131,6 +163,49 @@ describe('extract', () => {
     expect(labels.some((label) => label.includes('post'))).toBe(true)
     expect(labels.some((label) => label.includes('buildHeaders'))).toBe(true)
     expect(calls.has('.post()->.get()')).toBe(true)
+  })
+
+  it('extracts nested js/ts closures with local ownership and dynamic imports', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'loader.ts')
+      writeFileSync(
+        filePath,
+        [
+          'class Loader {',
+          '  async load() {',
+          '    const pick = async () => {',
+          "      const feature = await import('./feature')",
+          '      return this.request(feature)',
+          '    }',
+          '    return pick()',
+          '  }',
+          '',
+          '  request(_feature: unknown) {',
+          '    return true',
+          '  }',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extractJs(filePath)
+      const loadId = result.nodes.find((node) => node.label === '.load()')?.id
+      const pickId = result.nodes.find((node) => node.label === 'pick()')?.id
+      const requestId = result.nodes.find((node) => node.label === '.request()')?.id
+      const featureId = _makeId('feature')
+
+      expect(loadId).toBeTruthy()
+      expect(pickId).toBeTruthy()
+      expect(requestId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === loadId && edge.target === pickId && edge.relation === 'contains')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === loadId && edge.target === pickId && edge.relation === 'calls')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === pickId && edge.target === requestId && edge.relation === 'calls')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === pickId && edge.target === featureId && edge.relation === 'imports_from')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === loadId && edge.target === requestId && edge.relation === 'calls')).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 
   it('extracts go structs, methods, functions, and calls', () => {
@@ -169,6 +244,44 @@ describe('extract', () => {
       expect(labels).toContain('helper()')
       expect(calls.has('.Get()->.do()')).toBe(true)
       expect(calls.has('Build()->helper()')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts go interfaces and interface method signatures', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'interfaces.go')
+      writeFileSync(
+        filePath,
+        [
+          'package main',
+          '',
+          'type Runner interface {',
+          '  Run() error',
+          '}',
+          '',
+          'type Service struct {}',
+          '',
+          'func (s *Service) Run() error {',
+          '  return helper()',
+          '}',
+          '',
+          'func helper() error {',
+          '  return nil',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([filePath])
+      const runnerId = result.nodes.find((node) => node.label === 'Runner')?.id
+      const runnerMethodEdge = result.edges.find((edge) => edge.source === runnerId && edge.relation === 'method')
+      const runnerMethodLabel = result.nodes.find((node) => node.id === runnerMethodEdge?.target)?.label
+
+      expect(runnerId).toBeTruthy()
+      expect(runnerMethodLabel).toBe('.Run()')
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -241,16 +354,7 @@ describe('extract', () => {
     const root = createTempRoot()
     try {
       const filePath = join(root, 'nested.rb')
-      writeFileSync(
-        filePath,
-        [
-          'module Httpx',
-          '  class Client',
-          '  end',
-          'end',
-        ].join('\n'),
-        'utf8',
-      )
+      writeFileSync(filePath, ['module Httpx', '  class Client', '  end', 'end'].join('\n'), 'utf8')
 
       const result = extract([filePath])
       const moduleId = result.nodes.find((node) => node.label === 'Httpx')?.id
@@ -317,18 +421,7 @@ describe('extract', () => {
       const filePath = join(root, 'sample.ex')
       writeFileSync(
         filePath,
-        [
-          'defmodule ApiClient do',
-          '  alias Models.Response',
-          '',
-          '  def get do',
-          '    request()',
-          '  end',
-          '',
-          '  def request do',
-          '  end',
-          'end',
-        ].join('\n'),
+        ['defmodule ApiClient do', '  alias Models.Response', '', '  def get do', '    request()', '  end', '', '  def request do', '  end', 'end'].join('\n'),
         'utf8',
       )
 
@@ -353,19 +446,7 @@ describe('extract', () => {
       const filePath = join(root, 'sample.jl')
       writeFileSync(
         filePath,
-        [
-          'using LinearAlgebra',
-          '',
-          'struct Client',
-          'end',
-          '',
-          'function fetch(client)',
-          '  normalize()',
-          'end',
-          '',
-          'function normalize()',
-          'end',
-        ].join('\n'),
+        ['using LinearAlgebra', '', 'struct Client', 'end', '', 'function fetch(client)', '  normalize()', 'end', '', 'function normalize()', 'end'].join('\n'),
         'utf8',
       )
 
@@ -471,17 +552,7 @@ describe('extract', () => {
       const filePath = join(root, 'sample.lua')
       writeFileSync(
         filePath,
-        [
-          'local http = require("http")',
-          'local Client = {}',
-          '',
-          'function Client:get()',
-          '  request()',
-          'end',
-          '',
-          'function request()',
-          'end',
-        ].join('\n'),
+        ['local http = require("http")', 'local Client = {}', '', 'function Client:get()', '  request()', 'end', '', 'function request()', 'end'].join('\n'),
         'utf8',
       )
 
@@ -506,15 +577,7 @@ describe('extract', () => {
       const tocPath = join(root, 'Addon.toc')
       const luaPath = join(root, 'Main.lua')
       writeFileSync(luaPath, 'function main()\nend\n', 'utf8')
-      writeFileSync(
-        tocPath,
-        [
-          '## Interface: 100000',
-          '## Title: Sample Addon',
-          'Main.lua',
-        ].join('\n'),
-        'utf8',
-      )
+      writeFileSync(tocPath, ['## Interface: 100000', '## Title: Sample Addon', 'Main.lua'].join('\n'), 'utf8')
 
       const result = extract([tocPath, luaPath])
       const labels = result.nodes.map((node) => node.label)
@@ -538,11 +601,7 @@ describe('extract', () => {
     const root = createTempRoot()
     try {
       const filePath = join(root, 'Service.java')
-      writeFileSync(
-        filePath,
-        ['import java.util.List;', 'class Service {', '  void run() {', '    helper();', '  }', '  void helper() {}', '}'].join('\n'),
-        'utf8',
-      )
+      writeFileSync(filePath, ['import java.util.List;', 'class Service {', '  void run() {', '    helper();', '  }', '  void helper() {}', '}'].join('\n'), 'utf8')
 
       const result = extract([filePath])
       const labels = result.nodes.map((node) => node.label)
@@ -558,13 +617,75 @@ describe('extract', () => {
     }
   })
 
+  it('extracts nested java classes under their enclosing owner', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'Service.java')
+      writeFileSync(
+        filePath,
+        ['class Service {', '  static class Helper {', '    void run() {', '      ping();', '    }', '    void ping() {}', '  }', '}'].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([filePath])
+      const serviceId = result.nodes.find((node) => node.label === 'Service')?.id
+      const helperId = result.nodes.find((node) => node.label === 'Helper')?.id
+      const nodeById = new Map(result.nodes.map((node) => [node.id, node.label]))
+      const calls = new Set(result.edges.filter((edge) => edge.relation === 'calls').map((edge) => `${nodeById.get(edge.source)}->${nodeById.get(edge.target)}`))
+
+      expect(serviceId).toBeTruthy()
+      expect(helperId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === serviceId && edge.target === helperId && edge.relation === 'contains')).toBe(true)
+      expect(calls.has('.run()->.ping()')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts java records as owners for their methods', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'UserRecord.java')
+      writeFileSync(
+        filePath,
+        ['import java.util.List;', 'record UserRecord(String name) {', '  void emit() {', '    helper();', '  }', '  static void helper() {}', '}'].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([filePath])
+      const labels = result.nodes.map((node) => node.label)
+      const nodeById = new Map(result.nodes.map((node) => [node.id, node.label]))
+      const calls = new Set(result.edges.filter((edge) => edge.relation === 'calls').map((edge) => `${nodeById.get(edge.source)}->${nodeById.get(edge.target)}`))
+      const recordId = result.nodes.find((node) => node.label === 'UserRecord')?.id
+
+      expect(recordId).toBeTruthy()
+      expect(labels).toContain('.emit()')
+      expect(labels).toContain('.helper()')
+      expect(result.edges.some((edge) => edge.source === recordId && edge.relation === 'method')).toBe(true)
+      expect(calls.has('.emit()->.helper()')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('extracts rust impl methods and self calls as methods on the owner type', () => {
     const root = createTempRoot()
     try {
       const filePath = join(root, 'worker.rs')
       writeFileSync(
         filePath,
-        ['struct Worker {}', 'impl Worker {', '  fn run(&self) {', '    self.helper();', '  }', '  fn helper(&self) {}', '}', 'fn boot() {', '  Worker::run();', '}'].join('\n'),
+        [
+          'struct Worker {}',
+          'impl Worker {',
+          '  fn run(&self) {',
+          '    self.helper();',
+          '  }',
+          '  fn helper(&self) {}',
+          '}',
+          'fn boot() {',
+          '  Worker::run();',
+          '}',
+        ].join('\n'),
         'utf8',
       )
 
@@ -631,6 +752,147 @@ describe('extract', () => {
     }
   })
 
+  it('extracts class field arrow methods and their internal calls in js or ts files', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'class-arrow.ts')
+      writeFileSync(
+        filePath,
+        [
+          'class HttpClient {',
+          '  private buildHeaders = () => ({ Authorization: "Bearer token" })',
+          '',
+          '  post = async (url: string, data: unknown) => {',
+          '    const headers = this.buildHeaders()',
+          '    return fetch(url, { method: "POST", headers, body: JSON.stringify(data) })',
+          '  }',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extractJs(filePath)
+      const labels = result.nodes.map((node) => node.label)
+      const nodeById = new Map(result.nodes.map((node) => [node.id, node.label]))
+      const calls = new Set(result.edges.filter((edge) => edge.relation === 'calls').map((edge) => `${nodeById.get(edge.source)}->${nodeById.get(edge.target)}`))
+
+      expect(labels).toContain('HttpClient')
+      expect(labels).toContain('.buildHeaders()')
+      expect(labels).toContain('.post()')
+      expect(calls.has('.post()->.buildHeaders()')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts typescript interface nodes plus extends and implements heritage edges', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'heritage.ts')
+      writeFileSync(
+        filePath,
+        [
+          'interface Disposable {',
+          '  dispose(): void',
+          '}',
+          '',
+          'class BaseClient {}',
+          '',
+          'class HttpClient extends BaseClient implements Disposable {',
+          '  dispose() {}',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extractJs(filePath)
+      const httpClientId = result.nodes.find((node) => node.label === 'HttpClient')?.id
+      const baseClientId = result.nodes.find((node) => node.label === 'BaseClient')?.id
+      const disposableId = result.nodes.find((node) => node.label === 'Disposable')?.id
+
+      expect(httpClientId).toBeTruthy()
+      expect(baseClientId).toBeTruthy()
+      expect(disposableId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === httpClientId && edge.target === baseClientId && edge.relation === 'inherits')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === httpClientId && edge.target === disposableId && edge.relation === 'inherits')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts common parser-gap inheritance and signatures for kotlin, scala, and swift', () => {
+    const root = createTempRoot()
+    try {
+      const cases = [
+        {
+          fileName: 'worker.kt',
+          content: [
+            'open class BaseTask',
+            'interface Runnable',
+            'interface Closeable',
+            'class Worker: BaseTask(), Runnable, Closeable {',
+            '  fun run(): Int = helper()',
+            '  fun helper(): Int { return 1 }',
+            '}',
+          ].join('\n'),
+          ownerLabel: 'Worker',
+          inherits: ['BaseTask', 'Runnable', 'Closeable'],
+          call: '.run()->.helper()',
+        },
+        {
+          fileName: 'processor.scala',
+          content: [
+            'trait Logging',
+            'trait Serializable',
+            'class BaseHandler',
+            'class Processor extends BaseHandler with Logging with Serializable {',
+            '  def process(): Int = helper()',
+            '  def helper(): Int = 1',
+            '}',
+          ].join('\n'),
+          ownerLabel: 'Processor',
+          inherits: ['BaseHandler', 'Logging', 'Serializable'],
+          call: '.process()->.helper()',
+        },
+        {
+          fileName: 'container.swift',
+          content: [
+            'protocol Sendable {}',
+            'protocol Hashable {}',
+            'class BaseCollection {}',
+            'final class Container: BaseCollection, Sendable, Hashable {',
+            '  func hash() -> Int { return helper() }',
+            '  func helper() -> Int { return 0 }',
+            '}',
+          ].join('\n'),
+          ownerLabel: 'Container',
+          inherits: ['BaseCollection', 'Sendable', 'Hashable'],
+          call: '.hash()->.helper()',
+        },
+      ]
+
+      for (const testCase of cases) {
+        const filePath = join(root, testCase.fileName)
+        writeFileSync(filePath, testCase.content, 'utf8')
+
+        const result = extract([filePath])
+        const ownerId = result.nodes.find((node) => node.label === testCase.ownerLabel)?.id
+        const nodeById = new Map(result.nodes.map((node) => [node.id, node.label]))
+        const calls = new Set(result.edges.filter((edge) => edge.relation === 'calls').map((edge) => `${nodeById.get(edge.source)}->${nodeById.get(edge.target)}`))
+
+        expect(ownerId).toBeTruthy()
+        for (const baseLabel of testCase.inherits) {
+          const baseId = result.nodes.find((node) => node.label === baseLabel)?.id
+          expect(baseId).toBeTruthy()
+          expect(result.edges.some((edge) => edge.source === ownerId && edge.target === baseId && edge.relation === 'inherits')).toBe(true)
+        }
+        expect(calls.has(testCase.call)).toBe(true)
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('extracts markdown sections and local references for non-code corpora', () => {
     const root = createTempRoot()
     try {
@@ -677,15 +939,59 @@ describe('extract', () => {
     }
   })
 
+  it('extracts scholarly citation nodes from markdown papers and ignores fenced code blocks', () => {
+    const root = createTempRoot()
+    try {
+      const paperPath = join(root, 'paper.md')
+      writeFileSync(
+        paperPath,
+        [
+          '# Abstract',
+          'This work builds on DOI:10.1234/example.5678 and arXiv:2103.12345.',
+          'See also \\cite{vaswani2017attention,devlin2018bert}.',
+          '```tex',
+          '\\cite{ignored2020}',
+          'DOI:10.9999/ignored',
+          '```',
+          '## References',
+          '[1] Smith et al. (2020). Foundational Work. DOI:10.5555/foundational',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([paperPath])
+      const abstractId = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'Abstract')?.id
+      const referencesId = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'References')?.id
+      const doiId = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'DOI:10.1234/example.5678')?.id
+      const arxivId = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'arXiv:2103.12345')?.id
+      const citeKeyId = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'cite:vaswani2017attention')?.id
+      const secondCiteKeyId = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'cite:devlin2018bert')?.id
+      const referenceNodeId = result.nodes.find((node) => node.file_type === 'paper' && node.semantic_kind === 'reference' && String(node.label).startsWith('[1]'))?.id
+
+      expect(abstractId).toBeTruthy()
+      expect(referencesId).toBeTruthy()
+      expect(doiId).toBeTruthy()
+      expect(arxivId).toBeTruthy()
+      expect(citeKeyId).toBeTruthy()
+      expect(secondCiteKeyId).toBeTruthy()
+      expect(referenceNodeId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === abstractId && edge.target === doiId && edge.relation === 'cites')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === abstractId && edge.target === arxivId && edge.relation === 'cites')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === abstractId && edge.target === citeKeyId && edge.relation === 'cites')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === abstractId && edge.target === secondCiteKeyId && edge.relation === 'cites')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === referencesId && edge.target === referenceNodeId && edge.relation === 'contains')).toBe(true)
+      expect(result.nodes.some((node) => String(node.label).includes('ignored2020'))).toBe(false)
+      expect(result.nodes.some((node) => String(node.label).includes('10.9999/ignored'))).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('extracts heuristic title and section nodes from simple pdf papers', () => {
     const root = createTempRoot()
     try {
       const paperPath = join(root, 'paper.pdf')
-      writeFileSync(
-        paperPath,
-        '%PDF-1.4\n1 0 obj\n<< /Title (Graphify Paper) >>\nstream\n(Abstract) Tj\n(Introduction) Tj\nendstream\nendobj\n',
-        'latin1',
-      )
+      writeFileSync(paperPath, '%PDF-1.4\n1 0 obj\n<< /Title (Graphify Paper) >>\nstream\n(Abstract) Tj\n(Introduction) Tj\nendstream\nendobj\n', 'latin1')
 
       const result = extract([paperPath])
       const labels = result.nodes.filter((node) => node.file_type === 'paper').map((node) => node.label)
@@ -694,6 +1000,51 @@ describe('extract', () => {
       expect(labels).toContain('Graphify Paper')
       expect(labels).toContain('Abstract')
       expect(labels).toContain('Introduction')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts local filename mentions from simple pdf papers', () => {
+    const root = createTempRoot()
+    try {
+      const paperPath = join(root, 'paper.pdf')
+      const guidePath = join(root, 'guide.md')
+      writeFileSync(guidePath, '# Guide\n', 'utf8')
+      writeFileSync(paperPath, '%PDF-1.4\n1 0 obj\n<< /Title (Graphify Paper) >>\nstream\n(Abstract) Tj\n(See guide.md for details) Tj\nendstream\nendobj\n', 'latin1')
+
+      const result = extract([paperPath, guidePath])
+      const abstractId = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'Abstract')?.id
+      const guideId = result.nodes.find((node) => node.file_type === 'document' && node.label === 'guide.md')?.id
+
+      expect(abstractId).toBeTruthy()
+      expect(guideId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === abstractId && edge.target === guideId && edge.relation === 'references')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts citation identifiers from simple pdf papers', () => {
+    const root = createTempRoot()
+    try {
+      const paperPath = join(root, 'paper.pdf')
+      writeFileSync(
+        paperPath,
+        '%PDF-1.4\n1 0 obj\n<< /Title (Graphify Paper) >>\nstream\n(Abstract) Tj\n(See DOI:10.1000/example.42 and arXiv:2501.12345) Tj\nendstream\nendobj\n',
+        'latin1',
+      )
+
+      const result = extract([paperPath])
+      const abstractId = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'Abstract')?.id
+      const doiId = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'DOI:10.1000/example.42')?.id
+      const arxivId = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'arXiv:2501.12345')?.id
+
+      expect(abstractId).toBeTruthy()
+      expect(doiId).toBeTruthy()
+      expect(arxivId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === abstractId && edge.target === doiId && edge.relation === 'cites')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === abstractId && edge.target === arxivId && edge.relation === 'cites')).toBe(true)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -749,6 +1100,73 @@ describe('extract', () => {
       expect(labels).toContain('Details')
       expect(relations.has(`${nodeByKey.get('document:guide.docx')}:contains:${nodeByKey.get('document:Overview')}`)).toBe(true)
       expect(relations.has(`${nodeByKey.get('document:Overview')}:contains:${nodeByKey.get('document:Details')}`)).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts local filename mentions from docx body paragraphs', () => {
+    const root = createTempRoot()
+    try {
+      const docxPath = join(root, 'guide.docx')
+      const linkedGuidePath = join(root, 'linked-guide.md')
+      writeFileSync(linkedGuidePath, '# Linked Guide\n', 'utf8')
+      const archive = zipSync({
+        'word/document.xml': strToU8(
+          [
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">',
+            '  <w:body>',
+            '    <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Overview</w:t></w:r></w:p>',
+            '    <w:p><w:r><w:t>See linked-guide.md for details.</w:t></w:r></w:p>',
+            '  </w:body>',
+            '</w:document>',
+          ].join(''),
+        ),
+      })
+
+      writeFileSync(docxPath, Buffer.from(archive))
+
+      const result = extract([docxPath, linkedGuidePath])
+      const overviewId = result.nodes.find((node) => node.file_type === 'document' && node.label === 'Overview')?.id
+      const linkedGuideId = result.nodes.find((node) => node.file_type === 'document' && node.label === 'linked-guide.md')?.id
+
+      expect(overviewId).toBeTruthy()
+      expect(linkedGuideId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === overviewId && edge.target === linkedGuideId && edge.relation === 'references')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts citation identifiers from docx body paragraphs', () => {
+    const root = createTempRoot()
+    try {
+      const docxPath = join(root, 'guide.docx')
+      const archive = zipSync({
+        'word/document.xml': strToU8(
+          [
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">',
+            '  <w:body>',
+            '    <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Overview</w:t></w:r></w:p>',
+            '    <w:p><w:r><w:t>See DOI:10.1000/guide.1 and arXiv:2401.12345 for background.</w:t></w:r></w:p>',
+            '  </w:body>',
+            '</w:document>',
+          ].join(''),
+        ),
+      })
+
+      writeFileSync(docxPath, Buffer.from(archive))
+
+      const result = extract([docxPath])
+      const overviewId = result.nodes.find((node) => node.file_type === 'document' && node.label === 'Overview')?.id
+      const doiId = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'DOI:10.1000/guide.1')?.id
+      const arxivId = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'arXiv:2401.12345')?.id
+
+      expect(overviewId).toBeTruthy()
+      expect(doiId).toBeTruthy()
+      expect(arxivId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === overviewId && edge.target === doiId && edge.relation === 'cites')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === overviewId && edge.target === arxivId && edge.relation === 'cites')).toBe(true)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

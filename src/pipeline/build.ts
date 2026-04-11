@@ -11,8 +11,12 @@ type CombinedExtraction = {
   output_tokens: number
 }
 
-export function buildFromJson(extraction: unknown): KnowledgeGraph {
-  const graph = new KnowledgeGraph()
+export interface BuildGraphOptions {
+  directed?: boolean
+}
+
+export function buildFromJson(extraction: unknown, options: BuildGraphOptions = {}): KnowledgeGraph {
+  const graph = new KnowledgeGraph({ directed: options.directed === true })
   if (!isRecord(extraction)) {
     return graph
   }
@@ -53,11 +57,12 @@ export function buildFromJson(extraction: unknown): KnowledgeGraph {
   if (hyperedges.length > 0) {
     graph.graph.hyperedges = hyperedges
   }
+  graph.graph.directed = graph.isDirected()
 
   return graph
 }
 
-export function build(extractions: ExtractionData[]): KnowledgeGraph {
+export function build(extractions: ExtractionData[], options: BuildGraphOptions = {}): KnowledgeGraph {
   const combined: CombinedExtraction = {
     nodes: [],
     edges: [],
@@ -74,5 +79,5 @@ export function build(extractions: ExtractionData[]): KnowledgeGraph {
     combined.output_tokens += typeof extraction.output_tokens === 'number' ? extraction.output_tokens : 0
   }
 
-  return buildFromJson(combined)
+  return buildFromJson(combined, options)
 }

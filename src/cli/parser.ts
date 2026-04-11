@@ -52,9 +52,20 @@ export interface GenerateCliOptions {
   update: boolean
   clusterOnly: boolean
   watch: boolean
+  directed: boolean
   followSymlinks: boolean
   debounceSeconds: number
   noHtml: boolean
+  wiki: boolean
+  obsidian: boolean
+  obsidianDir: string | null
+  svg: boolean
+  graphml: boolean
+  neo4j: boolean
+  neo4jPushUri: string | null
+  neo4jUser: string | null
+  neo4jPassword: string | null
+  neo4jDatabase: string | null
 }
 
 export interface WatchCliOptions {
@@ -120,6 +131,15 @@ function parsePort(flag: string, value: string): number {
     throw new UsageError(`error: ${flag} must be between 0 and ${MAX_PORT}`)
   }
   return parsed
+}
+
+function parseServeTransport(flag: string, value: string): 'http' | 'stdio' {
+  const normalized = value.trim().toLowerCase()
+  if (normalized !== 'http' && normalized !== 'stdio') {
+    throw new UsageError(`error: ${flag} must be one of http, stdio`)
+  }
+
+  return normalized
 }
 
 function parseBudget(value: string): number {
@@ -411,9 +431,20 @@ export function parseGenerateArgs(args: string[]): GenerateCliOptions {
   let update = false
   let clusterOnly = false
   let watch = false
+  let directed = false
   let followSymlinks = false
   let debounceSeconds = 3
   let noHtml = false
+  let wiki = false
+  let obsidian = false
+  let obsidianDir: string | null = null
+  let svg = false
+  let graphml = false
+  let neo4j = false
+  let neo4jPushUri: string | null = null
+  let neo4jUser: string | null = null
+  let neo4jPassword: string | null = null
+  let neo4jDatabase: string | null = null
 
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index]
@@ -423,7 +454,9 @@ export function parseGenerateArgs(args: string[]): GenerateCliOptions {
 
     if (!argument.startsWith('--')) {
       if (path !== '.') {
-        throw new UsageError('Usage: graphify-ts generate [path] [--update] [--cluster-only] [--watch] [--follow-symlinks] [--debounce S] [--no-html]')
+        throw new UsageError(
+          'Usage: graphify-ts generate [path] [--update] [--cluster-only] [--watch] [--directed] [--follow-symlinks] [--debounce S] [--no-html] [--wiki] [--obsidian] [--obsidian-dir DIR] [--svg] [--graphml] [--neo4j] [--neo4j-push URI] [--neo4j-user USER] [--neo4j-password PW] [--neo4j-database DB]',
+        )
       }
       path = argument
       continue
@@ -444,6 +477,11 @@ export function parseGenerateArgs(args: string[]): GenerateCliOptions {
       continue
     }
 
+    if (argument === '--directed') {
+      directed = true
+      continue
+    }
+
     if (argument === '--follow-symlinks') {
       followSymlinks = true
       continue
@@ -451,6 +489,93 @@ export function parseGenerateArgs(args: string[]): GenerateCliOptions {
 
     if (argument === '--no-html') {
       noHtml = true
+      continue
+    }
+
+    if (argument === '--wiki') {
+      wiki = true
+      continue
+    }
+
+    if (argument === '--obsidian') {
+      obsidian = true
+      continue
+    }
+
+    if (argument === '--graphml') {
+      graphml = true
+      continue
+    }
+
+    if (argument === '--svg') {
+      svg = true
+      continue
+    }
+
+    if (argument === '--neo4j') {
+      neo4j = true
+      continue
+    }
+
+    if (argument === '--neo4j-push') {
+      neo4jPushUri = requireNonEmptyValue('--neo4j-push', args[index + 1])
+      index += 1
+      continue
+    }
+
+    if (argument.startsWith('--neo4j-push=')) {
+      const [, value] = argument.split('=', 2)
+      neo4jPushUri = requireNonEmptyValue('--neo4j-push', value)
+      continue
+    }
+
+    if (argument === '--neo4j-user') {
+      neo4jUser = requireNonEmptyValue('--neo4j-user', args[index + 1])
+      index += 1
+      continue
+    }
+
+    if (argument.startsWith('--neo4j-user=')) {
+      const [, value] = argument.split('=', 2)
+      neo4jUser = requireNonEmptyValue('--neo4j-user', value)
+      continue
+    }
+
+    if (argument === '--neo4j-password') {
+      neo4jPassword = requireNonEmptyValue('--neo4j-password', args[index + 1])
+      index += 1
+      continue
+    }
+
+    if (argument.startsWith('--neo4j-password=')) {
+      const [, value] = argument.split('=', 2)
+      neo4jPassword = requireNonEmptyValue('--neo4j-password', value)
+      continue
+    }
+
+    if (argument === '--neo4j-database') {
+      neo4jDatabase = requireNonEmptyValue('--neo4j-database', args[index + 1])
+      index += 1
+      continue
+    }
+
+    if (argument.startsWith('--neo4j-database=')) {
+      const [, value] = argument.split('=', 2)
+      neo4jDatabase = requireNonEmptyValue('--neo4j-database', value)
+      continue
+    }
+
+    if (argument === '--obsidian-dir') {
+      obsidianDir = requireNonEmptyValue('--obsidian-dir', args[index + 1])
+      obsidian = true
+      index += 1
+      continue
+    }
+
+    if (argument.startsWith('--obsidian-dir=')) {
+      const [, value] = argument.split('=', 2)
+      obsidianDir = requireNonEmptyValue('--obsidian-dir', value)
+      obsidian = true
       continue
     }
 
@@ -478,9 +603,20 @@ export function parseGenerateArgs(args: string[]): GenerateCliOptions {
     update,
     clusterOnly,
     watch,
+    directed,
     followSymlinks,
     debounceSeconds,
     noHtml,
+    wiki,
+    obsidian,
+    obsidianDir,
+    svg,
+    graphml,
+    neo4j,
+    neo4jPushUri,
+    neo4jUser,
+    neo4jPassword,
+    neo4jDatabase,
   }
 }
 
@@ -546,14 +682,31 @@ export function parseServeArgs(args: string[]): ServeCliOptions {
 
     if (!argument.startsWith('--')) {
       if (graphPath !== 'graphify-out/graph.json') {
-        throw new UsageError('Usage: graphify-ts serve [graph.json] [--host H] [--port N] [--stdio|--mcp]')
+        throw new UsageError('Usage: graphify-ts serve [graph.json] [--host H] [--port N] [--transport http|stdio] [--http|--stdio|--mcp]')
       }
       graphPath = argument
       continue
     }
 
+    if (argument === '--http') {
+      transport = 'http'
+      continue
+    }
+
     if (argument === '--stdio' || argument === '--mcp') {
       transport = 'stdio'
+      continue
+    }
+
+    if (argument === '--transport') {
+      transport = parseServeTransport('--transport', requireNonEmptyValue('--transport', args[index + 1]))
+      index += 1
+      continue
+    }
+
+    if (argument.startsWith('--transport=')) {
+      const [, value] = argument.split('=', 2)
+      transport = parseServeTransport('--transport', requireNonEmptyValue('--transport', value))
       continue
     }
 

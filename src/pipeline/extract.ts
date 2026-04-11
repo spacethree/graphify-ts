@@ -9,25 +9,13 @@ import { loadCached, saveCached } from '../infrastructure/cache.js'
 import { CODE_EXTENSIONS, FileType, classifyFile, detect } from './detect.js'
 import { isRecord } from '../shared/guards.js'
 import { MAX_TEXT_BYTES, sanitizeLabel } from '../shared/security.js'
+import { createTreeSitterWasmParser, treeSitterWasmError, type TreeSitterNode } from './tree-sitter-wasm.js'
 
-const EXTRACTOR_CACHE_VERSION = 3
+const EXTRACTOR_CACHE_VERSION = 6
 const PYTHON_KEYWORDS = new Set(['if', 'elif', 'else', 'for', 'while', 'return', 'class', 'def', 'lambda', 'with', 'print', 'sum'])
+const PYTHON_RATIONALE_COMMENT_PATTERN = /^#\s*(NOTE|WHY|IMPORTANT|HACK|RATIONALE|TODO|FIXME)\s*:?\s*(.+)$/i
 const GENERIC_CODE_EXTENSIONS = new Set(['.go', '.rs', '.java', '.kt', '.kts', '.scala', '.cs', '.c', '.cc', '.cpp', '.cxx', '.h', '.hpp', '.swift', '.php', '.zig'])
-const GENERIC_CONTROL_KEYWORDS = new Set([
-  'if',
-  'for',
-  'while',
-  'switch',
-  'catch',
-  'return',
-  'new',
-  'delete',
-  'throw',
-  'sizeof',
-  'case',
-  'do',
-  'else',
-])
+const GENERIC_CONTROL_KEYWORDS = new Set(['if', 'for', 'while', 'switch', 'catch', 'return', 'new', 'delete', 'throw', 'sizeof', 'case', 'do', 'else'])
 const RUBY_KEYWORDS = new Set(['if', 'elsif', 'else', 'unless', 'while', 'until', 'return', 'super', 'yield', 'class', 'def'])
 const LUA_KEYWORDS = new Set(['if', 'then', 'elseif', 'else', 'for', 'while', 'repeat', 'until', 'return', 'function', 'local', 'require'])
 const ELIXIR_KEYWORDS = new Set(['if', 'unless', 'case', 'cond', 'fn', 'def', 'defp', 'defmodule'])
@@ -62,6 +50,17 @@ const DOCX_MAX_TOTAL_ORIGINAL_BYTES = 6_291_456
 const DOCX_MAX_PARAGRAPHS = 5_000
 const DOCX_MAX_TEXT_RUNS_PER_PARAGRAPH = 256
 const DOCX_MAX_PARAGRAPH_TEXT_CHARS = 32_768
+const DOI_CITATION_PATTERN = /\b10\.\d{4,9}\/[\-._;()/:A-Za-z0-9]{1,200}\b/gi
+const ARXIV_CITATION_PATTERN = /(?:\barxiv\s{0,5}:?\s{0,5}|arxiv\.org\/abs\/)([A-Za-z\-.]{1,50}\/\d{7}|\d{4}\.\d{4,5}(?:v\d{1,3})?)/gi
+const LATEX_CITATION_PATTERN = /\\cite\w{0,20}\{([^}]{1,512})\}/g
+// Cap pathological inheritance/conformance lists without affecting common code.
+const MAX_GENERIC_BASE_TARGETS = 10
+// Keep bibliography snippets descriptive without letting single references dominate labels.
+const MAX_REFERENCE_LABEL_CHARS = 220
+// Large \cite{...} lists are rare; this bounds abuse while preserving ordinary papers.
+const MAX_CITATION_KEYS_PER_LINE = 16
+const REFERENCE_SECTION_LABELS = new Set(['references', 'bibliography', 'works cited', 'citations'])
+const TREE_SITTER_FALLBACK_WARNINGS = new Set<string>()
 
 type NonCodeFileType = Extract<ExtractionNode['file_type'], 'document' | 'paper' | 'image'>
 
@@ -138,7 +137,7 @@ function stripHashComment(line: string): string {
       continue
     }
 
-    if (character === '\'' && !inDoubleQuote) {
+    if (character === "'" && !inDoubleQuote) {
       inSingleQuote = !inSingleQuote
       continue
     }
@@ -188,6 +187,212 @@ function createEdge(
     source_location: toLocation(line),
     weight,
   }
+}
+
+function indentationLevel(line: string): number {
+  return line.length - line.trimStart().length
+}
+
+const MAX_PYTHON_DOCSTRING_LINES = 100
+const MAX_PYTHON_DOCSTRING_BYTES = 64 * 1024
+const MAX_TS_NESTED_FUNCTION_DEPTH = 10
+
+function compactRationaleText(text: string): string {
+  return sanitizeLabel(text.replace(/\s+/g, ' ').trim())
+}
+
+function pythonDocstringStart(trimmedLine: string): { delimiter: '"""' | "'''"; content: string } | null {
+  const match = trimmedLine.match(/^(?:[rRuUbBfF]{0,3})("""|''')([\s\S]*)$/)
+  if (!match?.[1]) {
+    return null
+  }
+
+  const delimiter = match[1] === '"""' ? '"""' : "'''"
+  return {
+    delimiter,
+    content: match[2] ?? '',
+  }
+}
+
+function consumePythonDocstring(lines: string[], startIndex: number, minIndent: number): { text: string; startIndex: number; endIndex: number } | null {
+  let index = startIndex
+
+  while (index < lines.length) {
+    const line = lines[index] ?? ''
+    const trimmed = line.trim()
+    if (!trimmed) {
+      index += 1
+      continue
+    }
+
+    if (indentationLevel(line) < minIndent) {
+      return null
+    }
+
+    const start = pythonDocstringStart(trimmed)
+    if (!start) {
+      return null
+    }
+
+    const parts: string[] = []
+    const singleLineCloseIndex = start.content.indexOf(start.delimiter)
+    if (singleLineCloseIndex >= 0) {
+      const text = compactRationaleText(start.content.slice(0, singleLineCloseIndex))
+      if (!text) {
+        return null
+      }
+
+      return {
+        text,
+        startIndex: index,
+        endIndex: index,
+      }
+    }
+
+    let totalDocstringBytes = 0
+    if (start.content.length > 0) {
+      totalDocstringBytes += Buffer.byteLength(start.content, 'utf8')
+      if (totalDocstringBytes > MAX_PYTHON_DOCSTRING_BYTES) {
+        return null
+      }
+      parts.push(start.content)
+    }
+
+    let endIndex = index
+    for (let cursor = index + 1; cursor < lines.length && cursor - index <= MAX_PYTHON_DOCSTRING_LINES; cursor += 1) {
+      const nextLine = lines[cursor] ?? ''
+      totalDocstringBytes += Buffer.byteLength(nextLine, 'utf8')
+      if (totalDocstringBytes > MAX_PYTHON_DOCSTRING_BYTES) {
+        break
+      }
+
+      const closeIndex = nextLine.indexOf(start.delimiter)
+      if (closeIndex >= 0) {
+        parts.push(nextLine.slice(0, closeIndex))
+        endIndex = cursor
+        break
+      }
+
+      parts.push(nextLine)
+    }
+
+    if (endIndex === index) {
+      return null
+    }
+
+    const text = compactRationaleText(parts.join(' '))
+    if (!text) {
+      return null
+    }
+
+    return {
+      text,
+      startIndex: index,
+      endIndex,
+    }
+  }
+
+  return null
+}
+
+function createRationaleNode(targetId: string, text: string, sourceFile: string, line: number, rationaleKind: 'docstring' | 'comment'): ExtractionNode {
+  return {
+    ...createNode(_makeId(targetId, 'rationale', String(line)), text, sourceFile, line, 'rationale'),
+    rationale_kind: rationaleKind,
+  }
+}
+
+function extractPythonRationale(filePath: string): ExtractionFragment {
+  const sourceText = readFileSync(filePath, 'utf8')
+  const lines = sourceText.split(/\r?\n/)
+  const stem = basename(filePath, extname(filePath))
+  const fileNodeId = _makeId(stem)
+  const nodes: ExtractionNode[] = []
+  const edges: ExtractionEdge[] = []
+  const seenIds = new Set<string>()
+  const seenEdges = new Set<string>()
+  const skippedLines = new Set<number>()
+  const classStack: Array<{ indent: number; id: string }> = []
+  const functionStack: Array<{ indent: number; id: string }> = []
+
+  const addRationale = (targetId: string, text: string, line: number, rationaleKind: 'docstring' | 'comment'): void => {
+    const cleaned = compactRationaleText(text)
+    if (!cleaned) {
+      return
+    }
+
+    const node = createRationaleNode(targetId, cleaned, filePath, line, rationaleKind)
+    addNode(nodes, seenIds, node)
+    addUniqueEdge(edges, seenEdges, createEdge(node.id, targetId, 'rationale_for', filePath, line))
+  }
+
+  const moduleDocstring = consumePythonDocstring(lines, 0, 0)
+  if (moduleDocstring) {
+    addRationale(fileNodeId, moduleDocstring.text, moduleDocstring.startIndex + 1, 'docstring')
+    for (let index = moduleDocstring.startIndex; index <= moduleDocstring.endIndex; index += 1) {
+      skippedLines.add(index)
+    }
+  }
+
+  for (let index = 0; index < lines.length; index += 1) {
+    if (skippedLines.has(index)) {
+      continue
+    }
+
+    const line = lines[index] ?? ''
+    const trimmed = line.trim()
+    if (!trimmed) {
+      continue
+    }
+
+    const indent = indentationLevel(line)
+    while (functionStack.length > 0 && indent <= (functionStack[functionStack.length - 1]?.indent ?? -1)) {
+      functionStack.pop()
+    }
+    while (classStack.length > 0 && indent <= (classStack[classStack.length - 1]?.indent ?? -1)) {
+      classStack.pop()
+    }
+
+    const commentMatch = trimmed.match(PYTHON_RATIONALE_COMMENT_PATTERN)
+    if (commentMatch?.[1] && commentMatch[2]) {
+      const prefix = commentMatch[1].toUpperCase()
+      const targetId = functionStack[functionStack.length - 1]?.id ?? classStack[classStack.length - 1]?.id ?? fileNodeId
+      addRationale(targetId, `${prefix}: ${commentMatch[2].trim()}`, index + 1, 'comment')
+      continue
+    }
+
+    const classMatch = trimmed.match(/^class\s+([A-Za-z_][A-Za-z0-9_]*)(?:\(([^)]+)\))?:/)
+    if (classMatch?.[1]) {
+      const classId = _makeId(stem, classMatch[1])
+      classStack.push({ indent, id: classId })
+
+      const docstring = consumePythonDocstring(lines, index + 1, indent + 1)
+      if (docstring) {
+        addRationale(classId, docstring.text, docstring.startIndex + 1, 'docstring')
+        for (let cursor = docstring.startIndex; cursor <= docstring.endIndex; cursor += 1) {
+          skippedLines.add(cursor)
+        }
+      }
+      continue
+    }
+
+    const functionMatch = trimmed.match(/^def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/)
+    if (functionMatch?.[1]) {
+      const parentClassId = classStack[classStack.length - 1]?.id
+      const functionId = parentClassId ? _makeId(parentClassId, functionMatch[1]) : _makeId(stem, functionMatch[1])
+      functionStack.push({ indent, id: functionId })
+
+      const docstring = consumePythonDocstring(lines, index + 1, indent + 1)
+      if (docstring) {
+        addRationale(functionId, docstring.text, docstring.startIndex + 1, 'docstring')
+        for (let cursor = docstring.startIndex; cursor <= docstring.endIndex; cursor += 1) {
+          skippedLines.add(cursor)
+        }
+      }
+    }
+  }
+
+  return { nodes, edges }
 }
 
 function addNode(nodes: ExtractionNode[], seenIds: Set<string>, node: ExtractionNode): void {
@@ -286,6 +491,33 @@ function cleanReferenceTarget(rawTarget: string): string {
   return rawTarget.trim().replace(/^<|>$/g, '').split('#')[0]?.split('?')[0] ?? ''
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function addCorpusReferenceEdge(
+  edges: ExtractionEdge[],
+  sourceId: string,
+  targetPath: string,
+  relation: 'references' | 'embeds',
+  filePath: string,
+  lineNumber: number,
+  seenEdges?: Set<string>,
+): void {
+  const targetId = targetNodeId(targetPath)
+  if (sourceId === targetId) {
+    return
+  }
+
+  const edge = createEdge(sourceId, targetId, relation, filePath, lineNumber)
+  if (seenEdges) {
+    addUniqueEdge(edges, seenEdges, edge)
+    return
+  }
+
+  addEdge(edges, edge)
+}
+
 function addLocalReferenceEdges(
   edges: ExtractionEdge[],
   line: string,
@@ -293,6 +525,7 @@ function addLocalReferenceEdges(
   sourceId: string,
   lineNumber: number,
   allowedTargets: ReadonlySet<string>,
+  seenEdges?: Set<string>,
 ): void {
   for (const match of line.matchAll(LOCAL_LINK_PATTERN)) {
     const isImage = Boolean(match[1])
@@ -317,23 +550,314 @@ function addLocalReferenceEdges(
     }
 
     const relation = isImage || relationTargetType === FileType.IMAGE ? 'embeds' : 'references'
-    const targetId = targetNodeId(resolvedTarget)
-    if (sourceId === targetId) {
-      continue
-    }
-
-    addEdge(edges, createEdge(sourceId, targetId, relation, filePath, lineNumber))
+    addCorpusReferenceEdge(edges, sourceId, resolvedTarget, relation, filePath, lineNumber, seenEdges)
   }
 }
 
-function extractStructuredText(
+function addMentionReferenceEdges(
+  edges: ExtractionEdge[],
+  line: string,
   filePath: string,
-  fileType: Extract<NonCodeFileType, 'document' | 'paper'>,
+  sourceId: string,
+  lineNumber: number,
   allowedTargets: ReadonlySet<string>,
-): ExtractionFragment {
+  seenEdges?: Set<string>,
+): void {
+  const normalizedLine = line.toLowerCase()
+
+  for (const targetPath of allowedTargets) {
+    if (resolve(targetPath) === resolve(filePath) || !existsSync(targetPath)) {
+      continue
+    }
+
+    const relationTargetType = classifyFile(targetPath)
+    if (!relationTargetType) {
+      continue
+    }
+
+    const targetName = basename(targetPath).toLowerCase()
+    if (!targetName) {
+      continue
+    }
+
+    const mentionPattern = new RegExp(`(^|[^a-z0-9_])${escapeRegExp(targetName)}(?=[^a-z0-9_]|$)`, 'i')
+    if (!mentionPattern.test(normalizedLine)) {
+      continue
+    }
+
+    const relation = relationTargetType === FileType.IMAGE ? 'embeds' : 'references'
+    addCorpusReferenceEdge(edges, sourceId, targetPath, relation, filePath, lineNumber, seenEdges)
+  }
+}
+
+function trimCitationValue(value: string): string {
+  return value
+    .trim()
+    .replace(/^['"`]+|['"`]+$/g, '')
+    .replace(/[.,;]+$/g, '')
+}
+
+function stripInlineCodeSpans(text: string): string {
+  return text.replace(/`[^`\n]{1,200}`/g, ' ')
+}
+
+function createSemanticPaperNode(
+  id: string,
+  label: string,
+  sourceFile: string,
+  line: number,
+  semanticKind: 'citation' | 'reference',
+  extra: Record<string, unknown> = {},
+): ExtractionNode {
+  return {
+    ...createNode(id, label, sourceFile, line, 'paper'),
+    virtual: true,
+    semantic_kind: semanticKind,
+    ...extra,
+  }
+}
+
+function addPaperCitationNode(
+  nodes: ExtractionNode[],
+  seenIds: Set<string>,
+  kind: 'doi' | 'arxiv' | 'citation_key',
+  value: string,
+  filePath: string,
+  lineNumber: number,
+): string | null {
+  const normalizedValue = trimCitationValue(value)
+  if (!normalizedValue) {
+    return null
+  }
+
+  const label = kind === 'doi' ? `DOI:${normalizedValue}` : kind === 'arxiv' ? `arXiv:${normalizedValue}` : `cite:${normalizedValue}`
+  const nodeId = _makeId('citation', kind, normalizedValue)
+  addNode(
+    nodes,
+    seenIds,
+    createSemanticPaperNode(nodeId, label, filePath, lineNumber, 'citation', {
+      citation_kind: kind,
+      citation_value: normalizedValue,
+    }),
+  )
+  return nodeId
+}
+
+function addCitationEdgesFromText(
+  nodes: ExtractionNode[],
+  edges: ExtractionEdge[],
+  seenIds: Set<string>,
+  seenEdges: Set<string>,
+  text: string,
+  sourceId: string,
+  filePath: string,
+  lineNumber: number,
+): void {
+  const citationText = stripInlineCodeSpans(text)
+
+  for (const match of citationText.matchAll(DOI_CITATION_PATTERN)) {
+    const doi = match[0]
+    if (!doi) {
+      continue
+    }
+
+    const citationId = addPaperCitationNode(nodes, seenIds, 'doi', doi, filePath, lineNumber)
+    if (!citationId) {
+      continue
+    }
+    addUniqueEdge(edges, seenEdges, createEdge(sourceId, citationId, 'cites', filePath, lineNumber))
+  }
+
+  for (const match of citationText.matchAll(ARXIV_CITATION_PATTERN)) {
+    const arxivId = match[1]
+    if (!arxivId) {
+      continue
+    }
+
+    const citationId = addPaperCitationNode(nodes, seenIds, 'arxiv', arxivId, filePath, lineNumber)
+    if (!citationId) {
+      continue
+    }
+    addUniqueEdge(edges, seenEdges, createEdge(sourceId, citationId, 'cites', filePath, lineNumber))
+  }
+
+  for (const match of citationText.matchAll(LATEX_CITATION_PATTERN)) {
+    const rawKeys = match[1]
+    if (!rawKeys) {
+      continue
+    }
+
+    for (const key of rawKeys
+      .split(',')
+      .map((value) => trimCitationValue(value))
+      .filter(Boolean)
+      .slice(0, MAX_CITATION_KEYS_PER_LINE)) {
+      const citationId = addPaperCitationNode(nodes, seenIds, 'citation_key', key, filePath, lineNumber)
+      if (!citationId) {
+        continue
+      }
+      addUniqueEdge(edges, seenEdges, createEdge(sourceId, citationId, 'cites', filePath, lineNumber))
+    }
+  }
+}
+
+function addReferenceNodeFromText(
+  nodes: ExtractionNode[],
+  edges: ExtractionEdge[],
+  seenIds: Set<string>,
+  seenEdges: Set<string>,
+  text: string,
+  filePath: string,
+  lineNumber: number,
+  containerId: string,
+): string | null {
+  const match = text.match(/^\[(\d{1,3})\]\s+(.{1,400})$/)
+  if (!match?.[1] || !match[2]) {
+    return null
+  }
+
+  const referenceIndex = Number.parseInt(match[1], 10)
+  if (Number.isNaN(referenceIndex) || referenceIndex < 1 || referenceIndex > 999) {
+    return null
+  }
+  const summary = sanitizeLabel(match[2].replace(/\s+/g, ' ').trim()).slice(0, MAX_REFERENCE_LABEL_CHARS)
+  if (!summary) {
+    return null
+  }
+
+  const referenceId = _makeId(basename(filePath, extname(filePath)), 'reference', match[1])
+  addNode(
+    nodes,
+    seenIds,
+    createSemanticPaperNode(referenceId, `[${match[1]}] ${summary}`, filePath, lineNumber, 'reference', {
+      reference_index: referenceIndex,
+    }),
+  )
+  addUniqueEdge(edges, seenEdges, createEdge(containerId, referenceId, 'contains', filePath, lineNumber))
+  return referenceId
+}
+
+function stripGenericSegments(value: string): string {
+  let depth = 0
+  let result = ''
+
+  for (const character of value) {
+    if (character === '<') {
+      depth += 1
+      continue
+    }
+    if (character === '>') {
+      depth = Math.max(0, depth - 1)
+      continue
+    }
+    if (depth === 0) {
+      result += character
+    }
+  }
+
+  return result
+}
+
+function normalizeTypeName(raw: string): string | null {
+  const withoutGenerics = stripGenericSegments(raw)
+    .replace(/\([^)]*\)/g, ' ')
+    .replace(/\bwhere\b[\s\S]*$/, ' ')
+    .replace(/[{}]/g, ' ')
+    .replace(
+      /\b(?:public|private|protected|internal|open|sealed|abstract|final|static|virtual|override|implements|extends|with|class|interface|struct|enum|trait|protocol|object|extension|partial|readonly|required|unsafe|new)\b/g,
+      ' ',
+    )
+    .trim()
+  if (!withoutGenerics) {
+    return null
+  }
+
+  const token = withoutGenerics.split(/\s+/).at(-1) ?? withoutGenerics
+  const parts = token.split(/::|\.|:/).filter(Boolean)
+  return parts.at(-1) ?? null
+}
+
+function parseBaseTypeList(raw: string): string[] {
+  return raw
+    .split(',')
+    .map((value) => normalizeTypeName(value))
+    .filter((value): value is string => Boolean(value))
+}
+
+function genericBaseNamesFromLine(line: string): string[] {
+  const trimmed = stripHashComment(line)
+    .replace(/\{.*$/, '')
+    .replace(/\bwhere\b[\s\S]*$/, '')
+    .trim()
+  const bases: string[] = []
+  const extendsMatch = trimmed.match(/\bextends\s+(.+)$/)
+
+  if (extendsMatch?.[1]) {
+    const afterExtends = extendsMatch[1]
+    const [primaryBase] = afterExtends.split(/\b(?:implements|with)\b/, 1)
+    if (primaryBase) {
+      bases.push(...parseBaseTypeList(primaryBase))
+    }
+
+    const implementsMatch = afterExtends.match(/\bimplements\s+(.+)$/)
+    if (implementsMatch?.[1]) {
+      bases.push(...parseBaseTypeList(implementsMatch[1]))
+    }
+
+    for (const withSegment of afterExtends.split(/\bwith\b/).slice(1)) {
+      bases.push(...parseBaseTypeList(withSegment))
+    }
+  } else {
+    const colonMatch = trimmed.match(/\b(?:class|interface|struct|enum|trait|protocol|object|extension)\s+[A-Za-z_][A-Za-z0-9_]*(?:\s*<[^>]+>)?\s*:\s*(.+)$/)
+    if (colonMatch?.[1]) {
+      bases.push(...parseBaseTypeList(colonMatch[1]))
+    }
+
+    const implementsMatch = trimmed.match(/\bimplements\s+(.+)$/)
+    if (implementsMatch?.[1]) {
+      bases.push(...parseBaseTypeList(implementsMatch[1]))
+    }
+  }
+
+  return [...new Set(bases)].slice(0, MAX_GENERIC_BASE_TARGETS)
+}
+
+function lightweightFunctionSignature(line: string): { functionName: string; inlineBodyText?: string } | null {
+  const kotlinMatch = line.match(/\bfun\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>]+>)?\s*\([^)]*\)\s*(?::\s*[^={]+)?\s*(?:=\s*(.+)|\{(.*))$/)
+  if (kotlinMatch?.[1]) {
+    const inlineBodyText = kotlinMatch[2] ?? kotlinMatch[3]
+    return {
+      functionName: kotlinMatch[1],
+      ...(inlineBodyText ? { inlineBodyText } : {}),
+    }
+  }
+
+  const scalaMatch = line.match(/\bdef\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[[^\]]*\])?\s*\([^)]*\)\s*(?::\s*[^={]+)?\s*(?:=\s*(.+)|\{(.*))$/)
+  if (scalaMatch?.[1]) {
+    const inlineBodyText = scalaMatch[2] ?? scalaMatch[3]
+    return {
+      functionName: scalaMatch[1],
+      ...(inlineBodyText ? { inlineBodyText } : {}),
+    }
+  }
+
+  const swiftMatch = line.match(/\bfunc\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>]+>)?\s*\([^)]*\)\s*(?:->\s*[^={]+)?\s*(?:=\s*(.+)|\{(.*))$/)
+  if (swiftMatch?.[1]) {
+    const inlineBodyText = swiftMatch[2] ?? swiftMatch[3]
+    return {
+      functionName: swiftMatch[1],
+      ...(inlineBodyText ? { inlineBodyText } : {}),
+    }
+  }
+
+  return null
+}
+
+function extractStructuredText(filePath: string, fileType: Extract<NonCodeFileType, 'document' | 'paper'>, allowedTargets: ReadonlySet<string>): ExtractionFragment {
   const nodes: ExtractionNode[] = []
   const edges: ExtractionEdge[] = []
   const seenIds = new Set<string>()
+  const seenSemanticEdges = new Set<string>()
   const fileNode = createFileNode(filePath, fileType)
 
   addNode(nodes, seenIds, fileNode)
@@ -349,7 +873,7 @@ function extractStructuredText(
   const sourceText = readFileSync(filePath, 'utf8')
   const lines = sourceText.split(/\r?\n/)
 
-  const headingStack: Array<{ level: number; id: string }> = []
+  const headingStack: Array<{ level: number; id: string; label: string }> = []
   let inFrontmatter = lines[0]?.trim() === '---'
   let fenceMarker: '```' | '~~~' | null = null
 
@@ -386,9 +910,10 @@ function extractStructuredText(
 
       const parentId = headingStack[headingStack.length - 1]?.id ?? fileNode.id
       addEdge(edges, createEdge(parentId, nodeId, 'contains', filePath, lineNumber))
-      headingStack.push({ level: heading.level, id: nodeId })
+      headingStack.push({ level: heading.level, id: nodeId, label: normalizeLabel(heading.text) })
 
-      addLocalReferenceEdges(edges, line, filePath, nodeId, lineNumber, allowedTargets)
+      addLocalReferenceEdges(edges, line, filePath, nodeId, lineNumber, allowedTargets, seenSemanticEdges)
+      addMentionReferenceEdges(edges, line, filePath, nodeId, lineNumber, allowedTargets, seenSemanticEdges)
 
       if (heading.consumedLines === 2) {
         index += 1
@@ -401,7 +926,15 @@ function extractStructuredText(
     }
 
     const currentSectionId = headingStack[headingStack.length - 1]?.id ?? fileNode.id
-    addLocalReferenceEdges(edges, line, filePath, currentSectionId, lineNumber, allowedTargets)
+    const currentSectionLabel = headingStack[headingStack.length - 1]?.label
+    const referenceNodeId =
+      currentSectionLabel && REFERENCE_SECTION_LABELS.has(currentSectionLabel)
+        ? addReferenceNodeFromText(nodes, edges, seenIds, seenSemanticEdges, line, filePath, lineNumber, currentSectionId)
+        : null
+
+    addLocalReferenceEdges(edges, line, filePath, currentSectionId, lineNumber, allowedTargets, seenSemanticEdges)
+    addMentionReferenceEdges(edges, line, filePath, currentSectionId, lineNumber, allowedTargets, seenSemanticEdges)
+    addCitationEdgesFromText(nodes, edges, seenIds, seenSemanticEdges, line, referenceNodeId ?? currentSectionId, filePath, lineNumber)
   }
 
   return { nodes, edges }
@@ -457,6 +990,7 @@ function extractDocxDocument(filePath: string, allowedTargets: ReadonlySet<strin
   const nodes: ExtractionNode[] = []
   const edges: ExtractionEdge[] = []
   const seenIds = new Set<string>()
+  const seenSemanticEdges = new Set<string>()
   const fileNode = createFileNode(filePath, 'document')
 
   addNode(nodes, seenIds, fileNode)
@@ -493,7 +1027,7 @@ function extractDocxDocument(filePath: string, allowedTargets: ReadonlySet<strin
   }
 
   const documentXml = strFromU8(documentXmlBytes)
-  const headingStack: Array<{ level: number; id: string }> = []
+  const headingStack: Array<{ level: number; id: string; label: string }> = []
   let syntheticLine = title ? 2 : 1
   let paragraphCount = 0
 
@@ -527,12 +1061,23 @@ function extractDocxDocument(filePath: string, allowedTargets: ReadonlySet<strin
 
       const parentId = headingStack[headingStack.length - 1]?.id ?? fileNode.id
       addEdge(edges, createEdge(parentId, nodeId, 'contains', filePath, syntheticLine))
-      headingStack.push({ level: headingLevel, id: nodeId })
-      addLocalReferenceEdges(edges, text, filePath, nodeId, syntheticLine, allowedTargets)
+      headingStack.push({ level: headingLevel, id: nodeId, label: normalizeLabel(text) })
+      addLocalReferenceEdges(edges, text, filePath, nodeId, syntheticLine, allowedTargets, seenSemanticEdges)
+      addMentionReferenceEdges(edges, text, filePath, nodeId, syntheticLine, allowedTargets, seenSemanticEdges)
     } else if (headingStack.length > 0) {
-      addLocalReferenceEdges(edges, text, filePath, headingStack[headingStack.length - 1]!.id, syntheticLine, allowedTargets)
+      const currentSectionId = headingStack[headingStack.length - 1]!.id
+      const currentSectionLabel = headingStack[headingStack.length - 1]!.label
+      const referenceNodeId = REFERENCE_SECTION_LABELS.has(currentSectionLabel)
+        ? addReferenceNodeFromText(nodes, edges, seenIds, seenSemanticEdges, text, filePath, syntheticLine, currentSectionId)
+        : null
+
+      addLocalReferenceEdges(edges, text, filePath, currentSectionId, syntheticLine, allowedTargets, seenSemanticEdges)
+      addMentionReferenceEdges(edges, text, filePath, currentSectionId, syntheticLine, allowedTargets, seenSemanticEdges)
+      addCitationEdgesFromText(nodes, edges, seenIds, seenSemanticEdges, text, referenceNodeId ?? currentSectionId, filePath, syntheticLine)
     } else {
-      addLocalReferenceEdges(edges, text, filePath, fileNode.id, syntheticLine, allowedTargets)
+      addLocalReferenceEdges(edges, text, filePath, fileNode.id, syntheticLine, allowedTargets, seenSemanticEdges)
+      addMentionReferenceEdges(edges, text, filePath, fileNode.id, syntheticLine, allowedTargets, seenSemanticEdges)
+      addCitationEdgesFromText(nodes, edges, seenIds, seenSemanticEdges, text, fileNode.id, filePath, syntheticLine)
     }
 
     syntheticLine += 1
@@ -559,10 +1104,11 @@ function decodePdfLiteral(raw: string): string {
   )
 }
 
-function extractPdfPaper(filePath: string): ExtractionFragment {
+function extractPdfPaper(filePath: string, allowedTargets: ReadonlySet<string>): ExtractionFragment {
   const nodes: ExtractionNode[] = []
   const edges: ExtractionEdge[] = []
   const seenIds = new Set<string>()
+  const seenSemanticEdges = new Set<string>()
   const fileNode = createFileNode(filePath, 'paper')
 
   addNode(nodes, seenIds, fileNode)
@@ -586,18 +1132,34 @@ function extractPdfPaper(filePath: string): ExtractionFragment {
   }
 
   const sectionLabels = new Set<string>()
+  let currentSectionId = fileNode.id
+  let currentSectionLabel: string | undefined
   let syntheticLine = 2
   for (const match of pdfText.matchAll(PDF_TEXT_OPERATOR_PATTERN)) {
     const endIndex = match[0].lastIndexOf(') Tj')
     const label = decodePdfLiteral(match[0].slice(1, endIndex))
-    if (!label || !PDF_COMMON_SECTION_LABELS.has(normalizeLabel(label)) || sectionLabels.has(label)) {
+    if (!label) {
       continue
     }
 
-    sectionLabels.add(label)
-    const sectionId = sectionNodeId(filePath, label, syntheticLine)
-    addNode(nodes, seenIds, createNode(sectionId, label, filePath, syntheticLine, 'paper'))
-    addEdge(edges, createEdge(fileNode.id, sectionId, 'contains', filePath, syntheticLine))
+    if (PDF_COMMON_SECTION_LABELS.has(normalizeLabel(label)) && !sectionLabels.has(label)) {
+      sectionLabels.add(label)
+      const sectionId = sectionNodeId(filePath, label, syntheticLine)
+      addNode(nodes, seenIds, createNode(sectionId, label, filePath, syntheticLine, 'paper'))
+      addEdge(edges, createEdge(fileNode.id, sectionId, 'contains', filePath, syntheticLine))
+      currentSectionId = sectionId
+      currentSectionLabel = normalizeLabel(label)
+      syntheticLine += 1
+      continue
+    }
+
+    const referenceNodeId =
+      currentSectionLabel && REFERENCE_SECTION_LABELS.has(currentSectionLabel)
+        ? addReferenceNodeFromText(nodes, edges, seenIds, seenSemanticEdges, label, filePath, syntheticLine, currentSectionId)
+        : null
+
+    addMentionReferenceEdges(edges, label, filePath, currentSectionId, syntheticLine, allowedTargets, seenSemanticEdges)
+    addCitationEdgesFromText(nodes, edges, seenIds, seenSemanticEdges, label, referenceNodeId ?? currentSectionId, filePath, syntheticLine)
     syntheticLine += 1
   }
 
@@ -607,7 +1169,7 @@ function extractPdfPaper(filePath: string): ExtractionFragment {
 function extractPaper(filePath: string, allowedTargets: ReadonlySet<string>): ExtractionFragment {
   const extension = extname(filePath).toLowerCase()
   if (extension === '.pdf') {
-    return extractPdfPaper(filePath)
+    return extractPdfPaper(filePath, allowedTargets)
   }
 
   return extractStructuredText(filePath, 'paper', allowedTargets)
@@ -648,11 +1210,7 @@ function isPythonClassNode(node: ExtractionNode): boolean {
   return extname(node.source_file).toLowerCase() === '.py' && node.file_type === 'code' && node.label !== basename(node.source_file) && !node.label.includes('(')
 }
 
-function resolveImportedPythonClassTarget(
-  moduleSpecifier: string,
-  importedName: string,
-  classNodeIdsByModuleAndName: ReadonlyMap<string, string>,
-): string | null {
+function resolveImportedPythonClassTarget(moduleSpecifier: string, importedName: string, classNodeIdsByModuleAndName: ReadonlyMap<string, string>): string | null {
   const moduleStem = moduleSpecifier.replace(/^\.+/, '').split('.').filter(Boolean).at(-1)
   if (!moduleStem) {
     return null
@@ -728,17 +1286,17 @@ function resolveCrossFilePythonImports(files: string[], combined: ExtractionData
         const classId = _makeId(stem, classMatch[1])
         classStack.push({ indent, id: classId })
 
-        const baseList = classMatch[2]?.split(',').map((value) => value.trim()).filter(Boolean) ?? []
+        const baseList =
+          classMatch[2]
+            ?.split(',')
+            .map((value) => value.trim())
+            .filter(Boolean) ?? []
         for (const baseName of baseList) {
           const importedBase = importedSymbols.find((symbol) => symbol.localName === baseName)
           if (!importedBase) {
             continue
           }
-          addUniqueEdge(
-            combined.edges,
-            existingEdges,
-            createEdge(classId, importedBase.targetId, 'inherits', filePath, lineNumber, 'INFERRED'),
-          )
+          addUniqueEdge(combined.edges, existingEdges, createEdge(classId, importedBase.targetId, 'inherits', filePath, lineNumber, 'INFERRED'))
         }
         continue
       }
@@ -754,11 +1312,7 @@ function resolveCrossFilePythonImports(files: string[], combined: ExtractionData
           continue
         }
 
-        addUniqueEdge(
-          combined.edges,
-          existingEdges,
-          createEdge(currentClass.id, importedSymbol.targetId, 'uses', filePath, lineNumber, 'INFERRED'),
-        )
+        addUniqueEdge(combined.edges, existingEdges, createEdge(currentClass.id, importedSymbol.targetId, 'uses', filePath, lineNumber, 'INFERRED'))
       }
     }
   }
@@ -992,8 +1546,15 @@ export function extractGenericCode(filePath: string): ExtractionFragment {
     const className = classNameFromLine(trimmed)
     if (className) {
       const classId = _makeId(stem, className)
+      const parentOwnerId = classStack[classStack.length - 1]?.id ?? fileNodeId
       addNode(nodes, seenIds, createNode(classId, className, filePath, lineNumber))
-      addEdge(edges, createEdge(fileNodeId, classId, 'contains', filePath, lineNumber))
+      addEdge(edges, createEdge(parentOwnerId, classId, 'contains', filePath, lineNumber))
+
+      for (const baseName of genericBaseNamesFromLine(trimmed)) {
+        const baseId = _makeId(stem, baseName)
+        addNode(nodes, seenIds, createNode(baseId, baseName, filePath, lineNumber))
+        addEdge(edges, createEdge(classId, baseId, 'inherits', filePath, lineNumber))
+      }
 
       const nextBraceDepth = braceDepth + braceDelta(line)
       if (trimmed.includes('{') || /\bstruct\b/.test(trimmed)) {
@@ -1006,6 +1567,8 @@ export function extractGenericCode(filePath: string): ExtractionFragment {
 
     let functionName: string | null = null
     let ownerClassId: string | undefined
+    let inlineBodyText: string | undefined
+    const currentClass = classStack[classStack.length - 1]
 
     const goMethodMatch = trimmed.match(/^func\s*\([^)]*\*?\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(/)
     if (goMethodMatch?.[1] && goMethodMatch[2]) {
@@ -1014,11 +1577,17 @@ export function extractGenericCode(filePath: string): ExtractionFragment {
       ownerClassId = ensureGenericOwnerNode(ownerName, stem, filePath, lineNumber, nodes, edges, seenIds)
     } else {
       const qualifiedMethod = qualifiedMethodDefinition(trimmed)
-      const currentClass = classStack[classStack.length - 1]
-      const constructorMatch = currentClass ? trimmed.match(new RegExp(`^(?:public|private|protected|internal|static|final|open|override|virtual|abstract|\\s)*${currentClass.name}\\s*\\(`)) : null
+      const constructorMatch = currentClass
+        ? trimmed.match(new RegExp(`^(?:public|private|protected|internal|static|final|open|override|virtual|abstract|\\s)*${currentClass.name}\\s*\\(`))
+        : null
+      const specialSignature = lightweightFunctionSignature(trimmed)
       if (qualifiedMethod) {
         functionName = qualifiedMethod.functionName
         ownerClassId = ensureGenericOwnerNode(qualifiedMethod.ownerName, stem, filePath, lineNumber, nodes, edges, seenIds)
+      } else if (specialSignature) {
+        functionName = specialSignature.functionName
+        ownerClassId = currentClass?.id
+        inlineBodyText = specialSignature.inlineBodyText
       } else if (constructorMatch && currentClass) {
         functionName = currentClass.name
         ownerClassId = currentClass.id
@@ -1057,9 +1626,13 @@ export function extractGenericCode(filePath: string): ExtractionFragment {
         })
       }
 
-      const inlineBodyIndex = trimmed.indexOf('=>') >= 0 ? trimmed.indexOf('=>') + 2 : trimmed.indexOf('{') >= 0 ? trimmed.indexOf('{') + 1 : -1
-      if (inlineBodyIndex >= 0) {
-        addGenericCallsFromText(trimmed.slice(inlineBodyIndex), functionId, lineNumber, pendingCalls, ownerClassId, stem)
+      if (inlineBodyText && inlineBodyText.trim()) {
+        addGenericCallsFromText(inlineBodyText, functionId, lineNumber, pendingCalls, ownerClassId, stem)
+      } else {
+        const inlineBodyIndex = trimmed.indexOf('=>') >= 0 ? trimmed.indexOf('=>') + 2 : trimmed.indexOf('{') >= 0 ? trimmed.indexOf('{') + 1 : -1
+        if (inlineBodyIndex >= 0) {
+          addGenericCallsFromText(trimmed.slice(inlineBodyIndex), functionId, lineNumber, pendingCalls, ownerClassId, stem)
+        }
       }
 
       braceDepth = nextBraceDepth
@@ -1230,6 +1803,9 @@ export function extractPython(filePath: string): ExtractionFragment {
   })
 
   addResolvedCalls(edges, pendingCalls, nodes, filePath, methodIdsByClass)
+  const rationale = extractPythonRationale(filePath)
+  nodes.push(...rationale.nodes)
+  edges.push(...rationale.edges)
 
   const validNodeIds = new Set(nodes.map((node) => node.id))
   return {
@@ -1299,7 +1875,7 @@ export function extractRuby(filePath: string): ExtractionFragment {
       return
     }
 
-    const classMatch = trimmed.match(/^class\s+([A-Za-z_][A-Za-z0-9_:]*)(?:\s*<\s*([A-Za-z_][A-Za-z0-9_:]*))?/) 
+    const classMatch = trimmed.match(/^class\s+([A-Za-z_][A-Za-z0-9_:]*)(?:\s*<\s*([A-Za-z_][A-Za-z0-9_:]*))?/)
     if (classMatch?.[1]) {
       const className = classMatch[1].split('::').at(-1)
       if (!className) {
@@ -1429,8 +2005,7 @@ export function extractLua(filePath: string): ExtractionFragment {
       return
     }
 
-    const requireMatch = trimmed.match(/^local\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*require\(["']([^"']+)["']\)/)
-      ?? trimmed.match(/^require\(["']([^"']+)["']\)/)
+    const requireMatch = trimmed.match(/^local\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*require\(["']([^"']+)["']\)/) ?? trimmed.match(/^require\(["']([^"']+)["']\)/)
     if (requireMatch?.[1]) {
       addEdge(edges, createEdge(fileNodeId, _makeId(normalizeImportTarget(requireMatch[1])), 'imports', filePath, lineNumber))
       return
@@ -1707,8 +2282,7 @@ export function extractJulia(filePath: string): ExtractionFragment {
       return
     }
 
-    const functionMatch = trimmed.match(/^function\s+([A-Za-z_][A-Za-z0-9_!]*)\s*\(/)
-      ?? trimmed.match(/^([A-Za-z_][A-Za-z0-9_!]*)\s*\([^=]*\)\s*=/)
+    const functionMatch = trimmed.match(/^function\s+([A-Za-z_][A-Za-z0-9_!]*)\s*\(/) ?? trimmed.match(/^([A-Za-z_][A-Za-z0-9_!]*)\s*\([^=]*\)\s*=/)
     if (functionMatch?.[1]) {
       const functionName = functionMatch[1]
       const functionId = _makeId(stem, functionName)
@@ -1789,8 +2363,7 @@ export function extractPowerShell(filePath: string): ExtractionFragment {
       classStack.pop()
     }
 
-    const importMatch = trimmed.match(/^Import-Module\s+([A-Za-z0-9_.-]+)/i)
-      ?? trimmed.match(/^using\s+module\s+([A-Za-z0-9_.-]+)/i)
+    const importMatch = trimmed.match(/^Import-Module\s+([A-Za-z0-9_.-]+)/i) ?? trimmed.match(/^using\s+module\s+([A-Za-z0-9_.-]+)/i)
     if (importMatch?.[1]) {
       addEdge(edges, createEdge(fileNodeId, _makeId(normalizeImportTarget(importMatch[1])), 'imports', filePath, lineNumber))
       braceDepth += braceDelta(line)
@@ -1900,7 +2473,7 @@ export function extractObjectiveC(filePath: string): ExtractionFragment {
       functionStack.pop()
     }
 
-    const importMatch = trimmed.match(/^#import\s+[<"]([^>"]+)[>"]/) 
+    const importMatch = trimmed.match(/^#import\s+[<"]([^>"]+)[>"]/)
     if (importMatch?.[1]) {
       addEdge(edges, createEdge(fileNodeId, _makeId(normalizeImportTarget(importMatch[1])), 'imports_from', filePath, lineNumber))
       braceDepth += braceDelta(line)
@@ -1924,7 +2497,7 @@ export function extractObjectiveC(filePath: string): ExtractionFragment {
       continue
     }
 
-    const methodMatch = trimmed.match(/^[+-]\s*\([^)]*\)\s*([A-Za-z_][A-Za-z0-9_]*)[^;]*\{/) 
+    const methodMatch = trimmed.match(/^[+-]\s*\([^)]*\)\s*([A-Za-z_][A-Za-z0-9_]*)[^;]*\{/)
     if (methodMatch?.[1] && currentClass) {
       const functionName = methodMatch[1]
       const functionId = _makeId(currentClass.id, functionName)
@@ -1986,6 +2559,360 @@ function scriptKindForPath(filePath: string): ts.ScriptKind {
   }
 }
 
+function namedTreeSitterChildren(node: TreeSitterNode): TreeSitterNode[] {
+  return node.namedChildren.filter((child): child is TreeSitterNode => child !== null)
+}
+
+function treeSitterNodeText(sourceText: string, node: TreeSitterNode | null | undefined): string | null {
+  if (!node) {
+    return null
+  }
+
+  return sourceText.slice(node.startIndex, node.endIndex)
+}
+
+function warnTreeSitterFallback(language: 'go' | 'java'): void {
+  const runtimeError = treeSitterWasmError()
+  const warningKey = `${language}:${runtimeError ?? 'parser-unavailable'}`
+  if (TREE_SITTER_FALLBACK_WARNINGS.has(warningKey)) {
+    return
+  }
+
+  TREE_SITTER_FALLBACK_WARNINGS.add(warningKey)
+  const suffix = runtimeError ? ` (${runtimeError})` : ''
+  console.warn(`[graphify-ts] tree-sitter ${language} parser unavailable; falling back to the generic extractor${suffix}`)
+}
+
+function collectGoImports(node: TreeSitterNode, sourceText: string): string[] {
+  const imports: string[] = []
+  for (const match of sourceText.slice(node.startIndex, node.endIndex).matchAll(/"([^"]+)"/g)) {
+    const importPath = match[1]
+    if (importPath) {
+      imports.push(importPath)
+    }
+  }
+
+  return imports
+}
+
+function goReceiverInfo(sourceText: string, receiverNode: TreeSitterNode | null): { ownerName: string; receiverName?: string } | null {
+  if (!receiverNode) {
+    return null
+  }
+
+  const parameterNode = namedTreeSitterChildren(receiverNode).find((child) => child.type === 'parameter_declaration')
+  if (!parameterNode) {
+    return null
+  }
+
+  const receiverName = treeSitterNodeText(sourceText, parameterNode.childForFieldName('name')) ?? undefined
+  const typeNode = parameterNode.childForFieldName('type')
+  const ownerTypeNode =
+    typeNode?.type === 'pointer_type'
+      ? (namedTreeSitterChildren(typeNode).find((child) => child.type === 'type_identifier') ?? null)
+      : typeNode?.type === 'type_identifier'
+        ? typeNode
+        : (namedTreeSitterChildren(typeNode ?? parameterNode).find((child) => child.type === 'type_identifier') ?? null)
+
+  const ownerName = treeSitterNodeText(sourceText, ownerTypeNode)?.trim()
+  if (!ownerName) {
+    return null
+  }
+
+  return {
+    ownerName,
+    ...(receiverName ? { receiverName } : {}),
+  }
+}
+
+function collectGoCalls(node: TreeSitterNode, sourceText: string, callerId: string, pendingCalls: PendingCall[], receiverName?: string, currentOwnerId?: string): void {
+  if (node.type === 'call_expression') {
+    const functionNode = node.childForFieldName('function')
+    const line = node.startPosition.row + 1
+    if (functionNode?.type === 'identifier') {
+      const calleeName = treeSitterNodeText(sourceText, functionNode)?.trim()
+      if (calleeName) {
+        addPendingCall(pendingCalls, {
+          callerId,
+          calleeName,
+          line,
+        })
+      }
+    } else if (functionNode?.type === 'selector_expression') {
+      const operandNode = functionNode.childForFieldName('operand')
+      const fieldNode = functionNode.childForFieldName('field')
+      const calleeName = treeSitterNodeText(sourceText, fieldNode)?.trim()
+      if (calleeName) {
+        const operandName = treeSitterNodeText(sourceText, operandNode)?.trim()
+        addPendingCall(pendingCalls, {
+          callerId,
+          calleeName,
+          line,
+          preferredClassId: currentOwnerId && receiverName && operandName === receiverName ? currentOwnerId : undefined,
+        })
+      }
+    }
+  }
+
+  for (const child of namedTreeSitterChildren(node)) {
+    collectGoCalls(child, sourceText, callerId, pendingCalls, receiverName, currentOwnerId)
+  }
+}
+
+function extractGoTreeSitter(filePath: string): ExtractionFragment | null {
+  const parser = createTreeSitterWasmParser('go')
+  if (!parser) {
+    return null
+  }
+
+  const sourceText = readFileSync(filePath, 'utf8')
+  const stem = basename(filePath, extname(filePath))
+  const fileNodeId = _makeId(stem)
+  const nodes: ExtractionNode[] = []
+  const edges: ExtractionEdge[] = []
+  const seenIds = new Set<string>()
+  const seenStructuralEdges = new Set<string>()
+  const methodIdsByClass = new Map<string, string>()
+  const pendingCalls: PendingCall[] = []
+  let tree: ReturnType<typeof parser.parse> | null = null
+
+  const ensureOwnerNode = (ownerName: string, line: number): string => {
+    const ownerId = _makeId(stem, ownerName)
+    addNode(nodes, seenIds, createNode(ownerId, ownerName, filePath, line))
+    addUniqueEdge(edges, seenStructuralEdges, createEdge(fileNodeId, ownerId, 'contains', filePath, line))
+    return ownerId
+  }
+
+  const ensureMethodNode = (ownerId: string, methodName: string, line: number): string => {
+    const methodId = _makeId(ownerId, methodName)
+    addNode(nodes, seenIds, createNode(methodId, `.${methodName}()`, filePath, line))
+    addUniqueEdge(edges, seenStructuralEdges, createEdge(ownerId, methodId, 'method', filePath, line))
+    methodIdsByClass.set(`${ownerId}:${methodName.toLowerCase()}`, methodId)
+    return methodId
+  }
+
+  try {
+    tree = parser.parse(sourceText)
+    if (!tree) {
+      return null
+    }
+
+    addNode(nodes, seenIds, createNode(fileNodeId, basename(filePath), filePath, 1))
+
+    for (const node of namedTreeSitterChildren(tree.rootNode)) {
+      if (node.type === 'import_declaration') {
+        for (const importPath of collectGoImports(node, sourceText)) {
+          addUniqueEdge(edges, seenStructuralEdges, createEdge(fileNodeId, _makeId(resolveModuleName(importPath)), 'imports_from', filePath, node.startPosition.row + 1))
+        }
+        continue
+      }
+
+      if (node.type === 'type_declaration') {
+        for (const typeSpec of namedTreeSitterChildren(node).filter((child) => child.type === 'type_spec')) {
+          const nameNode = typeSpec.childForFieldName('name')
+          const typeName = treeSitterNodeText(sourceText, nameNode)?.trim()
+          if (!typeName) {
+            continue
+          }
+
+          const ownerId = ensureOwnerNode(typeName, typeSpec.startPosition.row + 1)
+          const typeNode = typeSpec.childForFieldName('type')
+          if (typeNode?.type !== 'interface_type') {
+            continue
+          }
+
+          for (const memberNode of namedTreeSitterChildren(typeNode).filter((child) => child.type === 'method_elem')) {
+            const methodName = treeSitterNodeText(sourceText, memberNode.childForFieldName('name'))?.trim()
+            if (!methodName) {
+              continue
+            }
+
+            ensureMethodNode(ownerId, methodName, memberNode.startPosition.row + 1)
+          }
+        }
+        continue
+      }
+
+      if (node.type === 'method_declaration') {
+        const receiver = goReceiverInfo(sourceText, node.childForFieldName('receiver'))
+        const methodName = treeSitterNodeText(sourceText, node.childForFieldName('name'))?.trim()
+        if (!receiver?.ownerName || !methodName) {
+          continue
+        }
+
+        const ownerId = ensureOwnerNode(receiver.ownerName, node.startPosition.row + 1)
+        const methodId = ensureMethodNode(ownerId, methodName, node.startPosition.row + 1)
+        const bodyNode = node.childForFieldName('body')
+        if (bodyNode) {
+          collectGoCalls(bodyNode, sourceText, methodId, pendingCalls, receiver.receiverName, ownerId)
+        }
+        continue
+      }
+
+      if (node.type === 'function_declaration') {
+        const nameNode = node.childForFieldName('name')
+        const functionName = treeSitterNodeText(sourceText, nameNode)?.trim()
+        if (!functionName) {
+          continue
+        }
+
+        const functionId = _makeId(stem, functionName)
+        addNode(nodes, seenIds, createNode(functionId, `${functionName}()`, filePath, node.startPosition.row + 1))
+        addUniqueEdge(edges, seenStructuralEdges, createEdge(fileNodeId, functionId, 'contains', filePath, node.startPosition.row + 1))
+
+        const bodyNode = node.childForFieldName('body')
+        if (bodyNode) {
+          collectGoCalls(bodyNode, sourceText, functionId, pendingCalls)
+        }
+      }
+    }
+
+    addResolvedCalls(edges, pendingCalls, nodes, filePath, methodIdsByClass)
+    const validNodeIds = new Set(nodes.map((node) => node.id))
+    return {
+      nodes,
+      edges: edges.filter((edge) => validNodeIds.has(edge.source) && (validNodeIds.has(edge.target) || edge.relation === 'imports' || edge.relation === 'imports_from')),
+    }
+  } finally {
+    tree?.delete()
+    parser.delete()
+  }
+}
+
+const JAVA_TYPE_DECLARATIONS = new Set(['class_declaration', 'interface_declaration', 'record_declaration', 'enum_declaration'])
+
+function collectJavaCalls(node: TreeSitterNode, sourceText: string, callerId: string, pendingCalls: PendingCall[]): void {
+  if (node.type === 'method_invocation') {
+    const methodName = treeSitterNodeText(sourceText, node.childForFieldName('name'))?.trim()
+    if (methodName) {
+      addPendingCall(pendingCalls, {
+        callerId,
+        calleeName: methodName,
+        line: node.startPosition.row + 1,
+      })
+    }
+  }
+
+  for (const child of namedTreeSitterChildren(node)) {
+    if (JAVA_TYPE_DECLARATIONS.has(child.type)) {
+      continue
+    }
+
+    collectJavaCalls(child, sourceText, callerId, pendingCalls)
+  }
+}
+
+function extractJavaImportTarget(importText: string): string | null {
+  const match = importText.match(/\bimport\s+(?:static\s+)?([A-Za-z_][A-Za-z0-9_$.]*)\s*;/)
+  if (!match?.[1]) {
+    return null
+  }
+
+  return normalizeImportTarget(match[1])
+}
+
+function extractJavaTreeSitter(filePath: string): ExtractionFragment | null {
+  const parser = createTreeSitterWasmParser('java')
+  if (!parser) {
+    return null
+  }
+
+  const sourceText = readFileSync(filePath, 'utf8')
+  const stem = basename(filePath, extname(filePath))
+  const fileNodeId = _makeId(stem)
+  const nodes: ExtractionNode[] = []
+  const edges: ExtractionEdge[] = []
+  const seenIds = new Set<string>()
+  const seenStructuralEdges = new Set<string>()
+  const methodIdsByClass = new Map<string, string>()
+  const pendingCalls: PendingCall[] = []
+  let tree: ReturnType<typeof parser.parse> | null = null
+
+  const ensureTypeNode = (typeName: string, line: number, parentOwnerId?: string): string => {
+    const typeId = _makeId(stem, typeName)
+    addNode(nodes, seenIds, createNode(typeId, typeName, filePath, line))
+    addUniqueEdge(edges, seenStructuralEdges, createEdge(parentOwnerId ?? fileNodeId, typeId, 'contains', filePath, line))
+    return typeId
+  }
+
+  const ensureMethodNode = (ownerId: string, methodName: string, line: number): string => {
+    const methodId = _makeId(ownerId, methodName)
+    addNode(nodes, seenIds, createNode(methodId, `.${methodName}()`, filePath, line))
+    addUniqueEdge(edges, seenStructuralEdges, createEdge(ownerId, methodId, 'method', filePath, line))
+    methodIdsByClass.set(`${ownerId}:${methodName.toLowerCase()}`, methodId)
+    return methodId
+  }
+
+  const walkTypeDeclaration = (node: TreeSitterNode, parentOwnerId?: string): void => {
+    const nameNode = node.childForFieldName('name')
+    const typeName = treeSitterNodeText(sourceText, nameNode)?.trim()
+    if (!typeName) {
+      return
+    }
+
+    const ownerId = ensureTypeNode(typeName, node.startPosition.row + 1, parentOwnerId)
+    const bodyNode = node.childForFieldName('body')
+    if (!bodyNode) {
+      return
+    }
+
+    for (const child of namedTreeSitterChildren(bodyNode)) {
+      if (JAVA_TYPE_DECLARATIONS.has(child.type)) {
+        walkTypeDeclaration(child, ownerId)
+        continue
+      }
+
+      if (child.type !== 'method_declaration' && child.type !== 'constructor_declaration') {
+        continue
+      }
+
+      const methodName = treeSitterNodeText(sourceText, child.childForFieldName('name'))?.trim() ?? (child.type === 'constructor_declaration' ? typeName : null)
+      if (!methodName) {
+        continue
+      }
+
+      const methodId = ensureMethodNode(ownerId, methodName, child.startPosition.row + 1)
+      const methodBody = child.childForFieldName('body')
+      if (methodBody) {
+        collectJavaCalls(methodBody, sourceText, methodId, pendingCalls)
+      }
+    }
+  }
+
+  try {
+    tree = parser.parse(sourceText)
+    if (!tree) {
+      return null
+    }
+
+    addNode(nodes, seenIds, createNode(fileNodeId, basename(filePath), filePath, 1))
+
+    for (const node of namedTreeSitterChildren(tree.rootNode)) {
+      if (node.type === 'import_declaration') {
+        const importTarget = extractJavaImportTarget(sourceText.slice(node.startIndex, node.endIndex))
+        if (importTarget) {
+          addUniqueEdge(edges, seenStructuralEdges, createEdge(fileNodeId, _makeId(importTarget), 'imports_from', filePath, node.startPosition.row + 1))
+        }
+        continue
+      }
+
+      if (JAVA_TYPE_DECLARATIONS.has(node.type)) {
+        walkTypeDeclaration(node)
+      }
+    }
+
+    addResolvedCalls(edges, pendingCalls, nodes, filePath, methodIdsByClass)
+    const validNodeIds = new Set(nodes.map((node) => node.id))
+    return {
+      nodes,
+      edges: edges.filter((edge) => validNodeIds.has(edge.source) && (validNodeIds.has(edge.target) || edge.relation === 'imports' || edge.relation === 'imports_from')),
+    }
+  } finally {
+    tree?.delete()
+    parser.delete()
+  }
+}
+
 export function extractJs(filePath: string): ExtractionFragment {
   const sourceText = readFileSync(filePath, 'utf8')
   const sourceFile = ts.createSourceFile(filePath, sourceText, ts.ScriptTarget.Latest, true, scriptKindForPath(filePath))
@@ -1994,30 +2921,90 @@ export function extractJs(filePath: string): ExtractionFragment {
   const nodes: ExtractionNode[] = []
   const edges: ExtractionEdge[] = []
   const seenIds = new Set<string>()
+  const seenImportEdges = new Set<string>()
   const methodIdsByClass = new Map<string, string>()
   const pendingCalls: PendingCall[] = []
 
   addNode(nodes, seenIds, createNode(fileNodeId, basename(filePath), filePath, 1))
 
-  const addTsCalls = (node: ts.Node, callerId: string, currentClassId?: string): void => {
+  const addTsCalls = (node: ts.Node, callerId: string, currentClassId?: string, isRoot = true): void => {
+    if (
+      !isRoot &&
+      (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isArrowFunction(node) || ts.isMethodDeclaration(node) || ts.isConstructorDeclaration(node))
+    ) {
+      return
+    }
+
     if (ts.isCallExpression(node)) {
+      const line = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1
       const expression = node.expression
-      if (ts.isIdentifier(expression)) {
+      if (expression.kind === ts.SyntaxKind.ImportKeyword) {
+        const [specifier] = node.arguments
+        if (specifier && ts.isStringLiteralLike(specifier)) {
+          addUniqueEdge(edges, seenImportEdges, createEdge(callerId, _makeId(resolveModuleName(specifier.text)), 'imports_from', filePath, line))
+        }
+      } else if (ts.isIdentifier(expression)) {
         addPendingCall(pendingCalls, {
           callerId,
           calleeName: expression.text,
-          line: sourceFile.getLineAndCharacterOfPosition(expression.getStart(sourceFile)).line + 1,
+          line,
         })
       } else if (ts.isPropertyAccessExpression(expression)) {
         addPendingCall(pendingCalls, {
           callerId,
           calleeName: expression.name.text,
-          line: sourceFile.getLineAndCharacterOfPosition(expression.name.getStart(sourceFile)).line + 1,
+          line,
           preferredClassId: expression.expression.kind === ts.SyntaxKind.ThisKeyword ? currentClassId : undefined,
         })
       }
     }
-    ts.forEachChild(node, (child) => addTsCalls(child, callerId, currentClassId))
+    ts.forEachChild(node, (child) => addTsCalls(child, callerId, currentClassId, false))
+  }
+
+  const addNestedTsFunctions = (node: ts.Node, ownerId: string, currentClassId?: string, depth = 0): void => {
+    if (depth >= MAX_TS_NESTED_FUNCTION_DEPTH) {
+      return
+    }
+
+    const visitNested = (candidate: ts.Node): void => {
+      if (ts.isFunctionDeclaration(candidate) && candidate.name) {
+        const functionName = candidate.name.text
+        const functionLine = sourceFile.getLineAndCharacterOfPosition(candidate.name.getStart(sourceFile)).line + 1
+        const functionId = _makeId(ownerId, functionName)
+        addNode(nodes, seenIds, createNode(functionId, `${functionName}()`, filePath, functionLine))
+        addEdge(edges, createEdge(ownerId, functionId, 'contains', filePath, functionLine))
+        if (candidate.body) {
+          addTsCalls(candidate.body, functionId, currentClassId)
+          addNestedTsFunctions(candidate.body, functionId, currentClassId, depth + 1)
+        }
+        return
+      }
+
+      if (ts.isVariableStatement(candidate)) {
+        for (const declaration of candidate.declarationList.declarations) {
+          if (!ts.isIdentifier(declaration.name) || !declaration.initializer) {
+            continue
+          }
+
+          if (!ts.isArrowFunction(declaration.initializer) && !ts.isFunctionExpression(declaration.initializer)) {
+            continue
+          }
+
+          const functionName = declaration.name.text
+          const functionLine = sourceFile.getLineAndCharacterOfPosition(declaration.name.getStart(sourceFile)).line + 1
+          const functionId = _makeId(ownerId, functionName)
+          addNode(nodes, seenIds, createNode(functionId, `${functionName}()`, filePath, functionLine))
+          addEdge(edges, createEdge(ownerId, functionId, 'contains', filePath, functionLine))
+          addTsCalls(declaration.initializer.body, functionId, currentClassId)
+          addNestedTsFunctions(declaration.initializer.body, functionId, currentClassId, depth + 1)
+        }
+        return
+      }
+
+      ts.forEachChild(candidate, visitNested)
+    }
+
+    ts.forEachChild(node, visitNested)
   }
 
   const visitTopLevel = (node: ts.Node): void => {
@@ -2035,6 +3022,28 @@ export function extractJs(filePath: string): ExtractionFragment {
       return
     }
 
+    if (ts.isInterfaceDeclaration(node)) {
+      const interfaceName = node.name.text
+      const interfaceId = _makeId(stem, interfaceName)
+      const interfaceLine = sourceFile.getLineAndCharacterOfPosition(node.name.getStart(sourceFile)).line + 1
+      addNode(nodes, seenIds, createNode(interfaceId, interfaceName, filePath, interfaceLine))
+      addEdge(edges, createEdge(fileNodeId, interfaceId, 'contains', filePath, interfaceLine))
+
+      for (const heritageClause of node.heritageClauses ?? []) {
+        for (const heritageType of heritageClause.types) {
+          const baseName = normalizeTypeName(heritageType.expression.getText(sourceFile))
+          if (!baseName) {
+            continue
+          }
+
+          const baseId = _makeId(stem, baseName)
+          addNode(nodes, seenIds, createNode(baseId, baseName, filePath, interfaceLine))
+          addEdge(edges, createEdge(interfaceId, baseId, 'inherits', filePath, interfaceLine))
+        }
+      }
+      return
+    }
+
     if (ts.isClassDeclaration(node) && node.name) {
       const className = node.name.text
       const classId = _makeId(stem, className)
@@ -2042,8 +3051,45 @@ export function extractJs(filePath: string): ExtractionFragment {
       addNode(nodes, seenIds, createNode(classId, className, filePath, classLine))
       addEdge(edges, createEdge(fileNodeId, classId, 'contains', filePath, classLine))
 
+      for (const heritageClause of node.heritageClauses ?? []) {
+        for (const heritageType of heritageClause.types) {
+          const baseName = normalizeTypeName(heritageType.expression.getText(sourceFile))
+          if (!baseName) {
+            continue
+          }
+
+          const baseId = _makeId(stem, baseName)
+          addNode(nodes, seenIds, createNode(baseId, baseName, filePath, classLine))
+          addEdge(edges, createEdge(classId, baseId, 'inherits', filePath, classLine))
+        }
+      }
+
       for (const member of node.members) {
         if (!ts.isMethodDeclaration(member) && !ts.isConstructorDeclaration(member)) {
+          if (!ts.isPropertyDeclaration(member) || !member.name || !member.initializer) {
+            continue
+          }
+
+          if (!ts.isArrowFunction(member.initializer) && !ts.isFunctionExpression(member.initializer)) {
+            continue
+          }
+
+          const methodName = ts.isIdentifier(member.name)
+            ? member.name.text
+            : ts.isStringLiteral(member.name) || ts.isNumericLiteral(member.name)
+              ? member.name.text
+              : member.name.getText(sourceFile)
+          if (!methodName) {
+            continue
+          }
+
+          const methodLine = sourceFile.getLineAndCharacterOfPosition(member.name.getStart(sourceFile)).line + 1
+          const methodId = _makeId(classId, methodName)
+          addNode(nodes, seenIds, createNode(methodId, `.${methodName}()`, filePath, methodLine))
+          addEdge(edges, createEdge(classId, methodId, 'method', filePath, methodLine))
+          methodIdsByClass.set(`${classId}:${methodName.toLowerCase()}`, methodId)
+          addTsCalls(member.initializer.body, methodId, classId)
+          addNestedTsFunctions(member.initializer.body, methodId, classId)
           continue
         }
 
@@ -2065,6 +3111,7 @@ export function extractJs(filePath: string): ExtractionFragment {
         methodIdsByClass.set(`${classId}:${methodName.toLowerCase()}`, methodId)
         if (member.body) {
           addTsCalls(member.body, methodId, classId)
+          addNestedTsFunctions(member.body, methodId, classId)
         }
       }
       return
@@ -2078,6 +3125,7 @@ export function extractJs(filePath: string): ExtractionFragment {
       addEdge(edges, createEdge(fileNodeId, functionId, 'contains', filePath, functionLine))
       if (node.body) {
         addTsCalls(node.body, functionId)
+        addNestedTsFunctions(node.body, functionId)
       }
       return
     }
@@ -2101,6 +3149,7 @@ export function extractJs(filePath: string): ExtractionFragment {
         const body = declaration.initializer.body
         if (body) {
           addTsCalls(body, functionId)
+          addNestedTsFunctions(body, functionId)
         }
       }
       return
@@ -2180,6 +3229,32 @@ function extractSingleFile(filePath: string, allowedTargets: ReadonlySet<string>
     return extraction
   }
 
+  if (extension === '.go') {
+    const extraction = extractGoTreeSitter(filePath)
+    if (extraction === null) {
+      warnTreeSitterFallback('go')
+      const fallbackExtraction = extractGenericCode(filePath)
+      writeCachedExtraction(filePath, fallbackExtraction)
+      return fallbackExtraction
+    }
+
+    writeCachedExtraction(filePath, extraction)
+    return extraction
+  }
+
+  if (extension === '.java') {
+    const extraction = extractJavaTreeSitter(filePath)
+    if (extraction === null) {
+      warnTreeSitterFallback('java')
+      const fallbackExtraction = extractGenericCode(filePath)
+      writeCachedExtraction(filePath, fallbackExtraction)
+      return fallbackExtraction
+    }
+
+    writeCachedExtraction(filePath, extraction)
+    return extraction
+  }
+
   if (GENERIC_CODE_EXTENSIONS.has(extension)) {
     const extraction = extractGenericCode(filePath)
     writeCachedExtraction(filePath, extraction)
@@ -2208,14 +3283,21 @@ function extractSingleFile(filePath: string, allowedTargets: ReadonlySet<string>
   return { nodes: [], edges: [] }
 }
 
-export function extract(files: string[]): ExtractionData {
+export interface ExtractOptions {
+  allowedTargets?: Iterable<string>
+  contextNodes?: ExtractionNode[]
+}
+
+export function extract(files: string[]): ExtractionData
+export function extract(files: string[], options: ExtractOptions): ExtractionData
+export function extract(files: string[], options: ExtractOptions = {}): ExtractionData {
   const combined: ExtractionData = {
     nodes: [],
     edges: [],
     input_tokens: 0,
     output_tokens: 0,
   }
-  const allowedTargets = new Set(files.map((filePath) => resolve(filePath)))
+  const allowedTargets = new Set([...(options.allowedTargets ?? files)].map((filePath) => resolve(filePath)))
 
   for (const filePath of files) {
     const extraction = extractSingleFile(filePath, allowedTargets)
@@ -2223,7 +3305,15 @@ export function extract(files: string[]): ExtractionData {
     combined.edges.push(...extraction.edges)
   }
 
-  resolveCrossFilePythonImports(files, combined)
+  if (options.contextNodes && options.contextNodes.length > 0) {
+    resolveCrossFilePythonImports(files, {
+      ...combined,
+      nodes: [...combined.nodes, ...options.contextNodes],
+      edges: combined.edges,
+    })
+  } else {
+    resolveCrossFilePythonImports(files, combined)
+  }
 
   return combined
 }

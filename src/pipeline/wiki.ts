@@ -18,12 +18,56 @@ export function safeFilename(name: string): string {
   return candidate.slice(0, 200)
 }
 
+type ConnectionDirection = 'incoming' | 'outgoing' | 'undirected'
+
+interface NodeConnection {
+  neighborId: string
+  direction: ConnectionDirection
+  attributes: Record<string, unknown>
+}
+
+function nodeConnections(graph: KnowledgeGraph, nodeId: string): NodeConnection[] {
+  const directionForUndirected = 'undirected' as const
+  const connections: NodeConnection[] = []
+
+  for (const [source, target, attributes] of graph.edgeEntries()) {
+    if (source === nodeId) {
+      connections.push({
+        neighborId: target,
+        direction: graph.isDirected() ? 'outgoing' : directionForUndirected,
+        attributes,
+      })
+      continue
+    }
+
+    if (target === nodeId) {
+      connections.push({
+        neighborId: source,
+        direction: graph.isDirected() ? 'incoming' : directionForUndirected,
+        attributes,
+      })
+    }
+  }
+
+  return connections
+}
+
+function connectionPrefix(direction: ConnectionDirection): string {
+  if (direction === 'incoming') {
+    return '← '
+  }
+  if (direction === 'outgoing') {
+    return '→ '
+  }
+  return ''
+}
+
 export function crossCommunityLinks(graph: KnowledgeGraph, nodes: string[], ownCommunityId: number, labels: Record<number, string>): Array<[string, number]> {
   const counts = new Map<string, number>()
 
   for (const nodeId of nodes) {
-    for (const neighbor of graph.neighbors(nodeId)) {
-      const neighborAttributes = graph.nodeAttributes(neighbor)
+    for (const connection of nodeConnections(graph, nodeId)) {
+      const neighborAttributes = graph.nodeAttributes(connection.neighborId)
       const community = neighborAttributes.community
       if (typeof community !== 'number' || community === ownCommunityId) {
         continue
@@ -42,8 +86,8 @@ export function communityArticle(graph: KnowledgeGraph, communityId: number, nod
   const confidenceCounts = new Map<string, number>()
 
   for (const nodeId of nodes) {
-    for (const neighbor of graph.neighbors(nodeId)) {
-      const confidence = String(graph.edgeAttributes(nodeId, neighbor).confidence ?? 'EXTRACTED')
+    for (const connection of nodeConnections(graph, nodeId)) {
+      const confidence = String(connection.attributes.confidence ?? 'EXTRACTED')
       confidenceCounts.set(confidence, (confidenceCounts.get(confidence) ?? 0) + 1)
     }
   }
@@ -109,12 +153,13 @@ export function godNodeArticle(graph: KnowledgeGraph, nodeId: string, labels: Re
   const communityName = community !== null ? (labels[community] ?? `Community ${community}`) : null
   const byRelation = new Map<string, string[]>()
 
-  for (const neighbor of [...graph.neighbors(nodeId)].sort((left, right) => graph.degree(right) - graph.degree(left) || left.localeCompare(right))) {
-    const neighborAttributes = graph.nodeAttributes(neighbor)
-    const edgeAttributes = graph.edgeAttributes(nodeId, neighbor)
-    const relation = String(edgeAttributes.relation ?? 'related')
-    const confidence = String(edgeAttributes.confidence ?? '')
-    const target = `[[${String(neighborAttributes.label ?? neighbor)}]]${confidence ? ` \`${confidence}\`` : ''}`
+  for (const connection of [...nodeConnections(graph, nodeId)].sort((left, right) => {
+    return graph.degree(right.neighborId) - graph.degree(left.neighborId) || left.neighborId.localeCompare(right.neighborId)
+  })) {
+    const neighborAttributes = graph.nodeAttributes(connection.neighborId)
+    const relation = String(connection.attributes.relation ?? 'related')
+    const confidence = String(connection.attributes.confidence ?? '')
+    const target = `${connectionPrefix(connection.direction)}[[${String(neighborAttributes.label ?? connection.neighborId)}]]${confidence ? ` \`${confidence}\`` : ''}`
     byRelation.set(relation, [...(byRelation.get(relation) ?? []), target])
   }
 

@@ -9,11 +9,17 @@ import {
   agentsUninstall,
   claudeInstall,
   claudeUninstall,
+  cursorInstall,
+  cursorUninstall,
   defaultInstallPlatform,
+  geminiInstall,
+  geminiUninstall,
   installSkill,
   isAgentPlatform,
   type AgentPlatform,
+  uninstallSkill,
 } from '../infrastructure/install.js'
+import { pushGraphToNeo4j } from '../infrastructure/neo4j.js'
 import { watch as watchGraph } from '../infrastructure/watch.js'
 import { serveGraph } from '../runtime/http-server.js'
 import { serveGraphStdio } from '../runtime/stdio-server.js'
@@ -49,7 +55,13 @@ export interface CliDependencies {
   installHooks: typeof installHooks
   uninstallHooks: typeof uninstallHooks
   hookStatus: typeof hookStatus
+  geminiInstall: typeof geminiInstall
+  geminiUninstall: typeof geminiUninstall
   installSkill: typeof installSkill
+  uninstallSkill: typeof uninstallSkill
+  cursorInstall: typeof cursorInstall
+  cursorUninstall: typeof cursorUninstall
+  pushGraphToNeo4j: typeof pushGraphToNeo4j
   generateGraph: typeof generateGraph
   watchGraph: typeof watchGraph
   serveGraph: typeof serveGraph
@@ -70,7 +82,13 @@ const DEFAULT_DEPENDENCIES: CliDependencies = {
   installHooks,
   uninstallHooks,
   hookStatus,
+  geminiInstall,
+  geminiUninstall,
   installSkill,
+  uninstallSkill,
+  cursorInstall,
+  cursorUninstall,
+  pushGraphToNeo4j,
   generateGraph,
   watchGraph,
   serveGraph,
@@ -93,12 +111,23 @@ export function formatHelp(binaryName = 'graphify-ts'): string {
     '',
     'Commands:',
     '  generate [path]       build graph artifacts for a folder (default .)',
-    '    --update             show incremental change status before rebuilding',
+    '    --update             rebuild incrementally from the manifest, re-extracting changed files only',
     '    --cluster-only       re-cluster an existing graph.json without re-extraction',
     '    --watch              keep watching after the initial build',
+    '    --directed           preserve edge direction (source → target) in the built graph',
     '    --follow-symlinks    include in-root symlink targets',
     '    --debounce S         watch debounce seconds (default 3)',
     '    --no-html            skip graph.html generation',
+    '    --wiki               also export a crawlable wiki to graphify-out/wiki',
+    '    --obsidian           also export an Obsidian vault',
+    '    --obsidian-dir DIR   custom Obsidian vault path (implies --obsidian)',
+    '    --svg                also export graph.svg for static embeds',
+    '    --graphml            also export graph.graphml for graph tools',
+    '    --neo4j              also export cypher.txt for Neo4j import',
+    '    --neo4j-push URI     also push the generated graph directly to Neo4j',
+    '    --neo4j-user USER    Neo4j username (defaults to NEO4J_USER or neo4j)',
+    '    --neo4j-password PW  Neo4j password (or set NEO4J_PASSWORD/.env)',
+    '    --neo4j-database DB  Neo4j database (defaults to NEO4J_DATABASE or neo4j)',
     '  watch [path]          build once, then watch for code/doc changes',
     '    --follow-symlinks    include in-root symlink targets',
     '    --debounce S         watch debounce seconds (default 3)',
@@ -106,6 +135,8 @@ export function formatHelp(binaryName = 'graphify-ts'): string {
     '  serve [graph.json]    serve graph artifacts over HTTP or stdio',
     '    --host H             host interface (default 127.0.0.1)',
     '    --port N             port (default 4173; use 0 for a random port)',
+    '    --transport MODE     choose http or stdio explicitly',
+    '    --http               explicit alias for HTTP transport',
     '    --stdio              serve graph query methods over stdio (JSON lines)',
     '    --mcp                alias for --stdio for installer/runtime parity',
     '  query "<question>"     traverse graph.json for a question',
@@ -128,13 +159,17 @@ export function formatHelp(binaryName = 'graphify-ts'): string {
     '    --nodes N1 N2 ...     source node labels cited in the answer',
     '    --memory-dir DIR      memory directory (default graphify-out/memory)',
     '  benchmark [graph.json] measure token reduction vs naive full-corpus approach',
-    '  install [--platform P] copy skill to platform config dir',
-    '    platforms            claude|windows|codex|opencode|claw|droid|trae|trae-cn',
+    '  install [--platform P] install the platform skill or local graphify config',
+    '    platforms            claude|windows|gemini|cursor|codex|opencode|aider|claw|droid|trae|trae-cn|copilot',
     '  hook [action]          manage git hooks for graphify rebuild reminders',
     '    install              install post-commit and post-checkout hooks',
     '    uninstall            remove graphify hook sections',
     '    status               show whether graphify hooks are installed',
+    '  aider [install|uninstall]   manage local AGENTS.md rules',
     '  claude [install|uninstall]  manage local CLAUDE.md graphify rules',
+    '  cursor [install|uninstall]  manage local Cursor graphify rules',
+    '  gemini [install|uninstall]  manage local GEMINI.md rules and Gemini CLI hook config',
+    '  copilot [install|uninstall] install or remove the GitHub Copilot skill',
     '  codex [install|uninstall]   manage local AGENTS.md + Codex hook rules',
     '  opencode [install|uninstall] manage local AGENTS.md + OpenCode plugin rules',
     '  claw [install|uninstall]    manage local AGENTS.md rules',
@@ -152,9 +187,25 @@ function isGenerateLikeArgument(argument: string): boolean {
     argument === '--update' ||
     argument === '--cluster-only' ||
     argument === '--watch' ||
+    argument === '--directed' ||
     argument === '--follow-symlinks' ||
     argument === '--no-html' ||
+    argument === '--wiki' ||
+    argument === '--obsidian' ||
+    argument === '--svg' ||
+    argument === '--graphml' ||
+    argument === '--neo4j' ||
+    argument === '--neo4j-push' ||
+    argument === '--neo4j-user' ||
+    argument === '--neo4j-password' ||
+    argument === '--neo4j-database' ||
+    argument === '--obsidian-dir' ||
     argument === '--debounce' ||
+    argument.startsWith('--neo4j-push=') ||
+    argument.startsWith('--neo4j-user=') ||
+    argument.startsWith('--neo4j-password=') ||
+    argument.startsWith('--neo4j-database=') ||
+    argument.startsWith('--obsidian-dir=') ||
     argument.startsWith('--debounce=')
   )
 }
@@ -182,6 +233,26 @@ function formatGenerateSummary(result: GenerateGraphResult): string {
 
   if (result.htmlPath) {
     lines.push(`- HTML: ${result.htmlPath}`)
+  }
+
+  if (result.wikiPath) {
+    lines.push(`- Wiki: ${result.wikiPath}`)
+  }
+
+  if (result.obsidianPath) {
+    lines.push(`- Obsidian: ${result.obsidianPath}`)
+  }
+
+  if (result.svgPath) {
+    lines.push(`- SVG: ${result.svgPath}`)
+  }
+
+  if (result.graphmlPath) {
+    lines.push(`- GraphML: ${result.graphmlPath}`)
+  }
+
+  if (result.cypherPath) {
+    lines.push(`- Neo4j Cypher: ${result.cypherPath}`)
   }
 
   if (result.changedFiles > 0 || result.deletedFiles > 0) {
@@ -234,10 +305,29 @@ export async function executeCli(argv: string[], io: CliIO = console, dependenci
       const result = dependencies.generateGraph(options.path, {
         update: options.update,
         clusterOnly: options.clusterOnly,
+        directed: options.directed,
         followSymlinks: options.followSymlinks,
         noHtml: options.noHtml,
+        wiki: options.wiki,
+        obsidian: options.obsidian,
+        obsidianDir: options.obsidianDir,
+        svg: options.svg,
+        graphml: options.graphml,
+        neo4j: options.neo4j,
       })
       io.log(formatGenerateSummary(result))
+
+      if (options.neo4jPushUri) {
+        const graph = dependencies.loadGraph(result.graphPath)
+        const pushResult = await dependencies.pushGraphToNeo4j(graph, {
+          uri: options.neo4jPushUri,
+          user: options.neo4jUser,
+          password: options.neo4jPassword,
+          database: options.neo4jDatabase,
+          projectRoot: result.rootPath,
+        })
+        io.log(`[graphify neo4j] Pushed ${pushResult.nodes} nodes and ${pushResult.edges} edges to ${pushResult.uri} (database ${pushResult.database})`)
+      }
 
       if (options.watch) {
         await dependencies.watchGraph(options.path, options.debounceSeconds, {
@@ -336,7 +426,13 @@ export async function executeCli(argv: string[], io: CliIO = console, dependenci
 
     if (command === 'install') {
       const options = parseInstallArgs(args, defaultInstallPlatform())
-      io.log(dependencies.installSkill(options.platform))
+      if (options.platform === 'gemini') {
+        io.log(dependencies.geminiInstall('.'))
+      } else if (options.platform === 'cursor') {
+        io.log(dependencies.cursorInstall('.'))
+      } else {
+        io.log(dependencies.installSkill(options.platform))
+      }
       return 0
     }
 
@@ -357,6 +453,24 @@ export async function executeCli(argv: string[], io: CliIO = console, dependenci
     if (command === 'claude') {
       const options = parsePlatformActionArgs(command, args)
       io.log(options.action === 'install' ? dependencies.claudeInstall('.') : dependencies.claudeUninstall('.'))
+      return 0
+    }
+
+    if (command === 'cursor') {
+      const options = parsePlatformActionArgs(command, args)
+      io.log(options.action === 'install' ? dependencies.cursorInstall('.') : dependencies.cursorUninstall('.'))
+      return 0
+    }
+
+    if (command === 'gemini') {
+      const options = parsePlatformActionArgs(command, args)
+      io.log(options.action === 'install' ? dependencies.geminiInstall('.') : dependencies.geminiUninstall('.'))
+      return 0
+    }
+
+    if (command === 'copilot') {
+      const options = parsePlatformActionArgs(command, args)
+      io.log(options.action === 'install' ? dependencies.installSkill('copilot') : dependencies.uninstallSkill('copilot'))
       return 0
     }
 

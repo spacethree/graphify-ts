@@ -61,7 +61,18 @@ function createDependencies(): CliDependencies {
     installHooks: () => 'hooks installed',
     uninstallHooks: () => 'hooks removed',
     hookStatus: () => 'post-commit: installed\npost-checkout: installed',
+    geminiInstall: () => 'gemini local rules installed',
+    geminiUninstall: () => 'gemini local rules removed',
     installSkill: (platform) => `installed ${platform}`,
+    uninstallSkill: (platform) => `removed ${platform}`,
+    cursorInstall: () => 'cursor local rules installed',
+    cursorUninstall: () => 'cursor local rules removed',
+    pushGraphToNeo4j: async (_graph, options) => ({
+      uri: options.uri,
+      database: options.database ?? 'neo4j',
+      nodes: 3,
+      edges: 2,
+    }),
     generateGraph: (rootPath = '.', options = {}) => ({
       mode: options.clusterOnly ? 'cluster-only' : options.update ? 'update' : 'generate',
       rootPath: resolve(rootPath),
@@ -69,6 +80,11 @@ function createDependencies(): CliDependencies {
       graphPath: resolve(rootPath, 'graphify-out', 'graph.json'),
       reportPath: resolve(rootPath, 'graphify-out', 'GRAPH_REPORT.md'),
       htmlPath: options.noHtml ? null : resolve(rootPath, 'graphify-out', 'graph.html'),
+      wikiPath: options.wiki ? resolve(rootPath, 'graphify-out', 'wiki') : null,
+      obsidianPath: options.obsidian ? resolve(options.obsidianDir ?? resolve(rootPath, 'graphify-out', 'obsidian')) : null,
+      svgPath: options.svg ? resolve(rootPath, 'graphify-out', 'graph.svg') : null,
+      graphmlPath: options.graphml ? resolve(rootPath, 'graphify-out', 'graph.graphml') : null,
+      cypherPath: options.neo4j ? resolve(rootPath, 'graphify-out', 'cypher.txt') : null,
       totalFiles: 3,
       codeFiles: 2,
       nonCodeFiles: 1,
@@ -201,19 +217,67 @@ describe('cli parser', () => {
       update: false,
       clusterOnly: false,
       watch: false,
+      directed: false,
       followSymlinks: false,
       debounceSeconds: 3,
       noHtml: false,
+      wiki: false,
+      obsidian: false,
+      obsidianDir: null,
+      svg: false,
+      graphml: false,
+      neo4j: false,
+      neo4jPushUri: null,
+      neo4jUser: null,
+      neo4jPassword: null,
+      neo4jDatabase: null,
     })
 
-    expect(parseGenerateArgs(['src', '--update', '--watch', '--follow-symlinks', '--debounce', '1.5', '--no-html'])).toEqual({
+    expect(
+      parseGenerateArgs([
+        'src',
+        '--update',
+        '--watch',
+        '--directed',
+        '--follow-symlinks',
+        '--debounce',
+        '1.5',
+        '--no-html',
+        '--wiki',
+        '--obsidian',
+        '--obsidian-dir',
+        'vault',
+        '--svg',
+        '--graphml',
+        '--neo4j',
+        '--neo4j-push',
+        'bolt://localhost:7687',
+        '--neo4j-user',
+        'neo4j',
+        '--neo4j-password',
+        'secret',
+        '--neo4j-database',
+        'graphify',
+      ]),
+    ).toEqual({
       path: 'src',
       update: true,
       clusterOnly: false,
       watch: true,
+      directed: true,
       followSymlinks: true,
       debounceSeconds: 1.5,
       noHtml: true,
+      wiki: true,
+      obsidian: true,
+      obsidianDir: 'vault',
+      svg: true,
+      graphml: true,
+      neo4j: true,
+      neo4jPushUri: 'bolt://localhost:7687',
+      neo4jUser: 'neo4j',
+      neo4jPassword: 'secret',
+      neo4jDatabase: 'graphify',
     })
 
     expect(() => parseGenerateArgs(['src', 'other'])).toThrow('Usage: graphify-ts generate')
@@ -253,7 +317,22 @@ describe('cli parser', () => {
       transport: 'stdio',
     })
 
+    expect(parseServeArgs(['graph.json', '--transport', 'stdio'])).toEqual({
+      graphPath: 'graph.json',
+      host: '127.0.0.1',
+      port: 4173,
+      transport: 'stdio',
+    })
+
+    expect(parseServeArgs(['graph.json', '--http'])).toEqual({
+      graphPath: 'graph.json',
+      host: '127.0.0.1',
+      port: 4173,
+      transport: 'http',
+    })
+
     expect(() => parseServeArgs(['--port', '70000'])).toThrow('must be between 0 and 65535')
+    expect(() => parseServeArgs(['--transport', 'socket'])).toThrow('error: --transport must be one of http, stdio')
   })
 
   it('parses hook args', () => {
@@ -265,11 +344,19 @@ describe('cli parser', () => {
 
   it('parses install args and platform actions', () => {
     expect(parseInstallArgs([], 'claude')).toEqual({ platform: 'claude' })
+    expect(parseInstallArgs(['--platform', 'aider'], 'claude')).toEqual({ platform: 'aider' })
+    expect(parseInstallArgs(['--platform', 'gemini'], 'claude')).toEqual({ platform: 'gemini' })
     expect(parseInstallArgs(['--platform', 'codex'], 'claude')).toEqual({ platform: 'codex' })
+    expect(parseInstallArgs(['--platform=copilot'], 'claude')).toEqual({ platform: 'copilot' })
+    expect(parseInstallArgs(['--platform=cursor'], 'claude')).toEqual({ platform: 'cursor' })
     expect(parseInstallArgs(['--platform=windows'], 'claude')).toEqual({ platform: 'windows' })
     expect(() => parseInstallArgs(['--platform', 'unknown'], 'claude')).toThrow("error: unknown platform 'unknown'")
 
     expect(parsePlatformActionArgs('claude', ['install'])).toEqual({ action: 'install' })
+    expect(parsePlatformActionArgs('aider', ['install'])).toEqual({ action: 'install' })
+    expect(parsePlatformActionArgs('gemini', ['install'])).toEqual({ action: 'install' })
+    expect(parsePlatformActionArgs('copilot', ['uninstall'])).toEqual({ action: 'uninstall' })
+    expect(parsePlatformActionArgs('cursor', ['uninstall'])).toEqual({ action: 'uninstall' })
     expect(parsePlatformActionArgs('codex', ['uninstall'])).toEqual({ action: 'uninstall' })
     expect(() => parsePlatformActionArgs('trae', [])).toThrow('Usage: graphify-ts trae [install|uninstall]')
   })
@@ -292,6 +379,15 @@ describe('cli main', () => {
     expect(help).toContain('generate [path]')
     expect(help).toContain('watch [path]')
     expect(help).toContain('serve [graph.json]')
+    expect(help).toContain('--directed')
+    expect(help).toContain('--wiki')
+    expect(help).toContain('--obsidian')
+    expect(help).toContain('--svg')
+    expect(help).toContain('--graphml')
+    expect(help).toContain('--neo4j')
+    expect(help).toContain('--neo4j-push')
+    expect(help).toContain('--transport')
+    expect(help).toContain('--http')
     expect(help).toContain('--stdio')
     expect(help).toContain('--mcp')
     expect(help).toContain('query "<question>"')
@@ -302,7 +398,11 @@ describe('cli main', () => {
     expect(help).toContain('benchmark [graph.json]')
     expect(help).toContain('hook [action]')
     expect(help).toContain('install [--platform P]')
+    expect(help).toContain('aider [install|uninstall]')
     expect(help).toContain('claude [install|uninstall]')
+    expect(help).toContain('cursor [install|uninstall]')
+    expect(help).toContain('gemini [install|uninstall]')
+    expect(help).toContain('copilot [install|uninstall]')
     expect(help).toContain('codex [install|uninstall]')
   })
 
@@ -353,6 +453,93 @@ describe('cli main', () => {
     expect(logs[0]).toContain('graph.json')
   })
 
+  it('passes optional export flags through generate commands', async () => {
+    const { io } = createIo()
+    let capturedOptions: Record<string, unknown> | undefined
+    const dependencies = createDependencies()
+    dependencies.generateGraph = (rootPath = '.', options = {}) => {
+      capturedOptions = { rootPath, ...options }
+      return {
+        mode: options.clusterOnly ? 'cluster-only' : options.update ? 'update' : 'generate',
+        rootPath: resolve(rootPath),
+        outputDir: resolve(rootPath, 'graphify-out'),
+        graphPath: resolve(rootPath, 'graphify-out', 'graph.json'),
+        reportPath: resolve(rootPath, 'graphify-out', 'GRAPH_REPORT.md'),
+        htmlPath: options.noHtml ? null : resolve(rootPath, 'graphify-out', 'graph.html'),
+        wikiPath: options.wiki ? resolve(rootPath, 'graphify-out', 'wiki') : null,
+        obsidianPath: options.obsidian ? resolve(options.obsidianDir ?? resolve(rootPath, 'graphify-out', 'obsidian')) : null,
+        svgPath: options.svg ? resolve(rootPath, 'graphify-out', 'graph.svg') : null,
+        graphmlPath: options.graphml ? resolve(rootPath, 'graphify-out', 'graph.graphml') : null,
+        cypherPath: options.neo4j ? resolve(rootPath, 'graphify-out', 'cypher.txt') : null,
+        totalFiles: 3,
+        codeFiles: 2,
+        nonCodeFiles: 1,
+        totalWords: 120,
+        nodeCount: 5,
+        edgeCount: 4,
+        communityCount: 2,
+        changedFiles: 0,
+        deletedFiles: 0,
+        warning: null,
+        notes: [],
+      }
+    }
+
+    const exitCode = await executeCli(
+      ['generate', 'src', '--directed', '--wiki', '--obsidian', '--obsidian-dir', 'vault', '--svg', '--graphml', '--neo4j'],
+      io,
+      dependencies,
+    )
+
+    expect(exitCode).toBe(0)
+    expect(capturedOptions).toEqual({
+      rootPath: 'src',
+      update: false,
+      clusterOnly: false,
+      directed: true,
+      followSymlinks: false,
+      noHtml: false,
+      wiki: true,
+      obsidian: true,
+      obsidianDir: 'vault',
+      svg: true,
+      graphml: true,
+      neo4j: true,
+    })
+  })
+
+  it('pushes the generated graph to neo4j when requested', async () => {
+    const { io, logs } = createIo()
+    const dependencies = createDependencies()
+    let capturedOptions: Parameters<CliDependencies['pushGraphToNeo4j']>[1] | undefined
+
+    dependencies.pushGraphToNeo4j = async (_graph, options) => {
+      capturedOptions = options
+      return {
+        uri: options.uri,
+        database: options.database ?? 'neo4j',
+        nodes: 4,
+        edges: 3,
+      }
+    }
+
+    const exitCode = await executeCli(
+      ['generate', 'src', '--neo4j-push', 'bolt://localhost:7687', '--neo4j-user', 'neo4j', '--neo4j-password', 'secret', '--neo4j-database', 'graphify'],
+      io,
+      dependencies,
+    )
+
+    expect(exitCode).toBe(0)
+    expect(capturedOptions).toMatchObject({
+      uri: 'bolt://localhost:7687',
+      user: 'neo4j',
+      password: 'secret',
+      database: 'graphify',
+      projectRoot: resolve('src'),
+    })
+    expect(logs.some((line) => line.includes('[graphify neo4j] Pushed 4 nodes and 3 edges'))).toBe(true)
+  })
+
   it('treats path-first invocations as generate commands', async () => {
     const { io, logs } = createIo()
 
@@ -400,15 +587,40 @@ describe('cli main', () => {
   it('executes install and platform action commands via injected dependencies', async () => {
     const { io, logs } = createIo()
 
+    const aiderInstallExitCode = await executeCli(['aider', 'install'], io, createDependencies())
+    const installGeminiExitCode = await executeCli(['install', '--platform', 'gemini'], io, createDependencies())
     const installExitCode = await executeCli(['install', '--platform', 'codex'], io, createDependencies())
     const claudeExitCode = await executeCli(['claude', 'install'], io, createDependencies())
+    const geminiInstallExitCode = await executeCli(['gemini', 'install'], io, createDependencies())
+    const geminiUninstallExitCode = await executeCli(['gemini', 'uninstall'], io, createDependencies())
+    const installCursorExitCode = await executeCli(['install', '--platform', 'cursor'], io, createDependencies())
+    const cursorInstallExitCode = await executeCli(['cursor', 'install'], io, createDependencies())
+    const cursorUninstallExitCode = await executeCli(['cursor', 'uninstall'], io, createDependencies())
+    const copilotInstallExitCode = await executeCli(['copilot', 'install'], io, createDependencies())
+    const copilotUninstallExitCode = await executeCli(['copilot', 'uninstall'], io, createDependencies())
     const codexExitCode = await executeCli(['codex', 'uninstall'], io, createDependencies())
 
+    expect(aiderInstallExitCode).toBe(0)
+    expect(installGeminiExitCode).toBe(0)
     expect(installExitCode).toBe(0)
     expect(claudeExitCode).toBe(0)
+    expect(geminiInstallExitCode).toBe(0)
+    expect(geminiUninstallExitCode).toBe(0)
+    expect(installCursorExitCode).toBe(0)
+    expect(cursorInstallExitCode).toBe(0)
+    expect(cursorUninstallExitCode).toBe(0)
+    expect(copilotInstallExitCode).toBe(0)
+    expect(copilotUninstallExitCode).toBe(0)
     expect(codexExitCode).toBe(0)
+    expect(logs).toContain('aider local rules installed')
+    expect(logs).toContain('gemini local rules installed')
     expect(logs).toContain('installed codex')
     expect(logs).toContain('claude local rules installed')
+    expect(logs).toContain('cursor local rules installed')
+    expect(logs).toContain('cursor local rules removed')
+    expect(logs).toContain('gemini local rules removed')
+    expect(logs).toContain('installed copilot')
+    expect(logs).toContain('removed copilot')
     expect(logs).toContain('codex local rules removed')
   })
 

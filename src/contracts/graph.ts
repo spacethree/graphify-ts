@@ -1,28 +1,43 @@
 export type GraphAttributes = Record<string, unknown>
 
+export interface KnowledgeGraphOptions {
+  directed?: boolean
+}
+
 interface StoredEdge {
   source: string
   target: string
   attributes: GraphAttributes
 }
 
-function edgeKey(source: string, target: string): string {
-  return [source, target].sort().join('\u0000')
-}
-
 export class KnowledgeGraph {
-  // Mirrors the Python reference, which uses an undirected NetworkX graph and
-  // stores the original direction on each edge via _src/_tgt attributes.
   public readonly graph: GraphAttributes = {}
+  public readonly directed: boolean
 
   private readonly nodeMap = new Map<string, GraphAttributes>()
   private readonly edgeMap = new Map<string, StoredEdge>()
-  private readonly adjacencyMap = new Map<string, Set<string>>()
+  private readonly successorMap = new Map<string, Set<string>>()
+  private readonly predecessorMap = new Map<string, Set<string>>()
+
+  constructor(options: KnowledgeGraphOptions | boolean = {}) {
+    this.directed = typeof options === 'boolean' ? options : options.directed === true
+    this.graph.directed = this.directed
+  }
+
+  private edgeKey(source: string, target: string): string {
+    if (this.directed) {
+      return `${source}\u0000${target}`
+    }
+    return [source, target].sort().join('\u0000')
+  }
 
   addNode(id: string, attributes: GraphAttributes): void {
     this.nodeMap.set(id, { ...attributes })
-    if (!this.adjacencyMap.has(id)) {
-      this.adjacencyMap.set(id, new Set())
+    if (!this.successorMap.has(id)) {
+      this.successorMap.set(id, new Set())
+    }
+    if (!this.predecessorMap.has(id)) {
+      this.predecessorMap.set(id, new Set())
     }
   }
 
@@ -34,15 +49,24 @@ export class KnowledgeGraph {
       this.addNode(target, {})
     }
 
-    const key = edgeKey(source, target)
+    const key = this.edgeKey(source, target)
     this.edgeMap.set(key, {
       source,
       target,
       attributes: { ...attributes },
     })
 
-    this.adjacencyMap.get(source)?.add(target)
-    this.adjacencyMap.get(target)?.add(source)
+    this.successorMap.get(source)?.add(target)
+    this.predecessorMap.get(target)?.add(source)
+
+    if (!this.directed) {
+      this.successorMap.get(target)?.add(source)
+      this.predecessorMap.get(source)?.add(target)
+    }
+  }
+
+  isDirected(): boolean {
+    return this.directed
   }
 
   hasNode(id: string): boolean {
@@ -70,11 +94,27 @@ export class KnowledgeGraph {
   }
 
   neighbors(id: string): string[] {
-    return [...(this.adjacencyMap.get(id) ?? [])]
+    return [...(this.successorMap.get(id) ?? [])]
+  }
+
+  successors(id: string): string[] {
+    return this.neighbors(id)
+  }
+
+  predecessors(id: string): string[] {
+    return [...(this.predecessorMap.get(id) ?? [])]
+  }
+
+  incidentNeighbors(id: string): string[] {
+    const neighbors = new Set<string>(this.successors(id))
+    for (const predecessor of this.predecessors(id)) {
+      neighbors.add(predecessor)
+    }
+    return [...neighbors]
   }
 
   degree(id: string): number {
-    return this.adjacencyMap.get(id)?.size ?? 0
+    return this.incidentNeighbors(id).length
   }
 
   nodeAttributes(id: string): GraphAttributes {
@@ -86,9 +126,9 @@ export class KnowledgeGraph {
   }
 
   edgeAttributes(source: string, target: string): GraphAttributes {
-    const edge = this.edgeMap.get(edgeKey(source, target))
+    const edge = this.edgeMap.get(this.edgeKey(source, target))
     if (!edge) {
-      throw new Error(`Unknown edge: ${source} <-> ${target}`)
+      throw new Error(`Unknown edge: ${source} ${this.directed ? '->' : '<->'} ${target}`)
     }
     return { ...edge.attributes }
   }

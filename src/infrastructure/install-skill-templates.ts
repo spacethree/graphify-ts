@@ -1,4 +1,4 @@
-import type { InstallPlatform } from './install.js'
+import type { SkillInstallPlatform } from './install.js'
 
 /**
  * Built-in skill template generation for graphify.
@@ -7,16 +7,19 @@ import type { InstallPlatform } from './install.js'
  * npm package stays self-contained even when `assets/skills/` is not shipped. Package
  * assets take precedence when present; these built-in templates are the fallback.
  */
-type PlatformKind = 'default' | 'codex' | 'opencode' | 'claw' | 'droid' | 'trae' | 'windows'
+type PlatformKind = 'default' | 'gemini' | 'codex' | 'opencode' | 'aider' | 'claw' | 'droid' | 'trae' | 'windows'
 
 const CODE_BLOCK_START = '[[[GRAPHIFY_CODE_BLOCK_START]]]'
 const CODE_BLOCK_END = '[[[GRAPHIFY_CODE_BLOCK_END]]]'
 const CODE_SPAN_START = '[[[GRAPHIFY_CODE_SPAN_START]]]'
 const CODE_SPAN_END = '[[[GRAPHIFY_CODE_SPAN_END]]]'
 
-const PLATFORM_KIND_BY_INSTALL_PLATFORM: Record<InstallPlatform, PlatformKind> = {
+const PLATFORM_KIND_BY_INSTALL_PLATFORM: Record<SkillInstallPlatform, PlatformKind> = {
   claude: 'default',
+  gemini: 'gemini',
+  aider: 'aider',
   codex: 'codex',
+  copilot: 'default',
   opencode: 'opencode',
   claw: 'claw',
   droid: 'droid',
@@ -32,6 +35,16 @@ description: any input (code, docs, papers, images) → knowledge graph → clus
 trigger: /graphify
 ---`,
   codex: `---
+name: graphify
+description: any input (code, docs, papers, images) → knowledge graph → clustered communities → HTML + JSON + audit report
+trigger: /graphify
+---`,
+  gemini: `---
+name: graphify
+description: any input (code, docs, papers, images) → knowledge graph → clustered communities → HTML + JSON + audit report
+trigger: /graphify
+---`,
+  aider: `---
 name: graphify
 description: any input (code, docs, papers, images) → knowledge graph → clustered communities → HTML + JSON + audit report
 trigger: /graphify
@@ -75,6 +88,7 @@ ${CODE_BLOCK_START}
 /graphify <path>
 /graphify <path> --mode deep
 /graphify <path> --update
+/graphify <path> --directed
 /graphify <path> --cluster-only
 /graphify <path> --no-viz
 /graphify <path> --svg
@@ -191,6 +205,13 @@ Use ${CODE_SPAN_START}spawn_agent${CODE_SPAN_END} once per chunk and launch all 
 `
   }
 
+  if (kind === 'aider') {
+    return `**Step B2 - Sequential extraction (Aider)**
+
+Multi-agent support is still limited on Aider, so extraction runs sequentially there. Read each uncached file yourself, extract nodes/edges/hyperedges, and accumulate the results carefully instead of pretending parallel workers exist.
+`
+  }
+
   if (kind === 'opencode') {
     return `**Step B2 - Dispatch with OpenCode mentions**
 
@@ -283,6 +304,7 @@ Generate HTML by default unless ${CODE_SPAN_START}--no-viz${CODE_SPAN_END} was g
 Generate Obsidian only when explicitly requested.
 
 Optional exports:
+- ${CODE_SPAN_START}--directed${CODE_SPAN_END} → preserve edge direction in ${CODE_SPAN_START}graph.json${CODE_SPAN_END}, GraphML, queries, and shortest-path traversal while keeping community detection on an undirected connectivity view
 - ${CODE_SPAN_START}--neo4j${CODE_SPAN_END} → Cypher file
 - ${CODE_SPAN_START}--neo4j-push${CODE_SPAN_END} → direct push
 - ${CODE_SPAN_START}--svg${CODE_SPAN_END} → SVG
@@ -304,15 +326,19 @@ function subcommandSection(kind: PlatformKind): string {
   const localConfigTarget =
     kind === 'trae'
       ? 'AGENTS.md (Trae)'
-      : kind === 'claw'
-        ? 'AGENTS.md (OpenClaw)'
-        : kind === 'codex'
-          ? 'AGENTS.md (Codex)'
-          : kind === 'opencode'
-            ? 'AGENTS.md (OpenCode)'
-            : kind === 'droid'
-              ? 'AGENTS.md (Factory Droid)'
-              : 'CLAUDE.md / AGENTS.md'
+      : kind === 'gemini'
+        ? 'GEMINI.md (Gemini CLI)'
+        : kind === 'aider'
+          ? 'AGENTS.md (Aider)'
+          : kind === 'claw'
+            ? 'AGENTS.md (OpenClaw)'
+            : kind === 'codex'
+              ? 'AGENTS.md (Codex)'
+              : kind === 'opencode'
+                ? 'AGENTS.md (OpenCode)'
+                : kind === 'droid'
+                  ? 'AGENTS.md (Factory Droid)'
+                  : 'CLAUDE.md / AGENTS.md'
   return `## Subcommands
 
 - ${CODE_SPAN_START}/graphify query${CODE_SPAN_END} — choose BFS by default, DFS with ${CODE_SPAN_START}--dfs${CODE_SPAN_END}, answer only from the graph, and save the answer back with ${CODE_SPAN_START}save-result${CODE_SPAN_END}.
@@ -381,7 +407,7 @@ function buildSkillDocument(kind: PlatformKind): string {
 /**
  * Generate a complete built-in `SKILL.md` document for the requested install platform.
  */
-export function getBuiltInSkillContent(platform: InstallPlatform): string {
+export function getBuiltInSkillContent(platform: SkillInstallPlatform): string {
   const content = buildSkillDocument(PLATFORM_KIND_BY_INSTALL_PLATFORM[platform])
 
   if (content.trim().length === 0) {

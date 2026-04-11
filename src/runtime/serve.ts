@@ -2,6 +2,7 @@ import { readFileSync, statSync } from 'node:fs'
 
 import { buildFromJson } from '../pipeline/build.js'
 import type { Communities } from '../pipeline/cluster.js'
+import { godNodes } from '../pipeline/analyze.js'
 import { isRecord } from '../shared/guards.js'
 import { sanitizeLabel, validateGraphPath } from '../shared/security.js'
 import { KnowledgeGraph } from '../contracts/graph.js'
@@ -30,12 +31,13 @@ export function loadGraph(graphPath: string): KnowledgeGraph {
   }
 
   const extraction = {
+    directed: parsed.directed === true,
     nodes: Array.isArray(parsed.nodes) ? parsed.nodes : [],
     edges: Array.isArray(parsed.links) ? parsed.links : Array.isArray(parsed.edges) ? parsed.edges : [],
     hyperedges: Array.isArray(parsed.hyperedges) ? parsed.hyperedges : [],
   }
 
-  return buildFromJson(extraction)
+  return buildFromJson(extraction, { directed: extraction.directed })
 }
 
 export function communitiesFromGraph(graph: KnowledgeGraph): Communities {
@@ -274,6 +276,19 @@ export function graphStats(graph: KnowledgeGraph, communities: Communities = com
     `INFERRED: ${Math.round((confidences.filter((confidence) => confidence === 'INFERRED').length / total) * 100)}%`,
     `AMBIGUOUS: ${Math.round((confidences.filter((confidence) => confidence === 'AMBIGUOUS').length / total) * 100)}%`,
   ].join('\n')
+}
+
+export function godNodesSummary(graph: KnowledgeGraph, topN = 10): string {
+  if (topN <= 0) {
+    throw new Error('topN must be positive')
+  }
+
+  const items = godNodes(graph, topN)
+  if (items.length === 0) {
+    return 'No non-file nodes found.'
+  }
+
+  return [`God nodes (${items.length} shown):`, ...items.map((item, index) => `  ${index + 1}. ${item.label} [${item.edges} edges]`)].join('\n')
 }
 
 function shortestPathNodeIds(graph: KnowledgeGraph, sourceNodeId: string, targetNodeId: string, maxDepth: number): string[] | null {

@@ -3,9 +3,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
-import { describe, expect, test } from 'vitest'
+import { describe, expect, test, vi } from 'vitest'
 
 import { generateGraph } from '../../src/infrastructure/generate.js'
+import { loadGraph } from '../../src/runtime/serve.js'
 
 function withTempDir<T>(callback: (tempDir: string) => T): T {
   const tempDir = mkdtempSync(join(tmpdir(), 'graphify-ts-generate-'))
@@ -98,6 +99,81 @@ describe('generateGraph', () => {
       expect(result.changedFiles).toBeGreaterThan(0)
       expect(result.deletedFiles).toBe(0)
       expect(existsSync(join(tempDir, 'graphify-out', 'manifest.json'))).toBe(true)
+    })
+  })
+
+  test('re-extracts only changed files during update while retaining unchanged graph context', async () => {
+    await withTempDirAsync(async (tempDir) => {
+      const sourcePath = join(tempDir, 'main.py')
+      const helperPath = join(tempDir, 'helper.py')
+      writeFileSync(sourcePath, 'def greet():\n    return helper()\n', 'utf8')
+      writeFileSync(helperPath, 'def helper():\n    return 1\n', 'utf8')
+      generateGraph(tempDir)
+
+      await delay(10)
+      writeFileSync(sourcePath, 'def greet():\n    return helper()\n\ndef other():\n    return greet()\n', 'utf8')
+
+      vi.resetModules()
+      const actualExtractModule = await vi.importActual<typeof import('../../src/pipeline/extract.js')>('../../src/pipeline/extract.js')
+      const extractSpy = vi.fn(actualExtractModule.extract)
+      vi.doMock('../../src/pipeline/extract.js', () => ({
+        ...actualExtractModule,
+        extract: extractSpy,
+      }))
+
+      try {
+        const generateModule = await import('../../src/infrastructure/generate.js')
+        const result = generateModule.generateGraph(tempDir, { update: true, noHtml: true })
+        const graph = loadGraph(result.graphPath)
+
+        expect(extractSpy).toHaveBeenCalledTimes(1)
+        expect(extractSpy.mock.calls[0]?.[0]).toEqual([sourcePath])
+        expect(graph.nodeEntries().some(([, attributes]) => attributes.label === 'helper()')).toBe(true)
+        expect(graph.nodeEntries().some(([, attributes]) => attributes.label === 'other()')).toBe(true)
+      } finally {
+        vi.doUnmock('../../src/pipeline/extract.js')
+        vi.resetModules()
+      }
+    })
+  })
+
+  test('writes optional wiki, obsidian, svg, graphml, and cypher artifacts when requested', () => {
+    withTempDir((tempDir) => {
+      writeFileSync(join(tempDir, 'main.py'), 'class Greeter:\n    def hello(self):\n        return 1\n', 'utf8')
+      writeFileSync(join(tempDir, 'README.md'), '# Notes\nSee [Guide](guide.md)\n', 'utf8')
+      writeFileSync(join(tempDir, 'guide.md'), '# Guide\n', 'utf8')
+
+      const obsidianDir = join(tempDir, 'vault')
+      const result = generateGraph(tempDir, {
+        wiki: true,
+        obsidian: true,
+        obsidianDir,
+        svg: true,
+        graphml: true,
+        neo4j: true,
+      })
+
+      expect(existsSync(join(tempDir, 'graphify-out', 'wiki', 'index.md'))).toBe(true)
+      expect(existsSync(join(obsidianDir, '.obsidian', 'graph.json'))).toBe(true)
+      expect(existsSync(join(tempDir, 'graphify-out', 'graph.svg'))).toBe(true)
+      expect(existsSync(join(tempDir, 'graphify-out', 'graph.graphml'))).toBe(true)
+      expect(existsSync(join(tempDir, 'graphify-out', 'cypher.txt'))).toBe(true)
+      expect(result.wikiPath).toBe(join(tempDir, 'graphify-out', 'wiki'))
+      expect(result.obsidianPath).toBe(obsidianDir)
+      expect(result.svgPath).toBe(join(tempDir, 'graphify-out', 'graph.svg'))
+      expect(result.graphmlPath).toBe(join(tempDir, 'graphify-out', 'graph.graphml'))
+      expect(result.cypherPath).toBe(join(tempDir, 'graphify-out', 'cypher.txt'))
+    })
+  })
+
+  test('writes and reloads directed graphs when requested', () => {
+    withTempDir((tempDir) => {
+      writeFileSync(join(tempDir, 'main.py'), 'class Greeter:\n    def hello(self):\n        return helper()\n\ndef helper():\n    return 1\n', 'utf8')
+
+      const result = generateGraph(tempDir, { directed: true, noHtml: true })
+      const graph = loadGraph(result.graphPath)
+
+      expect(graph.isDirected()).toBe(true)
     })
   })
 })

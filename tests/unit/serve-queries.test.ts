@@ -16,6 +16,16 @@ function makeGraph(): KnowledgeGraph {
   return graph
 }
 
+function makeDirectedGraph(): KnowledgeGraph {
+  const graph = new KnowledgeGraph(true)
+  graph.addNode('src', { label: 'source', source_file: 'extract.py', source_location: 'L1', community: 0, file_type: 'code' })
+  graph.addNode('mid', { label: 'middle', source_file: 'cluster.py', source_location: 'L2', community: 0, file_type: 'code' })
+  graph.addNode('sink', { label: 'sink', source_file: 'report.py', source_location: 'L3', community: 1, file_type: 'code' })
+  graph.addEdge('src', 'mid', { relation: 'calls', confidence: 'EXTRACTED', source_file: 'extract.py', _src: 'src', _tgt: 'mid' })
+  graph.addEdge('mid', 'sink', { relation: 'uses', confidence: 'EXTRACTED', source_file: 'cluster.py', _src: 'mid', _tgt: 'sink' })
+  return graph
+}
+
 const COMMUNITIES = { 0: ['n1', 'n2'], 1: ['n3', 'n4'], 2: ['n5'] }
 
 describe('queryGraph', () => {
@@ -38,6 +48,13 @@ describe('queryGraph', () => {
 
   test('returns a no-match message when nothing scores', () => {
     expect(queryGraph(makeGraph(), 'xyzzy plugh', { depth: 2 })).toContain('No matching nodes found')
+  })
+
+  test('does not traverse against edge direction in directed mode', () => {
+    const result = queryGraph(makeDirectedGraph(), 'sink', { depth: 2 })
+    expect(result).toContain('sink')
+    expect(result).not.toContain('middle')
+    expect(result).not.toContain('source')
   })
 })
 
@@ -62,6 +79,12 @@ describe('getNeighbors', () => {
     const result = getNeighbors(makeGraph(), 'cluster', 'imports')
     expect(result).toContain('build')
     expect(result).not.toContain('extract')
+  })
+
+  test('lists only outgoing edges for directed graphs', () => {
+    const result = getNeighbors(makeDirectedGraph(), 'middle')
+    expect(result).toContain('sink')
+    expect(result).not.toContain('source')
   })
 })
 
@@ -105,5 +128,10 @@ describe('shortestPath', () => {
 
   test('rejects invalid max hop values', () => {
     expect(() => shortestPath(makeGraph(), 'extract', 'report', 0)).toThrow(/maxHops/i)
+  })
+
+  test('respects edge direction when searching for shortest paths', () => {
+    const result = shortestPath(makeDirectedGraph(), 'sink', 'source')
+    expect(result).toContain('No path found')
   })
 })

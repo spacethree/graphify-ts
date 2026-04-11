@@ -4,7 +4,7 @@ import { join } from 'node:path'
 
 import { buildFromJson } from '../../src/pipeline/build.js'
 import { cluster } from '../../src/pipeline/cluster.js'
-import { toCypher, toGraphml, toHtml, toJson, toObsidian } from '../../src/pipeline/export.js'
+import { toCypher, toGraphml, toHtml, toJson, toObsidian, toSvg } from '../../src/pipeline/export.js'
 
 const FIXTURES_DIR = join(process.cwd(), 'tests', 'fixtures')
 
@@ -39,6 +39,37 @@ describe('export', () => {
     })
   })
 
+  it('writes directed graph JSON metadata and preserves opposite links', () => {
+    const graph = buildFromJson(
+      {
+        nodes: [
+          { id: 'n1', label: 'A', file_type: 'code', source_file: 'a.py' },
+          { id: 'n2', label: 'B', file_type: 'code', source_file: 'b.py' },
+        ],
+        edges: [
+          { source: 'n1', target: 'n2', relation: 'calls', confidence: 'EXTRACTED', source_file: 'a.py' },
+          { source: 'n2', target: 'n1', relation: 'returns_to', confidence: 'INFERRED', source_file: 'b.py' },
+        ],
+      },
+      { directed: true },
+    )
+
+    withTempDir((tempDir) => {
+      const outputPath = join(tempDir, 'graph.json')
+      toJson(graph, { 0: ['n1', 'n2'] }, outputPath)
+      const data = JSON.parse(readFileSync(outputPath, 'utf8'))
+
+      expect(data.directed).toBe(true)
+      expect(data.links).toHaveLength(2)
+      expect(data.links).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ source: 'n1', target: 'n2', relation: 'calls' }),
+          expect.objectContaining({ source: 'n2', target: 'n1', relation: 'returns_to' }),
+        ]),
+      )
+    })
+  })
+
   it('writes cypher with merge statements', () => {
     const graph = makeGraph()
 
@@ -66,6 +97,49 @@ describe('export', () => {
     })
   })
 
+  it('writes directed graphml exports with directed edge defaults', () => {
+    const graph = buildFromJson(
+      {
+        nodes: [
+          { id: 'n1', label: 'A', file_type: 'code', source_file: 'a.py' },
+          { id: 'n2', label: 'B', file_type: 'code', source_file: 'b.py' },
+        ],
+        edges: [
+          { source: 'n1', target: 'n2', relation: 'calls', confidence: 'EXTRACTED', source_file: 'a.py' },
+          { source: 'n2', target: 'n1', relation: 'returns_to', confidence: 'INFERRED', source_file: 'b.py' },
+        ],
+      },
+      { directed: true },
+    )
+
+    withTempDir((tempDir) => {
+      const outputPath = join(tempDir, 'graph.graphml')
+      toGraphml(graph, { 0: ['n1', 'n2'] }, outputPath)
+      const content = readFileSync(outputPath, 'utf8')
+
+      expect(content).toContain('edgedefault="directed"')
+      expect(content).toContain('source="n1" target="n2"')
+      expect(content).toContain('source="n2" target="n1"')
+    })
+  })
+
+  it('writes svg with node labels and community legend content', () => {
+    const graph = makeGraph()
+    const communities = cluster(graph)
+
+    withTempDir((tempDir) => {
+      const outputPath = join(tempDir, 'graph.svg')
+      toSvg(graph, communities, outputPath, { 0: 'Group 0' })
+      const content = readFileSync(outputPath, 'utf8')
+
+      expect(content).toContain('<svg')
+      expect(content).toContain('Group 0')
+      expect(content).toContain('Transformer')
+      expect(content).toContain('<circle')
+      expect(content).toContain('<line')
+    })
+  })
+
   it('writes html with richer exploration controls and embedded data', () => {
     const graph = makeGraph()
     const communities = cluster(graph)
@@ -84,7 +158,38 @@ describe('export', () => {
       expect(content).toContain('Communities')
       expect(content).toContain('selectNodeById')
       expect(content).toContain('focusCommunity')
+      expect(content).toContain('arrows: EDGE_ARROWS')
+      expect(content).toContain('return [...deduped.values()].sort((left, right) => {')
       expect(content).toContain('Group 0')
+    })
+  })
+
+  it('writes html edge arrow config that matches graph directedness', () => {
+    const undirectedGraph = makeGraph()
+    const directedGraph = buildFromJson(
+      {
+        nodes: [
+          { id: 'n1', label: 'A', file_type: 'code', source_file: 'a.py' },
+          { id: 'n2', label: 'B', file_type: 'code', source_file: 'b.py' },
+        ],
+        edges: [{ source: 'n1', target: 'n2', relation: 'calls', confidence: 'EXTRACTED', source_file: 'a.py' }],
+      },
+      { directed: true },
+    )
+
+    withTempDir((tempDir) => {
+      const undirectedPath = join(tempDir, 'undirected.html')
+      const directedPath = join(tempDir, 'directed.html')
+      toHtml(undirectedGraph, cluster(undirectedGraph), undirectedPath)
+      toHtml(directedGraph, { 0: ['n1', 'n2'] }, directedPath)
+
+      const undirectedContent = readFileSync(undirectedPath, 'utf8')
+      const directedContent = readFileSync(directedPath, 'utf8')
+
+      expect(undirectedContent).toContain('const IS_DIRECTED = false;')
+      expect(undirectedContent).toContain('const EDGE_ARROWS = {};')
+      expect(directedContent).toContain('const IS_DIRECTED = true;')
+      expect(directedContent).toContain('const EDGE_ARROWS = {"to":{"enabled":true,"scaleFactor":0.45}};')
     })
   })
 
@@ -102,6 +207,31 @@ describe('export', () => {
       expect(files.some((fileName) => fileName.endsWith('.md'))).toBe(true)
       expect(files.some((fileName) => fileName.startsWith('_COMMUNITY_'))).toBe(true)
       expect(readFileSync(join(outputPath, '.obsidian', 'graph.json'), 'utf8')).toContain('colorGroups')
+    })
+  })
+
+  it('writes directed Obsidian notes with incoming and outgoing connections', () => {
+    const graph = buildFromJson(
+      {
+        nodes: [
+          { id: 'n1', label: 'Alpha', file_type: 'code', source_file: 'a.py' },
+          { id: 'n2', label: 'Beta', file_type: 'code', source_file: 'b.py' },
+        ],
+        edges: [
+          { source: 'n1', target: 'n2', relation: 'calls', confidence: 'EXTRACTED', source_file: 'a.py' },
+          { source: 'n2', target: 'n1', relation: 'returns_to', confidence: 'INFERRED', source_file: 'b.py' },
+        ],
+      },
+      { directed: true },
+    )
+
+    withTempDir((tempDir) => {
+      const outputPath = join(tempDir, 'obsidian')
+      toObsidian(graph, { 0: ['n1', 'n2'] }, outputPath, { 0: 'Group 0' })
+
+      const note = readFileSync(join(outputPath, 'Alpha.md'), 'utf8')
+      expect(note).toContain('→ [[Beta]] - `calls` [EXTRACTED]')
+      expect(note).toContain('← [[Beta]] - `returns\\_to` [INFERRED]')
     })
   })
 

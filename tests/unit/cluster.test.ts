@@ -43,6 +43,21 @@ describe('cluster', () => {
     expect(Object.keys(communities).length).toBeGreaterThanOrEqual(2)
   })
 
+  it('treats directed graphs like their undirected equivalents for clustering', () => {
+    const directedGraph = new KnowledgeGraph(true)
+    const undirectedGraph = new KnowledgeGraph()
+
+    for (const graph of [directedGraph, undirectedGraph]) {
+      graph.addNode('a', { label: 'A', file_type: 'code', source_file: 'directed.py' })
+      graph.addNode('b', { label: 'B', file_type: 'code', source_file: 'directed.py' })
+      graph.addNode('c', { label: 'C', file_type: 'code', source_file: 'directed.py' })
+      graph.addEdge('a', 'b', { relation: 'calls', confidence: 'EXTRACTED', source_file: 'directed.py', weight: 1.0 })
+      graph.addEdge('b', 'c', { relation: 'calls', confidence: 'EXTRACTED', source_file: 'directed.py', weight: 1.0 })
+    }
+
+    expect(cluster(directedGraph)).toEqual(cluster(undirectedGraph))
+  })
+
   it('scores complete graphs at 1.0 cohesion', () => {
     const graph = new KnowledgeGraph()
     for (const nodeId of ['0', '1', '2', '3']) {

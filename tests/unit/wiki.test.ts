@@ -88,4 +88,37 @@ describe('toWiki', () => {
       expect(existsSync(join(tempDir, 'Community_1.md'))).toBe(true)
     })
   })
+
+  test('counts directed incoming links in community articles', () => {
+    withTempDir((tempDir) => {
+      const directedGraph = new KnowledgeGraph({ directed: true })
+      directedGraph.addNode('n1', { label: 'parse', file_type: 'code', source_file: 'parser.py', community: 0 })
+      directedGraph.addNode('n2', { label: 'render', file_type: 'code', source_file: 'renderer.py', community: 1 })
+      directedGraph.addEdge('n2', 'n1', { relation: 'feeds', confidence: 'INFERRED', weight: 1.0 })
+
+      toWiki(directedGraph, { 0: ['n1'], 1: ['n2'] }, tempDir, { communityLabels: LABELS })
+      const article = readFileSync(join(tempDir, 'Parsing_Layer.md'), 'utf8')
+
+      expect(article).toContain('[[Rendering Layer]]')
+      expect(article).toContain('INFERRED')
+    })
+  })
+
+  test('shows incoming directed relations in god node articles', () => {
+    withTempDir((tempDir) => {
+      const directedGraph = new KnowledgeGraph({ directed: true })
+      directedGraph.addNode('n1', { label: 'parse', file_type: 'code', source_file: 'parser.py', community: 0 })
+      directedGraph.addNode('n2', { label: 'render', file_type: 'code', source_file: 'renderer.py', community: 1 })
+      directedGraph.addEdge('n2', 'n1', { relation: 'feeds', confidence: 'INFERRED', weight: 1.0 })
+
+      toWiki(directedGraph, { 0: ['n1'], 1: ['n2'] }, tempDir, {
+        communityLabels: LABELS,
+        godNodes: [{ id: 'n1', label: 'parse', edges: 1 }],
+      })
+      const article = readFileSync(join(tempDir, 'parse.md'), 'utf8')
+
+      expect(article).toContain('### feeds')
+      expect(article).toContain('← [[render]] `INFERRED`')
+    })
+  })
 })

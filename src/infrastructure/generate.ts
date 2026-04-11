@@ -1,20 +1,30 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
+import { KnowledgeGraph } from '../contracts/graph.js'
+import type { ExtractionData, ExtractionEdge, ExtractionNode, Hyperedge } from '../contracts/types.js'
 import { godNodes, suggestQuestions, surprisingConnections } from '../pipeline/analyze.js'
 import { buildFromJson } from '../pipeline/build.js'
 import { cluster, scoreAll } from '../pipeline/cluster.js'
 import { type DetectResult, detect, detectIncremental, FileType, saveManifest } from '../pipeline/detect.js'
-import { toHtml, toJson } from '../pipeline/export.js'
+import { toCypher, toGraphml, toHtml, toJson, toObsidian, toSvg } from '../pipeline/export.js'
 import { extract } from '../pipeline/extract.js'
 import { generate as generateReport } from '../pipeline/report.js'
+import { toWiki } from '../pipeline/wiki.js'
 import { loadGraph } from '../runtime/serve.js'
 
 export interface GenerateGraphOptions {
   update?: boolean
   clusterOnly?: boolean
+  directed?: boolean
   followSymlinks?: boolean
   noHtml?: boolean
+  wiki?: boolean
+  obsidian?: boolean
+  obsidianDir?: string | null
+  svg?: boolean
+  graphml?: boolean
+  neo4j?: boolean
 }
 
 export interface GenerateGraphResult {
@@ -24,6 +34,11 @@ export interface GenerateGraphResult {
   graphPath: string
   reportPath: string
   htmlPath: string | null
+  wikiPath: string | null
+  obsidianPath: string | null
+  svgPath: string | null
+  graphmlPath: string | null
+  cypherPath: string | null
   totalFiles: number
   codeFiles: number
   nonCodeFiles: number
@@ -53,6 +68,90 @@ function detectionSummary(detection: DetectResult): Record<string, unknown> {
     total_files: detection.total_files,
     total_words: detection.total_words,
     warning: detection.warning,
+  }
+}
+
+function collectExtractableFiles(files: DetectResult['files']): string[] {
+  return [...files[FileType.CODE], ...files[FileType.DOCUMENT], ...files[FileType.PAPER], ...files[FileType.IMAGE]]
+}
+
+function emptyExtraction(): ExtractionData {
+  return {
+    nodes: [],
+    edges: [],
+    hyperedges: [],
+    input_tokens: 0,
+    output_tokens: 0,
+  }
+}
+
+function mergeExtractions(extractions: ExtractionData[]): ExtractionData {
+  return extractions.reduce<ExtractionData>((combined, extraction) => {
+    combined.nodes.push(...extraction.nodes)
+    combined.edges.push(...extraction.edges)
+    if (extraction.hyperedges && extraction.hyperedges.length > 0) {
+      combined.hyperedges = [...(combined.hyperedges ?? []), ...extraction.hyperedges]
+    }
+    combined.input_tokens = (combined.input_tokens ?? 0) + (extraction.input_tokens ?? 0)
+    combined.output_tokens = (combined.output_tokens ?? 0) + (extraction.output_tokens ?? 0)
+    return combined
+  }, emptyExtraction())
+}
+
+function sourceFileKey(sourceFile: unknown): string | null {
+  return typeof sourceFile === 'string' && sourceFile.length > 0 ? resolve(sourceFile) : null
+}
+
+function retainedExtractionFromGraph(graph: KnowledgeGraph, removedSourceFiles: ReadonlySet<string>): ExtractionData {
+  const nodes: ExtractionNode[] = graph
+    .nodeEntries()
+    .filter(([, attributes]) => {
+      const sourceFile = sourceFileKey(attributes.source_file)
+      return !sourceFile || !removedSourceFiles.has(sourceFile)
+    })
+    .map(([id, attributes]) => ({
+      id,
+      ...attributes,
+      label: String(attributes.label ?? id),
+      file_type: String(attributes.file_type ?? 'code') as ExtractionNode['file_type'],
+      source_file: String(attributes.source_file ?? ''),
+    }))
+
+  const nodeIds = new Set(nodes.map((node) => node.id))
+  const edges: ExtractionEdge[] = graph
+    .edgeEntries()
+    .filter(([source, target, attributes]) => {
+      const sourceFile = sourceFileKey(attributes.source_file)
+      return nodeIds.has(source) && nodeIds.has(target) && (!sourceFile || !removedSourceFiles.has(sourceFile))
+    })
+    .map(([source, target, attributes]) => ({
+      source,
+      target,
+      ...attributes,
+      relation: String(attributes.relation ?? 'related_to'),
+      confidence: String(attributes.confidence ?? 'EXTRACTED') as ExtractionEdge['confidence'],
+      source_file: String(attributes.source_file ?? ''),
+    }))
+
+  const hyperedges = (Array.isArray(graph.graph.hyperedges) ? graph.graph.hyperedges : []).filter((hyperedge): hyperedge is Hyperedge => {
+    if (!hyperedge || typeof hyperedge !== 'object' || Array.isArray(hyperedge)) {
+      return false
+    }
+
+    const sourceFile = sourceFileKey((hyperedge as Hyperedge).source_file)
+    if (sourceFile && removedSourceFiles.has(sourceFile)) {
+      return false
+    }
+
+    return Array.isArray((hyperedge as Hyperedge).nodes) && (hyperedge as Hyperedge).nodes.every((nodeId) => nodeIds.has(nodeId))
+  })
+
+  return {
+    nodes,
+    edges,
+    hyperedges,
+    input_tokens: 0,
+    output_tokens: 0,
   }
 }
 
@@ -86,6 +185,11 @@ export function generateGraph(rootPath = '.', options: GenerateGraphOptions = {}
   const graphPath = join(resolvedOutputDir, 'graph.json')
   const reportPath = join(resolvedOutputDir, 'GRAPH_REPORT.md')
   const htmlPath = join(resolvedOutputDir, 'graph.html')
+  const wikiPath = options.wiki ? join(resolvedOutputDir, 'wiki') : null
+  const obsidianPath = options.obsidian ? resolve(options.obsidianDir ?? join(resolvedOutputDir, 'obsidian')) : null
+  const svgPath = options.svg ? join(resolvedOutputDir, 'graph.svg') : null
+  const graphmlPath = options.graphml ? join(resolvedOutputDir, 'graph.graphml') : null
+  const cypherPath = options.neo4j ? join(resolvedOutputDir, 'cypher.txt') : null
   const manifestPath = join(resolvedOutputDir, 'manifest.json')
 
   mkdirSync(resolvedOutputDir, { recursive: true })
@@ -120,14 +224,41 @@ export function generateGraph(rootPath = '.', options: GenerateGraphOptions = {}
   }
 
   const codeFiles = detected.files[FileType.CODE]
-  const extractableFiles = [...codeFiles, ...detected.files[FileType.DOCUMENT], ...detected.files[FileType.PAPER], ...detected.files[FileType.IMAGE]]
+  const extractableFiles = collectExtractableFiles(detected.files)
+  const existingGraph = options.clusterOnly || (options.update && existsSync(graphPath)) ? loadGraph(graphPath) : null
+  const directed = options.directed === true || existingGraph?.isDirected() === true
   const graph = options.clusterOnly
-    ? loadGraph(graphPath)
-    : extractableFiles.length > 0
-      ? buildFromJson(extract(extractableFiles))
-      : options.update && existsSync(graphPath)
-        ? loadGraph(graphPath)
-        : null
+    ? existingGraph
+    : options.update && existingGraph && isIncrementalDetectResult(detected)
+      ? (() => {
+          const changedExtractableFiles = collectExtractableFiles(detected.new_files)
+          const removedSourceFiles = new Set([...changedExtractableFiles, ...detected.deleted_files].map((filePath) => resolve(filePath)))
+
+          if (changedExtractableFiles.length === 0 && detected.deleted_files.length === 0) {
+            notes.push('No changed files detected - reused the existing graph.')
+            return existingGraph
+          }
+
+          const retainedExtraction = retainedExtractionFromGraph(existingGraph, removedSourceFiles)
+          const changedExtraction =
+            changedExtractableFiles.length > 0
+              ? extract(changedExtractableFiles, {
+                  allowedTargets: extractableFiles,
+                  contextNodes: retainedExtraction.nodes,
+                })
+              : emptyExtraction()
+
+          notes.push(
+            `Incremental update re-extracted ${changedExtractableFiles.length} changed file(s) and retained ${new Set(retainedExtraction.nodes.map((node) => node.source_file)).size} unchanged file(s) from the existing graph.`,
+          )
+
+          return buildFromJson(mergeExtractions([retainedExtraction, changedExtraction]), { directed })
+        })()
+      : extractableFiles.length > 0
+        ? buildFromJson(extract(extractableFiles), { directed })
+        : options.update && existingGraph
+          ? existingGraph
+          : null
 
   if (!graph) {
     throw new Error(missingCodeExtractionMessage(detected.total_files))
@@ -161,6 +292,27 @@ export function generateGraph(rootPath = '.', options: GenerateGraphOptions = {}
   if (!options.noHtml) {
     toHtml(graph, communities, htmlPath, communityLabels)
   }
+  if (wikiPath) {
+    const articleCount = toWiki(graph, communities, wikiPath, {
+      communityLabels,
+      cohesion: cohesionScores,
+      godNodes: godNodeList,
+    })
+    notes.push(`Generated ${articleCount} wiki article(s).`)
+  }
+  if (obsidianPath) {
+    const noteCount = toObsidian(graph, communities, obsidianPath, communityLabels, cohesionScores)
+    notes.push(`Generated ${noteCount} Obsidian note(s).`)
+  }
+  if (svgPath) {
+    toSvg(graph, communities, svgPath, communityLabels)
+  }
+  if (graphmlPath) {
+    toGraphml(graph, communities, graphmlPath)
+  }
+  if (cypherPath) {
+    toCypher(graph, cypherPath)
+  }
   saveManifest(detected.files, manifestPath)
 
   return {
@@ -170,6 +322,11 @@ export function generateGraph(rootPath = '.', options: GenerateGraphOptions = {}
     graphPath,
     reportPath,
     htmlPath: options.noHtml ? null : htmlPath,
+    wikiPath,
+    obsidianPath,
+    svgPath,
+    graphmlPath,
+    cypherPath,
     totalFiles: detected.total_files,
     codeFiles: codeFiles.length,
     nonCodeFiles,

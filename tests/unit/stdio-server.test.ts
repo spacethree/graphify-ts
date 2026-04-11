@@ -82,12 +82,90 @@ describe('stdio runtime', () => {
         expect.arrayContaining(['graphify://artifact/graph.json', 'graphify://artifact/GRAPH_REPORT.md', 'graphify://artifact/graph.html']),
       )
       expect((tools?.result as { tools: Array<{ name: string }> }).tools.map((tool) => tool.name)).toEqual(
-        expect.arrayContaining(['query_graph', 'get_node', 'get_neighbors', 'shortest_path', 'explain_node', 'graph_stats', 'get_community']),
+        expect.arrayContaining(['query_graph', 'get_node', 'get_neighbors', 'shortest_path', 'explain_node', 'graph_stats', 'get_community', 'god_nodes']),
       )
       expect((call?.result as { content: Array<{ type: string; text: string }> }).content[0]?.text).toContain('Shortest path (2 hops)')
       expect((promptGet?.result as { messages: Array<{ content: { text: string } }> }).messages[0]?.content.text).toContain('How does auth reach transport?')
       expect((resourceRead?.result as { contents: Array<{ text: string }> }).contents[0]?.text).toContain('# Graph Report')
       expect(initializedNotification).toBeNull()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('supports richer MCP snake_case schemas and tool arguments', () => {
+    const root = createGraphFixtureRoot()
+    try {
+      const graphPath = join(root, 'graph.json')
+
+      const initialize = handleStdioRequest(graphPath, { id: 1, method: 'initialize' })
+      const tools = handleStdioRequest(graphPath, { id: 2, method: 'tools/list' })
+      const query = handleStdioRequest(graphPath, {
+        id: 3,
+        method: 'tools/call',
+        params: {
+          name: 'query_graph',
+          arguments: { question: 'auth transport', token_budget: 256, depth: 3 },
+        },
+      })
+      const neighbors = handleStdioRequest(graphPath, {
+        id: 4,
+        method: 'tools/call',
+        params: {
+          name: 'get_neighbors',
+          arguments: { label: 'HttpClient', relation_filter: 'uses' },
+        },
+      })
+      const path = handleStdioRequest(graphPath, {
+        id: 5,
+        method: 'tools/call',
+        params: {
+          name: 'shortest_path',
+          arguments: { source: 'AuthService', target: 'Transport', max_hops: 3 },
+        },
+      })
+      const community = handleStdioRequest(graphPath, {
+        id: 6,
+        method: 'tools/call',
+        params: {
+          name: 'get_community',
+          arguments: { community_id: 0 },
+        },
+      })
+      const godNodes = handleStdioRequest(graphPath, {
+        id: 7,
+        method: 'tools/call',
+        params: {
+          name: 'god_nodes',
+          arguments: { top_n: 1 },
+        },
+      })
+
+      const toolList = (tools?.result as { tools: Array<{ name: string; inputSchema: { properties: Record<string, unknown> } }> }).tools
+      const queryTool = toolList.find((tool) => tool.name === 'query_graph')
+      const neighborsTool = toolList.find((tool) => tool.name === 'get_neighbors')
+      const pathTool = toolList.find((tool) => tool.name === 'shortest_path')
+      const communityTool = toolList.find((tool) => tool.name === 'get_community')
+
+      expect(initialize).toMatchObject({
+        jsonrpc: '2.0',
+        id: 1,
+        result: {
+          serverInfo: {
+            name: 'graphify-ts',
+            title: 'Graphify TS',
+          },
+        },
+      })
+      expect(queryTool?.inputSchema.properties).toHaveProperty('token_budget')
+      expect(neighborsTool?.inputSchema.properties).toHaveProperty('relation_filter')
+      expect(pathTool?.inputSchema.properties).toHaveProperty('max_hops')
+      expect(communityTool?.inputSchema.properties).toHaveProperty('community_id')
+      expect((query?.result as { content: Array<{ text: string }> }).content[0]?.text).toContain('Traversal:')
+      expect((neighbors?.result as { content: Array<{ text: string }> }).content[0]?.text).toContain('Transport')
+      expect((path?.result as { content: Array<{ text: string }> }).content[0]?.text).toContain('Shortest path (2 hops)')
+      expect((community?.result as { content: Array<{ text: string }> }).content[0]?.text).toContain('Community 0')
+      expect((godNodes?.result as { content: Array<{ text: string }> }).content[0]?.text).toContain('God nodes')
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -123,9 +201,7 @@ describe('stdio runtime', () => {
       writeFileSync(
         graphPath,
         JSON.stringify({
-          nodes: [
-            { id: 'replacement', label: 'ReplacementNode', source_file: 'replacement.ts', source_location: '1', file_type: 'code', community: 0 },
-          ],
+          nodes: [{ id: 'replacement', label: 'ReplacementNode', source_file: 'replacement.ts', source_location: '1', file_type: 'code', community: 0 }],
           edges: [],
           hyperedges: [],
         }),
@@ -172,12 +248,14 @@ describe('stdio runtime', () => {
         outputText += chunk.toString('utf8')
       })
 
-      input.end([
-        JSON.stringify({ id: 1, method: 'stats' }),
-        JSON.stringify({ method: 'notifications/initialized' }),
-        '{bad json',
-        JSON.stringify({ id: 2, method: 'node', params: { label: 'AuthService' } }),
-      ].join('\n'))
+      input.end(
+        [
+          JSON.stringify({ id: 1, method: 'stats' }),
+          JSON.stringify({ method: 'notifications/initialized' }),
+          '{bad json',
+          JSON.stringify({ id: 2, method: 'node', params: { label: 'AuthService' } }),
+        ].join('\n'),
+      )
 
       await serveGraphStdio({
         graphPath,

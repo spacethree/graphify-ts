@@ -74,6 +74,21 @@ describe('bfs', () => {
     const { edges } = bfs(makeGraph(), ['n1'], 1)
     expect(edges.some(([source, target]) => source === 'n1' || target === 'n1')).toBe(true)
   })
+
+  test('traverses outgoing edges only for directed graphs', () => {
+    const graph = new KnowledgeGraph(true)
+    graph.addNode('a', { label: 'A' })
+    graph.addNode('b', { label: 'B' })
+    graph.addNode('c', { label: 'C' })
+    graph.addEdge('a', 'b', { relation: 'calls', confidence: 'EXTRACTED' })
+    graph.addEdge('c', 'a', { relation: 'feeds', confidence: 'EXTRACTED' })
+
+    const { visited } = bfs(graph, ['a'], 2)
+
+    expect(visited.has('a')).toBe(true)
+    expect(visited.has('b')).toBe(true)
+    expect(visited.has('c')).toBe(false)
+  })
 })
 
 describe('dfs', () => {
@@ -124,6 +139,33 @@ describe('loadGraph', () => {
       const graph = loadGraph(graphPath)
       expect(graph.numberOfNodes()).toBe(2)
       expect(graph.numberOfEdges()).toBe(1)
+      expect(graph.isDirected()).toBe(false)
+      expect(graph.neighbors('n1')).toEqual(['n2'])
+      expect(graph.neighbors('n2')).toEqual(['n1'])
+    })
+  })
+
+  test('restores directed graph metadata when loading exported graph json', () => {
+    withTempDir((tempDir) => {
+      const outDir = join(tempDir, 'graphify-out')
+      const graphPath = join(outDir, 'graph.json')
+      mkdirSync(outDir, { recursive: true })
+      const graphData = {
+        directed: true,
+        nodes: [
+          { id: 'n1', label: 'extract', community: 0, source_file: 'extract.py', file_type: 'code' },
+          { id: 'n2', label: 'cluster', community: 0, source_file: 'cluster.py', file_type: 'code' },
+        ],
+        links: [{ source: 'n1', target: 'n2', relation: 'calls', confidence: 'EXTRACTED', source_file: 'extract.py' }],
+        hyperedges: [],
+      }
+      writeFileSync(graphPath, `${JSON.stringify(graphData)}\n`, 'utf8')
+
+      const graph = loadGraph(graphPath)
+      expect(graph.isDirected()).toBe(true)
+      expect(graph.numberOfEdges()).toBe(1)
+      expect(graph.neighbors('n1')).toEqual(['n2'])
+      expect(graph.neighbors('n2')).toEqual([])
     })
   })
 
