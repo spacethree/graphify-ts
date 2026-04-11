@@ -60,6 +60,19 @@ For public releases, consider protecting tags that match release patterns such a
 
 That helps prevent accidental retagging of published releases.
 
+Use annotated semantic-version tags such as `v0.1.0`.
+
+This repository now also includes `.github/workflows/release.yml`, which runs on `v*` tags and verifies:
+
+- tag format
+- `package.json` version alignment
+- matching `CHANGELOG.md` heading
+- local-equivalent validation steps before creating a GitHub release
+
+For the step-by-step maintainer workflow, see:
+
+- [`docs/maintainers/releases.md`](./releases.md)
+
 ## What is already handled in the repo
 
 Committed to the repository:
@@ -70,5 +83,6 @@ Committed to the repository:
 - `.github/pull_request_template.md`
 - `.github/CODEOWNERS`
 - `.github/workflows/ci.yml`
+- `.github/workflows/release.yml`
 
 These files improve contribution flow, but they do **not** replace GitHub branch protection or rulesets.
