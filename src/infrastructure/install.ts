@@ -28,60 +28,65 @@ interface InstallSkillOptions {
   version?: string
 }
 
+const SKILL_SLUG = 'graphify-ts'
+const SKILL_COMMAND = '/graphify-ts'
+const SECTION_MARKER = '## graphify-ts'
+const HOME_SECTION_MARKER = '# graphify-ts'
+
 const PLATFORM_CONFIG: Record<SkillInstallPlatform, InstallPlatformConfig> = {
   claude: {
     skillFile: 'skill.md',
-    skillDestination: '.claude/skills/graphify/SKILL.md',
+    skillDestination: '.claude/skills/graphify-ts/SKILL.md',
     registerClaudeMd: true,
   },
   gemini: {
     skillFile: 'skill.md',
-    skillDestination: '.gemini/skills/graphify/SKILL.md',
+    skillDestination: '.gemini/skills/graphify-ts/SKILL.md',
     registerClaudeMd: false,
   },
   aider: {
     skillFile: 'skill-aider.md',
-    skillDestination: '.aider/graphify/SKILL.md',
+    skillDestination: '.aider/graphify-ts/SKILL.md',
     registerClaudeMd: false,
   },
   codex: {
     skillFile: 'skill-codex.md',
-    skillDestination: '.agents/skills/graphify/SKILL.md',
+    skillDestination: '.agents/skills/graphify-ts/SKILL.md',
     registerClaudeMd: false,
   },
   copilot: {
     skillFile: 'skill-copilot.md',
-    skillDestination: '.copilot/skills/graphify/SKILL.md',
+    skillDestination: '.copilot/skills/graphify-ts/SKILL.md',
     registerClaudeMd: false,
   },
   opencode: {
     skillFile: 'skill-opencode.md',
-    skillDestination: '.config/opencode/skills/graphify/SKILL.md',
+    skillDestination: '.config/opencode/skills/graphify-ts/SKILL.md',
     registerClaudeMd: false,
   },
   claw: {
     skillFile: 'skill-claw.md',
-    skillDestination: '.claw/skills/graphify/SKILL.md',
+    skillDestination: '.claw/skills/graphify-ts/SKILL.md',
     registerClaudeMd: false,
   },
   droid: {
     skillFile: 'skill-droid.md',
-    skillDestination: '.factory/skills/graphify/SKILL.md',
+    skillDestination: '.factory/skills/graphify-ts/SKILL.md',
     registerClaudeMd: false,
   },
   trae: {
     skillFile: 'skill-trae.md',
-    skillDestination: '.trae/skills/graphify/SKILL.md',
+    skillDestination: '.trae/skills/graphify-ts/SKILL.md',
     registerClaudeMd: false,
   },
   'trae-cn': {
     skillFile: 'skill-trae.md',
-    skillDestination: '.trae-cn/skills/graphify/SKILL.md',
+    skillDestination: '.trae-cn/skills/graphify-ts/SKILL.md',
     registerClaudeMd: false,
   },
   windows: {
     skillFile: 'skill-windows.md',
-    skillDestination: '.claude/skills/graphify/SKILL.md',
+    skillDestination: '.claude/skills/graphify-ts/SKILL.md',
     registerClaudeMd: true,
   },
 }
@@ -94,7 +99,7 @@ const SETTINGS_HOOK = {
       type: 'command',
       command:
         `[ -f graphify-out/graph.json ] && ` +
-        `echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"graphify: Knowledge graph exists. Read graphify-out/GRAPH_REPORT.md for god nodes and community structure before searching raw files."}}' || true`,
+        `echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"graphify-ts: Knowledge graph exists. Read graphify-out/GRAPH_REPORT.md for god nodes and community structure before searching raw files."}}' || true`,
     },
   ],
 }
@@ -110,7 +115,7 @@ const CODEX_HOOK = {
             type: 'command',
             command:
               `[ -f graphify-out/graph.json ] && ` +
-              `echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"},"systemMessage":"graphify: Knowledge graph exists. Read graphify-out/GRAPH_REPORT.md for god nodes and community structure before searching raw files."}' || true`,
+              `echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"},"systemMessage":"graphify-ts: Knowledge graph exists. Read graphify-out/GRAPH_REPORT.md for god nodes and community structure before searching raw files."}' || true`,
           },
         ],
       },
@@ -126,31 +131,20 @@ const GEMINI_HOOK = {
       type: 'command',
       command:
         `[ -f graphify-out/graph.json ] && ` +
-        `echo '{"decision":"allow","additionalContext":"graphify: Knowledge graph exists. Read graphify-out/GRAPH_REPORT.md for god nodes and community structure before searching raw files."}' || ` +
+        `echo '{"decision":"allow","additionalContext":"graphify-ts: Knowledge graph exists. Read graphify-out/GRAPH_REPORT.md for god nodes and community structure before searching raw files."}' || ` +
         `echo '{"decision":"allow"}'`,
     },
   ],
 }
 
 const SKILL_REGISTRATION =
-  '\n# graphify\n' +
-  '- **graphify** (`~/.claude/skills/graphify/SKILL.md`) - any input to knowledge graph. Trigger: `/graphify`\n' +
-  'When the user types `/graphify`, invoke the Skill tool with `skill: "graphify"` before doing anything else.\n'
+  `\n${HOME_SECTION_MARKER}\n` +
+  `- **${SKILL_SLUG}** (\`~/.claude/skills/${SKILL_SLUG}/SKILL.md\`) - any input to knowledge graph. Trigger: \`${SKILL_COMMAND}\`\n` +
+  `When the user types \`${SKILL_COMMAND}\`, invoke the Skill tool with \`skill: "${SKILL_SLUG}"\` before doing anything else.\n`
 
-const CLAUDE_MD_SECTION = `## graphify
+const CLAUDE_MD_SECTION = `${SECTION_MARKER}
 
-This project has a graphify knowledge graph at graphify-out/.
-
-Rules:
-- Before answering architecture or codebase questions, read graphify-out/GRAPH_REPORT.md for god nodes and community structure
-- If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
-- Use only Node.js / TypeScript tooling in this repository. Do not install or invoke Python, pip, a legacy Python package, or a deleted reference checkout.
-- After modifying code files in this session, refresh graph artifacts with this repository's TypeScript graphify-ts workflow only.
-`
-
-const AGENTS_MD_SECTION = `## graphify
-
-This project has a graphify knowledge graph at graphify-out/.
+This project has a graphify-ts knowledge graph at graphify-out/.
 
 Rules:
 - Before answering architecture or codebase questions, read graphify-out/GRAPH_REPORT.md for god nodes and community structure
@@ -159,9 +153,9 @@ Rules:
 - After modifying code files in this session, refresh graph artifacts with this repository's TypeScript graphify-ts workflow only.
 `
 
-const GEMINI_MD_SECTION = `## graphify
+const AGENTS_MD_SECTION = `${SECTION_MARKER}
 
-This project has a graphify knowledge graph at graphify-out/.
+This project has a graphify-ts knowledge graph at graphify-out/.
 
 Rules:
 - Before answering architecture or codebase questions, read graphify-out/GRAPH_REPORT.md for god nodes and community structure
@@ -170,13 +164,23 @@ Rules:
 - After modifying code files in this session, refresh graph artifacts with this repository's TypeScript graphify-ts workflow only.
 `
 
-const SECTION_MARKER = '## graphify'
-const SKILL_REGISTRATION_MARKER = '- **graphify**'
+const GEMINI_MD_SECTION = `${SECTION_MARKER}
+
+This project has a graphify-ts knowledge graph at graphify-out/.
+
+Rules:
+- Before answering architecture or codebase questions, read graphify-out/GRAPH_REPORT.md for god nodes and community structure
+- If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
+- Use only Node.js / TypeScript tooling in this repository. Do not install or invoke Python, pip, a legacy Python package, or a deleted reference checkout.
+- After modifying code files in this session, refresh graph artifacts with this repository's TypeScript graphify-ts workflow only.
+`
+
+const SKILL_REGISTRATION_MARKER = '- **graphify-ts**'
 const LOCAL_SKILL_ASSET_DIRECTORY = join('assets', 'skills')
-const OPENCODE_PLUGIN_RELATIVE_PATH = '.opencode/plugins/graphify.js'
+const OPENCODE_PLUGIN_RELATIVE_PATH = '.opencode/plugins/graphify-ts.js'
 const OPENCODE_CONFIG_PATH = 'opencode.json'
-const CURSOR_RULE_RELATIVE_PATH = '.cursor/rules/graphify.mdc'
-const OPENCODE_PLUGIN_JS = `// graphify OpenCode plugin
+const CURSOR_RULE_RELATIVE_PATH = '.cursor/rules/graphify-ts.mdc'
+const OPENCODE_PLUGIN_JS = `// graphify-ts OpenCode plugin
 // Injects a knowledge graph reminder before bash tool calls when the graph exists.
 import { existsSync } from "fs";
 import { join } from "path";
@@ -191,7 +195,7 @@ export const GraphifyPlugin = async ({ directory }) => {
 
       if (input.tool === "bash") {
         output.args.command =
-          'echo "[graphify] Knowledge graph available. Read graphify-out/GRAPH_REPORT.md for god nodes and architecture context before searching files." && ' +
+          'echo "[graphify-ts] Knowledge graph available. Read graphify-out/GRAPH_REPORT.md for god nodes and architecture context before searching files." && ' +
           output.args.command;
         reminded = true;
       }
@@ -201,11 +205,11 @@ export const GraphifyPlugin = async ({ directory }) => {
 `
 
 const CURSOR_RULE = `---
-description: graphify knowledge graph context
+description: graphify-ts knowledge graph context
 alwaysApply: true
 ---
 
-This project has a graphify knowledge graph at graphify-out/.
+This project has a graphify-ts knowledge graph at graphify-out/.
 
 - Before answering architecture or codebase questions, read graphify-out/GRAPH_REPORT.md for god nodes and community structure
 - If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
@@ -273,8 +277,44 @@ function sectionFileDisplayName(targetPath: string): string {
   return 'AGENTS.md'
 }
 
-function removeSection(content: string, marker: string): string {
-  return content.replace(/\n*## graphify\n[\s\S]*?(?=\n## |$)/, '').trimEnd()
+function removeMarkdownSection(content: string, marker: string, nextHeadingPrefix: string): string {
+  const startIndex = content.indexOf(marker)
+  if (startIndex === -1) {
+    return content.trimEnd()
+  }
+
+  const nextHeadingIndex = content.indexOf(`\n${nextHeadingPrefix}`, startIndex + marker.length)
+  const before = content.slice(0, startIndex).trimEnd()
+  const after = nextHeadingIndex === -1 ? '' : content.slice(nextHeadingIndex + 1).trimStart()
+
+  if (before.length > 0 && after.length > 0) {
+    return `${before}\n\n${after}`.trimEnd()
+  }
+
+  return `${before}${after}`.trimEnd()
+}
+
+function removeSection(content: string): string {
+  return removeMarkdownSection(content, SECTION_MARKER, '## ')
+}
+
+function removeHomeSkillRegistration(content: string): string {
+  return removeMarkdownSection(content, HOME_SECTION_MARKER, '# ')
+}
+
+function removeInstalledSkill(destinationPath: string, stopDirectory: string, label = 'skill removed'): string | undefined {
+  if (!existsSync(destinationPath)) {
+    return undefined
+  }
+
+  unlinkSync(destinationPath)
+  const versionPath = join(dirname(destinationPath), '.graphify_version')
+  if (existsSync(versionPath)) {
+    unlinkSync(versionPath)
+  }
+
+  removeEmptyDirectories(dirname(destinationPath), stopDirectory)
+  return `${label} -> ${destinationPath}`
 }
 
 function findPackageRoot(startDirectory = dirname(fileURLToPath(import.meta.url))): string {
@@ -354,12 +394,10 @@ function readPackageVersion(packageRoot: string): string {
 
 function resolveSkillSourcePath(platform: SkillInstallPlatform, packageRoot: string): string | undefined {
   const config = PLATFORM_CONFIG[platform]
-  const candidatePaths = [join(packageRoot, LOCAL_SKILL_ASSET_DIRECTORY, config.skillFile)]
+  const candidatePath = join(packageRoot, LOCAL_SKILL_ASSET_DIRECTORY, config.skillFile)
 
-  for (const candidatePath of candidatePaths) {
-    if (existsSync(candidatePath)) {
-      return candidatePath
-    }
+  if (existsSync(candidatePath)) {
+    return candidatePath
   }
 
   return undefined
@@ -385,9 +423,10 @@ function resolveSkillContent(platform: SkillInstallPlatform, packageRoot: string
 function registerHomeClaudeSkill(homeDir: string): string {
   const claudeMdPath = join(homeDir, '.claude', 'CLAUDE.md')
   ensureParentDirectory(claudeMdPath)
+  const registrationBlock = SKILL_REGISTRATION.trimStart()
 
   if (!existsSync(claudeMdPath)) {
-    writeFileSync(claudeMdPath, SKILL_REGISTRATION.trimStart(), 'utf8')
+    writeFileSync(claudeMdPath, registrationBlock, 'utf8')
     return `CLAUDE.md -> created at ${claudeMdPath}`
   }
 
@@ -396,8 +435,11 @@ function registerHomeClaudeSkill(homeDir: string): string {
     return 'CLAUDE.md -> already registered (no change)'
   }
 
-  writeFileSync(claudeMdPath, `${content.trimEnd()}${SKILL_REGISTRATION}`, 'utf8')
-  return `CLAUDE.md -> skill registered in ${claudeMdPath}`
+  const hasCurrentSection = content.includes(HOME_SECTION_MARKER)
+  const cleanedContent = hasCurrentSection ? removeHomeSkillRegistration(content) : content.trimEnd()
+  const nextContent = cleanedContent.length > 0 ? `${cleanedContent}\n\n${registrationBlock}` : registrationBlock
+  writeFileSync(claudeMdPath, `${nextContent.trimEnd()}\n`, 'utf8')
+  return hasCurrentSection ? `CLAUDE.md -> skill registration updated in ${claudeMdPath}` : `CLAUDE.md -> skill registered in ${claudeMdPath}`
 }
 
 function installClaudeHook(projectDir: string): string {
@@ -406,7 +448,7 @@ function installClaudeHook(projectDir: string): string {
   const hooks = ensureRecord(settings, 'hooks')
   const preToolUse = ensureArray(hooks, 'PreToolUse')
 
-  if (preToolUse.some((hook) => isRecord(hook) && hook.matcher === 'Glob|Grep' && JSON.stringify(hook).includes('graphify'))) {
+  if (preToolUse.some((hook) => isRecord(hook) && hook.matcher === 'Glob|Grep' && JSON.stringify(hook).includes(SKILL_SLUG))) {
     return '.claude/settings.json -> hook already registered (no change)'
   }
 
@@ -424,7 +466,7 @@ function uninstallClaudeHook(projectDir: string): string | undefined {
   const settings = readJsonObject(settingsPath)
   const hooks = ensureRecord(settings, 'hooks')
   const preToolUse = ensureArray(hooks, 'PreToolUse')
-  const filtered = preToolUse.filter((hook) => !(isRecord(hook) && hook.matcher === 'Glob|Grep' && JSON.stringify(hook).includes('graphify')))
+  const filtered = preToolUse.filter((hook) => !(isRecord(hook) && hook.matcher === 'Glob|Grep' && JSON.stringify(hook).includes(SKILL_SLUG)))
 
   if (filtered.length === preToolUse.length) {
     return undefined
@@ -441,7 +483,7 @@ function installGeminiHook(projectDir: string): string {
   const hooks = ensureRecord(settings, 'hooks')
   const beforeTool = ensureArray(hooks, 'BeforeTool')
 
-  if (beforeTool.some((hook) => JSON.stringify(hook).includes('graphify'))) {
+  if (beforeTool.some((hook) => JSON.stringify(hook).includes(SKILL_SLUG))) {
     return '.gemini/settings.json -> BeforeTool hook already registered (no change)'
   }
 
@@ -459,7 +501,7 @@ function uninstallGeminiHook(projectDir: string): string | undefined {
   const settings = readJsonObject(settingsPath)
   const hooks = ensureRecord(settings, 'hooks')
   const beforeTool = ensureArray(hooks, 'BeforeTool')
-  const filtered = beforeTool.filter((hook) => !JSON.stringify(hook).includes('graphify'))
+  const filtered = beforeTool.filter((hook) => !JSON.stringify(hook).includes(SKILL_SLUG))
 
   if (filtered.length === beforeTool.length) {
     return undefined
@@ -476,7 +518,7 @@ function installCodexHook(projectDir: string): string {
   const hooks = ensureRecord(hooksConfig, 'hooks')
   const preToolUse = ensureArray(hooks, 'PreToolUse')
 
-  if (preToolUse.some((hook) => JSON.stringify(hook).includes('graphify'))) {
+  if (preToolUse.some((hook) => JSON.stringify(hook).includes(SKILL_SLUG))) {
     return '.codex/hooks.json -> hook already registered (no change)'
   }
 
@@ -495,7 +537,7 @@ function uninstallCodexHook(projectDir: string): string | undefined {
   const hooksConfig = readJsonObject(hooksPath)
   const hooks = ensureRecord(hooksConfig, 'hooks')
   const preToolUse = ensureArray(hooks, 'PreToolUse')
-  const filtered = preToolUse.filter((hook) => !JSON.stringify(hook).includes('graphify'))
+  const filtered = preToolUse.filter((hook) => !JSON.stringify(hook).includes(SKILL_SLUG))
 
   if (filtered.length === preToolUse.length) {
     return undefined
@@ -514,7 +556,7 @@ function installOpencodePlugin(projectDir: string): string[] {
   const configPath = join(projectDir, OPENCODE_CONFIG_PATH)
   const config = readJsonObject(configPath)
   const plugins = ensureArray(config, 'plugin')
-  const messages = ['.opencode/plugins/graphify.js -> tool.execute.before hook written']
+  const messages = ['.opencode/plugins/graphify-ts.js -> tool.execute.before hook written']
 
   if (!plugins.includes(OPENCODE_PLUGIN_RELATIVE_PATH)) {
     plugins.push(OPENCODE_PLUGIN_RELATIVE_PATH)
@@ -534,7 +576,7 @@ function uninstallOpencodePlugin(projectDir: string): string[] {
 
   if (existsSync(pluginPath)) {
     unlinkSync(pluginPath)
-    messages.push('.opencode/plugins/graphify.js -> removed')
+    messages.push('.opencode/plugins/graphify-ts.js -> removed')
   }
 
   const configPath = join(projectDir, OPENCODE_CONFIG_PATH)
@@ -567,16 +609,16 @@ function writeSection(targetPath: string, section: string): string {
 
   if (!existsSync(targetPath)) {
     writeFileSync(targetPath, section, 'utf8')
-    return `graphify section written to ${targetPath}`
+    return `graphify-ts section written to ${targetPath}`
   }
 
   const content = readFileSync(targetPath, 'utf8')
   if (content.includes(SECTION_MARKER)) {
-    return `graphify already configured in ${fileLabel}`
+    return `graphify-ts already configured in ${fileLabel}`
   }
 
   writeFileSync(targetPath, `${content.trimEnd()}\n\n${section}`, 'utf8')
-  return `graphify section written to ${targetPath}`
+  return `graphify-ts section written to ${targetPath}`
 }
 
 function removeSectionFromFile(targetPath: string): string {
@@ -588,13 +630,13 @@ function removeSectionFromFile(targetPath: string): string {
 
   const content = readFileSync(targetPath, 'utf8')
   if (!content.includes(SECTION_MARKER)) {
-    return `graphify section not found in ${fileLabel} - nothing to do`
+    return `graphify-ts section not found in ${fileLabel} - nothing to do`
   }
 
-  const cleaned = removeSection(content, SECTION_MARKER)
+  const cleaned = removeSection(content)
   if (cleaned.length > 0) {
     writeFileSync(targetPath, `${cleaned}\n`, 'utf8')
-    return `graphify section removed from ${targetPath}`
+    return `graphify-ts section removed from ${targetPath}`
   }
 
   rmSync(targetPath, { force: true })
@@ -628,26 +670,19 @@ export function installSkill(platform: SkillInstallPlatform, options: InstallSki
   if (PLATFORM_CONFIG[platform].registerClaudeMd) {
     messages.push(registerHomeClaudeSkill(homeDir))
   }
-  messages.push('', 'Done. Open your AI coding assistant and type:', '', '  /graphify .')
+  messages.push('', 'Done. Open your AI coding assistant and type:', '', '  /graphify-ts .')
   return messages.join('\n')
 }
 
 export function uninstallSkill(platform: SkillInstallPlatform, options: Pick<InstallSkillOptions, 'homeDir'> = {}): string {
   const homeDir = resolve(options.homeDir ?? homedir())
   const destinationPath = join(homeDir, PLATFORM_CONFIG[platform].skillDestination)
-  const versionPath = join(dirname(destinationPath), '.graphify_version')
   const messages: string[] = []
 
-  if (existsSync(destinationPath)) {
-    unlinkSync(destinationPath)
-    messages.push(`skill removed -> ${destinationPath}`)
+  const removalMessage = removeInstalledSkill(destinationPath, homeDir)
+  if (removalMessage) {
+    messages.push(removalMessage)
   }
-
-  if (existsSync(versionPath)) {
-    unlinkSync(versionPath)
-  }
-
-  removeEmptyDirectories(dirname(destinationPath), homeDir)
 
   if (messages.length === 0) {
     return 'nothing to remove'
@@ -683,21 +718,21 @@ export function cursorInstall(projectDir = '.'): string {
   ensureParentDirectory(rulePath)
 
   if (existsSync(rulePath)) {
-    return `graphify Cursor rule already exists at ${rulePath} (no change)`
+    return `graphify-ts Cursor rule already exists at ${rulePath} (no change)`
   }
 
   writeFileSync(rulePath, CURSOR_RULE, 'utf8')
-  return `graphify Cursor rule written to ${rulePath}`
+  return `graphify-ts Cursor rule written to ${rulePath}`
 }
 
 export function cursorUninstall(projectDir = '.'): string {
   const rulePath = join(resolve(projectDir), CURSOR_RULE_RELATIVE_PATH)
   if (!existsSync(rulePath)) {
-    return 'No graphify Cursor rule found - nothing to do'
+    return 'No graphify-ts Cursor rule found - nothing to do'
   }
 
   unlinkSync(rulePath)
-  return `graphify Cursor rule removed from ${rulePath}`
+  return `graphify-ts Cursor rule removed from ${rulePath}`
 }
 
 export function claudeInstall(projectDir = '.'): string {

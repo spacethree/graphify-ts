@@ -90,6 +90,14 @@ graphify-ts claude install
 graphify-ts generate .
 ```
 
+Then inside Claude Code, use the installed slash command:
+
+```text
+/graphify-ts .
+```
+
+That is the current `graphify-ts` command name for the Claude skill.
+
 If you want Claude to benefit immediately in an existing repo, run `graphify-ts generate .` before you start asking codebase questions. If you are just setting up the integration, installing first and generating afterward is perfectly fine.
 
 ## Quick start on your own project

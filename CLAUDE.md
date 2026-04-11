@@ -1,6 +1,6 @@
-## graphify
+## graphify-ts
 
-This project has a graphify knowledge graph at graphify-out/.
+This project has a graphify-ts knowledge graph at graphify-out/.
 
 Rules:
 - Before answering architecture or codebase questions, read graphify-out/GRAPH_REPORT.md for god nodes and community structure

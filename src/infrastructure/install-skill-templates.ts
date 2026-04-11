@@ -13,6 +13,8 @@ const CODE_BLOCK_START = '[[[GRAPHIFY_CODE_BLOCK_START]]]'
 const CODE_BLOCK_END = '[[[GRAPHIFY_CODE_BLOCK_END]]]'
 const CODE_SPAN_START = '[[[GRAPHIFY_CODE_SPAN_START]]]'
 const CODE_SPAN_END = '[[[GRAPHIFY_CODE_SPAN_END]]]'
+const SKILL_NAME = 'graphify-ts'
+const SKILL_COMMAND = '/graphify-ts'
 
 const PLATFORM_KIND_BY_INSTALL_PLATFORM: Record<SkillInstallPlatform, PlatformKind> = {
   claude: 'default',
@@ -30,86 +32,86 @@ const PLATFORM_KIND_BY_INSTALL_PLATFORM: Record<SkillInstallPlatform, PlatformKi
 
 const FRONTMATTER: Record<PlatformKind, string> = {
   default: `---
-name: graphify
+name: ${SKILL_NAME}
 description: any input (code, docs, papers, images) → knowledge graph → clustered communities → HTML + JSON + audit report
-trigger: /graphify
+trigger: ${SKILL_COMMAND}
 ---`,
   codex: `---
-name: graphify
+name: ${SKILL_NAME}
 description: any input (code, docs, papers, images) → knowledge graph → clustered communities → HTML + JSON + audit report
-trigger: /graphify
+trigger: ${SKILL_COMMAND}
 ---`,
   gemini: `---
-name: graphify
+name: ${SKILL_NAME}
 description: any input (code, docs, papers, images) → knowledge graph → clustered communities → HTML + JSON + audit report
-trigger: /graphify
+trigger: ${SKILL_COMMAND}
 ---`,
   aider: `---
-name: graphify
+name: ${SKILL_NAME}
 description: any input (code, docs, papers, images) → knowledge graph → clustered communities → HTML + JSON + audit report
-trigger: /graphify
+trigger: ${SKILL_COMMAND}
 ---`,
   opencode: `---
-name: graphify
+name: ${SKILL_NAME}
 description: any input (code, docs, papers, images) → knowledge graph → clustered communities → HTML + JSON + audit report
-trigger: /graphify
+trigger: ${SKILL_COMMAND}
 ---`,
   claw: `---
-name: graphify
+name: ${SKILL_NAME}
 description: any input (code, docs, papers, images) → knowledge graph → clustered communities → HTML + JSON + audit report
-trigger: /graphify
+trigger: ${SKILL_COMMAND}
 ---`,
   droid: `---
-name: graphify
+name: ${SKILL_NAME}
 description: any input (code, docs, papers, images) → knowledge graph → clustered communities → HTML + JSON + audit report
-trigger: /graphify
+trigger: ${SKILL_COMMAND}
 ---`,
   trae: `---
-name: graphify
+name: ${SKILL_NAME}
 description: any input (code, docs, papers, images) → knowledge graph → clustered communities → HTML + JSON + audit report
-trigger: /graphify
+trigger: ${SKILL_COMMAND}
 ---`,
   windows: `---
-name: graphify-windows
+name: ${SKILL_NAME}
 description: any input (code, docs, papers, images) → knowledge graph → clustered communities → HTML + JSON + audit report
-trigger: /graphify
+trigger: ${SKILL_COMMAND}
 ---`,
 }
 
 function commonOverview(): string {
-  return `# /graphify
+  return `# ${SKILL_COMMAND}
 
 Turn any folder of files into a navigable knowledge graph with community detection, an honest audit trail, and three outputs: interactive HTML, GraphRAG-ready JSON, and a plain-language GRAPH_REPORT.md.
 
 ## Usage
 
 ${CODE_BLOCK_START}
-/graphify
-/graphify <path>
-/graphify <path> --mode deep
-/graphify <path> --update
-/graphify <path> --directed
-/graphify <path> --cluster-only
-/graphify <path> --no-viz
-/graphify <path> --svg
-/graphify <path> --graphml
-/graphify <path> --neo4j
-/graphify <path> --neo4j-push bolt://localhost:7687
-/graphify <path> --mcp
-/graphify <path> --watch
-/graphify add <url>
-/graphify add <url> --author "Name"
-/graphify add <url> --contributor "Name"
-/graphify query "<question>"
-/graphify query "<question>" --dfs
-/graphify query "<question>" --budget 1500
-/graphify path "AuthModule" "Database"
-/graphify explain "SwinTransformer"
+${SKILL_COMMAND}
+${SKILL_COMMAND} <path>
+${SKILL_COMMAND} <path> --mode deep
+${SKILL_COMMAND} <path> --update
+${SKILL_COMMAND} <path> --directed
+${SKILL_COMMAND} <path> --cluster-only
+${SKILL_COMMAND} <path> --no-viz
+${SKILL_COMMAND} <path> --svg
+${SKILL_COMMAND} <path> --graphml
+${SKILL_COMMAND} <path> --neo4j
+${SKILL_COMMAND} <path> --neo4j-push bolt://localhost:7687
+${SKILL_COMMAND} <path> --mcp
+${SKILL_COMMAND} <path> --watch
+${SKILL_COMMAND} add <url>
+${SKILL_COMMAND} add <url> --author "Name"
+${SKILL_COMMAND} add <url> --contributor "Name"
+${SKILL_COMMAND} query "<question>"
+${SKILL_COMMAND} query "<question>" --dfs
+${SKILL_COMMAND} query "<question>" --budget 1500
+${SKILL_COMMAND} path "AuthModule" "Database"
+${SKILL_COMMAND} explain "SwinTransformer"
 ${CODE_BLOCK_END}
 
-## What graphify is for
+## What ${SKILL_NAME} is for
 
-graphify is built around the /raw-folder workflow: drop anything into a folder—papers, tweets, screenshots, code, notes—and get a structured knowledge graph that shows you what you did not know was connected.
+${SKILL_NAME} is built around the /raw-folder workflow: drop anything into a folder—papers, tweets, screenshots, code, notes—and get a structured knowledge graph that shows you what you did not know was connected.
 
 Three things it does that an assistant alone cannot:
 1. **Persistent graph** — relationships are stored in ${CODE_SPAN_START}graphify-out/graph.json${CODE_SPAN_END} and survive across sessions.
@@ -341,15 +343,15 @@ function subcommandSection(kind: PlatformKind): string {
                   : 'CLAUDE.md / AGENTS.md'
   return `## Subcommands
 
-- ${CODE_SPAN_START}/graphify query${CODE_SPAN_END} — choose BFS by default, DFS with ${CODE_SPAN_START}--dfs${CODE_SPAN_END}, answer only from the graph, and save the answer back with ${CODE_SPAN_START}save-result${CODE_SPAN_END}.
-- ${CODE_SPAN_START}/graphify path${CODE_SPAN_END} — find the shortest path between two concepts, explain each hop, then save the explanation back.
-- ${CODE_SPAN_START}/graphify explain${CODE_SPAN_END} — explain one node and its neighborhood using graph evidence only.
-- ${CODE_SPAN_START}/graphify add${CODE_SPAN_END} — fetch a URL into ${CODE_SPAN_START}./raw${CODE_SPAN_END} and then run ${CODE_SPAN_START}--update${CODE_SPAN_END}.
-- ${CODE_SPAN_START}/graphify --update${CODE_SPAN_END} — incremental re-extraction; skip semantic work when all changed files are code.
-- ${CODE_SPAN_START}/graphify --cluster-only${CODE_SPAN_END} — re-cluster an existing graph.
-- ${CODE_SPAN_START}/graphify --watch${CODE_SPAN_END} — supported code, docs, papers, and images trigger automatic rebuilds; manual refresh is only needed for unsupported future formats.
-- ${CODE_SPAN_START}graphify hook install|uninstall|status${CODE_SPAN_END} — manage git hooks for rebuild reminders.
-- ${CODE_SPAN_START}graphify claude install${CODE_SPAN_END} or the platform-specific installer — write always-on instructions to ${localConfigTarget}.
+- ${CODE_SPAN_START}${SKILL_COMMAND} query${CODE_SPAN_END} — choose BFS by default, DFS with ${CODE_SPAN_START}--dfs${CODE_SPAN_END}, answer only from the graph, and save the answer back with ${CODE_SPAN_START}save-result${CODE_SPAN_END}.
+- ${CODE_SPAN_START}${SKILL_COMMAND} path${CODE_SPAN_END} — find the shortest path between two concepts, explain each hop, then save the explanation back.
+- ${CODE_SPAN_START}${SKILL_COMMAND} explain${CODE_SPAN_END} — explain one node and its neighborhood using graph evidence only.
+- ${CODE_SPAN_START}${SKILL_COMMAND} add${CODE_SPAN_END} — fetch a URL into ${CODE_SPAN_START}./raw${CODE_SPAN_END} and then run ${CODE_SPAN_START}--update${CODE_SPAN_END}.
+- ${CODE_SPAN_START}${SKILL_COMMAND} --update${CODE_SPAN_END} — incremental re-extraction; skip semantic work when all changed files are code.
+- ${CODE_SPAN_START}${SKILL_COMMAND} --cluster-only${CODE_SPAN_END} — re-cluster an existing graph.
+- ${CODE_SPAN_START}${SKILL_COMMAND} --watch${CODE_SPAN_END} — supported code, docs, papers, and images trigger automatic rebuilds; manual refresh is only needed for unsupported future formats.
+- ${CODE_SPAN_START}graphify-ts hook install|uninstall|status${CODE_SPAN_END} — manage git hooks for rebuild reminders.
+- ${CODE_SPAN_START}graphify-ts claude install${CODE_SPAN_END} or the platform-specific installer — write always-on instructions to ${localConfigTarget}.
 `
 }
 

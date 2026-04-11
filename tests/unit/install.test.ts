@@ -19,15 +19,15 @@ import {
 } from '../../src/infrastructure/install.js'
 
 const BUNDLED_ASSET_CONTENT = {
-  'skill.md': '# graphify\n\nLocal bundled Claude skill\n',
-  'skill-aider.md': '# graphify\n\nAider bundled skill.\n',
-  'skill-codex.md': '# graphify\n\nUse spawn_agent for Codex installs.\n',
-  'skill-copilot.md': '# graphify\n\nGitHub Copilot bundled skill.\n',
-  'skill-opencode.md': '# graphify\n\nUse @mention syntax for OpenCode installs.\n',
-  'skill-claw.md': '# graphify\n\nSequential execution guidance for Claw installs.\n',
-  'skill-droid.md': '# graphify\n\nFactory Droid bundled skill.\n',
-  'skill-trae.md': '# graphify\n\nTrae bundled skill.\n',
-  'skill-windows.md': '# graphify\n\nWindows bundled skill.\n',
+  'skill.md': '# graphify-ts\n\nLocal bundled Claude skill\n',
+  'skill-aider.md': '# graphify-ts\n\nAider bundled skill.\n',
+  'skill-codex.md': '# graphify-ts\n\nUse spawn_agent for Codex installs.\n',
+  'skill-copilot.md': '# graphify-ts\n\nGitHub Copilot bundled skill.\n',
+  'skill-opencode.md': '# graphify-ts\n\nUse @mention syntax for OpenCode installs.\n',
+  'skill-claw.md': '# graphify-ts\n\nSequential execution guidance for Claw installs.\n',
+  'skill-droid.md': '# graphify-ts\n\nFactory Droid bundled skill.\n',
+  'skill-trae.md': '# graphify-ts\n\nTrae bundled skill.\n',
+  'skill-windows.md': '# graphify-ts\n\nWindows bundled skill.\n',
 } as const
 
 function withTempDir(callback: (tempDir: string) => void): void {
@@ -79,17 +79,17 @@ describe('install helpers', () => {
 
   it('installs skills into the expected home-directory locations', () => {
     const expectedPaths = {
-      claude: '.claude/skills/graphify/SKILL.md',
-      gemini: '.gemini/skills/graphify/SKILL.md',
-      aider: '.aider/graphify/SKILL.md',
-      codex: '.agents/skills/graphify/SKILL.md',
-      copilot: '.copilot/skills/graphify/SKILL.md',
-      opencode: '.config/opencode/skills/graphify/SKILL.md',
-      claw: '.claw/skills/graphify/SKILL.md',
-      droid: '.factory/skills/graphify/SKILL.md',
-      trae: '.trae/skills/graphify/SKILL.md',
-      'trae-cn': '.trae-cn/skills/graphify/SKILL.md',
-      windows: '.claude/skills/graphify/SKILL.md',
+      claude: '.claude/skills/graphify-ts/SKILL.md',
+      gemini: '.gemini/skills/graphify-ts/SKILL.md',
+      aider: '.aider/graphify-ts/SKILL.md',
+      codex: '.agents/skills/graphify-ts/SKILL.md',
+      copilot: '.copilot/skills/graphify-ts/SKILL.md',
+      opencode: '.config/opencode/skills/graphify-ts/SKILL.md',
+      claw: '.claw/skills/graphify-ts/SKILL.md',
+      droid: '.factory/skills/graphify-ts/SKILL.md',
+      trae: '.trae/skills/graphify-ts/SKILL.md',
+      'trae-cn': '.trae-cn/skills/graphify-ts/SKILL.md',
+      windows: '.claude/skills/graphify-ts/SKILL.md',
     } as const
 
     withBundledPackageRoot((packageRoot) => {
@@ -126,7 +126,7 @@ describe('install helpers', () => {
 
         const secondClaudeMd = readFileSync(join(homeDir, '.claude', 'CLAUDE.md'), 'utf8')
         expect(secondClaudeMd).toBe(firstClaudeMd)
-        expect(countOccurrences(secondClaudeMd, '- **graphify**')).toBe(1)
+        expect(countOccurrences(secondClaudeMd, '- **graphify-ts**')).toBe(1)
       })
     })
   })
@@ -141,12 +141,12 @@ describe('install helpers', () => {
         installSkill('opencode', { homeDir, packageRoot, version: 'test-version' })
         installSkill('claw', { homeDir, packageRoot, version: 'test-version' })
 
-        expect(readFileSync(join(homeDir, '.aider', 'graphify', 'SKILL.md'), 'utf8')).toContain('Aider bundled skill')
-        expect(readFileSync(join(homeDir, '.gemini', 'skills', 'graphify', 'SKILL.md'), 'utf8')).toContain('Local bundled Claude skill')
-        expect(readFileSync(join(homeDir, '.agents', 'skills', 'graphify', 'SKILL.md'), 'utf8')).toContain('spawn_agent')
-        expect(readFileSync(join(homeDir, '.copilot', 'skills', 'graphify', 'SKILL.md'), 'utf8')).toContain('GitHub Copilot bundled skill')
-        expect(readFileSync(join(homeDir, '.config', 'opencode', 'skills', 'graphify', 'SKILL.md'), 'utf8')).toContain('@mention')
-        expect(readFileSync(join(homeDir, '.claw', 'skills', 'graphify', 'SKILL.md'), 'utf8').toLowerCase()).toContain('sequential')
+        expect(readFileSync(join(homeDir, '.aider', 'graphify-ts', 'SKILL.md'), 'utf8')).toContain('Aider bundled skill')
+        expect(readFileSync(join(homeDir, '.gemini', 'skills', 'graphify-ts', 'SKILL.md'), 'utf8')).toContain('Local bundled Claude skill')
+        expect(readFileSync(join(homeDir, '.agents', 'skills', 'graphify-ts', 'SKILL.md'), 'utf8')).toContain('spawn_agent')
+        expect(readFileSync(join(homeDir, '.copilot', 'skills', 'graphify-ts', 'SKILL.md'), 'utf8')).toContain('GitHub Copilot bundled skill')
+        expect(readFileSync(join(homeDir, '.config', 'opencode', 'skills', 'graphify-ts', 'SKILL.md'), 'utf8')).toContain('@mention')
+        expect(readFileSync(join(homeDir, '.claw', 'skills', 'graphify-ts', 'SKILL.md'), 'utf8').toLowerCase()).toContain('sequential')
       })
     })
   })
@@ -158,7 +158,7 @@ describe('install helpers', () => {
 
         installSkill('claude', { homeDir, packageRoot, version: 'test-version' })
 
-        expect(readFileSync(join(homeDir, '.claude', 'skills', 'graphify', 'SKILL.md'), 'utf8')).toContain('Local bundled Claude skill')
+        expect(readFileSync(join(homeDir, '.claude', 'skills', 'graphify-ts', 'SKILL.md'), 'utf8')).toContain('Local bundled Claude skill')
       })
     })
   })
@@ -173,17 +173,17 @@ describe('install helpers', () => {
         installSkill('codex', { homeDir, packageRoot, version: 'test-version' })
         installSkill('copilot', { homeDir, packageRoot, version: 'test-version' })
 
-        const geminiSkill = readFileSync(join(homeDir, '.gemini', 'skills', 'graphify', 'SKILL.md'), 'utf8')
-        const aiderSkill = readFileSync(join(homeDir, '.aider', 'graphify', 'SKILL.md'), 'utf8')
-        const installedSkill = readFileSync(join(homeDir, '.agents', 'skills', 'graphify', 'SKILL.md'), 'utf8')
-        const copilotSkill = readFileSync(join(homeDir, '.copilot', 'skills', 'graphify', 'SKILL.md'), 'utf8')
-        expect(geminiSkill).toMatch(/^---\nname: graphify\n/)
-        expect(geminiSkill).toContain('# /graphify')
-        expect(aiderSkill).toMatch(/^---\nname: graphify\n/)
+        const geminiSkill = readFileSync(join(homeDir, '.gemini', 'skills', 'graphify-ts', 'SKILL.md'), 'utf8')
+        const aiderSkill = readFileSync(join(homeDir, '.aider', 'graphify-ts', 'SKILL.md'), 'utf8')
+        const installedSkill = readFileSync(join(homeDir, '.agents', 'skills', 'graphify-ts', 'SKILL.md'), 'utf8')
+        const copilotSkill = readFileSync(join(homeDir, '.copilot', 'skills', 'graphify-ts', 'SKILL.md'), 'utf8')
+        expect(geminiSkill).toMatch(/^---\nname: graphify-ts\n/)
+        expect(geminiSkill).toContain('# /graphify-ts')
+        expect(aiderSkill).toMatch(/^---\nname: graphify-ts\n/)
         expect(aiderSkill).toContain('Aider')
-        expect(installedSkill).toMatch(/^---\nname: graphify\n/)
+        expect(installedSkill).toMatch(/^---\nname: graphify-ts\n/)
         expect(installedSkill).toContain('spawn_agent')
-        expect(installedSkill).toContain('# /graphify')
+        expect(installedSkill).toContain('# /graphify-ts')
         expect(installedSkill).toContain('## Honesty Rules')
         expect(installedSkill).toContain('```bash')
         expect(installedSkill.length).toBeGreaterThan(1000)
@@ -195,8 +195,8 @@ describe('install helpers', () => {
         expect(installedSkill).not.toContain('python3 -c')
         expect(installedSkill).not.toContain('graphifyy')
         expect(installedSkill).not.toContain('from graphify.')
-        expect(copilotSkill).toMatch(/^---\nname: graphify\n/)
-        expect(copilotSkill).toContain('# /graphify')
+        expect(copilotSkill).toMatch(/^---\nname: graphify-ts\n/)
+        expect(copilotSkill).toContain('# /graphify-ts')
       })
     })
   })
@@ -205,13 +205,13 @@ describe('install helpers', () => {
     withBundledPackageRoot((packageRoot) => {
       withTempDir((homeDir) => {
         installSkill('copilot', { homeDir, packageRoot, version: 'test-version' })
-        expect(existsSync(join(homeDir, '.copilot', 'skills', 'graphify', 'SKILL.md'))).toBe(true)
+        expect(existsSync(join(homeDir, '.copilot', 'skills', 'graphify-ts', 'SKILL.md'))).toBe(true)
 
         const message = uninstallSkill('copilot', { homeDir })
 
         expect(message).toContain('skill removed')
-        expect(existsSync(join(homeDir, '.copilot', 'skills', 'graphify', 'SKILL.md'))).toBe(false)
-        expect(existsSync(join(homeDir, '.copilot', 'skills', 'graphify', '.graphify_version'))).toBe(false)
+        expect(existsSync(join(homeDir, '.copilot', 'skills', 'graphify-ts', 'SKILL.md'))).toBe(false)
+        expect(existsSync(join(homeDir, '.copilot', 'skills', 'graphify-ts', '.graphify_version'))).toBe(false)
       })
     })
   })
@@ -222,17 +222,17 @@ describe('install helpers', () => {
         withTempDir((projectDir) => {
           const installMessage = geminiInstall(projectDir, { homeDir, packageRoot, version: 'test-version' })
           expect(installMessage).toContain('GEMINI.md')
-          expect(existsSync(join(homeDir, '.gemini', 'skills', 'graphify', 'SKILL.md'))).toBe(true)
+          expect(existsSync(join(homeDir, '.gemini', 'skills', 'graphify-ts', 'SKILL.md'))).toBe(true)
           expect(existsSync(join(projectDir, 'GEMINI.md'))).toBe(true)
           expect(existsSync(join(projectDir, '.gemini', 'settings.json'))).toBe(true)
           expect(readFileSync(join(projectDir, 'GEMINI.md'), 'utf8')).toContain('TypeScript tooling')
-          expect(readFileSync(join(projectDir, '.gemini', 'settings.json'), 'utf8')).toContain('graphify')
+          expect(readFileSync(join(projectDir, '.gemini', 'settings.json'), 'utf8')).toContain('graphify-ts')
 
           const uninstallMessage = geminiUninstall(projectDir, { homeDir })
-          expect(uninstallMessage).toMatch(/graphify section removed|GEMINI\.md was empty after removal/)
-          expect(existsSync(join(homeDir, '.gemini', 'skills', 'graphify', 'SKILL.md'))).toBe(false)
+          expect(uninstallMessage).toMatch(/graphify-ts section removed|GEMINI\.md was empty after removal/)
+          expect(existsSync(join(homeDir, '.gemini', 'skills', 'graphify-ts', 'SKILL.md'))).toBe(false)
           expect(existsSync(join(projectDir, 'GEMINI.md'))).toBe(false)
-          expect(readFileSync(join(projectDir, '.gemini', 'settings.json'), 'utf8')).not.toContain('graphify')
+          expect(readFileSync(join(projectDir, '.gemini', 'settings.json'), 'utf8')).not.toContain('graphify-ts')
         })
       })
     })
@@ -250,8 +250,8 @@ describe('install helpers', () => {
 
           expect(readFileSync(join(projectDir, 'GEMINI.md'), 'utf8')).toBe(firstGeminiMd)
           expect(readFileSync(join(projectDir, '.gemini', 'settings.json'), 'utf8')).toBe(firstSettings)
-          expect(countOccurrences(firstGeminiMd, '## graphify')).toBe(1)
-          expect(countOccurrences(firstSettings, 'graphify')).toBeGreaterThan(0)
+          expect(countOccurrences(firstGeminiMd, '## graphify-ts')).toBe(1)
+          expect(countOccurrences(firstSettings, 'graphify-ts')).toBeGreaterThan(0)
         })
       })
     })
@@ -270,13 +270,13 @@ describe('install helpers', () => {
   it('writes and removes the local Cursor rule file', () => {
     withTempDir((projectDir) => {
       const installMessage = cursorInstall(projectDir)
-      expect(installMessage).toContain('.cursor/rules/graphify.mdc')
-      expect(existsSync(join(projectDir, '.cursor', 'rules', 'graphify.mdc'))).toBe(true)
-      expect(readFileSync(join(projectDir, '.cursor', 'rules', 'graphify.mdc'), 'utf8')).toContain('alwaysApply: true')
+      expect(installMessage).toContain('.cursor/rules/graphify-ts.mdc')
+      expect(existsSync(join(projectDir, '.cursor', 'rules', 'graphify-ts.mdc'))).toBe(true)
+      expect(readFileSync(join(projectDir, '.cursor', 'rules', 'graphify-ts.mdc'), 'utf8')).toContain('alwaysApply: true')
 
       const uninstallMessage = cursorUninstall(projectDir)
       expect(uninstallMessage).toContain('removed')
-      expect(existsSync(join(projectDir, '.cursor', 'rules', 'graphify.mdc'))).toBe(false)
+      expect(existsSync(join(projectDir, '.cursor', 'rules', 'graphify-ts.mdc'))).toBe(false)
     })
   })
 
@@ -290,7 +290,7 @@ describe('install helpers', () => {
       expect(readFileSync(join(projectDir, 'CLAUDE.md'), 'utf8')).toContain('TypeScript tooling')
 
       const uninstallMessage = claudeUninstall(projectDir)
-      expect(uninstallMessage).toMatch(/graphify section removed|CLAUDE\.md was empty after removal/)
+      expect(uninstallMessage).toMatch(/graphify-ts section removed|CLAUDE\.md was empty after removal/)
       expect(existsSync(join(projectDir, 'CLAUDE.md'))).toBe(false)
     })
   })
@@ -305,8 +305,8 @@ describe('install helpers', () => {
 
       expect(readFileSync(join(projectDir, 'CLAUDE.md'), 'utf8')).toBe(firstClaudeMd)
       expect(readFileSync(join(projectDir, '.claude', 'settings.json'), 'utf8')).toBe(firstSettings)
-      expect(countOccurrences(firstClaudeMd, '## graphify')).toBe(1)
-      expect(countOccurrences(firstSettings, 'graphify')).toBeGreaterThan(0)
+      expect(countOccurrences(firstClaudeMd, '## graphify-ts')).toBe(1)
+      expect(countOccurrences(firstSettings, 'graphify-ts')).toBeGreaterThan(0)
     })
   })
 
@@ -327,13 +327,13 @@ describe('install helpers', () => {
       expect(aiderMessage).toContain('AGENTS.md')
       expect(aiderMessage).toContain('Aider')
       expect(codexMessage).toContain('AGENTS.md')
-      expect(readFileSync(join(projectDir, 'AGENTS.md'), 'utf8')).toContain('## graphify')
+      expect(readFileSync(join(projectDir, 'AGENTS.md'), 'utf8')).toContain('## graphify-ts')
       expect(readFileSync(join(projectDir, 'AGENTS.md'), 'utf8')).not.toContain('python3 -c')
       expect(existsSync(join(projectDir, '.codex', 'hooks.json'))).toBe(true)
 
       const opencodeMessage = agentsInstall(projectDir, 'opencode')
-      expect(opencodeMessage).toMatch(/graphify section written|graphify already configured in AGENTS\.md/)
-      expect(existsSync(join(projectDir, '.opencode', 'plugins', 'graphify.js'))).toBe(true)
+      expect(opencodeMessage).toMatch(/graphify-ts section written|graphify-ts already configured in AGENTS\.md/)
+      expect(existsSync(join(projectDir, '.opencode', 'plugins', 'graphify-ts.js'))).toBe(true)
       expect(existsSync(join(projectDir, 'opencode.json'))).toBe(true)
     })
   })
@@ -352,9 +352,9 @@ describe('install helpers', () => {
       expect(readFileSync(join(projectDir, 'AGENTS.md'), 'utf8')).toBe(firstAgentsMd)
       expect(readFileSync(join(projectDir, '.codex', 'hooks.json'), 'utf8')).toBe(firstCodexHooks)
       expect(readFileSync(join(projectDir, 'opencode.json'), 'utf8')).toBe(firstOpenCodeConfig)
-      expect(countOccurrences(firstAgentsMd, '## graphify')).toBe(1)
-      expect(countOccurrences(firstCodexHooks, 'graphify')).toBeGreaterThan(0)
-      expect(countOccurrences(firstOpenCodeConfig, '.opencode/plugins/graphify.js')).toBe(1)
+      expect(countOccurrences(firstAgentsMd, '## graphify-ts')).toBe(1)
+      expect(countOccurrences(firstCodexHooks, 'graphify-ts')).toBeGreaterThan(0)
+      expect(countOccurrences(firstOpenCodeConfig, '.opencode/plugins/graphify-ts.js')).toBe(1)
     })
   })
 
@@ -364,10 +364,10 @@ describe('install helpers', () => {
       agentsInstall(projectDir, 'codex')
       const uninstallMessage = agentsUninstall(projectDir, 'codex')
 
-      expect(uninstallMessage).toContain('graphify section removed')
+      expect(uninstallMessage).toContain('graphify-ts section removed')
       expect(readFileSync(join(projectDir, 'AGENTS.md'), 'utf8')).toContain('Keep calm.')
-      expect(readFileSync(join(projectDir, 'AGENTS.md'), 'utf8')).not.toContain('## graphify')
-      expect(readFileSync(join(projectDir, '.codex', 'hooks.json'), 'utf8')).not.toContain('graphify')
+      expect(readFileSync(join(projectDir, 'AGENTS.md'), 'utf8')).not.toContain('## graphify-ts')
+      expect(readFileSync(join(projectDir, '.codex', 'hooks.json'), 'utf8')).not.toContain('graphify-ts')
     })
   })
 })
