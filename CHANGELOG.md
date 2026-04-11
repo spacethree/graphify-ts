@@ -2,6 +2,13 @@
 
 All notable changes to the TypeScript package will be documented in this file.
 
+## [0.1.4] - 2026-04-12
+
+### Fixed
+
+- Prevented semantic community naming from crashing when labels include Object prototype property names such as `constructor` or `toString`
+- Added regression coverage for prototype-chain label handling in `buildCommunityLabels`
+
 ## [0.1.3] - 2026-04-12
 
 ### Added
