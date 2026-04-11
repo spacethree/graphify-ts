@@ -5,27 +5,7 @@ import type { Communities } from './cluster.js'
 
 const GENERIC_PATH_SEGMENTS = new Set(['src', 'tests', 'test', 'dist', 'lib', 'graphify-out', 'worked'])
 const GENERIC_FILE_BASES = new Set(['index', 'main', 'mod'])
-const STOP_WORDS = new Set([
-  'a',
-  'an',
-  'and',
-  'at',
-  'by',
-  'for',
-  'from',
-  'get',
-  'has',
-  'have',
-  'in',
-  'is',
-  'of',
-  'on',
-  'or',
-  'set',
-  'the',
-  'to',
-  'with',
-])
+const STOP_WORDS = new Set(['a', 'an', 'and', 'at', 'by', 'for', 'from', 'get', 'has', 'have', 'in', 'is', 'of', 'on', 'or', 'set', 'the', 'to', 'with'])
 const ACRONYMS: Record<string, string> = {
   api: 'API',
   cli: 'CLI',
@@ -88,8 +68,8 @@ function splitWords(value: string): string[] {
 
 function titleCaseWord(word: string): string {
   const lowered = word.toLowerCase()
-  if (ACRONYMS[lowered]) {
-    return ACRONYMS[lowered]
+  if (Object.hasOwn(ACRONYMS, lowered)) {
+    return ACRONYMS[lowered]!
   }
   return lowered.charAt(0).toUpperCase() + lowered.slice(1)
 }
@@ -214,15 +194,13 @@ function joinThemes(directoryTheme: string | null, fileTheme: string | null, ope
   return directoryTheme ?? operationTheme
 }
 
-export function buildCommunityLabels(
-  graph: KnowledgeGraph,
-  communities: Communities,
-  options: CommunityNamingOptions = {},
-): Record<number, string> {
+export function buildCommunityLabels(graph: KnowledgeGraph, communities: Communities, options: CommunityNamingOptions = {}): Record<number, string> {
   const labels = new Map<number, string>()
   const seen = new Map<string, number>()
 
-  for (const communityId of Object.keys(communities).map(Number).sort((left, right) => left - right)) {
+  for (const communityId of Object.keys(communities)
+    .map(Number)
+    .sort((left, right) => left - right)) {
     const nodeIds = communities[communityId] ?? []
     const sourceFiles = nodeIds
       .map((nodeId) => normalizePath(String(graph.nodeAttributes(nodeId).source_file ?? ''), options.rootPath))
@@ -231,9 +209,7 @@ export function buildCommunityLabels(
     const fallbackLabel = representativeNodeLabel(graph, nodeIds)
 
     let label =
-      nodeIds.length === 1
-        ? fallbackLabel
-        : joinThemes(dominantDirectory(sourceFiles), dominantFileTheme(sourceFiles), dominantOperationTheme(nodeLabels), fallbackLabel)
+      nodeIds.length === 1 ? fallbackLabel : joinThemes(dominantDirectory(sourceFiles), dominantFileTheme(sourceFiles), dominantOperationTheme(nodeLabels), fallbackLabel)
 
     if (!label || label.trim().length === 0) {
       label = `Community ${communityId}`

@@ -49,4 +49,19 @@ describe('buildCommunityLabels', () => {
       5: 'Knowledge Graph (5)',
     })
   })
+
+  it('does not crash when labels include Object prototype property names', () => {
+    const graph = buildFromJson({
+      nodes: [
+        { id: 'a', label: 'ConstructorHelper', file_type: 'code', source_file: '/repo/src/runtime/constructor.ts' },
+        { id: 'b', label: 'toStringBridge', file_type: 'code', source_file: '/repo/src/runtime/to-string.ts' },
+      ],
+      edges: [],
+    })
+
+    expect(() => buildCommunityLabels(graph, { 0: ['a', 'b'] }, { rootPath: '/repo' })).not.toThrow()
+    expect(buildCommunityLabels(graph, { 0: ['a', 'b'] }, { rootPath: '/repo' })).toEqual({
+      0: 'Runtime Constructor',
+    })
+  })
 })
