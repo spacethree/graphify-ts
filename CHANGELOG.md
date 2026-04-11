@@ -2,6 +2,14 @@
 
 All notable changes to the TypeScript package will be documented in this file.
 
+## [0.1.2] - 2026-04-11
+
+### Changed
+
+- Renamed the installed Claude skill and slash command to `graphify-ts` consistently across built-in templates, installer output, and README usage examples
+- Simplified assistant installer behavior to use only the current `graphify-ts` naming for skill paths, section markers, hooks, and generated helper files
+- Renamed generated OpenCode and Cursor integration helper files to `graphify-ts`-specific filenames for clearer project ownership
+
 ## [0.1.1] - 2026-04-11
 
 ### Added
