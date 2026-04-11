@@ -1,17 +1,52 @@
 {
-    "name": "graphify-ts",
+    "name": "@mohanagy/graphify-ts",
     "version": "0.1.0",
-    "private": true,
+    "description": "Build local knowledge graphs from code, docs, and mixed project folders with a TypeScript CLI.",
+    "license": "MIT",
+    "author": "mohanagy",
     "bin": {
-        "graphify-ts": "./dist/src/cli/bin.js"
+        "graphify-ts": "dist/src/cli/bin.js"
     },
     "type": "module",
+    "files": [
+        "dist/",
+        "CHANGELOG.md",
+        "README.md",
+        "LICENSE"
+    ],
+    "keywords": [
+        "cli",
+        "codebase",
+        "graph",
+        "graphrag",
+        "knowledge-graph",
+        "mcp",
+        "typescript"
+    ],
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/mohanagy/graphify-ts.git"
+    },
+    "bugs": {
+        "url": "https://github.com/mohanagy/graphify-ts/issues"
+    },
+    "homepage": "https://github.com/mohanagy/graphify-ts#readme",
+    "engines": {
+        "node": ">=20"
+    },
+    "publishConfig": {
+        "access": "public"
+    },
     "scripts": {
-        "build": "tsc -p tsconfig.json",
+        "clean": "node --eval \"import { rmSync } from 'node:fs'; rmSync('dist', { recursive: true, force: true })\"",
+        "build": "tsc -p tsconfig.build.json",
         "typecheck": "tsc --noEmit",
         "test": "vitest",
         "test:run": "vitest run",
-        "test:coverage": "vitest run --coverage"
+        "test:coverage": "vitest run --coverage",
+        "prepack": "npm run clean && npm run build",
+        "pack:dry-run": "npm pack --dry-run",
+        "publish:dry-run": "npm publish --dry-run"
     },
     "devDependencies": {
         "@types/node": "^24.0.0",
