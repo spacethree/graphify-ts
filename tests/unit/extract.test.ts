@@ -426,6 +426,45 @@ describe('extract', () => {
     }
   })
 
+  it('extracts ruby command-style calls without parentheses', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'commands.rb')
+      writeFileSync(
+        filePath,
+        ['class ApiClient', '  def get', '    request', '    normalize', '  end', '', '  def request', '  end', '', '  def normalize', '  end', 'end'].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([filePath])
+      const nodeById = new Map(result.nodes.map((node) => [node.id, node.label]))
+      const calls = new Set(result.edges.filter((edge) => edge.relation === 'calls').map((edge) => `${nodeById.get(edge.source)}->${nodeById.get(edge.target)}`))
+
+      expect(calls.has('.get()->.request()')).toBe(true)
+      expect(calls.has('.get()->.normalize()')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts ruby singleton method calls through constant receivers', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'singleton.rb')
+      writeFileSync(filePath, ['class Client', '  def get', '    Client.build()', '  end', '', '  def self.build', '  end', 'end'].join('\n'), 'utf8')
+
+      const result = extract([filePath])
+      const labels = result.nodes.map((node) => node.label)
+      const nodeById = new Map(result.nodes.map((node) => [node.id, node.label]))
+      const calls = new Set(result.edges.filter((edge) => edge.relation === 'calls').map((edge) => `${nodeById.get(edge.source)}->${nodeById.get(edge.target)}`))
+
+      expect(labels).toContain('.build()')
+      expect(calls.has('.get()->.build()')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('extracts ruby modules as containing owners', () => {
     const root = createTempRoot()
     try {

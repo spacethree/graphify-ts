@@ -282,7 +282,7 @@ Today, the strongest path is:
 
 Additional coverage exists for:
 
-- Python, Go, and Java via portable WASM tree-sitter
+- Python, Go, Java, and Ruby via portable WASM tree-sitter
 - several additional languages via lighter structural extraction
 - deterministic document, paper, and image handling
 - lightweight HTTP and stdio/MCP-style serving

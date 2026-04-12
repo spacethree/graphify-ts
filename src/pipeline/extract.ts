@@ -15,11 +15,13 @@ import { createTreeSitterWasmParser, treeSitterWasmError, type TreeSitterNode } 
 
 export { _makeId } from './extract/core.js'
 
-const EXTRACTOR_CACHE_VERSION = 8
+const EXTRACTOR_CACHE_VERSION = 9
 const PYTHON_KEYWORDS = new Set(['if', 'elif', 'else', 'for', 'while', 'return', 'class', 'def', 'lambda', 'with', 'print', 'sum'])
 const GENERIC_CODE_EXTENSIONS = new Set(['.go', '.rs', '.java', '.kt', '.kts', '.scala', '.cs', '.c', '.cc', '.cpp', '.cxx', '.h', '.hpp', '.swift', '.php', '.zig'])
 const GENERIC_CONTROL_KEYWORDS = new Set(['if', 'for', 'while', 'switch', 'catch', 'return', 'new', 'delete', 'throw', 'sizeof', 'case', 'do', 'else'])
 const RUBY_KEYWORDS = new Set(['if', 'elsif', 'else', 'unless', 'while', 'until', 'return', 'super', 'yield', 'class', 'def'])
+const RUBY_AST_NESTED_DECLARATION_TYPES = new Set(['class', 'module', 'method', 'singleton_method'])
+const MAX_RUBY_AST_DEPTH = 64
 const LUA_KEYWORDS = new Set(['if', 'then', 'elseif', 'else', 'for', 'while', 'repeat', 'until', 'return', 'function', 'local', 'require'])
 const ELIXIR_KEYWORDS = new Set(['if', 'unless', 'case', 'cond', 'fn', 'def', 'defp', 'defmodule'])
 const JULIA_KEYWORDS = new Set(['if', 'elseif', 'else', 'while', 'for', 'return', 'function', 'struct', 'mutable', 'macro'])
@@ -947,6 +949,22 @@ function extractStructuredText(filePath: string, fileType: Extract<NonCodeFileTy
   flushPendingReferenceCitations(edges, seenSemanticEdges, filePath, referenceNodeIdsByIndex, pendingReferenceCitations)
 
   return { nodes, edges }
+}
+
+function createCodeFileOnlyExtraction(filePath: string): ExtractionFragment {
+  const stem = basename(filePath, extname(filePath))
+  return {
+    nodes: [createNode(_makeId(stem), basename(filePath), filePath, 1)],
+    edges: [],
+  }
+}
+
+function ensureTextFileWithinLimit(filePath: string): boolean {
+  try {
+    return statSync(filePath).size <= MAX_TEXT_BYTES
+  } catch {
+    return false
+  }
 }
 
 function decodeXmlText(text: string): string {
@@ -2127,7 +2145,11 @@ export function extractPython(filePath: string): ExtractionFragment {
   return extractPythonRegex(filePath)
 }
 
-export function extractRuby(filePath: string): ExtractionFragment {
+function extractRubyScanner(filePath: string): ExtractionFragment {
+  if (!ensureTextFileWithinLimit(filePath)) {
+    return createCodeFileOnlyExtraction(filePath)
+  }
+
   const sourceText = readFileSync(filePath, 'utf8')
   const lines = sourceText.split(/\r?\n/)
   const stem = basename(filePath, extname(filePath))
@@ -2272,6 +2294,16 @@ export function extractRuby(filePath: string): ExtractionFragment {
     nodes,
     edges: edges.filter((edge) => validNodeIds.has(edge.source) && (validNodeIds.has(edge.target) || edge.relation === 'imports' || edge.relation === 'imports_from')),
   }
+}
+
+export function extractRuby(filePath: string): ExtractionFragment {
+  const extraction = extractRubyTreeSitter(filePath)
+  if (extraction !== null) {
+    return extraction
+  }
+
+  warnTreeSitterFallback('ruby')
+  return extractRubyScanner(filePath)
 }
 
 export function extractLua(filePath: string): ExtractionFragment {
@@ -2884,7 +2916,7 @@ function treeSitterNodeText(sourceText: string, node: TreeSitterNode | null | un
   return sourceText.slice(node.startIndex, node.endIndex)
 }
 
-function warnTreeSitterFallback(language: 'go' | 'java' | 'python'): void {
+function warnTreeSitterFallback(language: 'go' | 'java' | 'python' | 'ruby'): void {
   const runtimeError = treeSitterWasmError()
   const warningKey = `${language}:${runtimeError ?? 'parser-unavailable'}`
   if (TREE_SITTER_FALLBACK_WARNINGS.has(warningKey)) {
@@ -2893,7 +2925,7 @@ function warnTreeSitterFallback(language: 'go' | 'java' | 'python'): void {
 
   TREE_SITTER_FALLBACK_WARNINGS.add(warningKey)
   const suffix = runtimeError ? ` (${runtimeError})` : ''
-  console.warn(`[graphify-ts] tree-sitter ${language} parser unavailable; falling back to the generic extractor${suffix}`)
+  console.warn(`[graphify-ts] tree-sitter ${language} parser unavailable; falling back to the legacy extractor${suffix}`)
 }
 
 function collectGoImports(node: TreeSitterNode, sourceText: string): string[] {
@@ -2906,6 +2938,293 @@ function collectGoImports(node: TreeSitterNode, sourceText: string): string[] {
   }
 
   return imports
+}
+
+function lastScopedRubyName(name: string | null | undefined): string | null {
+  const trimmed = name?.trim()
+  if (!trimmed) {
+    return null
+  }
+
+  const normalized = trimmed.replace(/^<\s*/, '').replace(/^::/, '').trim()
+  if (!normalized) {
+    return null
+  }
+
+  const parts = normalized.split('::').filter(Boolean)
+  return parts.at(-1) ?? normalized
+}
+
+function extractRubyStringArgument(sourceText: string, node: TreeSitterNode | null | undefined): string | null {
+  if (!node) {
+    return null
+  }
+
+  const stringNode =
+    node.type === 'argument_list' ? (namedTreeSitterChildren(node).find((child) => child.type === 'string') ?? null) : node.type === 'string' ? node : null
+
+  if (!stringNode) {
+    return null
+  }
+
+  const contentNode = namedTreeSitterChildren(stringNode).find((child) => child.type === 'string_content') ?? stringNode
+  const rawValue = treeSitterNodeText(sourceText, contentNode)?.trim()
+  if (!rawValue) {
+    return null
+  }
+
+  return rawValue.replace(/^['"]|['"]$/g, '')
+}
+
+function collectRubyImports(
+  node: TreeSitterNode,
+  sourceText: string,
+  fileNodeId: string,
+  filePath: string,
+  edges: ExtractionEdge[],
+  seenStructuralEdges: Set<string>,
+  depth = 0,
+): void {
+  if (depth >= MAX_RUBY_AST_DEPTH) {
+    return
+  }
+
+  if (node.type === 'call') {
+    const receiverNode = node.childForFieldName('receiver')
+    const methodNode = node.childForFieldName('method') ?? namedTreeSitterChildren(node).find((child) => child.type === 'identifier') ?? null
+    const methodName = treeSitterNodeText(sourceText, methodNode)?.trim()
+    if (!receiverNode && (methodName === 'require' || methodName === 'require_relative')) {
+      const importTarget = extractRubyStringArgument(sourceText, node.childForFieldName('arguments'))
+      if (importTarget) {
+        addUniqueEdge(
+          edges,
+          seenStructuralEdges,
+          createEdge(
+            fileNodeId,
+            _makeId(normalizeImportTarget(importTarget)),
+            methodName === 'require_relative' ? 'imports_from' : 'imports',
+            filePath,
+            node.startPosition.row + 1,
+          ),
+        )
+      }
+    }
+  }
+
+  for (const child of namedTreeSitterChildren(node)) {
+    collectRubyImports(child, sourceText, fileNodeId, filePath, edges, seenStructuralEdges, depth + 1)
+  }
+}
+
+function collectRubyCalls(
+  node: TreeSitterNode,
+  sourceText: string,
+  stem: string,
+  callerId: string,
+  pendingCalls: PendingCall[],
+  currentOwnerId?: string,
+  depth = 0,
+): void {
+  if (depth >= MAX_RUBY_AST_DEPTH) {
+    return
+  }
+
+  if (node.type === 'call') {
+    const methodNode = node.childForFieldName('method') ?? namedTreeSitterChildren(node).find((child) => child.type === 'identifier') ?? null
+    const methodName = treeSitterNodeText(sourceText, methodNode)?.trim()
+    if (methodName && !RUBY_KEYWORDS.has(methodName)) {
+      const receiverNode = node.childForFieldName('receiver')
+      const receiverText = treeSitterNodeText(sourceText, receiverNode)?.trim()
+      let preferredClassId: string | undefined
+
+      if (receiverNode?.type === 'self') {
+        preferredClassId = currentOwnerId
+      } else if (receiverText && (/^[A-Z]/.test(receiverText) || receiverText.includes('::'))) {
+        const ownerName = lastScopedRubyName(receiverText)
+        if (ownerName) {
+          preferredClassId = _makeId(stem, ownerName)
+        }
+      } else if (!receiverNode) {
+        preferredClassId = currentOwnerId
+      }
+
+      addPendingCall(pendingCalls, {
+        callerId,
+        calleeName: methodName,
+        line: node.startPosition.row + 1,
+        preferredClassId,
+      })
+    }
+    return
+  }
+
+  for (const child of namedTreeSitterChildren(node)) {
+    if (RUBY_AST_NESTED_DECLARATION_TYPES.has(child.type)) {
+      continue
+    }
+
+    if (node.type === 'body_statement' && child.type === 'identifier') {
+      const calleeName = treeSitterNodeText(sourceText, child)?.trim()
+      if (calleeName && !RUBY_KEYWORDS.has(calleeName)) {
+        addPendingCall(pendingCalls, {
+          callerId,
+          calleeName,
+          line: child.startPosition.row + 1,
+          preferredClassId: currentOwnerId,
+        })
+      }
+      continue
+    }
+
+    collectRubyCalls(child, sourceText, stem, callerId, pendingCalls, currentOwnerId, depth + 1)
+  }
+}
+
+function extractRubyTreeSitter(filePath: string): ExtractionFragment | null {
+  const parser = createTreeSitterWasmParser('ruby')
+  if (!parser) {
+    return null
+  }
+
+  if (!ensureTextFileWithinLimit(filePath)) {
+    return createCodeFileOnlyExtraction(filePath)
+  }
+
+  const sourceText = readFileSync(filePath, 'utf8')
+  const stem = basename(filePath, extname(filePath))
+  const fileNodeId = _makeId(stem)
+  const nodes: ExtractionNode[] = []
+  const edges: ExtractionEdge[] = []
+  const seenIds = new Set<string>()
+  const seenStructuralEdges = new Set<string>()
+  const methodIdsByClass = new Map<string, string>()
+  const pendingCalls: PendingCall[] = []
+  let tree: ReturnType<typeof parser.parse> | null = null
+
+  const ensureOwnerNode = (ownerName: string, line: number, parentOwnerId?: string): string => {
+    const ownerId = _makeId(stem, ownerName)
+    addNode(nodes, seenIds, createNode(ownerId, ownerName, filePath, line))
+    addUniqueEdge(edges, seenStructuralEdges, createEdge(parentOwnerId ?? fileNodeId, ownerId, 'contains', filePath, line))
+    return ownerId
+  }
+
+  const ensureMethodNode = (ownerId: string, methodName: string, line: number): string => {
+    const methodId = _makeId(ownerId, methodName)
+    addNode(nodes, seenIds, createNode(methodId, `.${methodName}()`, filePath, line))
+    addUniqueEdge(edges, seenStructuralEdges, createEdge(ownerId, methodId, 'method', filePath, line))
+    methodIdsByClass.set(`${ownerId}:${methodName.toLowerCase()}`, methodId)
+    return methodId
+  }
+
+  const ensureFunctionNode = (functionName: string, line: number): string => {
+    const functionId = _makeId(stem, functionName)
+    addNode(nodes, seenIds, createNode(functionId, `${functionName}()`, filePath, line))
+    addUniqueEdge(edges, seenStructuralEdges, createEdge(fileNodeId, functionId, 'contains', filePath, line))
+    return functionId
+  }
+
+  const walkRubyStatements = (node: TreeSitterNode, parentOwnerId?: string, depth = 0): void => {
+    if (depth >= MAX_RUBY_AST_DEPTH) {
+      return
+    }
+
+    for (const child of namedTreeSitterChildren(node)) {
+      if (child.type === 'module') {
+        const ownerName = lastScopedRubyName(treeSitterNodeText(sourceText, child.childForFieldName('name')))
+        if (!ownerName) {
+          continue
+        }
+
+        const ownerId = ensureOwnerNode(ownerName, child.startPosition.row + 1, parentOwnerId)
+        const bodyNode = child.childForFieldName('body')
+        if (bodyNode) {
+          walkRubyStatements(bodyNode, ownerId, depth + 1)
+        }
+        continue
+      }
+
+      if (child.type === 'class') {
+        const ownerName = lastScopedRubyName(treeSitterNodeText(sourceText, child.childForFieldName('name')))
+        if (!ownerName) {
+          continue
+        }
+
+        const ownerId = ensureOwnerNode(ownerName, child.startPosition.row + 1, parentOwnerId)
+        const superclassName = lastScopedRubyName(treeSitterNodeText(sourceText, child.childForFieldName('superclass')))
+        if (superclassName) {
+          addUniqueEdge(edges, seenStructuralEdges, createEdge(ownerId, _makeId(stem, superclassName), 'inherits', filePath, child.startPosition.row + 1))
+        }
+
+        const bodyNode = child.childForFieldName('body')
+        if (bodyNode) {
+          walkRubyStatements(bodyNode, ownerId, depth + 1)
+        }
+        continue
+      }
+
+      if (child.type === 'method') {
+        const methodName = treeSitterNodeText(sourceText, child.childForFieldName('name'))?.trim()
+        if (!methodName) {
+          continue
+        }
+
+        const methodId = parentOwnerId
+          ? ensureMethodNode(parentOwnerId, methodName, child.startPosition.row + 1)
+          : ensureFunctionNode(methodName, child.startPosition.row + 1)
+        const bodyNode = child.childForFieldName('body')
+        if (bodyNode) {
+          collectRubyCalls(bodyNode, sourceText, stem, methodId, pendingCalls, parentOwnerId, depth + 1)
+        }
+        continue
+      }
+
+      if (child.type === 'singleton_method') {
+        const methodName = treeSitterNodeText(sourceText, child.childForFieldName('name'))?.trim()
+        if (!methodName) {
+          continue
+        }
+
+        const objectText = treeSitterNodeText(sourceText, child.childForFieldName('object'))?.trim()
+        let ownerId: string | undefined
+        if (objectText === 'self') {
+          ownerId = parentOwnerId
+        } else {
+          const explicitOwnerName = lastScopedRubyName(objectText)
+          if (explicitOwnerName) {
+            ownerId = ensureOwnerNode(explicitOwnerName, child.startPosition.row + 1, parentOwnerId)
+          }
+        }
+
+        const methodId = ownerId ? ensureMethodNode(ownerId, methodName, child.startPosition.row + 1) : ensureFunctionNode(methodName, child.startPosition.row + 1)
+        const bodyNode = child.childForFieldName('body')
+        if (bodyNode) {
+          collectRubyCalls(bodyNode, sourceText, stem, methodId, pendingCalls, ownerId ?? parentOwnerId, depth + 1)
+        }
+        continue
+      }
+    }
+  }
+
+  try {
+    tree = parser.parse(sourceText)
+    if (!tree) {
+      return null
+    }
+
+    addNode(nodes, seenIds, createNode(fileNodeId, basename(filePath), filePath, 1))
+    collectRubyImports(tree.rootNode, sourceText, fileNodeId, filePath, edges, seenStructuralEdges)
+    walkRubyStatements(tree.rootNode)
+
+    addResolvedCalls(edges, pendingCalls, nodes, filePath, methodIdsByClass)
+    const validNodeIds = new Set(nodes.map((node) => node.id))
+    return {
+      nodes,
+      edges: edges.filter((edge) => validNodeIds.has(edge.source) && (validNodeIds.has(edge.target) || edge.relation === 'imports' || edge.relation === 'imports_from')),
+    }
+  } finally {
+    tree?.delete()
+    parser.delete()
+  }
 }
 
 function goReceiverInfo(sourceText: string, receiverNode: TreeSitterNode | null): { ownerName: string; receiverName?: string } | null {
