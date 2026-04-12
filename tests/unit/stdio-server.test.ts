@@ -1,6 +1,7 @@
 import { PassThrough } from 'node:stream'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 
 import { handleStdioRequest, serveGraphStdio } from '../../src/runtime/stdio-server.js'
 
@@ -105,7 +106,7 @@ describe('stdio runtime', () => {
             completions: {},
             logging: {},
             prompts: { listChanged: false },
-            resources: { subscribe: false, listChanged: false },
+            resources: { subscribe: true, listChanged: true },
             tools: { listChanged: false },
           },
           serverInfo: { name: 'graphify-ts' },
@@ -254,6 +255,84 @@ describe('stdio runtime', () => {
           }),
         ]),
       )
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('supports resource subscriptions and emits resource update notifications for subscribed artifacts', async () => {
+    const root = createGraphFixtureRoot()
+    try {
+      const graphPath = join(root, 'graph.json')
+      const input = new PassThrough()
+      const output = new PassThrough()
+      let outputText = ''
+
+      output.on('data', (chunk) => {
+        outputText += chunk.toString('utf8')
+      })
+
+      const serverPromise = serveGraphStdio({
+        graphPath,
+        input,
+        output,
+      })
+
+      input.write(`${JSON.stringify({ id: 1, method: 'initialize' })}\n`)
+      input.write(`${JSON.stringify({ id: 2, method: 'resources/subscribe', params: { uri: 'graphify://artifact/graph.json' } })}\n`)
+
+      await delay(25)
+      writeFileSync(
+        graphPath,
+        JSON.stringify({
+          nodes: [{ id: 'updated', label: 'UpdatedNode', source_file: 'updated.ts', source_location: '1', file_type: 'code', community: 0 }],
+          edges: [],
+          hyperedges: [],
+        }),
+        'utf8',
+      )
+
+      input.write(`${JSON.stringify({ id: 3, method: 'ping' })}\n`)
+      await delay(25)
+      input.write(`${JSON.stringify({ id: 4, method: 'resources/unsubscribe', params: { uri: 'graphify://artifact/graph.json' } })}\n`)
+
+      await delay(25)
+      writeFileSync(
+        graphPath,
+        JSON.stringify({
+          nodes: [{ id: 'updated-again', label: 'UpdatedAgain', source_file: 'updated-again.ts', source_location: '1', file_type: 'code', community: 0 }],
+          edges: [],
+          hyperedges: [],
+        }),
+        'utf8',
+      )
+
+      input.end(`${JSON.stringify({ id: 5, method: 'ping' })}\n`)
+      await serverPromise
+
+      const messages = outputText
+        .trim()
+        .split(/\n+/)
+        .filter(Boolean)
+        .map((line) => JSON.parse(line))
+      const updatedNotifications = messages.filter((message) => message.method === 'notifications/resources/updated')
+
+      expect(messages).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ jsonrpc: '2.0', id: 2, result: {} }),
+          expect.objectContaining({ jsonrpc: '2.0', id: 3, result: { ok: true } }),
+          expect.objectContaining({ jsonrpc: '2.0', id: 4, result: {} }),
+          expect.objectContaining({ jsonrpc: '2.0', id: 5, result: { ok: true } }),
+        ]),
+      )
+      expect(updatedNotifications).toHaveLength(1)
+      expect(updatedNotifications[0]).toMatchObject({
+        jsonrpc: '2.0',
+        method: 'notifications/resources/updated',
+        params: {
+          uri: 'graphify://artifact/graph.json',
+        },
+      })
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

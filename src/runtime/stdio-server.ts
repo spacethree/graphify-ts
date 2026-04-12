@@ -37,6 +37,7 @@ const MAX_STDIO_DEPTH = 20
 const MAX_STDIO_HOPS = 20
 const MAX_STDIO_RESOURCE_BYTES = 5_000_000
 const MAX_STDIO_DIFF_ITEMS = 100
+const MAX_RESOURCE_SUBSCRIPTIONS = 16
 const graphCache = new Map<string, { mtimeMs: number; graph: ReturnType<typeof loadGraph> }>()
 const promptContextCache = new Map<string, { mtimeMs: number; context: PromptContext }>()
 const MAX_COMPLETION_VALUES = 25
@@ -46,6 +47,9 @@ type McpLogLevel = 'debug' | 'info' | 'notice' | 'warning' | 'error' | 'critical
 
 interface StdioSessionState {
   logLevel: McpLogLevel
+  subscribedResourceUris?: Set<string>
+  resourceVersions?: Map<string, string>
+  resourceListSignature?: string | null
 }
 
 interface JsonRpcNotification {
@@ -64,6 +68,15 @@ const LOG_LEVEL_PRIORITY: Record<McpLogLevel, number> = {
   critical: 60,
   alert: 70,
   emergency: 80,
+}
+
+function createSessionState(): StdioSessionState {
+  return {
+    logLevel: DEFAULT_STDIO_LOG_LEVEL,
+    subscribedResourceUris: new Set<string>(),
+    resourceVersions: new Map<string, string>(),
+    resourceListSignature: null,
+  }
 }
 
 interface StdioRequest {
@@ -307,6 +320,22 @@ function notification(method: string, params?: unknown): JsonRpcNotification {
     method,
     ...(params !== undefined ? { params } : {}),
   }
+}
+
+function ensureSubscribedResourceUris(state: StdioSessionState): Set<string> {
+  if (!state.subscribedResourceUris) {
+    state.subscribedResourceUris = new Set<string>()
+  }
+
+  return state.subscribedResourceUris
+}
+
+function ensureResourceVersions(state: StdioSessionState): Map<string, string> {
+  if (!state.resourceVersions) {
+    state.resourceVersions = new Map<string, string>()
+  }
+
+  return state.resourceVersions
 }
 
 function requestId(request: StdioRequest): string | number | null {
@@ -589,6 +618,59 @@ function resourcesForGraph(graphPath: string): McpResourceDefinition[] {
     }))
 }
 
+function resourceListSignature(resources: readonly McpResourceDefinition[]): string {
+  return resources
+    .map((resource) => resource.uri)
+    .sort()
+    .join('|')
+}
+
+function resourceVersion(resource: McpResourceDefinition): string {
+  const graphVersion = String(resource.annotations?.graph_version ?? '')
+  const modifiedAt = String(resource.annotations?.resource_modified_ms ?? '')
+  return `${graphVersion}:${modifiedAt}`
+}
+
+function emitJsonRpcNotification(output: Writable, message: JsonRpcNotification): void {
+  try {
+    output.write(`${JSON.stringify(message)}\n`)
+  } catch {
+    // Ignore closed stream cases.
+  }
+}
+
+function emitResourceNotifications(output: Writable, graphPath: string, state: StdioSessionState): void {
+  const resources = resourcesForGraph(graphPath)
+  const nextListSignature = resourceListSignature(resources)
+  if (state.resourceListSignature !== null && state.resourceListSignature !== nextListSignature) {
+    emitJsonRpcNotification(output, notification('notifications/resources/list_changed'))
+  }
+  state.resourceListSignature = nextListSignature
+
+  const subscribedUris = ensureSubscribedResourceUris(state)
+  if (subscribedUris.size === 0) {
+    return
+  }
+
+  const versions = ensureResourceVersions(state)
+  const resourcesByUri = new Map(resources.map((resource) => [resource.uri, resource]))
+  for (const uri of [...subscribedUris].sort()) {
+    const resource = resourcesByUri.get(uri)
+    if (!resource) {
+      versions.delete(uri)
+      continue
+    }
+
+    const nextVersion = resourceVersion(resource)
+    const previousVersion = versions.get(uri)
+    if (previousVersion !== undefined && previousVersion !== nextVersion) {
+      emitJsonRpcNotification(output, notification('notifications/resources/updated', { uri }))
+    }
+
+    versions.set(uri, nextVersion)
+  }
+}
+
 function formatCount(count: number, singular: string, plural = `${singular}s`): string {
   return `${count} ${count === 1 ? singular : plural}`
 }
@@ -800,6 +882,39 @@ function handleResourceRead(id: string | number | null, graphPath: string, param
       },
     ],
   })
+}
+
+function handleResourceSubscribe(id: string | number | null, graphPath: string, params: unknown, sessionState: StdioSessionState): StdioResponse {
+  const uri = stringParam(params, 'uri')
+  if (!uri) {
+    return failure(id, JSONRPC_INVALID_PARAMS, `resources/subscribe requires a string uri parameter <= ${MAX_STDIO_TEXT_LENGTH} characters`)
+  }
+
+  const resource = resourcesForGraph(graphPath).find((entry) => entry.uri === uri)
+  if (!resource) {
+    return failure(id, JSONRPC_INVALID_PARAMS, `Unknown resource: ${uri}`)
+  }
+
+  const subscribedUris = ensureSubscribedResourceUris(sessionState)
+  if (!subscribedUris.has(uri) && subscribedUris.size >= MAX_RESOURCE_SUBSCRIPTIONS) {
+    return failure(id, JSONRPC_INVALID_PARAMS, `Subscription limit exceeded (${MAX_RESOURCE_SUBSCRIPTIONS})`)
+  }
+
+  subscribedUris.add(uri)
+  ensureResourceVersions(sessionState).set(uri, resourceVersion(resource))
+  sessionState.resourceListSignature = resourceListSignature(resourcesForGraph(graphPath))
+  return ok(id, {})
+}
+
+function handleResourceUnsubscribe(id: string | number | null, params: unknown, sessionState: StdioSessionState): StdioResponse {
+  const uri = stringParam(params, 'uri')
+  if (!uri) {
+    return failure(id, JSONRPC_INVALID_PARAMS, `resources/unsubscribe requires a string uri parameter <= ${MAX_STDIO_TEXT_LENGTH} characters`)
+  }
+
+  ensureSubscribedResourceUris(sessionState).delete(uri)
+  ensureResourceVersions(sessionState).delete(uri)
+  return ok(id, {})
 }
 
 function handlePromptGet(id: string | number | null, graphPath: string, params: unknown): StdioResponse {
@@ -1124,7 +1239,7 @@ function handleToolCall(id: string | number | null, graphPath: string, params: u
   }
 }
 
-export function handleStdioRequest(graphPath: string, payload: unknown, sessionState: StdioSessionState = { logLevel: DEFAULT_STDIO_LOG_LEVEL }): StdioResponse | null {
+export function handleStdioRequest(graphPath: string, payload: unknown, sessionState: StdioSessionState = createSessionState()): StdioResponse | null {
   if (!payload || typeof payload !== 'object') {
     return failure(null, JSONRPC_INVALID_REQUEST, 'Invalid request')
   }
@@ -1147,7 +1262,7 @@ export function handleStdioRequest(graphPath: string, payload: unknown, sessionS
             completions: {},
             logging: {},
             prompts: { listChanged: false },
-            resources: { subscribe: false, listChanged: false },
+            resources: { subscribe: true, listChanged: true },
             tools: { listChanged: false },
           },
           serverInfo: {
@@ -1184,6 +1299,10 @@ export function handleStdioRequest(graphPath: string, payload: unknown, sessionS
             annotations,
           })),
         })
+      case 'resources/subscribe':
+        return handleResourceSubscribe(id, graphPath, params, sessionState)
+      case 'resources/unsubscribe':
+        return handleResourceUnsubscribe(id, params, sessionState)
       case 'resources/read':
         return handleResourceRead(id, graphPath, params)
       case 'tools/list':
@@ -1260,7 +1379,7 @@ export async function serveGraphStdio(options: ServeGraphStdioOptions): Promise<
   const input = options.input ?? process.stdin
   const output = options.output ?? process.stdout
   const logger = options.logger ?? console
-  const sessionState: StdioSessionState = { logLevel: DEFAULT_STDIO_LOG_LEVEL }
+  const sessionState = createSessionState()
 
   logger.log(`[graphify serve] stdio ready for ${options.graphPath}`)
 
@@ -1288,6 +1407,7 @@ export async function serveGraphStdio(options: ServeGraphStdioOptions): Promise<
       continue
     }
 
+    emitResourceNotifications(output, options.graphPath, sessionState)
     const response = handleStdioRequest(options.graphPath, payload, sessionState)
     if (response) {
       if (response.error) {

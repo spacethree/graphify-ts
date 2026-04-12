@@ -426,6 +426,45 @@ describe('extract', () => {
     }
   })
 
+  it('extracts ruby command-style calls without parentheses', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'commands.rb')
+      writeFileSync(
+        filePath,
+        ['class ApiClient', '  def get', '    request', '    normalize', '  end', '', '  def request', '  end', '', '  def normalize', '  end', 'end'].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([filePath])
+      const nodeById = new Map(result.nodes.map((node) => [node.id, node.label]))
+      const calls = new Set(result.edges.filter((edge) => edge.relation === 'calls').map((edge) => `${nodeById.get(edge.source)}->${nodeById.get(edge.target)}`))
+
+      expect(calls.has('.get()->.request()')).toBe(true)
+      expect(calls.has('.get()->.normalize()')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts ruby singleton method calls through constant receivers', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'singleton.rb')
+      writeFileSync(filePath, ['class Client', '  def get', '    Client.build()', '  end', '', '  def self.build', '  end', 'end'].join('\n'), 'utf8')
+
+      const result = extract([filePath])
+      const labels = result.nodes.map((node) => node.label)
+      const nodeById = new Map(result.nodes.map((node) => [node.id, node.label]))
+      const calls = new Set(result.edges.filter((edge) => edge.relation === 'calls').map((edge) => `${nodeById.get(edge.source)}->${nodeById.get(edge.target)}`))
+
+      expect(labels).toContain('.build()')
+      expect(calls.has('.get()->.build()')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('extracts ruby modules as containing owners', () => {
     const root = createTempRoot()
     try {
@@ -1195,12 +1234,14 @@ describe('extract', () => {
         reference_year: 2020,
         reference_title: 'Foundational Work',
         doi: '10.5555/foundational',
+        source_url: 'https://doi.org/10.5555/foundational',
       })
       expect(referenceTwo).toMatchObject({
         reference_index: 2,
         reference_year: 2021,
         reference_title: 'Follow Up Study',
         arxiv_id: '2401.12345',
+        source_url: 'https://arxiv.org/abs/2401.12345',
       })
       expect(referenceThree).toMatchObject({
         reference_index: 3,
@@ -1273,6 +1314,48 @@ describe('extract', () => {
       expect(arxivId).toBeTruthy()
       expect(result.edges.some((edge) => edge.source === abstractId && edge.target === doiId && edge.relation === 'cites')).toBe(true)
       expect(result.edges.some((edge) => edge.source === abstractId && edge.target === arxivId && edge.relation === 'cites')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts pdf metadata, TJ-array text, and resolved reference source urls', () => {
+    const root = createTempRoot()
+    try {
+      const paperPath = join(root, 'paper.pdf')
+      writeFileSync(
+        paperPath,
+        [
+          '%PDF-1.4',
+          '1 0 obj',
+          '<< /Title (Graphify Paper) /Author (Jane Doe) /Subject (Runtime Notes) >>',
+          'stream',
+          '[(Abstract)] TJ',
+          '[(See DOI:10.1000/example.42 and arXiv:2501.12345)] TJ',
+          '[(References)] TJ',
+          '([1] Doe et al. (2024). Runtime Paper. DOI:10.4242/runtime.paper) Tj',
+          'endstream',
+          'endobj',
+        ].join('\n'),
+        'latin1',
+      )
+
+      const result = extract([paperPath])
+      const paperNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'paper.pdf')
+      const abstractId = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'Abstract')?.id
+      const doiNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'DOI:10.1000/example.42')
+      const arxivNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'arXiv:2501.12345')
+
+      expect(paperNode).toMatchObject({
+        title: 'Graphify Paper',
+        author: 'Jane Doe',
+        subject: 'Runtime Notes',
+      })
+      expect(abstractId).toBeTruthy()
+      expect(doiNode).toMatchObject({ source_url: 'https://doi.org/10.1000/example.42' })
+      expect(arxivNode).toMatchObject({ source_url: 'https://arxiv.org/abs/2501.12345' })
+      expect(result.edges.some((edge) => edge.source === abstractId && edge.target === doiNode?.id && edge.relation === 'cites')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === abstractId && edge.target === arxivNode?.id && edge.relation === 'cites')).toBe(true)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -1395,6 +1478,97 @@ describe('extract', () => {
       expect(arxivId).toBeTruthy()
       expect(result.edges.some((edge) => edge.source === overviewId && edge.target === doiId && edge.relation === 'cites')).toBe(true)
       expect(result.edges.some((edge) => edge.source === overviewId && edge.target === arxivId && edge.relation === 'cites')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts docx core metadata and resolved citation source urls', () => {
+    const root = createTempRoot()
+    try {
+      const docxPath = join(root, 'guide.docx')
+      const archive = zipSync({
+        'word/document.xml': strToU8(
+          [
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">',
+            '  <w:body>',
+            '    <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Overview</w:t></w:r></w:p>',
+            '    <w:p><w:r><w:t>See DOI:10.1000/guide.1 for background.</w:t></w:r></w:p>',
+            '  </w:body>',
+            '</w:document>',
+          ].join(''),
+        ),
+        'docProps/core.xml': strToU8(
+          [
+            '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/">',
+            '  <dc:title>Guide Title</dc:title>',
+            '  <dc:creator>Jane Doe</dc:creator>',
+            '  <dc:subject>Design Notes</dc:subject>',
+            '  <dc:description>Background material for the graph runtime.</dc:description>',
+            '</cp:coreProperties>',
+          ].join(''),
+        ),
+      })
+
+      writeFileSync(docxPath, Buffer.from(archive))
+
+      const result = extract([docxPath])
+      const fileNode = result.nodes.find((node) => node.file_type === 'document' && node.label === 'guide.docx')
+      const doiNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'DOI:10.1000/guide.1')
+
+      expect(fileNode).toMatchObject({
+        title: 'Guide Title',
+        author: 'Jane Doe',
+        subject: 'Design Notes',
+        description: 'Background material for the graph runtime.',
+      })
+      expect(doiNode).toMatchObject({ source_url: 'https://doi.org/10.1000/guide.1' })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts workbook metadata and sheet nodes from xlsx documents', () => {
+    const root = createTempRoot()
+    try {
+      const workbookPath = join(root, 'metrics.xlsx')
+      const archive = zipSync({
+        'xl/workbook.xml': strToU8(
+          [
+            '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
+            '  <sheets>',
+            '    <sheet name="Summary" sheetId="1" r:id="rId1" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>',
+            '    <sheet name="Experiments" sheetId="2" r:id="rId2" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>',
+            '  </sheets>',
+            '</workbook>',
+          ].join(''),
+        ),
+        'docProps/core.xml': strToU8(
+          [
+            '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/">',
+            '  <dc:title>Metrics Workbook</dc:title>',
+            '  <dc:creator>Jane Doe</dc:creator>',
+            '</cp:coreProperties>',
+          ].join(''),
+        ),
+      })
+
+      writeFileSync(workbookPath, Buffer.from(archive))
+
+      const result = extract([workbookPath])
+      const labels = result.nodes.filter((node) => node.file_type === 'document').map((node) => node.label)
+      const workbookNode = result.nodes.find((node) => node.file_type === 'document' && node.label === 'metrics.xlsx')
+      const nodeByKey = new Map(result.nodes.map((node) => [`${node.file_type}:${node.label}`, node.id]))
+      const relations = new Set(result.edges.map((edge) => `${edge.source}:${edge.relation}:${edge.target}`))
+
+      expect(workbookNode).toMatchObject({
+        title: 'Metrics Workbook',
+        author: 'Jane Doe',
+      })
+      expect(labels).toContain('Summary')
+      expect(labels).toContain('Experiments')
+      expect(relations.has(`${nodeByKey.get('document:metrics.xlsx')}:contains:${nodeByKey.get('document:Summary')}`)).toBe(true)
+      expect(relations.has(`${nodeByKey.get('document:metrics.xlsx')}:contains:${nodeByKey.get('document:Experiments')}`)).toBe(true)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

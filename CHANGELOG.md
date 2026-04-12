@@ -2,6 +2,27 @@
 
 All notable changes to the TypeScript package will be documented in this file.
 
+## [0.1.5] - 2026-04-12
+
+### Added
+
+- MCP resource subscriptions for the stdio runtime via `resources/subscribe`, `resources/unsubscribe`, `notifications/resources/updated`, and `notifications/resources/list_changed`
+- Deeper deterministic non-code extraction for PDF metadata and `Tj`/`TJ` text recovery, DOCX core metadata, and XLSX workbook/sheet structure
+- Citation and bibliography enrichment that derives deterministic external `source_url` values for DOI and arXiv references
+- A dedicated `src/pipeline/extract/non-code.ts` module to own the active non-code extraction path
+- Regression coverage for stdio subscriptions, mixed-corpus watch rebuilds, and richer PDF/DOCX/XLSX extraction behavior
+
+### Changed
+
+- Watch mode now rebuilds supported code, document, paper, image, and office-document changes automatically, including mixed supported batches
+- README, roadmap notes, and bundled installer guidance now reflect the expanded MCP/runtime and office-document capabilities
+- Refactored `extract.ts` to route active non-code extraction through the new dedicated module and bumped the extractor cache version
+
+### Fixed
+
+- Hardened non-code parsing with bounded markdown-link matching and structured-text line caps
+- Added a defensive stdio resource-subscription cap to avoid unbounded session growth
+
 ## [0.1.4] - 2026-04-12
 
 ### Fixed

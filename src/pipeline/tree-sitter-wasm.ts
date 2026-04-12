@@ -5,7 +5,7 @@ import { Language, Parser } from 'web-tree-sitter'
 
 export type TreeSitterNode = import('web-tree-sitter').Node
 
-export type SupportedTreeSitterLanguage = 'go' | 'java' | 'python'
+export type SupportedTreeSitterLanguage = 'go' | 'java' | 'python' | 'ruby'
 
 interface TreeSitterRuntimeState {
   languages: Map<SupportedTreeSitterLanguage, Language>
@@ -32,6 +32,7 @@ async function initializeRuntime(): Promise<TreeSitterRuntimeState> {
     languages.set('go', await loadLanguage('tree-sitter-go.wasm'))
     languages.set('java', await loadLanguage('tree-sitter-java.wasm'))
     languages.set('python', await loadLanguage('tree-sitter-python.wasm'))
+    languages.set('ruby', await loadLanguage('tree-sitter-ruby.wasm'))
 
     return {
       languages,
