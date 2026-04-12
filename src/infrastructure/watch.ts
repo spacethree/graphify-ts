@@ -1,10 +1,10 @@
 import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync, unlinkSync, watch as createFileSystemWatcher, writeFileSync } from 'node:fs'
 import { extname, join, resolve, sep } from 'node:path'
 
-import { CODE_EXTENSIONS, DOC_EXTENSIONS, IMAGE_EXTENSIONS, PAPER_EXTENSIONS } from '../pipeline/detect.js'
+import { CODE_EXTENSIONS, DOC_EXTENSIONS, IMAGE_EXTENSIONS, OFFICE_EXTENSIONS, PAPER_EXTENSIONS } from '../pipeline/detect.js'
 import { generateGraph } from './generate.js'
 
-export const WATCHED_EXTENSIONS = new Set([...CODE_EXTENSIONS, ...DOC_EXTENSIONS, ...PAPER_EXTENSIONS, ...IMAGE_EXTENSIONS])
+export const WATCHED_EXTENSIONS = new Set([...CODE_EXTENSIONS, ...DOC_EXTENSIONS, ...PAPER_EXTENSIONS, ...IMAGE_EXTENSIONS, ...OFFICE_EXTENSIONS])
 const MAX_SYMLINK_DEPTH = 40
 const MAX_WATCHED_FILES = 10_000
 
@@ -302,7 +302,9 @@ export async function watch(watchPath: string, debounce = 3, options: WatchOptio
   const changed = new Set<string>()
 
   output.log(`[graphify watch] Watching ${resolvedWatchPath} - abort the process to stop`)
-  output.log('[graphify watch] Code-only changes rebuild automatically; document, paper, and image changes require a manual generate --update refresh.')
+  output.log(
+    '[graphify watch] Supported code, docs, papers, images, and office documents rebuild automatically; manual refresh is only needed for unsupported future formats.',
+  )
   output.log(`[graphify watch] Debounce: ${debounce}s`)
   if (eventWatcher) {
     output.log('[graphify watch] Filesystem events enabled with polling fallback.')
@@ -333,11 +335,6 @@ export async function watch(watchPath: string, debounce = 3, options: WatchOptio
         changed.clear()
 
         output.log(`\n[graphify watch] ${batch.length} file(s) changed`)
-        if (hasNonCode(batch)) {
-          runNotify(resolvedWatchPath, output)
-          continue
-        }
-
         const rebuildOptions: RebuildCodeOptions = {
           logger: output,
           ...(options.followSymlinks !== undefined ? { followSymlinks: options.followSymlinks } : {}),

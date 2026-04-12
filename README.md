@@ -1,5 +1,16 @@
 # graphify-ts
 
+[![version 0.1.5](https://img.shields.io/badge/version-0.1.5-2563eb)](https://github.com/mohanagy/graphify-ts)
+[![node >=20](https://img.shields.io/badge/node-%E2%89%A520-3c873a)](https://nodejs.org/)
+[![TypeScript 5.8](https://img.shields.io/badge/typescript-5.8-3178c6)](https://www.typescriptlang.org/)
+[![Vitest 3.2](https://img.shields.io/badge/tests-Vitest%203.2-6e9f18)](https://vitest.dev/)
+[![MCP stdio + HTTP](https://img.shields.io/badge/runtime-MCP%20stdio%20%2B%20HTTP-7c3aed)](#how-graphify-helps-claude-code-and-other-ai-platforms)
+[![Local first](https://img.shields.io/badge/local--first-no%20cloud%20required-0f766e)](#how-graphify-helps)
+[![Code docs papers images](https://img.shields.io/badge/corpus-code%20%2B%20docs%20%2B%20papers%20%2B%20images-9a3412)](#what-you-get)
+[![HTML JSON Neo4j](https://img.shields.io/badge/outputs-HTML%20%2B%20JSON%20%2B%20Neo4j-f59e0b)](#what-you-get)
+[![No Python runtime](https://img.shields.io/badge/runtime-no%20Python%20required-111827)](#best-fit-today)
+[![license MIT](https://img.shields.io/badge/license-MIT-16a34a)](./LICENSE)
+
 `graphify` is a workflow for turning a codebase, documentation set, or mixed project folder into a local knowledge graph. Instead of treating a repository as a pile of disconnected files, graphify extracts files, symbols, concepts, and relationships so you can explore the project as a connected system.
 
 `graphify-ts` is the Node/TypeScript implementation of that workflow. It lets you generate graph artifacts locally, inspect them in HTML, query them from the CLI, serve them to tools, and use them to give AI platforms like Claude Code a much better map of your repository — all without requiring a Python runtime.
@@ -211,6 +222,7 @@ When you run `graphify-ts serve graphify-out/graph.json --mcp`, graph-aware prom
 - a `graph_diff` tool plus direct `diff` method support for comparing the current graph to a baseline `graph.json`
 - a `semantic_anomalies` MCP tool plus an HTTP `/anomalies` endpoint for surfacing bridge nodes, weak communities, and suspicious cross-boundary links
 - freshness metadata on MCP `resources/list` / `resources/read` responses via resource annotations, plus matching graph-version headers on the HTTP runtime so clients can detect stale graph artifacts
+- `resources/subscribe` / `resources/unsubscribe` support with `notifications/resources/updated` and `notifications/resources/list_changed` so MCP clients can react to refreshed graph artifacts
 
 ## Try it out
 
@@ -237,7 +249,7 @@ If you want the interactive UI for the same smoke test, rerun without `--no-html
 | Command | What it does |
 |---|---|
 | `generate [path]` | Build graph artifacts for a folder |
-| `watch [path]` | Build once, then watch for code/doc changes |
+| `watch [path]` | Build once, then watch supported code, docs, papers, images, and office-document changes |
 | `serve [graph.json]` | Serve graph artifacts over HTTP or stdio |
 | `query "<question>"` | Traverse `graph.json` for a question, with optional ranking and query filters |
 | `diff <baseline-graph.json>` | Compare two graph snapshots and summarize new/removed nodes and edges |
@@ -284,7 +296,7 @@ Additional coverage exists for:
 
 - Python, Go, Java, and Ruby via portable WASM tree-sitter
 - several additional languages via lighter structural extraction
-- deterministic document, paper, and image handling
+- deterministic document, paper, image, and office-document handling, including DOCX/XLSX metadata lifting plus richer PDF citation metadata
 - lightweight HTTP and stdio/MCP-style serving
 
 For the detailed implementation status, limitations, and roadmap material that used to live in this README, see:

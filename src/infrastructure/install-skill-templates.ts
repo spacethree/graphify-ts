@@ -349,7 +349,7 @@ function subcommandSection(kind: PlatformKind): string {
 - ${CODE_SPAN_START}${SKILL_COMMAND} add${CODE_SPAN_END} — fetch a URL into ${CODE_SPAN_START}./raw${CODE_SPAN_END} and then run ${CODE_SPAN_START}--update${CODE_SPAN_END}.
 - ${CODE_SPAN_START}${SKILL_COMMAND} --update${CODE_SPAN_END} — incremental re-extraction; skip semantic work when all changed files are code.
 - ${CODE_SPAN_START}${SKILL_COMMAND} --cluster-only${CODE_SPAN_END} — re-cluster an existing graph.
-- ${CODE_SPAN_START}${SKILL_COMMAND} --watch${CODE_SPAN_END} — supported code, docs, papers, and images trigger automatic rebuilds; manual refresh is only needed for unsupported future formats.
+- ${CODE_SPAN_START}${SKILL_COMMAND} --watch${CODE_SPAN_END} — supported code, docs, papers, images, and office documents trigger automatic rebuilds; manual refresh is only needed for unsupported future formats.
 - ${CODE_SPAN_START}graphify-ts hook install|uninstall|status${CODE_SPAN_END} — manage git hooks for rebuild reminders.
 - ${CODE_SPAN_START}graphify-ts claude install${CODE_SPAN_END} or the platform-specific installer — write always-on instructions to ${localConfigTarget}.
 `

@@ -29,13 +29,15 @@ describe('notifyOnly', () => {
 })
 
 describe('WATCHED_EXTENSIONS', () => {
-  test('includes code, docs, papers, and images', () => {
+  test('includes code, docs, papers, images, and office documents', () => {
     expect(WATCHED_EXTENSIONS.has('.py')).toBe(true)
     expect(WATCHED_EXTENSIONS.has('.ts')).toBe(true)
     expect(WATCHED_EXTENSIONS.has('.md')).toBe(true)
     expect(WATCHED_EXTENSIONS.has('.pdf')).toBe(true)
     expect(WATCHED_EXTENSIONS.has('.png')).toBe(true)
     expect(WATCHED_EXTENSIONS.has('.jpg')).toBe(true)
+    expect(WATCHED_EXTENSIONS.has('.docx')).toBe(true)
+    expect(WATCHED_EXTENSIONS.has('.xlsx')).toBe(true)
   })
 
   test('excludes noise extensions', () => {
@@ -133,7 +135,7 @@ describe('watch', () => {
     })
   })
 
-  test('triggers notify-only for supported non-code changes', async () => {
+  test('triggers rebuild for supported non-code changes', async () => {
     await withTempDirAsync(async (tempDir) => {
       const controller = new AbortController()
       const rebuild = vi.fn(() => {
@@ -158,12 +160,12 @@ describe('watch', () => {
 
       await watcher
 
-      expect(rebuild).not.toHaveBeenCalled()
-      expect(notify).toHaveBeenCalledTimes(1)
+      expect(rebuild).toHaveBeenCalledTimes(1)
+      expect(notify).not.toHaveBeenCalled()
     })
   })
 
-  test('triggers notify-only for mixed code and non-code changes in one batch', async () => {
+  test('triggers rebuild for mixed code and non-code changes in one batch', async () => {
     await withTempDirAsync(async (tempDir) => {
       const controller = new AbortController()
       const rebuild = vi.fn(() => {
@@ -189,8 +191,8 @@ describe('watch', () => {
 
       await watcher
 
-      expect(rebuild).not.toHaveBeenCalled()
-      expect(notify).toHaveBeenCalledTimes(1)
+      expect(rebuild).toHaveBeenCalledTimes(1)
+      expect(notify).not.toHaveBeenCalled()
     })
   })
 

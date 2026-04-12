@@ -8,6 +8,13 @@ import type { ExtractionData, ExtractionEdge, ExtractionNode } from '../contract
 import { loadCached, saveCached } from '../infrastructure/cache.js'
 import { CODE_EXTENSIONS, FileType, classifyFile, detect } from './detect.js'
 import { _makeId, addEdge, addNode, addUniqueEdge, createEdge, createFileNode, createNode, indentationLevel, normalizeLabel, stripHashComment } from './extract/core.js'
+import {
+  createCodeFileOnlyExtraction as createTextFallbackExtraction,
+  ensureTextFileWithinLimit as isTextFileWithinLimit,
+  extractDocument as extractDocumentFile,
+  extractImageFile as extractImageFragment,
+  extractPaper as extractPaperFile,
+} from './extract/non-code.js'
 import { extractPythonRationale } from './extract/python-rationale.js'
 import { isRecord } from '../shared/guards.js'
 import { MAX_TEXT_BYTES, sanitizeLabel } from '../shared/security.js'
@@ -15,7 +22,7 @@ import { createTreeSitterWasmParser, treeSitterWasmError, type TreeSitterNode } 
 
 export { _makeId } from './extract/core.js'
 
-const EXTRACTOR_CACHE_VERSION = 9
+const EXTRACTOR_CACHE_VERSION = 10
 const PYTHON_KEYWORDS = new Set(['if', 'elif', 'else', 'for', 'while', 'return', 'class', 'def', 'lambda', 'with', 'print', 'sum'])
 const GENERIC_CODE_EXTENSIONS = new Set(['.go', '.rs', '.java', '.kt', '.kts', '.scala', '.cs', '.c', '.cc', '.cpp', '.cxx', '.h', '.hpp', '.swift', '.php', '.zig'])
 const GENERIC_CONTROL_KEYWORDS = new Set(['if', 'for', 'while', 'switch', 'catch', 'return', 'new', 'delete', 'throw', 'sizeof', 'case', 'do', 'else'])
@@ -2146,8 +2153,8 @@ export function extractPython(filePath: string): ExtractionFragment {
 }
 
 function extractRubyScanner(filePath: string): ExtractionFragment {
-  if (!ensureTextFileWithinLimit(filePath)) {
-    return createCodeFileOnlyExtraction(filePath)
+  if (!isTextFileWithinLimit(filePath)) {
+    return createTextFallbackExtraction(filePath)
   }
 
   const sourceText = readFileSync(filePath, 'utf8')
@@ -3086,8 +3093,8 @@ function extractRubyTreeSitter(filePath: string): ExtractionFragment | null {
     return null
   }
 
-  if (!ensureTextFileWithinLimit(filePath)) {
-    return createCodeFileOnlyExtraction(filePath)
+  if (!isTextFileWithinLimit(filePath)) {
+    return createTextFallbackExtraction(filePath)
   }
 
   const sourceText = readFileSync(filePath, 'utf8')
@@ -3940,19 +3947,19 @@ function extractSingleFile(filePath: string, allowedTargets: ReadonlySet<string>
 
   const fileType = classifyFile(filePath)
   if (fileType === FileType.DOCUMENT) {
-    const extraction = extractDocument(filePath, allowedTargets)
+    const extraction = extractDocumentFile(filePath, allowedTargets)
     writeCachedExtraction(filePath, extraction)
     return extraction
   }
 
   if (fileType === FileType.PAPER) {
-    const extraction = extractPaper(filePath, allowedTargets)
+    const extraction = extractPaperFile(filePath, allowedTargets)
     writeCachedExtraction(filePath, extraction)
     return extraction
   }
 
   if (fileType === FileType.IMAGE) {
-    const extraction = extractImage(filePath)
+    const extraction = extractImageFragment(filePath)
     writeCachedExtraction(filePath, extraction)
     return extraction
   }
