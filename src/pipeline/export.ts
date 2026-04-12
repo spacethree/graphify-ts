@@ -3,7 +3,7 @@ import { dirname, join, relative } from 'node:path'
 
 import { KnowledgeGraph } from '../contracts/graph.js'
 import { validateUrl } from '../shared/security.js'
-import { _nodeCommunityMap } from './analyze.js'
+import { _nodeCommunityMap, type SemanticAnomaly } from './analyze.js'
 import type { Communities } from './cluster.js'
 
 const COMMUNITY_COLORS = ['#4E79A7', '#F28E2B', '#E15759', '#76B7B2', '#59A14F', '#EDC948', '#B07AA1', '#FF9DA7', '#9C755F', '#BAB0AC']
@@ -325,7 +325,13 @@ function buildHtmlPayload(graph: KnowledgeGraph, communities: Communities, commu
   }
 }
 
-export function toJson(graph: KnowledgeGraph, communities: Communities, outputPath: string, communityLabels: Record<number, string> = {}): void {
+export function toJson(
+  graph: KnowledgeGraph,
+  communities: Communities,
+  outputPath: string,
+  communityLabels: Record<number, string> = {},
+  semanticAnomalies: SemanticAnomaly[] = [],
+): void {
   const nodeCommunity = _nodeCommunityMap(communities)
   const data = {
     directed: graph.isDirected(),
@@ -342,6 +348,7 @@ export function toJson(graph: KnowledgeGraph, communities: Communities, outputPa
     })),
     hyperedges: Array.isArray(graph.graph.hyperedges) ? graph.graph.hyperedges : [],
     community_labels: communityLabels,
+    semantic_anomalies: semanticAnomalies,
   }
 
   writeFileSync(outputPath, `${JSON.stringify(data, null, 2)}\n`, 'utf8')

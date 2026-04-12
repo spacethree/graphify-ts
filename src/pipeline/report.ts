@@ -1,5 +1,5 @@
 import { KnowledgeGraph } from '../contracts/graph.js'
-import { _isConceptNode, _isFileNode, _nodeCommunityMap } from './analyze.js'
+import { _isConceptNode, _isFileNode, _nodeCommunityMap, type SemanticAnomaly } from './analyze.js'
 import type { Communities } from './cluster.js'
 
 function formatNumber(value: number): string {
@@ -21,6 +21,17 @@ function formatConfidenceTag(confidence: string, confidenceScore?: number): stri
   return confidence
 }
 
+function formatAnomalyKind(kind: SemanticAnomaly['kind']): string {
+  switch (kind) {
+    case 'bridge_node':
+      return 'Bridge node'
+    case 'cross_boundary_edge':
+      return 'Cross-boundary edge'
+    case 'low_cohesion_community':
+      return 'Low-cohesion community'
+  }
+}
+
 export function generate(
   graph: KnowledgeGraph,
   communities: Communities,
@@ -37,6 +48,7 @@ export function generate(
     why?: string
     note?: string
   }>,
+  semanticAnomalyList: SemanticAnomaly[],
   detectionResult: Record<string, unknown>,
   tokenCost: Record<string, unknown>,
   root: string,
@@ -90,6 +102,17 @@ export function generate(
       lines.push(
         `  ${escapeMarkdownInline(surprise.source_files[0])} → ${escapeMarkdownInline(surprise.source_files[1])}${surprise.why ? `  _${escapeMarkdownInline(surprise.why)}_` : ''}`,
       )
+    }
+  }
+
+  lines.push('')
+  lines.push('## Semantic Anomalies')
+  if (semanticAnomalyList.length === 0) {
+    lines.push('- None detected - the graph currently looks structurally well-behaved.')
+  } else {
+    for (const anomaly of semanticAnomalyList) {
+      lines.push(`- **[${anomaly.severity}] ${formatAnomalyKind(anomaly.kind)}** - ${escapeMarkdownInline(anomaly.summary)}`)
+      lines.push(`  _${escapeMarkdownInline(anomaly.why)}_`)
     }
   }
 

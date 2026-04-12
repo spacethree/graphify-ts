@@ -22,11 +22,13 @@ import {
 import { pushGraphToNeo4j } from '../infrastructure/neo4j.js'
 import { watch as watchGraph } from '../infrastructure/watch.js'
 import { serveGraph } from '../runtime/http-server.js'
+import { diffGraphs } from '../runtime/diff.js'
 import { serveGraphStdio } from '../runtime/stdio-server.js'
 import { getNeighbors, getNode, loadGraph, queryGraph, shortestPath } from '../runtime/serve.js'
 import {
   parseBenchmarkArgs,
   parseAddArgs,
+  parseDiffArgs,
   parseExplainArgs,
   parseGenerateArgs,
   parseHookArgs,
@@ -143,6 +145,12 @@ export function formatHelp(binaryName = 'graphify-ts'): string {
     '    --dfs                 use depth-first instead of breadth-first',
     '    --budget N            cap output at N tokens (default 2000)',
     '    --graph <path>        path to graph.json (default graphify-out/graph.json)',
+    '    --rank-by MODE        rank matches by relevance or degree (default relevance)',
+    '    --community ID        limit traversal to one community id',
+    '    --file-type TYPE      limit traversal to one file type (for example code or document)',
+    '  diff <baseline-graph.json> compare a baseline graph.json to the current graph snapshot',
+    '    --graph <path>        path to the current graph.json (default graphify-out/graph.json)',
+    '    --limit N             maximum items to show per change section (default 10)',
     '  path <source> <target> find the shortest path between two concepts',
     '    --graph <path>        path to graph.json (default graphify-out/graph.json)',
     '    --max-hops N          maximum allowed hops before reporting overflow (default 8)',
@@ -228,6 +236,7 @@ function formatGenerateSummary(result: GenerateGraphResult): string {
     `- Corpus: ${result.totalFiles} file(s) · ~${result.totalWords.toLocaleString()} words`,
     `- Extracted: ${result.codeFiles} code file(s)` + (result.nonCodeFiles > 0 ? ` (+${result.nonCodeFiles} non-code detected)` : ''),
     `- Graph: ${result.nodeCount} nodes · ${result.edgeCount} edges · ${result.communityCount} communities`,
+    ...(typeof result.semanticAnomalyCount === 'number' ? [`- Semantic anomalies: ${result.semanticAnomalyCount} high-signal item(s)`] : []),
     `- Outputs: ${result.graphPath}, ${result.reportPath}`,
   ]
 
@@ -376,7 +385,26 @@ export async function executeCli(argv: string[], io: CliIO = console, dependenci
     if (command === 'query') {
       const options = parseQueryArgs(args)
       const graph = dependencies.loadGraph(options.graphPath)
-      io.log(dependencies.queryGraph(graph, options.question, { mode: options.mode, tokenBudget: options.tokenBudget }))
+      const filters = {
+        ...(options.community !== null ? { community: options.community } : {}),
+        ...(options.fileType ? { fileType: options.fileType } : {}),
+      }
+      io.log(
+        dependencies.queryGraph(graph, options.question, {
+          mode: options.mode,
+          tokenBudget: options.tokenBudget,
+          rankBy: options.rankBy,
+          ...(Object.keys(filters).length > 0 ? { filters } : {}),
+        }),
+      )
+      return 0
+    }
+
+    if (command === 'diff') {
+      const options = parseDiffArgs(args)
+      const baselineGraph = dependencies.loadGraph(options.baselineGraphPath)
+      const graph = dependencies.loadGraph(options.graphPath)
+      io.log(diffGraphs(baselineGraph, graph, { limit: options.limit }))
       return 0
     }
 

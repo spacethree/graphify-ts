@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { godNodes, suggestQuestions, surprisingConnections } from '../../src/pipeline/analyze.js'
+import { godNodes, semanticAnomalies, suggestQuestions, surprisingConnections } from '../../src/pipeline/analyze.js'
 import { buildFromJson } from '../../src/pipeline/build.js'
 import { cluster, scoreAll } from '../../src/pipeline/cluster.js'
 import { generate } from '../../src/pipeline/report.js'
@@ -16,22 +16,24 @@ function makeInputs() {
   const labels = Object.fromEntries(Object.keys(communities).map((communityId) => [Number(communityId), `Community ${communityId}`]))
   const gods = godNodes(graph)
   const surprises = surprisingConnections(graph, communities)
+  const anomalies = semanticAnomalies(graph, communities, labels)
   const questions = suggestQuestions(graph, communities, labels)
   const detection = { total_files: 4, total_words: 62400, needs_graph: true, warning: null }
   const tokens = { input: extraction.input_tokens, output: extraction.output_tokens }
 
-  return { graph, communities, cohesion, labels, gods, surprises, questions, detection, tokens }
+  return { graph, communities, cohesion, labels, gods, surprises, anomalies, questions, detection, tokens }
 }
 
 describe('report', () => {
   it('generates the expected report sections', () => {
-    const { graph, communities, cohesion, labels, gods, surprises, questions, detection, tokens } = makeInputs()
-    const report = generate(graph, communities, cohesion, labels, gods, surprises, detection, tokens, './project', questions)
+    const { graph, communities, cohesion, labels, gods, surprises, anomalies, questions, detection, tokens } = makeInputs()
+    const report = generate(graph, communities, cohesion, labels, gods, surprises, anomalies, detection, tokens, './project', questions)
 
     expect(report).toContain('# Graph Report')
     expect(report).toContain('## Corpus Check')
     expect(report).toContain('## God Nodes')
     expect(report).toContain('## Surprising Connections')
+    expect(report).toContain('## Semantic Anomalies')
     expect(report).toContain('## Communities')
     expect(report).toContain('## Ambiguous Edges')
     expect(report).toContain('## Suggested Questions')
@@ -39,8 +41,8 @@ describe('report', () => {
   })
 
   it('shows token cost and raw cohesion values', () => {
-    const { graph, communities, cohesion, labels, gods, surprises, questions, detection, tokens } = makeInputs()
-    const report = generate(graph, communities, cohesion, labels, gods, surprises, detection, tokens, './project', questions)
+    const { graph, communities, cohesion, labels, gods, surprises, anomalies, questions, detection, tokens } = makeInputs()
+    const report = generate(graph, communities, cohesion, labels, gods, surprises, anomalies, detection, tokens, './project', questions)
 
     expect(report).toContain('Token cost')
     expect(report).toContain('1,200')
@@ -50,8 +52,8 @@ describe('report', () => {
   })
 
   it('renders no-signal suggestions as explanatory prose', () => {
-    const { graph, communities, cohesion, labels, gods, surprises, detection, tokens } = makeInputs()
-    const report = generate(graph, communities, cohesion, labels, gods, surprises, detection, tokens, './project', [
+    const { graph, communities, cohesion, labels, gods, surprises, anomalies, detection, tokens } = makeInputs()
+    const report = generate(graph, communities, cohesion, labels, gods, surprises, anomalies, detection, tokens, './project', [
       { type: 'no_signal', question: null, why: 'Nothing weird here.' },
     ])
 
@@ -79,6 +81,16 @@ describe('report', () => {
           why: 'Tries to break markdown.',
         },
       ],
+      [
+        {
+          id: 'anomaly-1',
+          kind: 'bridge_node',
+          severity: 'HIGH',
+          score: 9.5,
+          summary: '[bridge](javascript:alert(1)) spans communities.',
+          why: 'Still needs escaping.',
+        },
+      ],
       detection,
       tokens,
       './project',
@@ -95,9 +107,10 @@ describe('report', () => {
       },
     ]
 
-    const hyperedgeReport = generate(graph, communities, cohesion, labels, [], [], detection, tokens, './project', [])
+    const hyperedgeReport = generate(graph, communities, cohesion, labels, [], [], [], detection, tokens, './project', [])
 
     expect(report).not.toContain('[source](javascript:alert(1))')
+    expect(report).toContain('## Semantic Anomalies')
     expect(report).toContain('INFERRED 0.75')
     expect(hyperedgeReport).toContain('## Hyperedges (group relationships)')
     expect(hyperedgeReport).toContain('Cross\-cutting flow')

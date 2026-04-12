@@ -3,7 +3,8 @@ import { existsSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 import { validateGraphPath } from '../shared/security.js'
-import { communitiesFromGraph, getCommunity, getNeighbors, getNode, graphStats, loadGraph, queryGraph, shortestPath } from './serve.js'
+import { graphFreshnessHeaders, graphFreshnessMetadata, resourceFreshnessHeaders, resourceFreshnessMetadata } from './freshness.js'
+import { communitiesFromGraph, getCommunity, getNeighbors, getNode, graphStats, loadGraph, queryGraph, semanticAnomaliesSummary, shortestPath } from './serve.js'
 import type { KnowledgeGraph } from '../contracts/graph.js'
 
 export interface ServeLogger {
@@ -47,13 +48,13 @@ function parsePort(value: number | undefined): number {
   return value
 }
 
-function sendText(response: ServerResponse, statusCode: number, body: string, contentType = 'text/plain; charset=utf-8'): void {
-  response.writeHead(statusCode, { 'content-type': contentType })
+function sendText(response: ServerResponse, statusCode: number, body: string, contentType = 'text/plain; charset=utf-8', headers: Record<string, string> = {}): void {
+  response.writeHead(statusCode, { 'content-type': contentType, ...headers })
   response.end(body)
 }
 
-function sendJson(response: ServerResponse, statusCode: number, body: unknown): void {
-  response.writeHead(statusCode, { 'content-type': 'application/json; charset=utf-8' })
+function sendJson(response: ServerResponse, statusCode: number, body: unknown, headers: Record<string, string> = {}): void {
+  response.writeHead(statusCode, { 'content-type': 'application/json; charset=utf-8', ...headers })
   response.end(`${JSON.stringify(body, null, 2)}\n`)
 }
 
@@ -85,7 +86,8 @@ function renderIndex(outputDir: string): string {
   </ul>
   <p>Query endpoints:</p>
   <ul>
-    <li><code>/query?q=auth+flow&amp;mode=bfs&amp;budget=2000</code></li>
+    <li><code>/query?q=auth+flow&amp;mode=bfs&amp;budget=2000&amp;rank=degree&amp;community=0&amp;file_type=code</code></li>
+    <li><code>/anomalies?limit=5</code></li>
     <li><code>/path?source=Auth&amp;target=Database</code></li>
     <li><code>/node?label=HttpClient</code></li>
     <li><code>/neighbors?label=HttpClient&amp;relation=calls</code></li>
@@ -116,6 +118,56 @@ function normalizeBudget(value: string | null): number {
     return 2000
   }
   return Math.min(parsed, MAX_HTTP_TOKEN_BUDGET)
+}
+
+function normalizeRank(value: string | null): 'relevance' | 'degree' {
+  const normalized = value?.trim().toLowerCase()
+  if (!normalized) {
+    return 'relevance'
+  }
+  if (normalized === 'relevance' || normalized === 'degree') {
+    return normalized
+  }
+  throw new Error("Query parameter 'rank' must be one of relevance, degree")
+}
+
+function parseOptionalNonNegativeInteger(value: string | null, field: string): number | undefined {
+  const normalized = value?.trim() ?? ''
+  if (normalized.length === 0) {
+    return undefined
+  }
+
+  const parsed = Number(normalized)
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(`Query parameter '${field}' must be a non-negative integer`)
+  }
+
+  return parsed
+}
+
+function parseOptionalShortText(value: string | null, field: string): string | undefined {
+  const normalized = value?.trim() ?? ''
+  if (normalized.length === 0) {
+    return undefined
+  }
+  if (normalized.length > MAX_HTTP_LABEL_LENGTH) {
+    throw new Error(`Query parameter '${field}' exceeds maximum length of ${MAX_HTTP_LABEL_LENGTH}`)
+  }
+  return normalized
+}
+
+function parsePositiveInteger(value: string | null, field: string, defaultValue: number, maxValue: number): number {
+  const normalized = value?.trim() ?? ''
+  if (normalized.length === 0) {
+    return defaultValue
+  }
+
+  const parsed = Number(normalized)
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > maxValue) {
+    throw new Error(`Query parameter '${field}' must be an integer between 1 and ${maxValue}`)
+  }
+
+  return parsed
 }
 
 function createGraphLoader(graphPath: string): () => KnowledgeGraph {
@@ -178,11 +230,12 @@ export async function startGraphServer(options: ServeGraphOptions = {}): Promise
       }
 
       const url = new URL(request.url ?? '/', `http://${host}`)
+      const graphHeaders = graphFreshnessHeaders(graphFreshnessMetadata(graphPath))
 
       if (url.pathname === '/' || url.pathname === '/index.html') {
         const htmlPath = join(outputDir, 'graph.html')
         const html = existsSync(htmlPath) ? readUtf8File(htmlPath) : renderIndex(outputDir)
-        sendText(response, 200, html, 'text/html; charset=utf-8')
+        sendText(response, 200, html, 'text/html; charset=utf-8', graphHeaders)
         return
       }
 
@@ -192,12 +245,12 @@ export async function startGraphServer(options: ServeGraphOptions = {}): Promise
           sendText(response, 404, 'graph.html not found. Re-run graphify-ts generate without --no-html.')
           return
         }
-        sendText(response, 200, readUtf8File(htmlPath), 'text/html; charset=utf-8')
+        sendText(response, 200, readUtf8File(htmlPath), 'text/html; charset=utf-8', resourceFreshnessHeaders(resourceFreshnessMetadata(graphPath, htmlPath)))
         return
       }
 
       if (url.pathname === '/graph.json') {
-        sendText(response, 200, readUtf8File(graphPath), 'application/json; charset=utf-8')
+        sendText(response, 200, readUtf8File(graphPath), 'application/json; charset=utf-8', resourceFreshnessHeaders(resourceFreshnessMetadata(graphPath, graphPath)))
         return
       }
 
@@ -207,18 +260,24 @@ export async function startGraphServer(options: ServeGraphOptions = {}): Promise
           sendText(response, 404, 'GRAPH_REPORT.md not found.')
           return
         }
-        sendText(response, 200, readUtf8File(reportPath), 'text/markdown; charset=utf-8')
+        sendText(response, 200, readUtf8File(reportPath), 'text/markdown; charset=utf-8', resourceFreshnessHeaders(resourceFreshnessMetadata(graphPath, reportPath)))
         return
       }
 
       if (url.pathname === '/health') {
-        sendJson(response, 200, { ok: true })
+        sendJson(response, 200, { ok: true }, graphHeaders)
         return
       }
 
       if (url.pathname === '/stats') {
         const loadedGraph = graph()
-        sendText(response, 200, graphStats(loadedGraph, communitiesFromGraph(loadedGraph)))
+        sendText(response, 200, graphStats(loadedGraph, communitiesFromGraph(loadedGraph)), 'text/plain; charset=utf-8', graphHeaders)
+        return
+      }
+
+      if (url.pathname === '/anomalies') {
+        const limit = parsePositiveInteger(url.searchParams.get('limit'), 'limit', 5, 100)
+        sendText(response, 200, semanticAnomaliesSummary(graphPath, limit), 'text/plain; charset=utf-8', graphHeaders)
         return
       }
 
@@ -226,20 +285,38 @@ export async function startGraphServer(options: ServeGraphOptions = {}): Promise
         const question = parseQueryText(url.searchParams.get('q'), 'q', MAX_HTTP_QUERY_LENGTH)
         const mode = url.searchParams.get('mode') === 'dfs' ? 'dfs' : 'bfs'
         const budget = normalizeBudget(url.searchParams.get('budget'))
-        sendText(response, 200, queryGraph(graph(), question, { mode, tokenBudget: budget }))
+        const rankBy = normalizeRank(url.searchParams.get('rank') ?? url.searchParams.get('rank_by'))
+        const community = parseOptionalNonNegativeInteger(url.searchParams.get('community'), 'community')
+        const fileType = parseOptionalShortText(url.searchParams.get('file_type') ?? url.searchParams.get('fileType'), 'file_type')
+        const filters = {
+          ...(community !== undefined ? { community } : {}),
+          ...(fileType ? { fileType } : {}),
+        }
+        sendText(
+          response,
+          200,
+          queryGraph(graph(), question, {
+            mode,
+            tokenBudget: budget,
+            rankBy,
+            ...(Object.keys(filters).length > 0 ? { filters } : {}),
+          }),
+          'text/plain; charset=utf-8',
+          graphHeaders,
+        )
         return
       }
 
       if (url.pathname === '/path') {
         const source = parseQueryText(url.searchParams.get('source'), 'source', MAX_HTTP_LABEL_LENGTH)
         const target = parseQueryText(url.searchParams.get('target'), 'target', MAX_HTTP_LABEL_LENGTH)
-        sendText(response, 200, shortestPath(graph(), source, target))
+        sendText(response, 200, shortestPath(graph(), source, target), 'text/plain; charset=utf-8', graphHeaders)
         return
       }
 
       if (url.pathname === '/node') {
         const label = parseQueryText(url.searchParams.get('label'), 'label', MAX_HTTP_LABEL_LENGTH)
-        sendText(response, 200, getNode(graph(), label))
+        sendText(response, 200, getNode(graph(), label), 'text/plain; charset=utf-8', graphHeaders)
         return
       }
 
@@ -250,7 +327,7 @@ export async function startGraphServer(options: ServeGraphOptions = {}): Promise
           sendText(response, 400, `Query parameter 'relation' exceeds maximum length of ${MAX_HTTP_LABEL_LENGTH}`)
           return
         }
-        sendText(response, 200, getNeighbors(graph(), label, relation))
+        sendText(response, 200, getNeighbors(graph(), label, relation), 'text/plain; charset=utf-8', graphHeaders)
         return
       }
 
@@ -261,7 +338,7 @@ export async function startGraphServer(options: ServeGraphOptions = {}): Promise
           return
         }
         const loadedGraph = graph()
-        sendText(response, 200, getCommunity(loadedGraph, communitiesFromGraph(loadedGraph), communityId))
+        sendText(response, 200, getCommunity(loadedGraph, communitiesFromGraph(loadedGraph), communityId), 'text/plain; charset=utf-8', graphHeaders)
         return
       }
 

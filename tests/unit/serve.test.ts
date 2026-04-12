@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { describe, expect, test } from 'vitest'
 
 import { KnowledgeGraph } from '../../src/contracts/graph.js'
-import { bfs, communitiesFromGraph, dfs, loadGraph, scoreNodes, subgraphToText } from '../../src/runtime/serve.js'
+import { bfs, communitiesFromGraph, dfs, loadGraph, queryGraph, scoreNodes, semanticAnomaliesSummary, subgraphToText } from '../../src/runtime/serve.js'
 
 function withTempDir(callback: (tempDir: string) => void): void {
   const tempDir = mkdtempSync(join(tmpdir(), 'graphify-ts-serve-'))
@@ -26,6 +26,20 @@ function makeGraph(): KnowledgeGraph {
   graph.addEdge('n1', 'n2', { relation: 'calls', confidence: 'INFERRED' })
   graph.addEdge('n2', 'n3', { relation: 'imports', confidence: 'EXTRACTED' })
   graph.addEdge('n3', 'n4', { relation: 'uses', confidence: 'EXTRACTED' })
+  return graph
+}
+
+function makeRankedGraph(): KnowledgeGraph {
+  const graph = new KnowledgeGraph()
+  graph.addNode('hub', { label: 'AuthService', source_file: 'auth.ts', source_location: 'L1', file_type: 'code', community: 0 })
+  graph.addNode('leaf', { label: 'AuthLeaf', source_file: 'leaf.ts', source_location: 'L2', file_type: 'code', community: 0 })
+  graph.addNode('guide', { label: 'AuthGuide', source_file: 'guide.md', source_location: 'L3', file_type: 'document', community: 1 })
+  graph.addNode('other1', { label: 'HelperOne', source_file: 'helper-one.ts', source_location: 'L4', file_type: 'code', community: 0 })
+  graph.addNode('other2', { label: 'HelperTwo', source_file: 'helper-two.ts', source_location: 'L5', file_type: 'code', community: 0 })
+  graph.addEdge('hub', 'leaf', { relation: 'calls', confidence: 'EXTRACTED' })
+  graph.addEdge('hub', 'other1', { relation: 'calls', confidence: 'EXTRACTED' })
+  graph.addEdge('hub', 'other2', { relation: 'calls', confidence: 'EXTRACTED' })
+  graph.addEdge('leaf', 'guide', { relation: 'documents', confidence: 'EXTRACTED' })
   return graph
 }
 
@@ -59,6 +73,51 @@ describe('scoreNodes', () => {
   test('scores partial source file matches at lower weight', () => {
     const scored = scoreNodes(makeGraph(), ['cluster'])
     expect(scored.map(([, id]) => id)).toContain('n2')
+  })
+
+  test('can rank matching nodes by degree', () => {
+    const scored = scoreNodes(makeRankedGraph(), ['auth'], { rankBy: 'degree' })
+
+    expect(scored.map(([, id]) => id)).toEqual(['hub', 'leaf', 'guide'])
+  })
+
+  test('applies query filters before scoring nodes', () => {
+    const scored = scoreNodes(makeRankedGraph(), ['auth'], {
+      filters: {
+        community: 0,
+        fileType: 'code',
+      },
+    })
+
+    expect(scored.map(([, id]) => id)).toEqual(['hub', 'leaf'])
+  })
+})
+
+describe('queryGraph', () => {
+  test('reports query ranking and filters in the traversal summary', () => {
+    const result = queryGraph(makeRankedGraph(), 'auth', {
+      rankBy: 'degree',
+      filters: {
+        community: 0,
+        fileType: 'code',
+      },
+    })
+
+    expect(result).toContain('Rank: DEGREE')
+    expect(result).toContain('Filters: community=0, file_type=code')
+    expect(result).toContain('AuthService')
+    expect(result).not.toContain('AuthGuide')
+  })
+
+  test('explains when filters eliminate all matching nodes', () => {
+    const result = queryGraph(makeRankedGraph(), 'auth', {
+      filters: {
+        community: 99,
+      },
+    })
+
+    expect(result).toContain('No matching nodes found')
+    expect(result).toContain('community=99')
   })
 })
 
@@ -183,6 +242,97 @@ describe('loadGraph', () => {
       mkdirSync(outDir, { recursive: true })
       writeFileSync(graphPath, '{bad-json', 'utf8')
       expect(() => loadGraph(graphPath)).toThrow(/corrupt|json/i)
+    })
+  })
+
+  test('summarizes semantic anomalies stored in graph artifacts', () => {
+    withTempDir((tempDir) => {
+      const outDir = join(tempDir, 'graphify-out')
+      const graphPath = join(outDir, 'graph.json')
+      mkdirSync(outDir, { recursive: true })
+      writeFileSync(
+        graphPath,
+        `${JSON.stringify({
+          community_labels: { '0': 'Alpha Cluster' },
+          nodes: [
+            { id: 'n1', label: 'extract', community: 0, source_file: 'extract.py', file_type: 'code' },
+            { id: 'n2', label: 'cluster', community: 0, source_file: 'cluster.py', file_type: 'code' },
+          ],
+          links: [{ source: 'n1', target: 'n2', relation: 'calls', confidence: 'EXTRACTED', source_file: 'extract.py' }],
+          hyperedges: [],
+          semantic_anomalies: [
+            {
+              id: 'low-cohesion-alpha',
+              kind: 'low_cohesion_community',
+              severity: 'MEDIUM',
+              score: 5.4,
+              summary: 'Alpha Cluster is weakly connected for its size.',
+              why: 'Cohesion score is below the anomaly threshold.',
+            },
+          ],
+        })}\n`,
+        'utf8',
+      )
+
+      const result = semanticAnomaliesSummary(graphPath, 5)
+
+      expect(result).toContain('Semantic anomalies (1 shown)')
+      expect(result).toContain('Alpha Cluster is weakly connected for its size.')
+    })
+  })
+
+  test('ignores oversized stored anomaly payloads and sanitizes anomaly text', () => {
+    withTempDir((tempDir) => {
+      const outDir = join(tempDir, 'graphify-out')
+      const graphPath = join(outDir, 'graph.json')
+      mkdirSync(outDir, { recursive: true })
+      writeFileSync(
+        graphPath,
+        `${JSON.stringify({
+          nodes: [],
+          links: [],
+          hyperedges: [],
+          semantic_anomalies: [
+            {
+              id: 'valid-id',
+              kind: 'bridge_node',
+              severity: 'HIGH',
+              score: 7.2,
+              summary: 'Bridge\u0007 node summary',
+              why: 'Because\u0000 it links distant communities.',
+            },
+          ],
+        })}\n`,
+        'utf8',
+      )
+
+      const sanitized = semanticAnomaliesSummary(graphPath, 5)
+
+      expect(sanitized).toContain('Bridge node summary')
+      expect(sanitized).not.toContain('\u0007')
+      expect(sanitized).not.toContain('\u0000')
+
+      writeFileSync(
+        graphPath,
+        `${JSON.stringify({
+          nodes: [],
+          links: [],
+          hyperedges: [],
+          semantic_anomalies: Array.from({ length: 10001 }, (_, index) => ({
+            id: `anomaly-${index}`,
+            kind: 'bridge_node',
+            severity: 'HIGH',
+            score: 9,
+            summary: `Oversized anomaly ${index}`,
+            why: 'Too many anomalies should be ignored.',
+          })),
+        })}\n`,
+        'utf8',
+      )
+
+      const oversized = semanticAnomaliesSummary(graphPath, 5)
+
+      expect(oversized).toBe('Semantic anomalies: none detected.')
     })
   })
 })

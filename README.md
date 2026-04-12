@@ -35,6 +35,8 @@ Graphify is especially helpful when you want to:
 - **See structure instead of noise** through reports, graph views, and focused exports.
 - **Explore large projects safely** with overview-first HTML for large graphs instead of trying to render everything at once.
 - **Query the codebase semantically** with commands like `query`, `explain`, and `path` on top of generated graph artifacts.
+- **Compare snapshots over time** with `diff` so refactors and graph changes are easier to review.
+- **Spot suspicious structure faster** through semantic anomaly detection for bridge nodes, low-cohesion communities, and unexpected cross-boundary edges.
 - **Reuse the same context across tools** because the graph is saved locally as files that humans and automation can both consume.
 - **Refresh understanding after changes** by regenerating the graph whenever the repo evolves.
 
@@ -45,8 +47,8 @@ After a successful `generate` run, `graphify-ts` writes artifacts into `graphify
 ```text
 graphify-out/
 ├── graph.html       interactive graph explorer (or overview page for large graphs)
-├── GRAPH_REPORT.md  summary report with god nodes and suggested questions
-├── graph.json       machine-readable graph for query/serve flows
+├── GRAPH_REPORT.md  summary report with god nodes, semantic anomalies, and suggested questions
+├── graph.json       machine-readable graph for query/serve flows, community labels, and semantic anomalies
 ├── graph-pages/     focused community explorer pages for large graphs
 └── cache/           content-addressed extraction cache
 ```
@@ -103,7 +105,7 @@ AI coding assistants are powerful, but they usually begin with incomplete reposi
 In practice, graphify gives AI platforms a better starting point:
 
 - `graphify-out/GRAPH_REPORT.md` explains the repo at a higher level, including god nodes, communities, and suggested questions.
-- `graphify-out/graph.json` provides machine-readable structure for query, explain, path, and serve workflows.
+- `graphify-out/graph.json` provides machine-readable structure for query, explain, path, anomaly, and serve workflows.
 - `graphify-out/wiki/index.md` (when you generate wiki output) gives assistants a linked markdown view that is often easier to navigate than raw source trees.
 - `graphify-out/graph.html` and `graphify-out/graph-pages/` let you inspect the same structure visually.
 
@@ -185,6 +187,8 @@ If the graph is large, `graph.html` becomes a lightweight overview page with nam
 
 ```bash
 graphify-ts query "how does the auth flow work?" --graph graphify-out/graph.json
+graphify-ts query "auth" --rank-by degree --community 0 --file-type code --graph graphify-out/graph.json
+graphify-ts diff previous-run/graph.json --graph graphify-out/graph.json
 graphify-ts explain "SomeNodeLabel" --graph graphify-out/graph.json
 graphify-ts path "SourceConcept" "TargetConcept" --graph graphify-out/graph.json
 graphify-ts serve graphify-out/graph.json
@@ -192,6 +196,21 @@ graphify-ts serve graphify-out/graph.json --mcp
 ```
 
 Replace `SomeNodeLabel`, `SourceConcept`, and `TargetConcept` with labels that actually exist in your generated graph.
+
+For graph queries, you can now:
+
+- use `--rank-by degree` to prioritize more connected matches over plain text relevance
+- use `--community <id>` to stay inside one detected community
+- use `--file-type <type>` to limit traversal to one node type such as `code` or `document`
+
+When you run `graphify-ts serve graphify-out/graph.json --mcp`, graph-aware prompt consumers now also get:
+
+- prompt descriptions seeded from the actual generated graph instead of fixed boilerplate
+- query/explain/path prompts that include live graph stats, top communities, god nodes, and suggested follow-up questions
+- a `graph_community_summary_prompt` for summarizing one detected community by id, with prompt completion for available `community_id` values
+- a `graph_diff` tool plus direct `diff` method support for comparing the current graph to a baseline `graph.json`
+- a `semantic_anomalies` MCP tool plus an HTTP `/anomalies` endpoint for surfacing bridge nodes, weak communities, and suspicious cross-boundary links
+- freshness metadata on MCP `resources/list` / `resources/read` responses via resource annotations, plus matching graph-version headers on the HTTP runtime so clients can detect stale graph artifacts
 
 ## Try it out
 
@@ -220,7 +239,8 @@ If you want the interactive UI for the same smoke test, rerun without `--no-html
 | `generate [path]` | Build graph artifacts for a folder |
 | `watch [path]` | Build once, then watch for code/doc changes |
 | `serve [graph.json]` | Serve graph artifacts over HTTP or stdio |
-| `query "<question>"` | Traverse `graph.json` for a question |
+| `query "<question>"` | Traverse `graph.json` for a question, with optional ranking and query filters |
+| `diff <baseline-graph.json>` | Compare two graph snapshots and summarize new/removed nodes and edges |
 | `path <source> <target>` | Find the shortest path between two concepts |
 | `explain <label>` | Explain one node and its neighborhood |
 | `add <url> [path]` | Ingest a URL into a corpus and rebuild with `--update` |
