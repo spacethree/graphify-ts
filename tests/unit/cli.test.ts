@@ -4,6 +4,7 @@ import { type CliDependencies, executeCli, formatHelp } from '../../src/cli/main
 import {
   parseAddArgs,
   parseBenchmarkArgs,
+  parseDiffArgs,
   parseExplainArgs,
   parseGenerateArgs,
   parseHookArgs,
@@ -38,6 +39,12 @@ function createDependencies(): CliDependencies {
   return {
     loadGraph: (graphPath) => {
       const graph = new KnowledgeGraph()
+      if (graphPath.includes('baseline')) {
+        graph.addNode('auth', { label: 'AuthService', source_file: graphPath, file_type: 'code', community: 0 })
+        graph.addNode('client', { label: 'HttpClient', source_file: graphPath, file_type: 'code', community: 0 })
+        graph.addEdge('auth', 'client', { relation: 'calls', confidence: 'EXTRACTED' })
+        return graph
+      }
       graph.addNode('auth', { label: 'AuthService', source_file: graphPath, file_type: 'code', community: 0 })
       graph.addNode('client', { label: 'HttpClient', source_file: graphPath, file_type: 'code', community: 0 })
       graph.addNode('transport', { label: 'Transport', source_file: graphPath, file_type: 'code', community: 1 })
@@ -92,6 +99,7 @@ function createDependencies(): CliDependencies {
       nodeCount: 5,
       edgeCount: 4,
       communityCount: 2,
+      semanticAnomalyCount: 2,
       changedFiles: options.update ? 1 : 0,
       deletedFiles: 0,
       warning: null,
@@ -114,13 +122,21 @@ describe('cli parser', () => {
       mode: 'bfs',
       tokenBudget: 2000,
       graphPath: 'graphify-out/graph.json',
+      rankBy: 'relevance',
+      community: null,
+      fileType: null,
     })
 
-    expect(parseQueryArgs(['show flow', '--dfs', '--budget', '1500', '--graph', 'custom.json'])).toEqual({
+    expect(
+      parseQueryArgs(['show flow', '--dfs', '--budget', '1500', '--graph', 'custom.json', '--rank-by', 'degree', '--community', '0', '--file-type', 'code']),
+    ).toEqual({
       question: 'show flow',
       mode: 'dfs',
       tokenBudget: 1500,
       graphPath: 'custom.json',
+      rankBy: 'degree',
+      community: 0,
+      fileType: 'code',
     })
   })
 
@@ -128,6 +144,8 @@ describe('cli parser', () => {
     expect(() => parseQueryArgs([])).toThrow('Usage: graphify-ts query')
     expect(() => parseQueryArgs(['test', '--budget', 'abc'])).toThrow('error: --budget must be a positive integer')
     expect(() => parseQueryArgs(['test', '--budget', '100001'])).toThrow('error: --budget must be <= 100000')
+    expect(() => parseQueryArgs(['test', '--rank-by', 'centrality'])).toThrow('error: --rank-by must be one of relevance, degree')
+    expect(() => parseQueryArgs(['test', '--community', '-1'])).toThrow('error: --community must be a non-negative integer')
     expect(() => parseQueryArgs(['test', '--wat'])).toThrow('error: unknown option for query: --wat')
   })
 
@@ -167,6 +185,25 @@ describe('cli parser', () => {
     expect(() => parseExplainArgs([])).toThrow('Usage: graphify-ts explain')
     expect(() => parseExplainArgs(['HttpClient', '--wat'])).toThrow('error: unknown option for explain: --wat')
     expect(() => parseExplainArgs([`H${'x'.repeat(512)}`])).toThrow('error: label exceeds maximum length of 512 characters')
+  })
+
+  it('parses diff args', () => {
+    expect(parseDiffArgs(['baseline.json'])).toEqual({
+      baselineGraphPath: 'baseline.json',
+      graphPath: 'graphify-out/graph.json',
+      limit: 10,
+    })
+
+    expect(parseDiffArgs(['baseline.json', '--graph', 'current.json', '--limit', '5'])).toEqual({
+      baselineGraphPath: 'baseline.json',
+      graphPath: 'current.json',
+      limit: 5,
+    })
+
+    expect(() => parseDiffArgs([])).toThrow('Usage: graphify-ts diff')
+    expect(() => parseDiffArgs(['baseline.json', '--limit', '0'])).toThrow('error: --limit must be a positive integer')
+    expect(() => parseDiffArgs([`/${'nested/'.repeat(700)}baseline.json`])).toThrow('error: baseline graph path exceeds maximum length')
+    expect(() => parseDiffArgs(['baseline.json', '--wat'])).toThrow('error: unknown option for diff: --wat')
   })
 
   it('parses add args', () => {
@@ -391,6 +428,10 @@ describe('cli main', () => {
     expect(help).toContain('--stdio')
     expect(help).toContain('--mcp')
     expect(help).toContain('query "<question>"')
+    expect(help).toContain('diff <baseline-graph.json>')
+    expect(help).toContain('--rank-by MODE')
+    expect(help).toContain('--community ID')
+    expect(help).toContain('--file-type TYPE')
     expect(help).toContain('path <source> <target>')
     expect(help).toContain('explain <label>')
     expect(help).toContain('add <url> [path]')
@@ -415,6 +456,35 @@ describe('cli main', () => {
     expect(logs).toEqual(['show auth flow :: dfs :: 1500'])
   })
 
+  it('passes query ranking and filters through injected dependencies', async () => {
+    const { io, logs } = createIo()
+    const dependencies = createDependencies()
+    let capturedOptions: Record<string, unknown> | undefined
+
+    dependencies.queryGraph = (_graph, question, options) => {
+      capturedOptions = {
+        question,
+        ...options,
+      }
+      return 'filtered query output'
+    }
+
+    const exitCode = await executeCli(['query', 'show auth flow', '--rank-by', 'degree', '--community', '0', '--file-type', 'code'], io, dependencies)
+
+    expect(exitCode).toBe(0)
+    expect(logs).toEqual(['filtered query output'])
+    expect(capturedOptions).toEqual({
+      question: 'show auth flow',
+      mode: 'bfs',
+      tokenBudget: 2000,
+      rankBy: 'degree',
+      filters: {
+        community: 0,
+        fileType: 'code',
+      },
+    })
+  })
+
   it('executes path and explain commands against the loaded graph', async () => {
     const { io, logs } = createIo()
     const dependencies = createDependencies()
@@ -429,6 +499,20 @@ describe('cli main', () => {
     expect(logs[1]).toContain('Node: HttpClient')
     expect(logs[1]).toContain('Neighbors of HttpClient')
     expect(logs[1]).toContain('Transport')
+  })
+
+  it('executes diff commands against baseline and current graphs', async () => {
+    const { io, logs } = createIo()
+    const dependencies = createDependencies()
+
+    const exitCode = await executeCli(['diff', 'baseline.json', '--graph', 'current.json', '--limit', '5'], io, dependencies)
+
+    expect(exitCode).toBe(0)
+    expect(logs[0]).toContain('Graph diff: 1 new node, 1 new edge')
+    expect(logs[0]).toContain('Before: 2 nodes')
+    expect(logs[0]).toContain('After: 3 nodes')
+    expect(logs[0]).toContain('Transport [transport]')
+    expect(logs[0]).toContain('HttpClient --uses [EXTRACTED]--> Transport')
   })
 
   it('executes add commands by ingesting into raw and rebuilding incrementally', async () => {
@@ -451,6 +535,7 @@ describe('cli main', () => {
     expect(exitCode).toBe(0)
     expect(logs[0]).toContain('[graphify generate] update completed')
     expect(logs[0]).toContain('graph.json')
+    expect(logs[0]).toContain('Semantic anomalies: 2 high-signal item(s)')
   })
 
   it('passes optional export flags through generate commands', async () => {

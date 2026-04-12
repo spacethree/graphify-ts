@@ -3,7 +3,22 @@ import { existsSync, readFileSync, statSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import type { Readable, Writable } from 'node:stream'
 
-import { communitiesFromGraph, getCommunity, getNeighbors, getNode, godNodesSummary, graphStats, loadGraph, queryGraph, shortestPath } from './serve.js'
+import { godNodes, suggestQuestions } from '../pipeline/analyze.js'
+import { buildCommunityLabels } from '../pipeline/community-naming.js'
+import { diffGraphs } from './diff.js'
+import { freshnessAnnotations, resourceFreshnessMetadata } from './freshness.js'
+import {
+  communitiesFromGraph,
+  getCommunity,
+  getNeighbors,
+  getNode,
+  godNodesSummary,
+  graphStats,
+  loadGraph,
+  queryGraph,
+  semanticAnomaliesSummary,
+  shortestPath,
+} from './serve.js'
 import { validateGraphPath } from '../shared/security.js'
 
 const JSONRPC_PARSE_ERROR = -32700
@@ -21,7 +36,9 @@ const MAX_STDIO_TOKEN_BUDGET = 100_000
 const MAX_STDIO_DEPTH = 20
 const MAX_STDIO_HOPS = 20
 const MAX_STDIO_RESOURCE_BYTES = 5_000_000
+const MAX_STDIO_DIFF_ITEMS = 100
 const graphCache = new Map<string, { mtimeMs: number; graph: ReturnType<typeof loadGraph> }>()
+const promptContextCache = new Map<string, { mtimeMs: number; context: PromptContext }>()
 const MAX_COMPLETION_VALUES = 25
 const MAX_LOG_NOTIFICATION_CHARS = 10_000
 
@@ -82,6 +99,7 @@ interface McpResourceDefinition {
   description: string
   mimeType: string
   filePath: string
+  annotations?: Record<string, number | string>
 }
 
 interface McpPromptDefinition {
@@ -93,6 +111,16 @@ interface McpPromptDefinition {
     description: string
     required?: boolean
   }>
+}
+
+interface PromptContext {
+  graph: ReturnType<typeof loadGraph>
+  communities: ReturnType<typeof communitiesFromGraph>
+  communityLabels: Record<number, string>
+  nodeCommunity: Record<string, number>
+  topCommunities: Array<{ communityId: number; label: string; size: number }>
+  topGodNodes: Array<{ label: string; edges: number }>
+  suggestedQuestions: string[]
 }
 
 export interface ServeGraphStdioOptions {
@@ -118,6 +146,9 @@ const MCP_TOOLS: McpToolDefinition[] = [
         mode: { type: 'string', enum: ['bfs', 'dfs'] },
         depth: { type: 'number' },
         token_budget: { type: 'number' },
+        rank_by: { type: 'string', enum: ['relevance', 'degree'] },
+        community_id: { type: 'number' },
+        file_type: { type: 'string' },
       },
     },
   },
@@ -129,6 +160,28 @@ const MCP_TOOLS: McpToolDefinition[] = [
       required: ['label'],
       properties: {
         label: { type: 'string' },
+      },
+    },
+  },
+  {
+    name: 'graph_diff',
+    description: 'Compare the current graph to a baseline graph.json and summarize what changed.',
+    inputSchema: {
+      type: 'object',
+      required: ['baseline_graph_path'],
+      properties: {
+        baseline_graph_path: { type: 'string' },
+        limit: { type: 'number' },
+      },
+    },
+  },
+  {
+    name: 'semantic_anomalies',
+    description: 'Return the highest-signal semantic anomalies in the current graph snapshot.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        top_n: { type: 'number' },
       },
     },
   },
@@ -228,6 +281,12 @@ const MCP_PROMPTS: McpPromptDefinition[] = [
       { name: 'relation', description: 'Optional neighbor relation filter' },
     ],
   },
+  {
+    name: 'graph_community_summary_prompt',
+    title: 'Graph Community Summary',
+    description: 'Summarize one community, its key nodes, and its boundaries.',
+    arguments: [{ name: 'community_id', description: 'Numeric community id to summarize', required: true }],
+  },
 ]
 
 function ok(id: string | number | null, result: unknown): StdioResponse {
@@ -301,6 +360,30 @@ function numberParamAlias(params: unknown, keys: readonly string[], options: { m
   return null
 }
 
+function integerLikeParamAlias(params: unknown, keys: readonly string[], options: { min?: number; max?: number } = {}): number | null {
+  for (const key of keys) {
+    if (!params || typeof params !== 'object' || !(key in params)) {
+      continue
+    }
+
+    const rawValue = (params as Record<string, unknown>)[key]
+    const numericValue = typeof rawValue === 'number' ? rawValue : typeof rawValue === 'string' && /^\d+$/.test(rawValue.trim()) ? Number(rawValue.trim()) : null
+
+    if (numericValue === null || !Number.isFinite(numericValue)) {
+      continue
+    }
+    if (options.min !== undefined && numericValue < options.min) {
+      continue
+    }
+    if (options.max !== undefined && numericValue > options.max) {
+      continue
+    }
+    return numericValue
+  }
+
+  return null
+}
+
 function recordParam(params: unknown, key: string): Record<string, unknown> | null {
   if (!params || typeof params !== 'object' || !(key in params)) {
     return null
@@ -310,6 +393,79 @@ function recordParam(params: unknown, key: string): Record<string, unknown> | nu
     return null
   }
   return value as Record<string, unknown>
+}
+
+function hasParam(params: unknown, key: string): boolean {
+  return Boolean(params && typeof params === 'object' && key in params)
+}
+
+function hasParamAlias(params: unknown, keys: readonly string[]): boolean {
+  return keys.some((key) => hasParam(params, key))
+}
+
+function parseRankBy(value: string | null): 'relevance' | 'degree' | null {
+  const normalized = value?.trim().toLowerCase() ?? ''
+  if (!normalized) {
+    return null
+  }
+  if (normalized === 'relevance' || normalized === 'degree') {
+    return normalized
+  }
+  return null
+}
+
+function queryOptionsFromParams(id: string | number | null, params: unknown): { failureResponse?: StdioResponse; queryOptions?: Record<string, unknown> } {
+  const mode = stringParam(params, 'mode') === 'dfs' ? 'dfs' : 'bfs'
+  const depth = numberParam(params, 'depth', { min: 0, max: MAX_STDIO_DEPTH })
+  const tokenBudget = numberParamAlias(params, ['token_budget', 'tokenBudget'], { min: 1, max: MAX_STDIO_TOKEN_BUDGET })
+  const rawRankBy = stringParamAlias(params, ['rank_by', 'rankBy'])
+  const rankBy = parseRankBy(rawRankBy)
+  if (hasParamAlias(params, ['rank_by', 'rankBy']) && rankBy === null) {
+    return {
+      failureResponse: failure(id, JSONRPC_INVALID_PARAMS, 'rank_by must be one of relevance, degree'),
+    }
+  }
+
+  const community = numberParamAlias(params, ['community_id', 'communityId'], { min: 0 })
+  if (hasParamAlias(params, ['community_id', 'communityId']) && community === null) {
+    return {
+      failureResponse: failure(id, JSONRPC_INVALID_PARAMS, 'community_id must be a non-negative number'),
+    }
+  }
+
+  const fileType = stringParamAlias(params, ['file_type', 'fileType'])
+  const filters = {
+    ...(community !== null ? { community } : {}),
+    ...(fileType ? { fileType } : {}),
+  }
+
+  return {
+    queryOptions: {
+      mode,
+      ...(depth !== null ? { depth } : {}),
+      ...(tokenBudget !== null ? { tokenBudget } : {}),
+      ...(rankBy ? { rankBy } : {}),
+      ...(Object.keys(filters).length > 0 ? { filters } : {}),
+    },
+  }
+}
+
+function graphDiffOptionsFromParams(id: string | number | null, params: unknown): { failureResponse?: StdioResponse; baselineGraphPath?: string; limit?: number } {
+  const baselineGraphPath = stringParamAlias(params, ['baseline_graph_path', 'baselineGraphPath'])
+  if (!baselineGraphPath) {
+    return {
+      failureResponse: failure(id, JSONRPC_INVALID_PARAMS, `baseline_graph_path requires a string parameter <= ${MAX_STDIO_TEXT_LENGTH} characters`),
+    }
+  }
+
+  const limit = numberParamAlias(params, ['limit'], { min: 1, max: MAX_STDIO_DIFF_ITEMS })
+  if (hasParam(params, 'limit') && limit === null) {
+    return {
+      failureResponse: failure(id, JSONRPC_INVALID_PARAMS, `limit must be a number between 1 and ${MAX_STDIO_DIFF_ITEMS}`),
+    }
+  }
+
+  return { baselineGraphPath, ...(limit !== null ? { limit } : {}) }
 }
 
 function shouldEmitLog(level: McpLogLevel, currentLevel: McpLogLevel): boolean {
@@ -425,7 +581,198 @@ function resourcesForGraph(graphPath: string): McpResourceDefinition[] {
     },
   ]
 
-  return candidates.filter((resource) => existsSync(resource.filePath))
+  return candidates
+    .filter((resource) => existsSync(resource.filePath))
+    .map((resource) => ({
+      ...resource,
+      annotations: freshnessAnnotations(resourceFreshnessMetadata(safeGraphPath, resource.filePath)),
+    }))
+}
+
+function formatCount(count: number, singular: string, plural = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : plural}`
+}
+
+function readStoredCommunityLabels(graphPath: string): Record<number, string> {
+  const safeGraphPath = validateGraphPath(graphPath)
+
+  try {
+    const parsed = JSON.parse(readFileSync(safeGraphPath, 'utf8')) as { community_labels?: unknown }
+    const rawLabels = parsed.community_labels
+    if (!rawLabels || typeof rawLabels !== 'object' || Array.isArray(rawLabels)) {
+      return {}
+    }
+
+    const labels = new Map<number, string>()
+    for (const [communityIdRaw, labelRaw] of Object.entries(rawLabels as Record<string, unknown>)) {
+      const communityId = Number(communityIdRaw)
+      const label = typeof labelRaw === 'string' ? labelRaw.trim() : ''
+      if (Number.isInteger(communityId) && communityId >= 0 && label.length > 0) {
+        labels.set(communityId, label)
+      }
+    }
+
+    return Object.fromEntries(labels.entries())
+  } catch {
+    return {}
+  }
+}
+
+function nodeCommunityMap(communities: ReturnType<typeof communitiesFromGraph>): Record<string, number> {
+  const mapping: Record<string, number> = {}
+
+  for (const [communityIdRaw, nodeIds] of Object.entries(communities)) {
+    const communityId = Number(communityIdRaw)
+    for (const nodeId of nodeIds) {
+      mapping[nodeId] = communityId
+    }
+  }
+
+  return mapping
+}
+
+function loadPromptContext(graphPath: string): PromptContext {
+  const safeGraphPath = validateGraphPath(graphPath)
+  const currentMtime = statSync(safeGraphPath).mtimeMs
+  const cached = promptContextCache.get(safeGraphPath)
+  if (cached && cached.mtimeMs === currentMtime) {
+    return cached.context
+  }
+
+  const graph = loadGraphCached(safeGraphPath)
+  const communities = communitiesFromGraph(graph)
+  const storedLabels = readStoredCommunityLabels(safeGraphPath)
+  const communityLabels = {
+    ...buildCommunityLabels(graph, communities),
+    ...storedLabels,
+  }
+  const topCommunities = Object.entries(communities)
+    .map(([communityIdRaw, nodeIds]) => {
+      const communityId = Number(communityIdRaw)
+      return {
+        communityId,
+        label: communityLabels[communityId] ?? `Community ${communityId}`,
+        size: nodeIds.length,
+      }
+    })
+    .sort((left, right) => right.size - left.size || left.label.localeCompare(right.label))
+    .slice(0, 3)
+
+  const context: PromptContext = {
+    graph,
+    communities,
+    communityLabels,
+    nodeCommunity: nodeCommunityMap(communities),
+    topCommunities,
+    topGodNodes: godNodes(graph, 5).map((node) => ({ label: node.label, edges: node.edges })),
+    suggestedQuestions: suggestQuestions(graph, communities, communityLabels, 3)
+      .map((item) => item.question)
+      .filter((question): question is string => Boolean(question)),
+  }
+
+  promptContextCache.set(safeGraphPath, { mtimeMs: currentMtime, context })
+  return context
+}
+
+function formatTopCommunitySummary(context: PromptContext): string {
+  if (context.topCommunities.length === 0) {
+    return 'No named communities detected.'
+  }
+
+  return context.topCommunities.map((community) => `${community.label} (#${community.communityId}, ${formatCount(community.size, 'node')})`).join('; ')
+}
+
+function formatGodNodeSummary(context: PromptContext): string {
+  if (context.topGodNodes.length === 0) {
+    return 'No non-file god nodes detected.'
+  }
+
+  return context.topGodNodes.map((node) => `${node.label} (${node.edges} edges)`).join(', ')
+}
+
+function formatSuggestedQuestionLines(context: PromptContext): string {
+  if (context.suggestedQuestions.length === 0) {
+    return '- No high-signal graph questions detected.'
+  }
+
+  return context.suggestedQuestions.map((question) => `- ${question}`).join('\n')
+}
+
+function graphSnapshotLines(context: PromptContext): string[] {
+  return [
+    `Graph snapshot: ${formatCount(context.graph.numberOfNodes(), 'node')}, ${formatCount(context.graph.numberOfEdges(), 'edge')}, ${formatCount(Object.keys(context.communities).length, 'community')}.`,
+    `Top communities: ${formatTopCommunitySummary(context)}`,
+    `God nodes: ${formatGodNodeSummary(context)}`,
+  ]
+}
+
+function promptDefinitionsForGraph(graphPath: string): McpPromptDefinition[] {
+  const context = loadPromptContext(graphPath)
+  const exampleLabels = context.topGodNodes.slice(0, 3).map((node) => node.label)
+  const exampleCommunities = context.topCommunities.slice(0, 2).map((community) => `${community.label} (#${community.communityId})`)
+
+  return MCP_PROMPTS.map((prompt) => {
+    switch (prompt.name) {
+      case 'graph_query_prompt':
+        return {
+          ...prompt,
+          description: `Ask a question using graph evidence only. Current graph: ${formatCount(context.graph.numberOfNodes(), 'node')} across ${formatCount(Object.keys(context.communities).length, 'community')}.`,
+        }
+      case 'graph_path_prompt':
+        return {
+          ...prompt,
+          description: exampleLabels.length > 0 ? `Explain the shortest path between two graph concepts such as ${exampleLabels.join(', ')}.` : prompt.description,
+        }
+      case 'graph_explain_prompt':
+        return {
+          ...prompt,
+          description: exampleLabels.length > 0 ? `Explain one node and its neighborhood. Try labels like ${exampleLabels.join(', ')}.` : prompt.description,
+        }
+      case 'graph_community_summary_prompt':
+        return {
+          ...prompt,
+          description: exampleCommunities.length > 0 ? `Summarize a detected community such as ${exampleCommunities.join(' or ')}.` : prompt.description,
+        }
+      default:
+        return prompt
+    }
+  })
+}
+
+function communityMemberLabels(context: PromptContext, communityId: number): string[] {
+  return [...(context.communities[communityId] ?? [])]
+    .sort(
+      (left, right) =>
+        context.graph.degree(right) - context.graph.degree(left) ||
+        String(context.graph.nodeAttributes(left).label ?? left).localeCompare(String(context.graph.nodeAttributes(right).label ?? right)),
+    )
+    .map((nodeId) => String(context.graph.nodeAttributes(nodeId).label ?? nodeId))
+}
+
+function communityBridgeLines(context: PromptContext, communityId: number): string[] {
+  const nodeIds = context.communities[communityId] ?? []
+  const nodeSet = new Set(nodeIds)
+  const lines = new Set<string>()
+
+  for (const nodeId of nodeIds) {
+    for (const neighborId of context.graph.neighbors(nodeId)) {
+      if (nodeSet.has(neighborId)) {
+        continue
+      }
+
+      const sourceLabel = String(context.graph.nodeAttributes(nodeId).label ?? nodeId)
+      const targetLabel = String(context.graph.nodeAttributes(neighborId).label ?? neighborId)
+      const targetCommunityId = context.nodeCommunity[neighborId]
+      const targetCommunityLabel =
+        targetCommunityId === undefined ? 'outside named communities' : (context.communityLabels[targetCommunityId] ?? `Community ${targetCommunityId}`)
+      lines.add(`${sourceLabel} -> ${targetLabel} (${targetCommunityLabel})`)
+      if (lines.size >= 4) {
+        return [...lines]
+      }
+    }
+  }
+
+  return [...lines]
 }
 
 function handleResourceRead(id: string | number | null, graphPath: string, params: unknown): StdioResponse {
@@ -449,18 +796,22 @@ function handleResourceRead(id: string | number | null, graphPath: string, param
         uri: resource.uri,
         mimeType: resource.mimeType,
         text: readFileSync(resource.filePath, 'utf8'),
+        annotations: resource.annotations,
       },
     ],
   })
 }
 
-function handlePromptGet(id: string | number | null, params: unknown): StdioResponse {
+function handlePromptGet(id: string | number | null, graphPath: string, params: unknown): StdioResponse {
   const promptName = stringParam(params, 'name')
   if (!promptName) {
     return failure(id, JSONRPC_INVALID_PARAMS, `prompts/get requires a string name parameter <= ${MAX_STDIO_TEXT_LENGTH} characters`)
   }
 
   const promptArguments = recordParam(params, 'arguments') ?? {}
+  const context = loadPromptContext(graphPath)
+  const snapshot = graphSnapshotLines(context).join('\n')
+  const suggestedQuestionsText = formatSuggestedQuestionLines(context)
 
   switch (promptName) {
     case 'graph_query_prompt': {
@@ -473,7 +824,7 @@ function handlePromptGet(id: string | number | null, params: unknown): StdioResp
             role: 'user',
             content: {
               type: 'text',
-              text: `Use graph evidence only to answer this question: ${question}\nPreferred traversal mode: ${mode}. Cite the strongest nodes/edges you relied on and stay explicit about uncertainty.`,
+              text: `${snapshot}\nSuggested follow-up questions:\n${suggestedQuestionsText}\n\nUse graph evidence only to answer this question: ${question}\nPreferred traversal mode: ${mode}. Cite the strongest nodes/edges you relied on and stay explicit about uncertainty.`,
             },
           },
         ],
@@ -489,7 +840,7 @@ function handlePromptGet(id: string | number | null, params: unknown): StdioResp
             role: 'user',
             content: {
               type: 'text',
-              text: `Find the shortest path between ${source} and ${target}. Then explain each hop in plain language and call out the relation/confidence of each edge.`,
+              text: `${snapshot}\n\nFind the shortest path between ${source} and ${target}. Then explain each hop in plain language and call out the relation/confidence of each edge. Mention any community boundaries the path crosses.`,
             },
           },
         ],
@@ -505,7 +856,46 @@ function handlePromptGet(id: string | number | null, params: unknown): StdioResp
             role: 'user',
             content: {
               type: 'text',
-              text: `Explain the graph node ${label}${relation ? ` with neighbor relation filter ${relation}` : ''}. Summarize what it is, where it comes from, and why its neighborhood matters.`,
+              text: `${snapshot}\nSuggested follow-up questions:\n${suggestedQuestionsText}\n\nExplain the graph node ${label}${relation ? ` with neighbor relation filter ${relation}` : ''}. Summarize what it is, where it comes from, and why its neighborhood matters.`,
+            },
+          },
+        ],
+      })
+    }
+    case 'graph_community_summary_prompt': {
+      const communityId = integerLikeParamAlias(promptArguments, ['community_id', 'communityId'], { min: 0 })
+      if (communityId === null) {
+        return failure(id, JSONRPC_INVALID_PARAMS, 'graph_community_summary_prompt requires a numeric community_id parameter >= 0')
+      }
+
+      const members = communityMemberLabels(context, communityId)
+      if (members.length === 0) {
+        return failure(id, JSONRPC_INVALID_PARAMS, `Unknown community: ${communityId}`)
+      }
+
+      const communityLabel = context.communityLabels[communityId] ?? `Community ${communityId}`
+      const bridges = communityBridgeLines(context, communityId)
+      const relatedQuestions = context.suggestedQuestions.filter(
+        (question) => question.includes(`\`${communityLabel}\``) || members.some((member) => question.includes(`\`${member}\``)),
+      )
+
+      return ok(id, {
+        description: 'Summarize one community, its key nodes, and its boundaries.',
+        messages: [
+          {
+            role: 'user',
+            content: {
+              type: 'text',
+              text: [
+                snapshot,
+                `Community focus: ${communityLabel} (#${communityId}) with ${formatCount(members.length, 'node')}.`,
+                `Key nodes: ${members.slice(0, 8).join(', ')}`,
+                `Cross-community bridges: ${bridges.length > 0 ? bridges.join('; ') : 'No obvious cross-community bridges detected.'}`,
+                'Related questions:',
+                relatedQuestions.length > 0 ? relatedQuestions.map((question) => `- ${question}`).join('\n') : '- No community-specific follow-up questions detected.',
+                '',
+                `Summarize community #${communityId} (${communityLabel}) using graph evidence only. Explain its likely responsibility, the important files or concepts inside it, and the boundaries or bridges it has to the rest of the graph.`,
+              ].join('\n'),
             },
           },
         ],
@@ -578,7 +968,8 @@ function handleCompletion(id: string | number | null, graphPath: string, params:
     return failure(id, JSONRPC_INVALID_PARAMS, `Unsupported completion ref type: ${refType}`)
   }
 
-  const graph = loadGraphCached(graphPath)
+  const context = loadPromptContext(graphPath)
+  const graph = context.graph
   let values: string[]
   switch (refName) {
     case 'graph_query_prompt':
@@ -603,6 +994,18 @@ function handleCompletion(id: string | number | null, graphPath: string, params:
         break
       }
       return failure(id, JSONRPC_INVALID_PARAMS, `Unsupported completion argument for ${refName}: ${argumentName}`)
+    case 'graph_community_summary_prompt':
+      if (argumentName !== 'community_id') {
+        return failure(id, JSONRPC_INVALID_PARAMS, `Unsupported completion argument for ${refName}: ${argumentName}`)
+      }
+      values = completionValuesForPrefix(
+        Object.keys(context.communities)
+          .map(Number)
+          .sort((left, right) => left - right)
+          .map(String),
+        argumentValue,
+      )
+      break
     default:
       return failure(id, JSONRPC_INVALID_PARAMS, `Unknown completion reference: ${refName}`)
   }
@@ -623,16 +1026,27 @@ function handleDirectQuery(graphPath: string, id: string | number | null, params
     return failure(id, JSONRPC_INVALID_PARAMS, `query requires a string question parameter <= ${MAX_STDIO_TEXT_LENGTH} characters`)
   }
 
-  const mode = stringParam(params, 'mode') === 'dfs' ? 'dfs' : 'bfs'
-  const depth = numberParam(params, 'depth', { min: 0, max: MAX_STDIO_DEPTH })
-  const tokenBudget = numberParamAlias(params, ['token_budget', 'tokenBudget'], { min: 1, max: MAX_STDIO_TOKEN_BUDGET })
-  const queryOptions: { mode?: 'bfs' | 'dfs'; depth?: number; tokenBudget?: number } = {
-    mode,
-    ...(depth !== null ? { depth } : {}),
-    ...(tokenBudget !== null ? { tokenBudget } : {}),
+  const { failureResponse, queryOptions } = queryOptionsFromParams(id, params)
+  if (failureResponse) {
+    return failureResponse
   }
 
   return ok(id, queryGraph(graph, question, queryOptions))
+}
+
+function handleGraphDiff(id: string | number | null, currentGraphPath: string, params: unknown): StdioResponse {
+  const options = graphDiffOptionsFromParams(id, params)
+  if (options.failureResponse) {
+    return options.failureResponse
+  }
+
+  try {
+    const baselineGraph = loadGraphCached(options.baselineGraphPath ?? currentGraphPath)
+    const currentGraph = loadGraphCached(currentGraphPath)
+    return ok(id, diffGraphs(baselineGraph, currentGraph, { ...(options.limit !== undefined ? { limit: options.limit } : {}) }))
+  } catch (error) {
+    return failure(id, JSONRPC_SERVER_ERROR, error instanceof Error ? error.message : 'Graph diff failed')
+  }
 }
 
 function handleToolCall(id: string | number | null, graphPath: string, params: unknown): StdioResponse {
@@ -651,13 +1065,9 @@ function handleToolCall(id: string | number | null, graphPath: string, params: u
         return failure(id, JSONRPC_INVALID_PARAMS, `query_graph requires a string question parameter <= ${MAX_STDIO_TEXT_LENGTH} characters`)
       }
 
-      const mode = stringParam(toolArguments, 'mode') === 'dfs' ? 'dfs' : 'bfs'
-      const depth = numberParam(toolArguments, 'depth', { min: 0, max: MAX_STDIO_DEPTH })
-      const tokenBudget = numberParamAlias(toolArguments, ['token_budget', 'tokenBudget'], { min: 1, max: MAX_STDIO_TOKEN_BUDGET })
-      const queryOptions: { mode?: 'bfs' | 'dfs'; depth?: number; tokenBudget?: number } = {
-        mode,
-        ...(depth !== null ? { depth } : {}),
-        ...(tokenBudget !== null ? { tokenBudget } : {}),
+      const { failureResponse, queryOptions } = queryOptionsFromParams(id, toolArguments)
+      if (failureResponse) {
+        return failureResponse
       }
 
       return ok(id, textToolResult(queryGraph(graph, question, queryOptions)))
@@ -669,6 +1079,12 @@ function handleToolCall(id: string | number | null, graphPath: string, params: u
       }
       return ok(id, textToolResult(getNode(graph, label)))
     }
+    case 'graph_diff': {
+      const diffResponse = handleGraphDiff(id, graphPath, toolArguments)
+      return 'error' in diffResponse && diffResponse.error ? diffResponse : ok(id, textToolResult(String(diffResponse.result ?? '')))
+    }
+    case 'semantic_anomalies':
+      return ok(id, textToolResult(semanticAnomaliesSummary(graphPath, numberParamAlias(toolArguments, ['top_n', 'topN'], { min: 1, max: 100 }) ?? 5)))
     case 'get_neighbors': {
       const label = stringParam(toolArguments, 'label')
       if (!label) {
@@ -754,12 +1170,19 @@ export function handleStdioRequest(graphPath: string, payload: unknown, sessionS
         return ok(id, {})
       }
       case 'prompts/list':
-        return ok(id, { prompts: MCP_PROMPTS })
+        return ok(id, { prompts: promptDefinitionsForGraph(graphPath) })
       case 'prompts/get':
-        return handlePromptGet(id, params)
+        return handlePromptGet(id, graphPath, params)
       case 'resources/list':
         return ok(id, {
-          resources: resourcesForGraph(graphPath).map(({ uri, name, title, description, mimeType }) => ({ uri, name, title, description, mimeType })),
+          resources: resourcesForGraph(graphPath).map(({ uri, name, title, description, mimeType, annotations }) => ({
+            uri,
+            name,
+            title,
+            description,
+            mimeType,
+            annotations,
+          })),
         })
       case 'resources/read':
         return handleResourceRead(id, graphPath, params)
@@ -771,6 +1194,10 @@ export function handleStdioRequest(graphPath: string, payload: unknown, sessionS
         return ok(id, { ok: true })
       case 'query':
         return handleDirectQuery(graphPath, id, params)
+      case 'diff':
+        return handleGraphDiff(id, graphPath, params)
+      case 'anomalies':
+        return ok(id, semanticAnomaliesSummary(graphPath, numberParamAlias(params, ['top_n', 'topN'], { min: 1, max: 100 }) ?? 5))
       case 'node': {
         const graph = loadGraphCached(graphPath)
         const label = stringParam(params, 'label')

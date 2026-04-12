@@ -1,14 +1,174 @@
 import { readFileSync, statSync } from 'node:fs'
 
+import { godNodes, semanticAnomalies, type SemanticAnomaly } from '../pipeline/analyze.js'
 import { buildFromJson } from '../pipeline/build.js'
+import { buildCommunityLabels } from '../pipeline/community-naming.js'
 import type { Communities } from '../pipeline/cluster.js'
-import { godNodes } from '../pipeline/analyze.js'
 import { isRecord } from '../shared/guards.js'
 import { sanitizeLabel, validateGraphPath } from '../shared/security.js'
 import { KnowledgeGraph } from '../contracts/graph.js'
 
 const MAX_GRAPH_BYTES = 100 * 1024 * 1024
 const MAX_TRAVERSAL_DEPTH = 6
+const MAX_STORED_SEMANTIC_ANOMALIES = 10_000
+const MAX_STORED_ANOMALY_ID_LENGTH = 256
+const MAX_STORED_ANOMALY_TEXT_LENGTH = 2_048
+
+export type QueryRankBy = 'relevance' | 'degree'
+
+export interface QueryFilters {
+  community?: number
+  fileType?: string
+}
+
+export interface QueryGraphOptions {
+  mode?: 'bfs' | 'dfs'
+  depth?: number
+  tokenBudget?: number
+  rankBy?: QueryRankBy
+  filters?: QueryFilters
+}
+
+function normalizeQueryFilters(filters?: QueryFilters): QueryFilters | undefined {
+  if (!filters) {
+    return undefined
+  }
+
+  const normalizedFileType = filters.fileType?.trim().toLowerCase()
+  const normalizedFilters: QueryFilters = {
+    ...(typeof filters.community === 'number' && Number.isInteger(filters.community) && filters.community >= 0 ? { community: filters.community } : {}),
+    ...(normalizedFileType ? { fileType: normalizedFileType } : {}),
+  }
+
+  return normalizedFilters.community !== undefined || normalizedFilters.fileType !== undefined ? normalizedFilters : undefined
+}
+
+function matchesQueryFilters(attributes: Record<string, unknown>, filters?: QueryFilters): boolean {
+  if (!filters) {
+    return true
+  }
+
+  if (filters.community !== undefined) {
+    const rawCommunity = attributes.community
+    const community =
+      typeof rawCommunity === 'number' && Number.isFinite(rawCommunity)
+        ? rawCommunity
+        : typeof rawCommunity === 'string' && rawCommunity.trim() !== '' && !Number.isNaN(Number(rawCommunity))
+          ? Number(rawCommunity)
+          : undefined
+
+    if (community !== filters.community) {
+      return false
+    }
+  }
+
+  if (filters.fileType !== undefined) {
+    const fileType = String(attributes.file_type ?? '')
+      .trim()
+      .toLowerCase()
+    if (fileType !== filters.fileType) {
+      return false
+    }
+  }
+
+  return true
+}
+
+function allowedNodeIds(graph: KnowledgeGraph, filters?: QueryFilters): Set<string> | undefined {
+  if (!filters) {
+    return undefined
+  }
+
+  return new Set(
+    graph
+      .nodeEntries()
+      .filter(([, attributes]) => matchesQueryFilters(attributes, filters))
+      .map(([nodeId]) => nodeId),
+  )
+}
+
+function describeQueryFilters(filters?: QueryFilters): string | null {
+  if (!filters) {
+    return null
+  }
+
+  const parts = [
+    ...(filters.community !== undefined ? [`community=${filters.community}`] : []),
+    ...(filters.fileType !== undefined ? [`file_type=${filters.fileType}`] : []),
+  ]
+
+  return parts.length > 0 ? parts.join(', ') : null
+}
+
+function readGraphArtifactRecord(graphPath: string): Record<string, unknown> {
+  const safePath = validateGraphPath(graphPath)
+
+  try {
+    const parsed = JSON.parse(readFileSync(safePath, 'utf8'))
+    return isRecord(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function storedCommunityLabels(rawLabels: unknown): Record<number, string> {
+  if (!rawLabels || typeof rawLabels !== 'object' || Array.isArray(rawLabels)) {
+    return {}
+  }
+
+  return Object.fromEntries(
+    Object.entries(rawLabels as Record<string, unknown>)
+      .map(([communityIdRaw, labelRaw]) => [Number(communityIdRaw), typeof labelRaw === 'string' ? labelRaw.trim() : ''] as const)
+      .filter(([communityId, label]) => Number.isInteger(communityId) && communityId >= 0 && label.length > 0),
+  )
+}
+
+function storedSemanticAnomalies(rawAnomalies: unknown, topN: number): SemanticAnomaly[] {
+  if (!Array.isArray(rawAnomalies) || rawAnomalies.length > MAX_STORED_SEMANTIC_ANOMALIES) {
+    return []
+  }
+
+  const results: SemanticAnomaly[] = []
+
+  for (const value of rawAnomalies) {
+    if (!isRecord(value)) {
+      continue
+    }
+
+    const kind = value.kind
+    const severity = value.severity
+    const score = typeof value.score === 'number' ? value.score : Number.NaN
+    const summary = sanitizeLabel(typeof value.summary === 'string' ? value.summary.slice(0, MAX_STORED_ANOMALY_TEXT_LENGTH) : '').trim()
+    const why = sanitizeLabel(typeof value.why === 'string' ? value.why.slice(0, MAX_STORED_ANOMALY_TEXT_LENGTH) : '').trim()
+    const id = sanitizeLabel(typeof value.id === 'string' ? value.id.slice(0, MAX_STORED_ANOMALY_ID_LENGTH) : '').trim()
+
+    if (
+      (kind !== 'bridge_node' && kind !== 'cross_boundary_edge' && kind !== 'low_cohesion_community') ||
+      (severity !== 'HIGH' && severity !== 'MEDIUM' && severity !== 'LOW') ||
+      !Number.isFinite(score) ||
+      id.length === 0 ||
+      summary.length === 0 ||
+      why.length === 0
+    ) {
+      continue
+    }
+
+    results.push({
+      id,
+      kind,
+      severity,
+      score,
+      summary,
+      why,
+    } satisfies SemanticAnomaly)
+
+    if (results.length >= topN) {
+      break
+    }
+  }
+
+  return results
+}
 
 export function loadGraph(graphPath: string): KnowledgeGraph {
   const safePath = validateGraphPath(graphPath)
@@ -62,30 +222,52 @@ export function communitiesFromGraph(graph: KnowledgeGraph): Communities {
   return Object.fromEntries([...buckets.entries()].map(([communityId, nodes]) => [communityId, [...nodes]]))
 }
 
-export function scoreNodes(graph: KnowledgeGraph, terms: string[]): Array<[number, string]> {
+export function scoreNodes(graph: KnowledgeGraph, terms: string[], options: Pick<QueryGraphOptions, 'rankBy' | 'filters'> = {}): Array<[number, string]> {
   const normalizedTerms = terms.map((term) => term.toLowerCase()).filter((term) => term.length > 0)
   if (normalizedTerms.length === 0) {
     return []
   }
 
+  const rankBy = options.rankBy === 'degree' ? 'degree' : 'relevance'
+  const filters = normalizeQueryFilters(options.filters)
+
   return graph
     .nodeEntries()
     .map(([nodeId, attributes]) => {
+      if (!matchesQueryFilters(attributes, filters)) {
+        return null
+      }
+
       const label = String(attributes.label ?? '').toLowerCase()
       const source = String(attributes.source_file ?? '').toLowerCase()
       const score = normalizedTerms.reduce((total, term) => total + (label.includes(term) ? 1 : 0) + (source.includes(term) ? 0.5 : 0), 0)
-      return [score, nodeId] as [number, string]
+      return {
+        degree: graph.degree(nodeId),
+        nodeId,
+        score,
+      }
     })
-    .filter(([score]) => score > 0)
-    .sort((left, right) => right[0] - left[0] || left[1].localeCompare(right[1]))
+    .filter((entry): entry is { degree: number; nodeId: string; score: number } => entry !== null && entry.score > 0)
+    .sort((left, right) => {
+      if (rankBy === 'degree') {
+        return right.degree - left.degree || right.score - left.score || left.nodeId.localeCompare(right.nodeId)
+      }
+      return right.score - left.score || left.nodeId.localeCompare(right.nodeId)
+    })
+    .map((entry) => [entry.score, entry.nodeId] as [number, string])
 }
 
-export function bfs(graph: KnowledgeGraph, startNodes: string[], depth: number): { visited: Set<string>; edges: Array<[string, string]> } {
+export function bfs(
+  graph: KnowledgeGraph,
+  startNodes: string[],
+  depth: number,
+  allowedNodes?: ReadonlySet<string>,
+): { visited: Set<string>; edges: Array<[string, string]> } {
   if (depth < 0) {
     throw new Error('depth must be non-negative')
   }
 
-  const seeds = startNodes.filter((nodeId) => graph.hasNode(nodeId))
+  const seeds = startNodes.filter((nodeId) => graph.hasNode(nodeId) && (!allowedNodes || allowedNodes.has(nodeId)))
   const visited = new Set(seeds)
   let frontier = new Set(seeds)
   const edges: Array<[string, string]> = []
@@ -94,6 +276,9 @@ export function bfs(graph: KnowledgeGraph, startNodes: string[], depth: number):
     const nextFrontier = new Set<string>()
     for (const nodeId of frontier) {
       for (const neighbor of graph.neighbors(nodeId)) {
+        if (allowedNodes && !allowedNodes.has(neighbor)) {
+          continue
+        }
         if (visited.has(neighbor)) {
           continue
         }
@@ -110,7 +295,12 @@ export function bfs(graph: KnowledgeGraph, startNodes: string[], depth: number):
   return { visited, edges }
 }
 
-export function dfs(graph: KnowledgeGraph, startNodes: string[], depth: number): { visited: Set<string>; edges: Array<[string, string]> } {
+export function dfs(
+  graph: KnowledgeGraph,
+  startNodes: string[],
+  depth: number,
+  allowedNodes?: ReadonlySet<string>,
+): { visited: Set<string>; edges: Array<[string, string]> } {
   if (depth < 0) {
     throw new Error('depth must be non-negative')
   }
@@ -118,7 +308,7 @@ export function dfs(graph: KnowledgeGraph, startNodes: string[], depth: number):
   const visited = new Set<string>()
   const edges: Array<[string, string]> = []
   const stack: Array<[string, number]> = [...startNodes]
-    .filter((nodeId) => graph.hasNode(nodeId))
+    .filter((nodeId) => graph.hasNode(nodeId) && (!allowedNodes || allowedNodes.has(nodeId)))
     .reverse()
     .map((nodeId) => [nodeId, 0])
 
@@ -135,6 +325,9 @@ export function dfs(graph: KnowledgeGraph, startNodes: string[], depth: number):
 
     visited.add(nodeId)
     for (const neighbor of graph.neighbors(nodeId)) {
+      if (allowedNodes && !allowedNodes.has(neighbor)) {
+        continue
+      }
       if (visited.has(neighbor)) {
         continue
       }
@@ -194,25 +387,36 @@ function findNodeIds(graph: KnowledgeGraph, label: string): string[] {
     .map(([nodeId]) => nodeId)
 }
 
-export function queryGraph(graph: KnowledgeGraph, question: string, options: { mode?: 'bfs' | 'dfs'; depth?: number; tokenBudget?: number } = {}): string {
+export function queryGraph(graph: KnowledgeGraph, question: string, options: QueryGraphOptions = {}): string {
   const mode = options.mode ?? 'bfs'
   const depth = Math.min(Math.max(options.depth ?? 2, 0), MAX_TRAVERSAL_DEPTH)
   const tokenBudget = options.tokenBudget ?? 2000
+  const rankBy = options.rankBy === 'degree' ? 'degree' : 'relevance'
+  const filters = normalizeQueryFilters(options.filters)
   const terms = question
     .split(/\s+/)
     .map((term) => term.toLowerCase())
     .filter((term) => term.length > 2)
-  const startNodes = scoreNodes(graph, terms)
+  const startNodes = scoreNodes(graph, terms, { rankBy, ...(filters ? { filters } : {}) })
     .slice(0, 5)
     .map(([, nodeId]) => nodeId)
 
   if (startNodes.length === 0) {
-    return 'No matching nodes found.'
+    const filterDescription = describeQueryFilters(filters)
+    return filterDescription ? `No matching nodes found for the current query and filters (${filterDescription}).` : 'No matching nodes found.'
   }
 
-  const traversal = mode === 'dfs' ? dfs(graph, startNodes, depth) : bfs(graph, startNodes, depth)
+  const allowedNodes = allowedNodeIds(graph, filters)
+  const traversal = mode === 'dfs' ? dfs(graph, startNodes, depth, allowedNodes) : bfs(graph, startNodes, depth, allowedNodes)
   const startLabels = startNodes.map((nodeId) => String(graph.nodeAttributes(nodeId).label ?? nodeId))
-  return `Traversal: ${mode.toUpperCase()} depth=${depth} | Start: ${JSON.stringify(startLabels)} | ${traversal.visited.size} nodes found\n\n${subgraphToText(graph, traversal.visited, traversal.edges, tokenBudget)}`
+  const summary = [
+    `Traversal: ${mode.toUpperCase()} depth=${depth}`,
+    ...(rankBy !== 'relevance' ? [`Rank: ${rankBy.toUpperCase()}`] : []),
+    ...(describeQueryFilters(filters) ? [`Filters: ${describeQueryFilters(filters)}`] : []),
+    `Start: ${JSON.stringify(startLabels)}`,
+    `${traversal.visited.size} nodes found`,
+  ]
+  return `${summary.join(' | ')}\n\n${subgraphToText(graph, traversal.visited, traversal.edges, tokenBudget)}`
 }
 
 export function getNode(graph: KnowledgeGraph, label: string): string {
@@ -275,6 +479,37 @@ export function graphStats(graph: KnowledgeGraph, communities: Communities = com
     `EXTRACTED: ${Math.round((confidences.filter((confidence) => confidence === 'EXTRACTED').length / total) * 100)}%`,
     `INFERRED: ${Math.round((confidences.filter((confidence) => confidence === 'INFERRED').length / total) * 100)}%`,
     `AMBIGUOUS: ${Math.round((confidences.filter((confidence) => confidence === 'AMBIGUOUS').length / total) * 100)}%`,
+  ].join('\n')
+}
+
+export function semanticAnomaliesSummary(graphPath: string, topN = 5): string {
+  if (topN <= 0) {
+    throw new Error('topN must be positive')
+  }
+
+  const safeGraphPath = validateGraphPath(graphPath)
+  const artifactRecord = readGraphArtifactRecord(safeGraphPath)
+  const stored = storedSemanticAnomalies(artifactRecord.semantic_anomalies, topN)
+  const anomalies =
+    stored.length > 0
+      ? stored
+      : (() => {
+          const graph = loadGraph(safeGraphPath)
+          const communities = communitiesFromGraph(graph)
+          const communityLabels = {
+            ...buildCommunityLabels(graph, communities),
+            ...storedCommunityLabels(artifactRecord.community_labels),
+          }
+          return semanticAnomalies(graph, communities, communityLabels, topN)
+        })()
+
+  if (anomalies.length === 0) {
+    return 'Semantic anomalies: none detected.'
+  }
+
+  return [
+    `Semantic anomalies (${anomalies.length} shown):`,
+    ...anomalies.map((anomaly, index) => `  ${index + 1}. [${anomaly.severity}] ${anomaly.summary}\n     ${anomaly.why}`),
   ].join('\n')
 }
 

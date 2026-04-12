@@ -3,7 +3,16 @@ import { join } from 'node:path'
 
 import { KnowledgeGraph } from '../../src/contracts/graph.js'
 import { buildFromJson } from '../../src/pipeline/build.js'
-import { _fileCategory, _isConceptNode, _surpriseScore, godNodes, graphDiff, suggestQuestions, surprisingConnections } from '../../src/pipeline/analyze.js'
+import {
+  _fileCategory,
+  _isConceptNode,
+  _surpriseScore,
+  godNodes,
+  graphDiff,
+  semanticAnomalies,
+  suggestQuestions,
+  surprisingConnections,
+} from '../../src/pipeline/analyze.js'
 import { cluster } from '../../src/pipeline/cluster.js'
 
 const FIXTURES_DIR = join(process.cwd(), 'tests', 'fixtures')
@@ -21,6 +30,49 @@ function makeSimpleGraph(nodes: Array<[string, string]>, edges: Array<[string, s
     graph.addEdge(source, target, { relation, confidence, source_file: 'test.py' })
   }
   return graph
+}
+
+function makeAnomalyGraph(): {
+  graph: KnowledgeGraph
+  communities: Record<number, string[]>
+  labels: Record<number, string>
+} {
+  const graph = new KnowledgeGraph()
+
+  for (const nodeId of ['a0', 'a1', 'a2', 'a3', 'a4', 'a5']) {
+    graph.addNode(nodeId, { label: `Alpha ${nodeId}`, source_file: 'alpha.ts', file_type: 'code', community: 0 })
+  }
+  for (const nodeId of ['b0', 'b1', 'b2', 'b3']) {
+    graph.addNode(nodeId, { label: `Beta ${nodeId}`, source_file: 'beta.ts', file_type: 'code', community: 1 })
+  }
+  graph.addNode('bridge', { label: 'BridgeHub', source_file: 'shared.ts', file_type: 'code', community: 2 })
+
+  for (const [source, target, relation, confidence, sourceFile] of [
+    ['a0', 'a1', 'calls', 'EXTRACTED', 'alpha.ts'],
+    ['a1', 'a2', 'calls', 'EXTRACTED', 'alpha.ts'],
+    ['b0', 'b1', 'calls', 'EXTRACTED', 'beta.ts'],
+    ['b1', 'b2', 'calls', 'EXTRACTED', 'beta.ts'],
+    ['b2', 'b3', 'calls', 'EXTRACTED', 'beta.ts'],
+    ['bridge', 'a0', 'calls', 'EXTRACTED', 'shared.ts'],
+    ['bridge', 'b0', 'calls', 'EXTRACTED', 'shared.ts'],
+    ['a2', 'b2', 'references', 'INFERRED', 'shared.ts'],
+  ] as const) {
+    graph.addEdge(source, target, { relation, confidence, source_file: sourceFile })
+  }
+
+  return {
+    graph,
+    communities: {
+      0: ['a0', 'a1', 'a2', 'a3', 'a4', 'a5'],
+      1: ['b0', 'b1', 'b2', 'b3'],
+      2: ['bridge'],
+    },
+    labels: {
+      0: 'Alpha Cluster',
+      1: 'Beta Cluster',
+      2: 'Shared Bridge',
+    },
+  }
 }
 
 describe('analyze', () => {
@@ -177,6 +229,25 @@ describe('analyze', () => {
     )
 
     expect(graphDiff(graphA, graphB).summary).toBe('no changes')
+  })
+
+  it('detects bridge, cross-boundary, and low-cohesion anomalies', () => {
+    const { graph, communities, labels } = makeAnomalyGraph()
+
+    const anomalies = semanticAnomalies(graph, communities, labels, 10)
+
+    expect(anomalies.map((anomaly) => anomaly.kind)).toEqual(expect.arrayContaining(['bridge_node', 'cross_boundary_edge', 'low_cohesion_community']))
+    expect(anomalies.every((anomaly) => anomaly.summary.length > 0 && anomaly.why.length > 0)).toBe(true)
+    expect(anomalies.every((anomaly) => ['HIGH', 'MEDIUM', 'LOW'].includes(anomaly.severity))).toBe(true)
+  })
+
+  it('sorts semantic anomalies by score and respects the requested limit', () => {
+    const { graph, communities, labels } = makeAnomalyGraph()
+
+    const anomalies = semanticAnomalies(graph, communities, labels, 2)
+
+    expect(anomalies).toHaveLength(2)
+    expect((anomalies[0]?.score ?? 0) >= (anomalies[1]?.score ?? 0)).toBe(true)
   })
 
   it('treats opposite edge directions as different changes for directed graphs', () => {

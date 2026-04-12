@@ -8,11 +8,16 @@ export class UsageError extends Error {
   }
 }
 
+export type QueryRankBy = 'relevance' | 'degree'
+
 export interface QueryCliOptions {
   question: string
   mode: 'bfs' | 'dfs'
   tokenBudget: number
   graphPath: string
+  rankBy: QueryRankBy
+  community: number | null
+  fileType: string | null
 }
 
 export interface PathCliOptions {
@@ -20,6 +25,12 @@ export interface PathCliOptions {
   target: string
   graphPath: string
   maxHops: number
+}
+
+export interface DiffCliOptions {
+  baselineGraphPath: string
+  graphPath: string
+  limit: number
 }
 
 export interface ExplainCliOptions {
@@ -96,6 +107,7 @@ export interface PlatformActionCliOptions {
 
 const MAX_CLI_SOURCE_NODES = 50
 const MAX_CLI_LABEL_LENGTH = 512
+const MAX_CLI_PATH_LENGTH = 4_096
 const MAX_QUESTION_LENGTH = 2_000
 const MAX_ANSWER_LENGTH = 100_000
 const MAX_PATH_HOPS = 20
@@ -113,6 +125,14 @@ function parsePositiveInteger(flag: string, value: string): number {
   const parsed = Number.parseInt(value, 10)
   if (!Number.isFinite(parsed) || parsed <= 0) {
     throw new UsageError(`error: ${flag} must be a positive integer`)
+  }
+  return parsed
+}
+
+function parseNonNegativeInteger(flag: string, value: string): number {
+  const parsed = Number(value)
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new UsageError(`error: ${flag} must be a non-negative integer`)
   }
   return parsed
 }
@@ -150,6 +170,14 @@ function parseBudget(value: string): number {
   return parsed
 }
 
+function parseQueryRankBy(value: string): QueryRankBy {
+  const normalized = value.trim().toLowerCase()
+  if (normalized === 'relevance' || normalized === 'degree') {
+    return normalized
+  }
+  throw new UsageError('error: --rank-by must be one of relevance, degree')
+}
+
 function validateCliText(field: string, value: string): string {
   if (value.length > MAX_CLI_LABEL_LENGTH) {
     throw new UsageError(`error: ${field} exceeds maximum length of ${MAX_CLI_LABEL_LENGTH} characters`)
@@ -160,12 +188,15 @@ function validateCliText(field: string, value: string): string {
 export function parseQueryArgs(args: string[]): QueryCliOptions {
   const question = args[0]?.trim()
   if (!question) {
-    throw new UsageError('Usage: graphify-ts query "<question>" [--dfs] [--budget N] [--graph path]')
+    throw new UsageError('Usage: graphify-ts query "<question>" [--dfs] [--budget N] [--graph path] [--rank-by MODE] [--community ID] [--file-type TYPE]')
   }
 
   let mode: 'bfs' | 'dfs' = 'bfs'
   let tokenBudget = 2000
   let graphPath = 'graphify-out/graph.json'
+  let rankBy: QueryRankBy = 'relevance'
+  let community: number | null = null
+  let fileType: string | null = null
 
   for (let index = 1; index < args.length; index += 1) {
     const argument = args[index]
@@ -202,10 +233,46 @@ export function parseQueryArgs(args: string[]): QueryCliOptions {
       continue
     }
 
+    if (argument === '--rank-by') {
+      rankBy = parseQueryRankBy(requireNonEmptyValue('--rank-by', args[index + 1]))
+      index += 1
+      continue
+    }
+
+    if (argument.startsWith('--rank-by=')) {
+      const [, value] = argument.split('=', 2)
+      rankBy = parseQueryRankBy(requireNonEmptyValue('--rank-by', value))
+      continue
+    }
+
+    if (argument === '--community') {
+      community = parseNonNegativeInteger('--community', requireNonEmptyValue('--community', args[index + 1]))
+      index += 1
+      continue
+    }
+
+    if (argument.startsWith('--community=')) {
+      const [, value] = argument.split('=', 2)
+      community = parseNonNegativeInteger('--community', requireNonEmptyValue('--community', value))
+      continue
+    }
+
+    if (argument === '--file-type') {
+      fileType = validateCliText('--file-type', requireNonEmptyValue('--file-type', args[index + 1]))
+      index += 1
+      continue
+    }
+
+    if (argument.startsWith('--file-type=')) {
+      const [, value] = argument.split('=', 2)
+      fileType = validateCliText('--file-type', requireNonEmptyValue('--file-type', value))
+      continue
+    }
+
     throw new UsageError(`error: unknown option for query: ${argument}`)
   }
 
-  return { question, mode, tokenBudget, graphPath }
+  return { question, mode, tokenBudget, graphPath, rankBy, community, fileType }
 }
 
 export function parsePathArgs(args: string[]): PathCliOptions {
@@ -254,6 +321,54 @@ export function parsePathArgs(args: string[]): PathCliOptions {
   }
 
   return { source: normalizedSource, target: normalizedTarget, graphPath, maxHops }
+}
+
+export function parseDiffArgs(args: string[]): DiffCliOptions {
+  const baselineGraphPath = args[0]?.trim()
+  if (!baselineGraphPath) {
+    throw new UsageError('Usage: graphify-ts diff <baseline-graph.json> [--graph path] [--limit N]')
+  }
+  if (baselineGraphPath.length > MAX_CLI_PATH_LENGTH) {
+    throw new UsageError(`error: baseline graph path exceeds maximum length of ${MAX_CLI_PATH_LENGTH} characters`)
+  }
+
+  let graphPath = 'graphify-out/graph.json'
+  let limit = 10
+
+  for (let index = 1; index < args.length; index += 1) {
+    const argument = args[index]
+    if (!argument) {
+      continue
+    }
+
+    if (argument === '--graph') {
+      graphPath = requireNonEmptyValue('--graph', args[index + 1])
+      index += 1
+      continue
+    }
+
+    if (argument.startsWith('--graph=')) {
+      const [, value] = argument.split('=', 2)
+      graphPath = requireNonEmptyValue('--graph', value)
+      continue
+    }
+
+    if (argument === '--limit') {
+      limit = parsePositiveInteger('--limit', requireNonEmptyValue('--limit', args[index + 1]))
+      index += 1
+      continue
+    }
+
+    if (argument.startsWith('--limit=')) {
+      const [, value] = argument.split('=', 2)
+      limit = parsePositiveInteger('--limit', requireNonEmptyValue('--limit', value))
+      continue
+    }
+
+    throw new UsageError(`error: unknown option for diff: ${argument}`)
+  }
+
+  return { baselineGraphPath, graphPath, limit }
 }
 
 export function parseExplainArgs(args: string[]): ExplainCliOptions {

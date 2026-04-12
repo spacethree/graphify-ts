@@ -58,6 +58,7 @@ function runPipeline(tempDir: string) {
     labels,
     gods,
     surprises,
+    [],
     detection as unknown as Record<string, unknown>,
     { input: extraction.input_tokens, output: extraction.output_tokens },
     FIXTURES_DIR,

@@ -36,18 +36,22 @@ describe('generateGraph', () => {
       const result = generateGraph(tempDir)
       const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
         nodes: Array<Record<string, unknown>>
+        semantic_anomalies?: unknown
       }
 
       expect(result.mode).toBe('generate')
       expect(result.nodeCount).toBeGreaterThan(0)
       expect(result.edgeCount).toBeGreaterThan(0)
+      expect(result.semanticAnomalyCount).toEqual(expect.any(Number))
       expect(existsSync(join(tempDir, 'graphify-out', 'graph.json'))).toBe(true)
       expect(existsSync(join(tempDir, 'graphify-out', 'GRAPH_REPORT.md'))).toBe(true)
       expect(existsSync(join(tempDir, 'graphify-out', 'graph.html'))).toBe(true)
       expect(existsSync(join(tempDir, 'graphify-out', 'manifest.json'))).toBe(true)
       expect(readFileSync(join(tempDir, 'graphify-out', 'GRAPH_REPORT.md'), 'utf8')).toContain('## God Nodes')
+      expect(readFileSync(join(tempDir, 'graphify-out', 'GRAPH_REPORT.md'), 'utf8')).toContain('## Semantic Anomalies')
       expect(result.notes.join('\n')).not.toContain('semantic extraction')
       expect(graphData.nodes.some((node) => node.file_type === 'document')).toBe(true)
+      expect(Array.isArray(graphData.semantic_anomalies)).toBe(true)
     })
   })
 

@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path'
 
 import { KnowledgeGraph } from '../contracts/graph.js'
 import type { ExtractionData, ExtractionEdge, ExtractionNode, Hyperedge } from '../contracts/types.js'
-import { godNodes, suggestQuestions, surprisingConnections } from '../pipeline/analyze.js'
+import { godNodes, semanticAnomalies, suggestQuestions, surprisingConnections } from '../pipeline/analyze.js'
 import { buildFromJson } from '../pipeline/build.js'
 import { cluster, scoreAll } from '../pipeline/cluster.js'
 import { buildCommunityLabels } from '../pipeline/community-naming.js'
@@ -48,6 +48,7 @@ export interface GenerateGraphResult {
   nodeCount: number
   edgeCount: number
   communityCount: number
+  semanticAnomalyCount?: number
   changedFiles: number
   deletedFiles: number
   warning: string | null
@@ -271,6 +272,7 @@ export function generateGraph(rootPath = '.', options: GenerateGraphOptions = {}
   const communityLabels = buildCommunityLabels(graph, communities, { rootPath: resolvedRootPath })
   const godNodeList = godNodes(graph)
   const surpriseList = surprisingConnections(graph, communities)
+  const semanticAnomalyList = semanticAnomalies(graph, communities, communityLabels)
   const suggestedQuestions = suggestQuestions(graph, communities, communityLabels)
   const report = generateReport(
     graph,
@@ -279,6 +281,7 @@ export function generateGraph(rootPath = '.', options: GenerateGraphOptions = {}
     communityLabels,
     godNodeList,
     surpriseList,
+    semanticAnomalyList,
     detectionSummary(detected),
     { input: 0, output: 0 },
     resolvedRootPath,
@@ -286,7 +289,7 @@ export function generateGraph(rootPath = '.', options: GenerateGraphOptions = {}
   )
 
   writeFileSync(reportPath, `${report}\n`, 'utf8')
-  toJson(graph, communities, graphPath, communityLabels)
+  toJson(graph, communities, graphPath, communityLabels, semanticAnomalyList)
   if (!options.noHtml) {
     const htmlResult = toHtml(graph, communities, htmlPath, communityLabels, {
       mode: options.htmlMode ?? 'auto',
@@ -338,6 +341,7 @@ export function generateGraph(rootPath = '.', options: GenerateGraphOptions = {}
     nodeCount: graph.numberOfNodes(),
     edgeCount: graph.numberOfEdges(),
     communityCount: Object.keys(communities).length,
+    semanticAnomalyCount: semanticAnomalyList.length,
     changedFiles,
     deletedFiles,
     warning: detected.warning,

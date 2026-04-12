@@ -25,6 +25,15 @@ export interface SuggestedQuestion {
   why: string
 }
 
+export interface SemanticAnomaly {
+  id: string
+  kind: 'bridge_node' | 'cross_boundary_edge' | 'low_cohesion_community'
+  severity: 'HIGH' | 'MEDIUM' | 'LOW'
+  score: number
+  summary: string
+  why: string
+}
+
 export interface GraphDiffResult {
   new_nodes: Array<{ id: string; label: string }>
   removed_nodes: Array<{ id: string; label: string }>
@@ -32,6 +41,10 @@ export interface GraphDiffResult {
   removed_edges: Array<{ source: string; target: string; relation: string; confidence: string }>
   summary: string
 }
+
+const MAX_BETWEENNESS_ANALYSIS_NODES = 2_000
+const MAX_SEMANTIC_ANOMALIES_PER_KIND = 3
+const nodeBetweennessCache = new WeakMap<KnowledgeGraph, Map<string, number>>()
 
 function edgeKey(left: string, right: string, relation: string, directed = false): string {
   if (directed) {
@@ -120,6 +133,11 @@ function edgeBetweenness(graph: KnowledgeGraph): Map<string, number> {
 }
 
 function nodeBetweenness(graph: KnowledgeGraph): Map<string, number> {
+  const cached = nodeBetweennessCache.get(graph)
+  if (cached) {
+    return cached
+  }
+
   const nodeIds = graph.nodeIds()
   const scores = new Map(nodeIds.map((nodeId) => [nodeId, 0]))
 
@@ -175,6 +193,7 @@ function nodeBetweenness(graph: KnowledgeGraph): Map<string, number> {
     scores.set(nodeId, value / 2)
   }
 
+  nodeBetweennessCache.set(graph, scores)
   return scores
 }
 
@@ -451,6 +470,112 @@ export function surprisingConnections(graph: KnowledgeGraph, communities: Commun
   return crossCommunitySurprises(graph, communities, topN)
 }
 
+function anomalySeverity(score: number, thresholds: { high: number; medium: number }): SemanticAnomaly['severity'] {
+  if (score >= thresholds.high) {
+    return 'HIGH'
+  }
+  if (score >= thresholds.medium) {
+    return 'MEDIUM'
+  }
+  return 'LOW'
+}
+
+export function semanticAnomalies(graph: KnowledgeGraph, communities: Communities, communityLabels: Record<number, string> = {}, topN = 5): SemanticAnomaly[] {
+  if (topN <= 0) {
+    return []
+  }
+
+  const nodeCommunity = _nodeCommunityMap(communities)
+  const candidates: SemanticAnomaly[] = []
+
+  if (graph.numberOfEdges() > 0 && graph.numberOfNodes() <= MAX_BETWEENNESS_ANALYSIS_NODES) {
+    const bridges = [...nodeBetweenness(graph).entries()]
+      .filter(([nodeId, score]) => !_isFileNode(graph, nodeId) && !_isConceptNode(graph, nodeId) && score > 0)
+      .sort((left, right) => right[1] - left[1] || nodeLabel(graph, left[0]).localeCompare(nodeLabel(graph, right[0])))
+
+    for (const [nodeId, centrality] of bridges) {
+      const communityId = nodeCommunity[nodeId]
+      const neighborCommunities = new Set(
+        graph
+          .neighbors(nodeId)
+          .map((neighborId) => nodeCommunity[neighborId])
+          .filter((neighborCommunityId): neighborCommunityId is number => neighborCommunityId !== undefined && neighborCommunityId !== communityId),
+      )
+
+      if (neighborCommunities.size === 0) {
+        continue
+      }
+
+      const score = Math.round(centrality * (neighborCommunities.size + 1) * 100) / 100
+      const homeLabel = communityId !== undefined ? (communityLabels[communityId] ?? `Community ${communityId}`) : 'its home community'
+      const otherLabels = [...neighborCommunities].map((neighborCommunityId) => communityLabels[neighborCommunityId] ?? `Community ${neighborCommunityId}`)
+
+      candidates.push({
+        id: `bridge_node:${nodeId}`,
+        kind: 'bridge_node',
+        severity: anomalySeverity(score, { high: 4, medium: 1.5 }),
+        score,
+        summary: `${nodeLabel(graph, nodeId)} bridges ${homeLabel} and ${otherLabels.join(', ')}.`,
+        why: `High betweenness centrality (${centrality.toFixed(3)}) across ${neighborCommunities.size + 1} communities makes this node a likely dependency chokepoint.`,
+      })
+    }
+  }
+
+  for (const [communityIdRaw, nodeIds] of Object.entries(communities)) {
+    const communityId = Number(communityIdRaw)
+    const cohesion = cohesionScore(graph, nodeIds)
+    if (nodeIds.length < 5 || cohesion >= 0.15) {
+      continue
+    }
+
+    const label = communityLabels[communityId] ?? `Community ${communityId}`
+    const score = Math.round((0.15 - cohesion) * nodeIds.length * 10 * 100) / 100
+    candidates.push({
+      id: `low_cohesion_community:${communityId}`,
+      kind: 'low_cohesion_community',
+      severity: anomalySeverity(score, { high: 6, medium: 3 }),
+      score,
+      summary: `${label} is weakly connected for its size.`,
+      why: `Cohesion score ${cohesion} across ${nodeIds.length} nodes suggests this community may mix unrelated responsibilities.`,
+    })
+  }
+
+  const surpriseCandidates = surprisingConnections(graph, communities, Math.max(topN * 2, 5))
+  for (const surprise of surpriseCandidates) {
+    const score =
+      (surprise.confidence === 'AMBIGUOUS' ? 4 : surprise.confidence === 'INFERRED' ? 3 : 2) +
+      (surprise.source_files[0] !== surprise.source_files[1] ? 2 : 0) +
+      (surprise.why.includes('bridges') ? 1 : 0)
+
+    candidates.push({
+      id: `cross_boundary_edge:${surprise.source}->${surprise.target}:${surprise.relation}`,
+      kind: 'cross_boundary_edge',
+      severity: anomalySeverity(score, { high: 5, medium: 3 }),
+      score,
+      summary: `${surprise.source} → ${surprise.target} crosses graph boundaries in an unexpected way.`,
+      why: surprise.why,
+    })
+  }
+
+  const limitedByKind = new Map<SemanticAnomaly['kind'], number>()
+  const results: SemanticAnomaly[] = []
+
+  for (const candidate of candidates.sort((left, right) => right.score - left.score || left.summary.localeCompare(right.summary))) {
+    const count = limitedByKind.get(candidate.kind) ?? 0
+    if (count >= MAX_SEMANTIC_ANOMALIES_PER_KIND) {
+      continue
+    }
+
+    limitedByKind.set(candidate.kind, count + 1)
+    results.push(candidate)
+    if (results.length >= topN) {
+      break
+    }
+  }
+
+  return results
+}
+
 export function suggestQuestions(graph: KnowledgeGraph, communities: Communities, communityLabels: Record<number, string>, topN = 7): SuggestedQuestion[] {
   const questions: SuggestedQuestion[] = []
   const nodeCommunity = _nodeCommunityMap(communities)
@@ -467,7 +592,7 @@ export function suggestQuestions(graph: KnowledgeGraph, communities: Communities
     })
   }
 
-  if (graph.numberOfEdges() > 0) {
+  if (graph.numberOfEdges() > 0 && graph.numberOfNodes() <= MAX_BETWEENNESS_ANALYSIS_NODES) {
     const bridges = [...nodeBetweenness(graph).entries()]
       .filter(([nodeId, score]) => !_isFileNode(graph, nodeId) && !_isConceptNode(graph, nodeId) && score > 0)
       .sort((left, right) => right[1] - left[1] || nodeLabel(graph, left[0]).localeCompare(nodeLabel(graph, right[0])))
