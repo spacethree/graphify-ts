@@ -4,6 +4,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs'
 import { strFromU8, unzipSync, type UnzipFileInfo } from 'fflate'
 
 import type { ExtractionEdge, ExtractionNode } from '../../contracts/types.js'
+import { readBinaryIngestSidecar } from '../../shared/binary-ingest-sidecar.js'
 import { MAX_TEXT_BYTES, sanitizeLabel } from '../../shared/security.js'
 import { FileType, classifyFile } from '../detect.js'
 import { _makeId, addEdge, addNode, addUniqueEdge, createEdge, createFileNode, createNode, normalizeLabel } from './core.js'
@@ -11,6 +12,11 @@ import { _makeId, addEdge, addNode, addUniqueEdge, createEdge, createFileNode, c
 interface ExtractionFragment {
   nodes: ExtractionNode[]
   edges: ExtractionEdge[]
+}
+
+function createBinaryMetadataAwareFileNode(filePath: string, fileType: NonCodeFileType): ExtractionNode {
+  const sidecarMetadata = readBinaryIngestSidecar(filePath)
+  return sidecarMetadata ? { ...sidecarMetadata, ...createFileNode(filePath, fileType) } : createFileNode(filePath, fileType)
 }
 
 interface PendingReferenceCitation {
@@ -834,7 +840,7 @@ function extractDocxDocument(filePath: string, allowedTargets: ReadonlySet<strin
   const edges: ExtractionEdge[] = []
   const seenIds = new Set<string>()
   const seenSemanticEdges = new Set<string>()
-  const fileNode = createFileNode(filePath, 'document')
+  const fileNode = createBinaryMetadataAwareFileNode(filePath, 'document')
 
   addNode(nodes, seenIds, fileNode)
 
@@ -867,7 +873,7 @@ function extractDocxDocument(filePath: string, allowedTargets: ReadonlySet<strin
   const coreXml = coreXmlBytes ? strFromU8(coreXmlBytes) : ''
   const coreMetadata = extractCoreMetadata(coreXml)
   if (Object.keys(coreMetadata).length > 0) {
-    nodes[0] = { ...coreMetadata, ...fileNode }
+    nodes[0] = { ...fileNode, ...coreMetadata }
   }
 
   const title = typeof coreMetadata.title === 'string' ? coreMetadata.title : ''
@@ -961,7 +967,7 @@ function extractDocxDocument(filePath: string, allowedTargets: ReadonlySet<strin
 
 function extractImage(filePath: string): ExtractionFragment {
   return {
-    nodes: [createFileNode(filePath, 'image')],
+    nodes: [createBinaryMetadataAwareFileNode(filePath, 'image')],
     edges: [],
   }
 }
@@ -1049,7 +1055,7 @@ function extractPdfPaper(filePath: string, allowedTargets: ReadonlySet<string>):
   const edges: ExtractionEdge[] = []
   const seenIds = new Set<string>()
   const seenSemanticEdges = new Set<string>()
-  const fileNode = createFileNode(filePath, 'paper')
+  const fileNode = createBinaryMetadataAwareFileNode(filePath, 'paper')
 
   addNode(nodes, seenIds, fileNode)
 
@@ -1069,10 +1075,10 @@ function extractPdfPaper(filePath: string, allowedTargets: ReadonlySet<string>):
   const subject = decodePdfLiteral(pdfText.match(PDF_METADATA_SUBJECT_PATTERN)?.[1] ?? '')
   if (title || author || subject) {
     nodes[0] = {
+      ...fileNode,
       ...(title ? { title } : {}),
       ...(author ? { author } : {}),
       ...(subject ? { subject } : {}),
-      ...fileNode,
     }
   }
   if (title && normalizeLabel(title) !== normalizeLabel(basename(filePath))) {
@@ -1150,7 +1156,7 @@ function extractXlsxDocument(filePath: string, allowedTargets: ReadonlySet<strin
   const edges: ExtractionEdge[] = []
   const seenIds = new Set<string>()
   const seenSemanticEdges = new Set<string>()
-  const fileNode = createFileNode(filePath, 'document')
+  const fileNode = createBinaryMetadataAwareFileNode(filePath, 'document')
 
   addNode(nodes, seenIds, fileNode)
 
@@ -1180,7 +1186,7 @@ function extractXlsxDocument(filePath: string, allowedTargets: ReadonlySet<strin
   const coreXml = archive['docProps/core.xml'] ? strFromU8(archive['docProps/core.xml']!) : ''
   const coreMetadata = extractCoreMetadata(coreXml)
   if (Object.keys(coreMetadata).length > 0) {
-    nodes[0] = { ...coreMetadata, ...fileNode }
+    nodes[0] = { ...fileNode, ...coreMetadata }
   }
 
   const workbookXmlBytes = archive['xl/workbook.xml']

@@ -1,6 +1,6 @@
 import { existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 
 import { strToU8, zipSync } from 'fflate'
 
@@ -14,6 +14,36 @@ const FIXTURES_DIR = join(process.cwd(), 'tests', 'fixtures')
 describe('extract', () => {
   function createTempRoot(): string {
     return mkdtempSync(join(tmpdir(), 'graphify-ts-extract-'))
+  }
+
+  function binaryIngestSidecarPath(assetPath: string): string {
+    return join(dirname(assetPath), `.${basename(assetPath)}.graphify-ingest.json`)
+  }
+
+  function expectSourceEntriesToUseCapability(result: ReturnType<typeof extract>, sourceFile: string, capabilityId: string): void {
+    const sourceNodes = result.nodes.filter((node) => node.source_file === sourceFile)
+    const sourceEdges = result.edges.filter((edge) => edge.source_file === sourceFile)
+
+    expect(sourceNodes.length).toBeGreaterThan(0)
+    expect(sourceEdges.length).toBeGreaterThan(0)
+    expect(sourceNodes.every((node) => node.layer === 'base')).toBe(true)
+    expect(sourceEdges.every((edge) => edge.layer === 'base')).toBe(true)
+    expect(sourceNodes.every((node) => Array.isArray(node.provenance) && node.provenance.length > 0)).toBe(true)
+    expect(sourceEdges.every((edge) => Array.isArray(edge.provenance) && edge.provenance.length > 0)).toBe(true)
+
+    for (const node of sourceNodes) {
+      expect(node).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: capabilityId, stage: 'extract' })],
+      })
+    }
+
+    for (const edge of sourceEdges) {
+      expect(edge).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: capabilityId, stage: 'extract' })],
+      })
+    }
   }
 
   it('builds stable ids without leading punctuation', () => {
@@ -755,6 +785,7 @@ describe('extract', () => {
       const tocId = result.nodes.find((node) => node.label === 'Addon.toc')?.id
       const titleId = result.nodes.find((node) => node.label === 'Title: Sample Addon')?.id
       const luaId = result.nodes.find((node) => node.label === 'Main.lua')?.id
+      const referenceEdge = result.edges.find((edge) => edge.source === tocId && edge.target === luaId && edge.relation === 'references')
 
       expect(labels).toContain('Addon.toc')
       expect(labels).toContain('Title: Sample Addon')
@@ -763,6 +794,10 @@ describe('extract', () => {
       expect(luaId).toBeTruthy()
       expect(result.edges.some((edge) => edge.source === tocId && edge.target === titleId && edge.relation === 'contains')).toBe(true)
       expect(result.edges.some((edge) => edge.source === tocId && edge.target === luaId && edge.relation === 'references')).toBe(true)
+      expect(referenceEdge).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:toc', stage: 'extract' })],
+      })
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -1120,6 +1155,239 @@ describe('extract', () => {
     }
   })
 
+  it('emits capability-specific provenance for javascript and typescript extraction', () => {
+    const root = createTempRoot()
+    try {
+      const cases = [
+        {
+          fileName: 'loader.ts',
+          capabilityId: 'builtin:extract:typescript',
+          content: ['export class Loader {', '  load() {', '    return helper()', '  }', '}', '', 'function helper() {', '  return true', '}'].join('\n'),
+        },
+        {
+          fileName: 'loader.js',
+          capabilityId: 'builtin:extract:javascript',
+          content: ['export class Loader {', '  load() {', '    return helper()', '  }', '}', '', 'function helper() {', '  return true', '}'].join('\n'),
+        },
+      ]
+
+      for (const testCase of cases) {
+        const filePath = join(root, testCase.fileName)
+        writeFileSync(filePath, testCase.content, 'utf8')
+
+        const result = extract([filePath])
+        const labels = result.nodes.filter((node) => node.source_file === filePath).map((node) => node.label)
+
+        expect(labels).toEqual(expect.arrayContaining([testCase.fileName, 'Loader', '.load()', 'helper()']))
+        expect(result.edges.some((edge) => edge.source_file === filePath && edge.relation === 'calls')).toBe(true)
+        expectSourceEntriesToUseCapability(result, filePath, testCase.capabilityId)
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('emits raw metadata for go, java, and ruby extraction families', () => {
+    const root = createTempRoot()
+    try {
+      const cases = [
+        {
+          fileName: 'client.go',
+          capabilityId: 'builtin:extract:go',
+          labels: ['client.go', 'Client', '.Get()', '.do()', 'helper()'],
+          content: [
+            'package main',
+            '',
+            'type Client struct {}',
+            'func (c *Client) Get() error {',
+            '  return c.do()',
+            '}',
+            'func (c *Client) do() error {',
+            '  return helper()',
+            '}',
+            'func helper() error {',
+            '  return nil',
+            '}',
+          ].join('\n'),
+        },
+        {
+          fileName: 'Service.java',
+          capabilityId: 'builtin:extract:java',
+          labels: ['Service.java', 'Service', '.run()', '.helper()'],
+          content: ['class Service {', '  void run() {', '    helper();', '  }', '  void helper() {}', '}'].join('\n'),
+        },
+        {
+          fileName: 'client.rb',
+          capabilityId: 'builtin:extract:ruby',
+          labels: ['client.rb', 'Client', '.get()', '.request()'],
+          content: ['class Client', '  def get', '    request()', '  end', '', '  def request', '  end', 'end'].join('\n'),
+        },
+      ]
+
+      for (const testCase of cases) {
+        const filePath = join(root, testCase.fileName)
+        writeFileSync(filePath, testCase.content, 'utf8')
+
+        const result = extract([filePath])
+        const labels = result.nodes.filter((node) => node.source_file === filePath).map((node) => node.label)
+
+        expect(labels).toEqual(expect.arrayContaining(testCase.labels))
+        expect(result.edges.some((edge) => edge.source_file === filePath && (edge.relation === 'calls' || edge.relation === 'method'))).toBe(true)
+        expectSourceEntriesToUseCapability(result, filePath, testCase.capabilityId)
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('emits raw metadata for lightweight scanner extractors', () => {
+    const root = createTempRoot()
+    try {
+      const cases = [
+        {
+          fileName: 'sample.lua',
+          capabilityId: 'builtin:extract:lua',
+          labels: ['sample.lua', 'Client', '.get()', 'request()'],
+          content: ['local Client = {}', '', 'function Client:get()', '  request()', 'end', '', 'function request()', 'end'].join('\n'),
+        },
+        {
+          fileName: 'sample.ex',
+          capabilityId: 'builtin:extract:elixir',
+          labels: ['sample.ex', 'ApiClient', '.get()', '.request()'],
+          content: ['defmodule ApiClient do', '  def get do', '    request()', '  end', '', '  def request do', '  end', 'end'].join('\n'),
+        },
+        {
+          fileName: 'sample.jl',
+          capabilityId: 'builtin:extract:julia',
+          labels: ['sample.jl', 'Client', 'fetch()', 'normalize()'],
+          content: ['struct Client', 'end', '', 'function fetch(client)', '  normalize()', 'end', '', 'function normalize()', 'end'].join('\n'),
+        },
+        {
+          fileName: 'sample.ps1',
+          capabilityId: 'builtin:extract:powershell',
+          labels: ['sample.ps1', 'ApiClient', '.Get()', 'Invoke-Request()', 'Normalize-Response()'],
+          content: [
+            'class ApiClient {',
+            '  [void] Get() {',
+            '    Invoke-Request',
+            '  }',
+            '}',
+            '',
+            'function Invoke-Request {',
+            '  Normalize-Response',
+            '}',
+            '',
+            'function Normalize-Response {',
+            '}',
+          ].join('\n'),
+        },
+        {
+          fileName: 'sample.m',
+          capabilityId: 'builtin:extract:objective-c',
+          labels: ['sample.m', 'Client', '.get()', '.request()'],
+          content: [
+            '#import <Foundation/Foundation.h>',
+            '',
+            '@interface Client : NSObject',
+            '@end',
+            '',
+            '@implementation Client',
+            '- (void)get {',
+            '  [self request];',
+            '}',
+            '',
+            '- (void)request {',
+            '}',
+            '@end',
+          ].join('\n'),
+        },
+      ]
+
+      for (const testCase of cases) {
+        const filePath = join(root, testCase.fileName)
+        writeFileSync(filePath, testCase.content, 'utf8')
+
+        const result = extract([filePath])
+        const labels = result.nodes.filter((node) => node.source_file === filePath).map((node) => node.label)
+
+        expect(labels).toEqual(expect.arrayContaining(testCase.labels))
+        expect(
+          result.edges.some((edge) => edge.source_file === filePath && (edge.relation === 'calls' || edge.relation === 'method' || edge.relation === 'contains')),
+        ).toBe(true)
+        expectSourceEntriesToUseCapability(result, filePath, testCase.capabilityId)
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('emits capability-specific provenance for generic fallback languages', () => {
+    const root = createTempRoot()
+    try {
+      const cases = [
+        {
+          fileName: 'worker.rs',
+          capabilityId: 'builtin:extract:rust',
+          labels: ['worker.rs', 'Worker', '.run()', '.helper()', 'boot()'],
+          content: [
+            'struct Worker {}',
+            'impl Worker {',
+            '  fn run(&self) {',
+            '    self.helper();',
+            '  }',
+            '  fn helper(&self) {}',
+            '}',
+            'fn boot() {',
+            '  Worker::run();',
+            '}',
+          ].join('\n'),
+        },
+        {
+          fileName: 'worker.kt',
+          capabilityId: 'builtin:extract:kotlin',
+          labels: ['worker.kt', 'Worker', '.run()', '.helper()'],
+          content: ['open class BaseTask', 'class Worker: BaseTask() {', '  fun run(): Int = helper()', '  fun helper(): Int { return 1 }', '}'].join('\n'),
+        },
+        {
+          fileName: 'container.swift',
+          capabilityId: 'builtin:extract:swift',
+          labels: ['container.swift', 'Container', '.hash()', '.helper()'],
+          content: [
+            'class BaseCollection {}',
+            'final class Container: BaseCollection {',
+            '  func hash() -> Int { return helper() }',
+            '  func helper() -> Int { return 0 }',
+            '}',
+          ].join('\n'),
+        },
+        {
+          fileName: 'engine.cpp',
+          capabilityId: 'builtin:extract:c-family',
+          labels: ['engine.cpp', 'Engine', '.start()', '.stop()'],
+          content: ['class Engine {', 'public:', '  void start();', '  void stop();', '};', 'void Engine::start() {', '  stop();', '}', 'void Engine::stop() {}'].join(
+            '\n',
+          ),
+        },
+      ]
+
+      for (const testCase of cases) {
+        const filePath = join(root, testCase.fileName)
+        writeFileSync(filePath, testCase.content, 'utf8')
+
+        const result = extract([filePath])
+        const labels = result.nodes.filter((node) => node.source_file === filePath).map((node) => node.label)
+
+        expect(labels).toEqual(expect.arrayContaining(testCase.labels))
+        expect(
+          result.edges.some((edge) => edge.source_file === filePath && (edge.relation === 'calls' || edge.relation === 'inherits' || edge.relation === 'method')),
+        ).toBe(true)
+        expectSourceEntriesToUseCapability(result, filePath, testCase.capabilityId)
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('extracts markdown sections and local references for non-code corpora', () => {
     const root = createTempRoot()
     try {
@@ -1136,6 +1404,9 @@ describe('extract', () => {
       const nodeByKey = new Map(result.nodes.map((node) => [`${node.file_type}:${node.label}`, node.id]))
       const relations = new Set(result.edges.map((edge) => `${edge.source}:${edge.relation}:${edge.target}`))
       const imageNode = result.nodes.find((node) => node.file_type === 'image' && node.label === 'diagram.svg')
+      const referenceEdge = result.edges.find(
+        (edge) => edge.source === nodeByKey.get('document:Overview') && edge.target === nodeByKey.get('document:guide.md') && edge.relation === 'references',
+      )
       const embedEdge = result.edges.find(
         (edge) => edge.source === nodeByKey.get('document:Overview') && edge.target === nodeByKey.get('image:diagram.svg') && edge.relation === 'embeds',
       )
@@ -1150,10 +1421,105 @@ describe('extract', () => {
       expect(relations.has(`${nodeByKey.get('document:README.md')}:contains:${nodeByKey.get('document:Overview')}`)).toBe(true)
       expect(relations.has(`${nodeByKey.get('document:Overview')}:references:${nodeByKey.get('document:guide.md')}`)).toBe(true)
       expect(relations.has(`${nodeByKey.get('document:Overview')}:embeds:${nodeByKey.get('image:diagram.svg')}`)).toBe(true)
+      expect(referenceEdge).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:markdown', stage: 'extract' })],
+      })
       expect(embedEdge).toMatchObject({
         layer: 'base',
         provenance: [expect.objectContaining({ capability_id: 'builtin:extract:markdown', stage: 'extract' })],
       })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('lifts hidden sidecar metadata onto extracted image file nodes', () => {
+    const root = createTempRoot()
+    try {
+      const imagePath = join(root, 'diagram.png')
+      writeFileSync(imagePath, Buffer.from([137, 80, 78, 71]))
+      writeFileSync(
+        binaryIngestSidecarPath(imagePath),
+        JSON.stringify(
+          {
+            source_url: 'https://example.com/diagram.png',
+            captured_at: '2026-04-13T03:00:00Z',
+            contributor: 'graphify-ts',
+          },
+          null,
+          2,
+        ),
+        'utf8',
+      )
+
+      const result = extract([imagePath])
+      const imageNode = result.nodes.find((node) => node.file_type === 'image' && node.label === 'diagram.png')
+
+      expect(imageNode).toMatchObject({
+        source_url: 'https://example.com/diagram.png',
+        captured_at: '2026-04-13T03:00:00Z',
+        contributor: 'graphify-ts',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:image', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('lifts hidden sidecar metadata onto extracted pdf file nodes without disturbing pdf heuristics', () => {
+    const root = createTempRoot()
+    try {
+      const paperPath = join(root, 'paper.pdf')
+      writeFileSync(paperPath, '%PDF-1.4\n1 0 obj\n<< /Title (Graphify Paper) /Subject (Runtime Notes) >>\nstream\n(Abstract) Tj\nendstream\nendobj\n', 'latin1')
+      writeFileSync(
+        binaryIngestSidecarPath(paperPath),
+        JSON.stringify(
+          {
+            source_url: 'https://example.com/paper.pdf',
+            captured_at: '2026-04-13T04:00:00Z',
+            contributor: 'graphify-ts',
+          },
+          null,
+          2,
+        ),
+        'utf8',
+      )
+
+      const result = extract([paperPath])
+      const paperNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'paper.pdf')
+
+      expect(paperNode).toMatchObject({
+        title: 'Graphify Paper',
+        subject: 'Runtime Notes',
+        source_url: 'https://example.com/paper.pdf',
+        captured_at: '2026-04-13T04:00:00Z',
+        contributor: 'graphify-ts',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores malformed hidden sidecar metadata for binary extraction', () => {
+    const root = createTempRoot()
+    try {
+      const imagePath = join(root, 'broken.png')
+      writeFileSync(imagePath, Buffer.from([137, 80, 78, 71]))
+      writeFileSync(binaryIngestSidecarPath(imagePath), '{not-json', 'utf8')
+
+      const result = extract([imagePath])
+      const imageNode = result.nodes.find((node) => node.file_type === 'image' && node.label === 'broken.png')
+
+      expect(imageNode).toMatchObject({
+        label: 'broken.png',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:image', stage: 'extract' })],
+      })
+      expect(imageNode?.source_url).toBeUndefined()
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -1190,6 +1556,7 @@ describe('extract', () => {
       const noteNode = result.nodes.find((node) => node.label === 'notes.md')
       const authenticateId = result.nodes.find((node) => node.label === 'authenticate()')?.id
       const requestTokenId = result.nodes.find((node) => node.label === 'requestToken()')?.id
+      const referenceEdges = result.edges.filter((edge) => edge.source === noteNode?.id && edge.relation === 'references')
 
       expect(noteNode).toMatchObject({
         title: 'Auth notebook',
@@ -1201,6 +1568,15 @@ describe('extract', () => {
       expect(Array.isArray(noteNode?.source_nodes)).toBe(true)
       expect(result.edges.some((edge) => edge.source === noteNode?.id && edge.target === authenticateId && edge.relation === 'references')).toBe(true)
       expect(result.edges.some((edge) => edge.source === noteNode?.id && edge.target === requestTokenId && edge.relation === 'references')).toBe(true)
+      expect(referenceEdges).toHaveLength(2)
+      expect(referenceEdges.every((edge) => edge.layer === 'base')).toBe(true)
+      expect(referenceEdges.every((edge) => Array.isArray(edge.provenance) && edge.provenance.length > 0)).toBe(true)
+      for (const edge of referenceEdges) {
+        expect(edge).toMatchObject({
+          layer: 'base',
+          provenance: [expect.objectContaining({ capability_id: 'builtin:extract:markdown', stage: 'extract' })],
+        })
+      }
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -1351,6 +1727,106 @@ describe('extract', () => {
     }
   })
 
+  it('splits multi-key latex citations and enforces the per-line key limit for markdown papers', () => {
+    const root = createTempRoot()
+    try {
+      const paperPath = join(root, 'paper.md')
+      const primaryKeys = ['vaswani2017attention', 'devlin2018bert', 'raffel2020t5']
+      const overflowKeys = Array.from({ length: 18 }, (_, index) => `overflow${index + 1}`)
+
+      writeFileSync(
+        paperPath,
+        [
+          '# Abstract',
+          'We also reference DOI:10.1234/bootstrap.1 for classification.',
+          `See also \\cite{${primaryKeys.join(',')}} for background.`,
+          `Benchmark against \\citep{${overflowKeys.join(',')}} when comparing results.`,
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([paperPath])
+      const abstractId = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'Abstract')?.id
+      const citationKeyNodes = result.nodes.filter((node) => node.file_type === 'paper' && node.citation_kind === 'citation_key')
+      const citationKeyNodeIds = new Set(citationKeyNodes.map((node) => node.id))
+      const citationKeyLabels = new Set(citationKeyNodes.map((node) => node.label))
+      const citesEdges = result.edges.filter((edge) => edge.source === abstractId && edge.relation === 'cites' && citationKeyNodeIds.has(edge.target))
+
+      expect(abstractId).toBeTruthy()
+      expect(citationKeyNodes).toHaveLength(primaryKeys.length + 16)
+      for (const key of primaryKeys) {
+        expect(citationKeyLabels.has(`cite:${key}`)).toBe(true)
+      }
+      for (const key of overflowKeys.slice(0, 16)) {
+        expect(citationKeyLabels.has(`cite:${key}`)).toBe(true)
+      }
+      expect(citationKeyLabels.has('cite:overflow17')).toBe(false)
+      expect(citationKeyLabels.has('cite:overflow18')).toBe(false)
+      expect(citesEdges).toHaveLength(primaryKeys.length + 16)
+      expect(citationKeyNodes.every((node) => node.layer === 'base')).toBe(true)
+      expect(citesEdges.every((edge) => edge.layer === 'base')).toBe(true)
+      expect(citationKeyNodes.every((node) => Array.isArray(node.provenance) && node.provenance.length > 0)).toBe(true)
+      expect(citesEdges.every((edge) => Array.isArray(edge.provenance) && edge.provenance.length > 0)).toBe(true)
+      for (const node of citationKeyNodes) {
+        expect(node).toMatchObject({
+          layer: 'base',
+          provenance: [expect.objectContaining({ capability_id: 'builtin:extract:markdown-paper', stage: 'extract' })],
+        })
+      }
+      for (const edge of citesEdges) {
+        expect(edge).toMatchObject({
+          layer: 'base',
+          provenance: [expect.objectContaining({ capability_id: 'builtin:extract:markdown-paper', stage: 'extract' })],
+        })
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts arxiv citation format variants from markdown papers', () => {
+    const root = createTempRoot()
+    try {
+      const paperPath = join(root, 'paper.md')
+      const expectedArxivNodes = [
+        { label: 'arXiv:math.CO/0123456', source_url: 'https://arxiv.org/abs/math.CO/0123456' },
+        { label: 'arXiv:2103.12345', source_url: 'https://arxiv.org/abs/2103.12345' },
+        { label: 'arXiv:2103.54321v2', source_url: 'https://arxiv.org/abs/2103.54321v2' },
+        { label: 'arXiv:2201.99999', source_url: 'https://arxiv.org/abs/2201.99999' },
+        { label: 'arXiv:2302.00001', source_url: 'https://arxiv.org/abs/2302.00001' },
+      ]
+
+      writeFileSync(
+        paperPath,
+        ['# Abstract', 'We compare arXiv:math.CO/0123456, arXiv:2103.12345, arXiv:2103.54321v2, arxiv.org/abs/2201.99999, and ArXiV: 2302.00001.'].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([paperPath])
+      const abstractId = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'Abstract')?.id
+      const citesEdges = result.edges.filter((edge) => edge.source === abstractId && edge.relation === 'cites')
+
+      expect(abstractId).toBeTruthy()
+      expect(citesEdges).toHaveLength(expectedArxivNodes.length)
+      for (const expectedNode of expectedArxivNodes) {
+        const node = result.nodes.find((candidate) => candidate.file_type === 'paper' && candidate.label === expectedNode.label)
+        const edge = result.edges.find((candidate) => candidate.source === abstractId && candidate.target === node?.id && candidate.relation === 'cites')
+
+        expect(node).toMatchObject({
+          source_url: expectedNode.source_url,
+          layer: 'base',
+          provenance: [expect.objectContaining({ capability_id: 'builtin:extract:markdown-paper', stage: 'extract' })],
+        })
+        expect(edge).toMatchObject({
+          layer: 'base',
+          provenance: [expect.objectContaining({ capability_id: 'builtin:extract:markdown-paper', stage: 'extract' })],
+        })
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('resolves inline numeric citations to numbered references and enriches reference metadata', () => {
     const root = createTempRoot()
     try {
@@ -1373,8 +1849,11 @@ describe('extract', () => {
       const referenceOne = result.nodes.find((node) => node.file_type === 'paper' && node.reference_index === 1)
       const referenceTwo = result.nodes.find((node) => node.file_type === 'paper' && node.reference_index === 2)
       const referenceThree = result.nodes.find((node) => node.file_type === 'paper' && node.reference_index === 3)
+      const referenceDoiNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'DOI:10.5555/foundational')
+      const referenceArxivNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'arXiv:2401.12345')
       const numberedReferences = [referenceOne, referenceTwo, referenceThree]
       const citesEdges = result.edges.filter((edge) => edge.source === abstractId && edge.relation === 'cites')
+      const referenceSourceEdges = result.edges.filter((edge) => edge.relation === 'cites' && (edge.source === referenceOne?.id || edge.source === referenceTwo?.id))
 
       expect(abstractId).toBeTruthy()
       expect(referenceOne).toMatchObject({
@@ -1396,15 +1875,30 @@ describe('extract', () => {
         reference_year: 2022,
         reference_title: 'Another Paper',
       })
+      expect(referenceDoiNode).toMatchObject({
+        source_url: 'https://doi.org/10.5555/foundational',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:markdown-paper', stage: 'extract' })],
+      })
+      expect(referenceArxivNode).toMatchObject({
+        source_url: 'https://arxiv.org/abs/2401.12345',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:markdown-paper', stage: 'extract' })],
+      })
       expect(result.edges.some((edge) => edge.source === abstractId && edge.target === referenceOne?.id && edge.relation === 'cites')).toBe(true)
       expect(result.edges.some((edge) => edge.source === abstractId && edge.target === referenceTwo?.id && edge.relation === 'cites')).toBe(true)
       expect(result.edges.some((edge) => edge.source === abstractId && edge.target === referenceThree?.id && edge.relation === 'cites')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === referenceOne?.id && edge.target === referenceDoiNode?.id && edge.relation === 'cites')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === referenceTwo?.id && edge.target === referenceArxivNode?.id && edge.relation === 'cites')).toBe(true)
       expect(numberedReferences).toHaveLength(3)
       expect(citesEdges).toHaveLength(3)
+      expect(referenceSourceEdges).toHaveLength(2)
       expect(numberedReferences.every((node) => node?.layer === 'base')).toBe(true)
       expect(citesEdges.every((edge) => edge.layer === 'base')).toBe(true)
+      expect(referenceSourceEdges.every((edge) => edge.layer === 'base')).toBe(true)
       expect(numberedReferences.every((node) => Array.isArray(node?.provenance) && node.provenance.length > 0)).toBe(true)
       expect(citesEdges.every((edge) => Array.isArray(edge.provenance) && edge.provenance.length > 0)).toBe(true)
+      expect(referenceSourceEdges.every((edge) => Array.isArray(edge.provenance) && edge.provenance.length > 0)).toBe(true)
       for (const node of numberedReferences) {
         expect(node).toMatchObject({
           layer: 'base',
@@ -1412,6 +1906,12 @@ describe('extract', () => {
         })
       }
       for (const edge of citesEdges) {
+        expect(edge).toMatchObject({
+          layer: 'base',
+          provenance: [expect.objectContaining({ capability_id: 'builtin:extract:markdown-paper', stage: 'extract' })],
+        })
+      }
+      for (const edge of referenceSourceEdges) {
         expect(edge).toMatchObject({
           layer: 'base',
           provenance: [expect.objectContaining({ capability_id: 'builtin:extract:markdown-paper', stage: 'extract' })],
@@ -1451,10 +1951,15 @@ describe('extract', () => {
       const result = extract([paperPath, guidePath])
       const abstractId = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'Abstract')?.id
       const guideId = result.nodes.find((node) => node.file_type === 'document' && node.label === 'guide.md')?.id
+      const referenceEdge = result.edges.find((edge) => edge.source === abstractId && edge.target === guideId && edge.relation === 'references')
 
       expect(abstractId).toBeTruthy()
       expect(guideId).toBeTruthy()
       expect(result.edges.some((edge) => edge.source === abstractId && edge.target === guideId && edge.relation === 'references')).toBe(true)
+      expect(referenceEdge).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' })],
+      })
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -1485,7 +1990,7 @@ describe('extract', () => {
     }
   })
 
-  it('extracts pdf metadata, TJ-array text, and resolved reference source urls', () => {
+  it('extracts pdf metadata, inline numeric citation resolution, TJ-array text, and resolved reference source urls', () => {
     const root = createTempRoot()
     try {
       const paperPath = join(root, 'paper.pdf')
@@ -1497,9 +2002,11 @@ describe('extract', () => {
           '<< /Title (Graphify Paper) /Author (Jane Doe) /Subject (Runtime Notes) >>',
           'stream',
           '[(Abstract)] TJ',
+          '(We build on [1] and compare against [2].) Tj',
           '[(See DOI:10.1000/example.42 and arXiv:2501.12345)] TJ',
           '[(References)] TJ',
           '([1] Doe et al. (2024). Runtime Paper. DOI:10.4242/runtime.paper) Tj',
+          '([2] Roe et al. (2025). Follow Up Paper. arXiv:2502.54321) Tj',
           'endstream',
           'endobj',
         ].join('\n'),
@@ -1515,10 +2022,18 @@ describe('extract', () => {
       const referenceNode = result.nodes.find(
         (node) => node.file_type === 'paper' && node.semantic_kind === 'reference' && String(node.label).startsWith('[1] Doe et al.'),
       )
+      const referenceTwo = result.nodes.find(
+        (node) => node.file_type === 'paper' && node.semantic_kind === 'reference' && String(node.label).startsWith('[2] Roe et al.'),
+      )
       const referenceDoiNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'DOI:10.4242/runtime.paper')
+      const referenceArxivNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'arXiv:2502.54321')
       const doiCitationEdge = result.edges.find((edge) => edge.source === abstractId && edge.target === doiNode?.id && edge.relation === 'cites')
-      const referenceContainsEdge = result.edges.find((edge) => edge.source === referencesId && edge.target === referenceNode?.id && edge.relation === 'contains')
+      const referenceContainsEdges = result.edges.filter((edge) => edge.source === referencesId && edge.relation === 'contains')
       const referenceCitationEdge = result.edges.find((edge) => edge.source === referenceNode?.id && edge.target === referenceDoiNode?.id && edge.relation === 'cites')
+      const referenceArxivEdge = result.edges.find((edge) => edge.source === referenceTwo?.id && edge.target === referenceArxivNode?.id && edge.relation === 'cites')
+      const abstractReferenceEdges = result.edges.filter(
+        (edge) => edge.source === abstractId && edge.relation === 'cites' && (edge.target === referenceNode?.id || edge.target === referenceTwo?.id),
+      )
 
       expect(paperNode).toMatchObject({
         title: 'Graphify Paper',
@@ -1552,11 +2067,21 @@ describe('extract', () => {
         layer: 'base',
         provenance: [expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' })],
       })
-      expect(doiCitationEdge).toMatchObject({
+      expect(referenceTwo).toMatchObject({
+        reference_index: 2,
+        reference_year: 2025,
+        reference_title: 'Follow Up Paper',
+        arxiv_id: '2502.54321',
+        source_url: 'https://arxiv.org/abs/2502.54321',
         layer: 'base',
         provenance: [expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' })],
       })
-      expect(referenceContainsEdge).toMatchObject({
+      expect(referenceArxivNode).toMatchObject({
+        source_url: 'https://arxiv.org/abs/2502.54321',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' })],
+      })
+      expect(doiCitationEdge).toMatchObject({
         layer: 'base',
         provenance: [expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' })],
       })
@@ -1564,10 +2089,36 @@ describe('extract', () => {
         layer: 'base',
         provenance: [expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' })],
       })
+      expect(referenceArxivEdge).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' })],
+      })
+      expect(abstractReferenceEdges).toHaveLength(2)
+      expect(referenceContainsEdges).toHaveLength(2)
+      expect(referenceContainsEdges.every((edge) => edge.layer === 'base')).toBe(true)
+      expect(referenceContainsEdges.every((edge) => Array.isArray(edge.provenance) && edge.provenance.length > 0)).toBe(true)
+      expect(abstractReferenceEdges.every((edge) => edge.layer === 'base')).toBe(true)
+      expect(abstractReferenceEdges.every((edge) => Array.isArray(edge.provenance) && edge.provenance.length > 0)).toBe(true)
       expect(result.edges.some((edge) => edge.source === abstractId && edge.target === doiNode?.id && edge.relation === 'cites')).toBe(true)
       expect(result.edges.some((edge) => edge.source === abstractId && edge.target === arxivNode?.id && edge.relation === 'cites')).toBe(true)
       expect(result.edges.some((edge) => edge.source === referencesId && edge.target === referenceNode?.id && edge.relation === 'contains')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === referencesId && edge.target === referenceTwo?.id && edge.relation === 'contains')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === abstractId && edge.target === referenceNode?.id && edge.relation === 'cites')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === abstractId && edge.target === referenceTwo?.id && edge.relation === 'cites')).toBe(true)
       expect(result.edges.some((edge) => edge.source === referenceNode?.id && edge.target === referenceDoiNode?.id && edge.relation === 'cites')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === referenceTwo?.id && edge.target === referenceArxivNode?.id && edge.relation === 'cites')).toBe(true)
+      for (const edge of referenceContainsEdges) {
+        expect(edge).toMatchObject({
+          layer: 'base',
+          provenance: [expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' })],
+        })
+      }
+      for (const edge of abstractReferenceEdges) {
+        expect(edge).toMatchObject({
+          layer: 'base',
+          provenance: [expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' })],
+        })
+      }
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -1614,15 +2165,42 @@ describe('extract', () => {
 
       const result = extract([docxPath])
       const labels = result.nodes.map((node) => node.label)
+      const titleNode = result.nodes.find((node) => node.file_type === 'document' && node.label === 'Guide Title')
+      const overviewNode = result.nodes.find((node) => node.file_type === 'document' && node.label === 'Overview')
+      const detailsNode = result.nodes.find((node) => node.file_type === 'document' && node.label === 'Details')
+      const fileNodeId = result.nodes.find((node) => node.file_type === 'document' && node.label === 'guide.docx')?.id
       const nodeByKey = new Map(result.nodes.map((node) => [`${node.file_type}:${node.label}`, node.id]))
       const relations = new Set(result.edges.map((edge) => `${edge.source}:${edge.relation}:${edge.target}`))
+      const containsEdges = result.edges.filter((edge) => edge.relation === 'contains')
 
       expect(labels).toContain('guide.docx')
       expect(labels).toContain('Guide Title')
       expect(labels).toContain('Overview')
       expect(labels).toContain('Details')
+      expect(titleNode).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+      })
+      expect(overviewNode).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+      })
+      expect(detailsNode).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+      })
+      expect(relations.has(`${fileNodeId}:contains:${nodeByKey.get('document:Guide Title')}`)).toBe(true)
       expect(relations.has(`${nodeByKey.get('document:guide.docx')}:contains:${nodeByKey.get('document:Overview')}`)).toBe(true)
       expect(relations.has(`${nodeByKey.get('document:Overview')}:contains:${nodeByKey.get('document:Details')}`)).toBe(true)
+      expect(containsEdges).toHaveLength(3)
+      expect(containsEdges.every((edge) => edge.layer === 'base')).toBe(true)
+      expect(containsEdges.every((edge) => Array.isArray(edge.provenance) && edge.provenance.length > 0)).toBe(true)
+      for (const edge of containsEdges) {
+        expect(edge).toMatchObject({
+          layer: 'base',
+          provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+        })
+      }
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -1652,10 +2230,15 @@ describe('extract', () => {
       const result = extract([docxPath, linkedGuidePath])
       const overviewId = result.nodes.find((node) => node.file_type === 'document' && node.label === 'Overview')?.id
       const linkedGuideId = result.nodes.find((node) => node.file_type === 'document' && node.label === 'linked-guide.md')?.id
+      const referenceEdge = result.edges.find((edge) => edge.source === overviewId && edge.target === linkedGuideId && edge.relation === 'references')
 
       expect(overviewId).toBeTruthy()
       expect(linkedGuideId).toBeTruthy()
       expect(result.edges.some((edge) => edge.source === overviewId && edge.target === linkedGuideId && edge.relation === 'references')).toBe(true)
+      expect(referenceEdge).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+      })
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -1771,7 +2354,7 @@ describe('extract', () => {
     }
   })
 
-  it('extracts numbered reference entries from docx References sections', () => {
+  it('extracts numbered reference entries, bibliography detection, and inline citation resolution from docx sections', () => {
     const root = createTempRoot()
     try {
       const docxPath = join(root, 'paper.docx')
@@ -1780,8 +2363,12 @@ describe('extract', () => {
           [
             '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">',
             '  <w:body>',
-            '    <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>References</w:t></w:r></w:p>',
+            '    <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Introduction</w:t></w:r></w:p>',
+            '    <w:p><w:r><w:t>We build on [1] and extend the comparison in [2-3].</w:t></w:r></w:p>',
+            '    <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Bibliography</w:t></w:r></w:p>',
             '    <w:p><w:r><w:t>[1] Smith et al. (2024). Foundational Work. DOI:10.1234/example</w:t></w:r></w:p>',
+            '    <w:p><w:r><w:t>[2] Doe et al. (2025). Follow Up Study. arXiv:2501.12345</w:t></w:r></w:p>',
+            '    <w:p><w:r><w:t>[3] Lee (2026). Another Paper.</w:t></w:r></w:p>',
             '  </w:body>',
             '</w:document>',
           ].join(''),
@@ -1791,13 +2378,22 @@ describe('extract', () => {
       writeFileSync(docxPath, Buffer.from(archive))
 
       const result = extract([docxPath])
-      const referencesId = result.nodes.find((node) => node.file_type === 'document' && node.label === 'References')?.id
-      const referenceNode = result.nodes.find((node) => node.file_type === 'paper' && node.semantic_kind === 'reference' && String(node.label).startsWith('[1]'))
+      const introductionId = result.nodes.find((node) => node.file_type === 'document' && node.label === 'Introduction')?.id
+      const bibliographyId = result.nodes.find((node) => node.file_type === 'document' && node.label === 'Bibliography')?.id
+      const referenceNode = result.nodes.find((node) => node.file_type === 'paper' && node.reference_index === 1)
+      const referenceTwo = result.nodes.find((node) => node.file_type === 'paper' && node.reference_index === 2)
+      const referenceThree = result.nodes.find((node) => node.file_type === 'paper' && node.reference_index === 3)
       const doiNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'DOI:10.1234/example')
-      const containsEdge = result.edges.find((edge) => edge.source === referencesId && edge.target === referenceNode?.id && edge.relation === 'contains')
+      const arxivNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'arXiv:2501.12345')
+      const containsEdges = result.edges.filter((edge) => edge.source === bibliographyId && edge.relation === 'contains')
+      const introReferenceEdges = result.edges.filter(
+        (edge) => edge.source === introductionId && edge.relation === 'cites' && [referenceNode?.id, referenceTwo?.id, referenceThree?.id].includes(edge.target),
+      )
       const citesEdge = result.edges.find((edge) => edge.source === referenceNode?.id && edge.target === doiNode?.id && edge.relation === 'cites')
+      const arxivCitesEdge = result.edges.find((edge) => edge.source === referenceTwo?.id && edge.target === arxivNode?.id && edge.relation === 'cites')
 
-      expect(referencesId).toBeTruthy()
+      expect(introductionId).toBeTruthy()
+      expect(bibliographyId).toBeTruthy()
       expect(referenceNode).toMatchObject({
         semantic_kind: 'reference',
         reference_index: 1,
@@ -1808,12 +2404,31 @@ describe('extract', () => {
         layer: 'base',
         provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
       })
+      expect(referenceTwo).toMatchObject({
+        semantic_kind: 'reference',
+        reference_index: 2,
+        reference_year: 2025,
+        reference_title: 'Follow Up Study',
+        arxiv_id: '2501.12345',
+        source_url: 'https://arxiv.org/abs/2501.12345',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+      })
+      expect(referenceThree).toMatchObject({
+        semantic_kind: 'reference',
+        reference_index: 3,
+        reference_year: 2026,
+        reference_title: 'Another Paper',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+      })
       expect(doiNode).toMatchObject({
         source_url: 'https://doi.org/10.1234/example',
         layer: 'base',
         provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
       })
-      expect(containsEdge).toMatchObject({
+      expect(arxivNode).toMatchObject({
+        source_url: 'https://arxiv.org/abs/2501.12345',
         layer: 'base',
         provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
       })
@@ -1821,6 +2436,34 @@ describe('extract', () => {
         layer: 'base',
         provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
       })
+      expect(arxivCitesEdge).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+      })
+      expect(containsEdges).toHaveLength(3)
+      expect(introReferenceEdges).toHaveLength(3)
+      expect(containsEdges.every((edge) => edge.layer === 'base')).toBe(true)
+      expect(containsEdges.every((edge) => Array.isArray(edge.provenance) && edge.provenance.length > 0)).toBe(true)
+      expect(introReferenceEdges.every((edge) => edge.layer === 'base')).toBe(true)
+      expect(introReferenceEdges.every((edge) => Array.isArray(edge.provenance) && edge.provenance.length > 0)).toBe(true)
+      expect(result.edges.some((edge) => edge.source === bibliographyId && edge.target === referenceNode?.id && edge.relation === 'contains')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === bibliographyId && edge.target === referenceTwo?.id && edge.relation === 'contains')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === bibliographyId && edge.target === referenceThree?.id && edge.relation === 'contains')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === introductionId && edge.target === referenceNode?.id && edge.relation === 'cites')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === introductionId && edge.target === referenceTwo?.id && edge.relation === 'cites')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === introductionId && edge.target === referenceThree?.id && edge.relation === 'cites')).toBe(true)
+      for (const edge of containsEdges) {
+        expect(edge).toMatchObject({
+          layer: 'base',
+          provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+        })
+      }
+      for (const edge of introReferenceEdges) {
+        expect(edge).toMatchObject({
+          layer: 'base',
+          provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+        })
+      }
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -2134,6 +2777,53 @@ describe('extract', () => {
       const third = extract([filePath])
 
       expect(third.nodes.some((node) => node.label === 'Details')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('invalidates cached binary extraction results when hidden ingest sidecar metadata changes', () => {
+    const root = createTempRoot()
+    try {
+      const imagePath = join(root, 'diagram.png')
+      writeFileSync(imagePath, Buffer.from([137, 80, 78, 71]))
+      writeFileSync(
+        binaryIngestSidecarPath(imagePath),
+        JSON.stringify(
+          {
+            source_url: 'https://example.com/diagram-v1.png',
+            captured_at: '2026-04-13T06:00:00Z',
+            contributor: 'graphify-ts',
+          },
+          null,
+          2,
+        ),
+        'utf8',
+      )
+
+      const first = extract([imagePath])
+      const second = extract([imagePath])
+
+      expect(first.nodes).toEqual(second.nodes)
+      expect(second.nodes.find((node) => node.label === 'diagram.png')?.source_url).toBe('https://example.com/diagram-v1.png')
+
+      writeFileSync(
+        binaryIngestSidecarPath(imagePath),
+        JSON.stringify(
+          {
+            source_url: 'https://example.com/diagram-v2.png',
+            captured_at: '2026-04-13T06:05:00Z',
+            contributor: 'graphify-ts',
+          },
+          null,
+          2,
+        ),
+        'utf8',
+      )
+
+      const third = extract([imagePath])
+
+      expect(third.nodes.find((node) => node.label === 'diagram.png')?.source_url).toBe('https://example.com/diagram-v2.png')
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

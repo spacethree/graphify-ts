@@ -1,8 +1,21 @@
-import { readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync, mkdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync, mkdirSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { join, resolve, basename } from 'node:path'
 
+import { binaryIngestSidecarPath } from '../shared/binary-ingest-sidecar.js'
 import { MAX_FETCH_BYTES } from '../shared/security.js'
+
+function appendBinaryIngestSidecarHash(hash: ReturnType<typeof createHash>, filePath: string): void {
+  const sidecarPath = binaryIngestSidecarPath(filePath)
+  if (!existsSync(sidecarPath)) {
+    return
+  }
+
+  hash.update('\0')
+  hash.update(readFileSync(sidecarPath))
+  hash.update('\0')
+  hash.update(resolve(sidecarPath))
+}
 
 export function fileHash(filePath: string): string {
   const stats = statSync(filePath)
@@ -13,12 +26,14 @@ export function fileHash(filePath: string): string {
     hash.update(String(stats.size))
     hash.update('\0')
     hash.update(String(stats.mtimeMs))
+    appendBinaryIngestSidecarHash(hash, filePath)
     return hash.digest('hex')
   }
 
   hash.update(readFileSync(filePath))
   hash.update('\0')
   hash.update(resolve(filePath))
+  appendBinaryIngestSidecarHash(hash, filePath)
   return hash.digest('hex')
 }
 

@@ -1,10 +1,11 @@
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
 import { builtinCapabilityRegistry } from './capabilities.js'
 import { dispatchIngest, type IngestHandlerMap } from './ingest/dispatch.js'
 import type { IngestOptions, UrlType } from './ingest/types.js'
 import { detectUrlType } from './ingest/url-type.js'
+import { writeBinaryIngestSidecar } from '../shared/binary-ingest-sidecar.js'
 import { safeFetch, safeFetchText, validateUrl } from '../shared/security.js'
 
 export interface SaveQueryOptions {
@@ -78,6 +79,10 @@ function extractTitle(html: string, fallback: string): string {
   return match ? stripHtml(match[1] ?? fallback) : fallback
 }
 
+function resolveContributor(options: IngestOptions): string {
+  return options.contributor ?? options.author ?? 'unknown'
+}
+
 async function fetchTweet(url: string, options: IngestOptions): Promise<{ content: string; fileName: string }> {
   const parsed = new URL(url)
   if (parsed.hostname === 'x.com') {
@@ -99,7 +104,7 @@ async function fetchTweet(url: string, options: IngestOptions): Promise<{ conten
   const capturedAt = new Date().toISOString()
   return {
     fileName: safeFilename(url, '.md'),
-    content: `---\nsource_url: ${yamlString(url)}\ntype: tweet\nauthor: ${yamlString(tweetAuthor)}\ncaptured_at: ${yamlString(capturedAt)}\ncontributor: ${yamlString(options.contributor ?? options.author ?? 'unknown')}\n---\n\n# Tweet by @${tweetAuthor}\n\n${tweetText}\n\nSource: ${url}\n`,
+    content: `---\nsource_url: ${yamlString(url)}\ntype: tweet\nauthor: ${yamlString(tweetAuthor)}\ncaptured_at: ${yamlString(capturedAt)}\ncontributor: ${yamlString(resolveContributor(options))}\n---\n\n# Tweet by @${tweetAuthor}\n\n${tweetText}\n\nSource: ${url}\n`,
   }
 }
 
@@ -121,7 +126,7 @@ async function fetchArxiv(url: string, options: IngestOptions): Promise<{ conten
 
   return {
     fileName: `arxiv_${arxivId.replace('.', '_')}.md`,
-    content: `---\nsource_url: ${yamlString(url)}\narxiv_id: ${yamlString(arxivId)}\ntype: paper\ntitle: ${yamlString(title)}\npaper_authors: ${yamlString(authors)}\ncaptured_at: ${yamlString(capturedAt)}\ncontributor: ${yamlString(options.contributor ?? options.author ?? 'unknown')}\n---\n\n# ${title}\n\n**Authors:** ${authors}\n**arXiv:** ${arxivId}\n\n## Abstract\n\n${abstract}\n\nSource: ${url}\n`,
+    content: `---\nsource_url: ${yamlString(url)}\narxiv_id: ${yamlString(arxivId)}\ntype: paper\ntitle: ${yamlString(title)}\npaper_authors: ${yamlString(authors)}\ncaptured_at: ${yamlString(capturedAt)}\ncontributor: ${yamlString(resolveContributor(options))}\n---\n\n# ${title}\n\n**Authors:** ${authors}\n**arXiv:** ${arxivId}\n\n## Abstract\n\n${abstract}\n\nSource: ${url}\n`,
   }
 }
 
@@ -131,7 +136,7 @@ async function fetchWebpage(url: string, options: IngestOptions): Promise<{ cont
   const capturedAt = new Date().toISOString()
   return {
     fileName: safeFilename(url, '.md'),
-    content: `---\nsource_url: ${yamlString(url)}\ntype: webpage\ntitle: ${yamlString(title)}\ncaptured_at: ${yamlString(capturedAt)}\ncontributor: ${yamlString(options.contributor ?? options.author ?? 'unknown')}\n---\n\n# ${title}\n\nSource: ${url}\n\n---\n\n${extractTextContent(html)}\n`,
+    content: `---\nsource_url: ${yamlString(url)}\ntype: webpage\ntitle: ${yamlString(title)}\ncaptured_at: ${yamlString(capturedAt)}\ncontributor: ${yamlString(resolveContributor(options))}\n---\n\n# ${title}\n\nSource: ${url}\n\n---\n\n${extractTextContent(html)}\n`,
   }
 }
 
@@ -150,10 +155,23 @@ const INGEST_HANDLERS: IngestHandlerMap = {
   'builtin:ingest:image': async (url) => ({ kind: 'binary', suffix: imageSuffixFromUrl(url) }),
 }
 
-async function downloadBinary(url: string, directory: string, suffix: string): Promise<string> {
+async function downloadBinary(url: string, directory: string, suffix: string, options: IngestOptions): Promise<string> {
   const bytes = await safeFetch(url)
   const outputPath = ensureUniquePath(directory, safeFilename(url, suffix))
   writeFileSync(outputPath, bytes)
+
+  try {
+    writeBinaryIngestSidecar(outputPath, {
+      source_url: url,
+      captured_at: new Date().toISOString(),
+      contributor: resolveContributor(options),
+    })
+  } catch (error) {
+    rmSync(outputPath, { force: true })
+    const message = error instanceof Error ? error.message : String(error)
+    throw new Error(`Failed to persist binary ingest metadata for '${url}': ${message}`)
+  }
+
   return outputPath
 }
 
@@ -167,7 +185,7 @@ export async function ingest(url: string, targetDir: string, options: IngestOpti
     registry: builtinCapabilityRegistry,
   })
   if (dispatched.kind === 'binary') {
-    return downloadBinary(url, directory, dispatched.suffix)
+    return downloadBinary(url, directory, dispatched.suffix, options)
   }
 
   const asset = dispatched.asset

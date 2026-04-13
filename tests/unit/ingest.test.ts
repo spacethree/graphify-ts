@@ -1,5 +1,5 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 
 import { afterEach, describe, expect, test, vi } from 'vitest'
@@ -13,6 +13,10 @@ async function withTempDir(callback: (tempDir: string) => void | Promise<void>):
   } finally {
     rmSync(tempDir, { recursive: true, force: true })
   }
+}
+
+function binaryIngestSidecarPath(assetPath: string): string {
+  return join(dirname(assetPath), `.${basename(assetPath)}.graphify-ingest.json`)
 }
 
 afterEach(() => {
@@ -69,6 +73,7 @@ describe('ingest', () => {
       expect(content).toContain('Example Page')
       expect(content).toContain('Source: https://example.com/post')
       expect(content).not.toContain('provenance:')
+      expect(existsSync(binaryIngestSidecarPath(output))).toBe(false)
     })
   })
 
@@ -131,7 +136,7 @@ describe('ingest', () => {
     })
   })
 
-  test('downloads binary assets directly', async () => {
+  test('downloads binary assets directly and persists hidden ingest metadata sidecars', async () => {
     await withTempDir(async (tempDir) => {
       const payload = Uint8Array.from([1, 2, 3, 4])
       vi.stubGlobal(
@@ -139,9 +144,34 @@ describe('ingest', () => {
         vi.fn(async () => new Response(payload, { status: 200 })),
       )
 
-      const output = await ingest('https://example.com/file.pdf', join(tempDir, 'raw'))
-      expect(output.endsWith('.pdf')).toBe(true)
-      expect(readFileSync(output)).toEqual(Buffer.from(payload))
+      const cases = [
+        {
+          url: 'https://example.com/file.pdf',
+          expectedSuffix: '.pdf',
+        },
+        {
+          url: 'https://example.com/diagram.png',
+          expectedSuffix: '.png',
+        },
+      ]
+
+      for (const testCase of cases) {
+        const output = await ingest(testCase.url, join(tempDir, 'raw'), { contributor: 'graphify-ts' })
+        const sidecarPath = binaryIngestSidecarPath(output)
+        const sidecar = JSON.parse(readFileSync(sidecarPath, 'utf8')) as Record<string, unknown>
+
+        expect(output.endsWith(testCase.expectedSuffix)).toBe(true)
+        expect(readFileSync(output)).toEqual(Buffer.from(payload))
+        expect(existsSync(sidecarPath)).toBe(true)
+        expect(sidecar).toEqual(
+          expect.objectContaining({
+            source_url: testCase.url,
+            captured_at: expect.any(String),
+            contributor: 'graphify-ts',
+          }),
+        )
+        expect(typeof sidecar.captured_at).toBe('string')
+      }
     })
   })
 

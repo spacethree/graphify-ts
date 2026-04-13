@@ -324,6 +324,57 @@ describe('normalizeExtractionData', () => {
     )
   })
 
+  it.each([
+    {
+      label: 'paper.pdf',
+      fileType: 'paper' as const,
+      sourceUrl: 'https://example.com/paper.pdf',
+      extractCapabilityId: 'builtin:extract:paper',
+      ingestCapabilityId: 'builtin:ingest:pdf',
+    },
+    {
+      label: 'diagram.png',
+      fileType: 'image' as const,
+      sourceUrl: 'https://example.com/diagram.png',
+      extractCapabilityId: 'builtin:extract:image',
+      ingestCapabilityId: 'builtin:ingest:image',
+    },
+  ])('projects flat binary ingest metadata into %s provenance', ({ label, fileType, sourceUrl, extractCapabilityId, ingestCapabilityId }) => {
+    const extraction = {
+      schema_version: 2 as const,
+      nodes: [
+        {
+          id: `n_${label.replace(/\W+/g, '_')}`,
+          label,
+          file_type: fileType,
+          source_file: label,
+          source_url: sourceUrl,
+          captured_at: '2026-04-13T05:00:00Z',
+          contributor: 'graphify-ts',
+          provenance: [{ capability_id: extractCapabilityId, stage: 'extract' }],
+        },
+      ],
+      edges: [],
+    }
+
+    const normalized = normalizeExtractionData(extraction)
+
+    expect(normalized.nodes[0]).toEqual(
+      expect.objectContaining({
+        provenance: expect.arrayContaining([
+          expect.objectContaining({ capability_id: extractCapabilityId, stage: 'extract' }),
+          expect.objectContaining({
+            capability_id: ingestCapabilityId,
+            stage: 'ingest',
+            source_url: sourceUrl,
+            captured_at: '2026-04-13T05:00:00Z',
+            contributor: 'graphify-ts',
+          }),
+        ]),
+      }),
+    )
+  })
+
   it('does not let virtual citation nodes seed ingest provenance for a source file', () => {
     const extraction = {
       schema_version: 2 as const,
