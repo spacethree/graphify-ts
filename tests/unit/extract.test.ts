@@ -1509,9 +1509,16 @@ describe('extract', () => {
       const result = extract([paperPath])
       const paperNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'paper.pdf')
       const abstractId = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'Abstract')?.id
+      const referencesId = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'References')?.id
       const doiNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'DOI:10.1000/example.42')
       const arxivNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'arXiv:2501.12345')
+      const referenceNode = result.nodes.find(
+        (node) => node.file_type === 'paper' && node.semantic_kind === 'reference' && String(node.label).startsWith('[1] Doe et al.'),
+      )
+      const referenceDoiNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'DOI:10.4242/runtime.paper')
       const doiCitationEdge = result.edges.find((edge) => edge.source === abstractId && edge.target === doiNode?.id && edge.relation === 'cites')
+      const referenceContainsEdge = result.edges.find((edge) => edge.source === referencesId && edge.target === referenceNode?.id && edge.relation === 'contains')
+      const referenceCitationEdge = result.edges.find((edge) => edge.source === referenceNode?.id && edge.target === referenceDoiNode?.id && edge.relation === 'cites')
 
       expect(paperNode).toMatchObject({
         title: 'Graphify Paper',
@@ -1531,12 +1538,36 @@ describe('extract', () => {
         layer: 'base',
         provenance: [expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' })],
       })
+      expect(referenceNode).toMatchObject({
+        reference_index: 1,
+        reference_year: 2024,
+        reference_title: 'Runtime Paper',
+        doi: '10.4242/runtime.paper',
+        source_url: 'https://doi.org/10.4242/runtime.paper',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' })],
+      })
+      expect(referenceDoiNode).toMatchObject({
+        source_url: 'https://doi.org/10.4242/runtime.paper',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' })],
+      })
       expect(doiCitationEdge).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' })],
+      })
+      expect(referenceContainsEdge).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' })],
+      })
+      expect(referenceCitationEdge).toMatchObject({
         layer: 'base',
         provenance: [expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' })],
       })
       expect(result.edges.some((edge) => edge.source === abstractId && edge.target === doiNode?.id && edge.relation === 'cites')).toBe(true)
       expect(result.edges.some((edge) => edge.source === abstractId && edge.target === arxivNode?.id && edge.relation === 'cites')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === referencesId && edge.target === referenceNode?.id && edge.relation === 'contains')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === referenceNode?.id && edge.target === referenceDoiNode?.id && edge.relation === 'cites')).toBe(true)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -1651,14 +1682,34 @@ describe('extract', () => {
 
       const result = extract([docxPath])
       const overviewId = result.nodes.find((node) => node.file_type === 'document' && node.label === 'Overview')?.id
-      const doiId = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'DOI:10.1000/guide.1')?.id
-      const arxivId = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'arXiv:2401.12345')?.id
+      const doiNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'DOI:10.1000/guide.1')
+      const arxivNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'arXiv:2401.12345')
+      const doiId = doiNode?.id
+      const arxivId = arxivNode?.id
+      const doiEdge = result.edges.find((edge) => edge.source === overviewId && edge.target === doiId && edge.relation === 'cites')
+      const arxivEdge = result.edges.find((edge) => edge.source === overviewId && edge.target === arxivId && edge.relation === 'cites')
 
       expect(overviewId).toBeTruthy()
       expect(doiId).toBeTruthy()
       expect(arxivId).toBeTruthy()
       expect(result.edges.some((edge) => edge.source === overviewId && edge.target === doiId && edge.relation === 'cites')).toBe(true)
       expect(result.edges.some((edge) => edge.source === overviewId && edge.target === arxivId && edge.relation === 'cites')).toBe(true)
+      expect(doiNode).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+      })
+      expect(arxivNode).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+      })
+      expect(doiEdge).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+      })
+      expect(arxivEdge).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+      })
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -1696,6 +1747,7 @@ describe('extract', () => {
       const result = extract([docxPath])
       const fileNode = result.nodes.find((node) => node.file_type === 'document' && node.label === 'guide.docx')
       const doiNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'DOI:10.1000/guide.1')
+      const doiEdge = result.edges.find((edge) => edge.relation === 'cites' && edge.target === doiNode?.id)
 
       expect(fileNode).toMatchObject({
         title: 'Guide Title',
@@ -1705,7 +1757,70 @@ describe('extract', () => {
         layer: 'base',
         provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
       })
-      expect(doiNode).toMatchObject({ source_url: 'https://doi.org/10.1000/guide.1' })
+      expect(doiNode).toMatchObject({
+        source_url: 'https://doi.org/10.1000/guide.1',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+      })
+      expect(doiEdge).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts numbered reference entries from docx References sections', () => {
+    const root = createTempRoot()
+    try {
+      const docxPath = join(root, 'paper.docx')
+      const archive = zipSync({
+        'word/document.xml': strToU8(
+          [
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">',
+            '  <w:body>',
+            '    <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>References</w:t></w:r></w:p>',
+            '    <w:p><w:r><w:t>[1] Smith et al. (2024). Foundational Work. DOI:10.1234/example</w:t></w:r></w:p>',
+            '  </w:body>',
+            '</w:document>',
+          ].join(''),
+        ),
+      })
+
+      writeFileSync(docxPath, Buffer.from(archive))
+
+      const result = extract([docxPath])
+      const referencesId = result.nodes.find((node) => node.file_type === 'document' && node.label === 'References')?.id
+      const referenceNode = result.nodes.find((node) => node.file_type === 'paper' && node.semantic_kind === 'reference' && String(node.label).startsWith('[1]'))
+      const doiNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'DOI:10.1234/example')
+      const containsEdge = result.edges.find((edge) => edge.source === referencesId && edge.target === referenceNode?.id && edge.relation === 'contains')
+      const citesEdge = result.edges.find((edge) => edge.source === referenceNode?.id && edge.target === doiNode?.id && edge.relation === 'cites')
+
+      expect(referencesId).toBeTruthy()
+      expect(referenceNode).toMatchObject({
+        semantic_kind: 'reference',
+        reference_index: 1,
+        reference_year: 2024,
+        reference_title: 'Foundational Work',
+        doi: '10.1234/example',
+        source_url: 'https://doi.org/10.1234/example',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+      })
+      expect(doiNode).toMatchObject({
+        source_url: 'https://doi.org/10.1234/example',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+      })
+      expect(containsEdge).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+      })
+      expect(citesEdge).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+      })
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -1741,8 +1856,11 @@ describe('extract', () => {
       const result = extract([workbookPath])
       const labels = result.nodes.filter((node) => node.file_type === 'document').map((node) => node.label)
       const workbookNode = result.nodes.find((node) => node.file_type === 'document' && node.label === 'metrics.xlsx')
+      const summaryNode = result.nodes.find((node) => node.file_type === 'document' && node.label === 'Summary')
+      const experimentsNode = result.nodes.find((node) => node.file_type === 'document' && node.label === 'Experiments')
       const nodeByKey = new Map(result.nodes.map((node) => [`${node.file_type}:${node.label}`, node.id]))
       const relations = new Set(result.edges.map((edge) => `${edge.source}:${edge.relation}:${edge.target}`))
+      const containsEdges = result.edges.filter((edge) => edge.source === workbookNode?.id && edge.relation === 'contains')
 
       expect(workbookNode).toMatchObject({
         title: 'Metrics Workbook',
@@ -1750,10 +1868,83 @@ describe('extract', () => {
         layer: 'base',
         provenance: [expect.objectContaining({ capability_id: 'builtin:extract:xlsx', stage: 'extract' })],
       })
+      expect(summaryNode).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:xlsx', stage: 'extract' })],
+      })
+      expect(experimentsNode).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:xlsx', stage: 'extract' })],
+      })
       expect(labels).toContain('Summary')
       expect(labels).toContain('Experiments')
       expect(relations.has(`${nodeByKey.get('document:metrics.xlsx')}:contains:${nodeByKey.get('document:Summary')}`)).toBe(true)
       expect(relations.has(`${nodeByKey.get('document:metrics.xlsx')}:contains:${nodeByKey.get('document:Experiments')}`)).toBe(true)
+      expect(containsEdges).toHaveLength(2)
+      expect(containsEdges.every((edge) => edge.layer === 'base')).toBe(true)
+      expect(containsEdges.every((edge) => Array.isArray(edge.provenance) && edge.provenance.length > 0)).toBe(true)
+      for (const edge of containsEdges) {
+        expect(edge).toMatchObject({
+          layer: 'base',
+          provenance: [expect.objectContaining({ capability_id: 'builtin:extract:xlsx', stage: 'extract' })],
+        })
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts citation nodes from xlsx shared strings', () => {
+    const root = createTempRoot()
+    try {
+      const workbookPath = join(root, 'citations.xlsx')
+      const archive = zipSync({
+        'xl/workbook.xml': strToU8(
+          [
+            '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
+            '  <sheets>',
+            '    <sheet name="Summary" sheetId="1" r:id="rId1" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>',
+            '  </sheets>',
+            '</workbook>',
+          ].join(''),
+        ),
+        'xl/sharedStrings.xml': strToU8(
+          [
+            '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
+            '  <si><t>See DOI:10.1234/example.5678 and arXiv:2103.12345 for details.</t></si>',
+            '</sst>',
+          ].join(''),
+        ),
+      })
+
+      writeFileSync(workbookPath, Buffer.from(archive))
+
+      const result = extract([workbookPath])
+      const workbookNode = result.nodes.find((node) => node.file_type === 'document' && node.label === 'citations.xlsx')
+      const doiNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'DOI:10.1234/example.5678')
+      const arxivNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'arXiv:2103.12345')
+      const citesEdges = result.edges.filter((edge) => edge.source === workbookNode?.id && edge.relation === 'cites')
+
+      expect(workbookNode).toBeTruthy()
+      expect(doiNode).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:xlsx', stage: 'extract' })],
+      })
+      expect(arxivNode).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:xlsx', stage: 'extract' })],
+      })
+      expect(result.edges.some((edge) => edge.source === workbookNode?.id && edge.target === doiNode?.id && edge.relation === 'cites')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === workbookNode?.id && edge.target === arxivNode?.id && edge.relation === 'cites')).toBe(true)
+      expect(citesEdges).toHaveLength(2)
+      expect(citesEdges.every((edge) => edge.layer === 'base')).toBe(true)
+      expect(citesEdges.every((edge) => Array.isArray(edge.provenance) && edge.provenance.length > 0)).toBe(true)
+      for (const edge of citesEdges) {
+        expect(edge).toMatchObject({
+          layer: 'base',
+          provenance: [expect.objectContaining({ capability_id: 'builtin:extract:xlsx', stage: 'extract' })],
+        })
+      }
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

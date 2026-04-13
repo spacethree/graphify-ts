@@ -44,6 +44,7 @@ const PDF_COMMON_SECTION_LABELS = new Set([
   'references',
 ])
 const DOCX_TEXT_PATTERN = /<w:t(?:\s[^>]*)?>([\s\S]{0,8192}?)<\/w:t>/g
+const XLSX_TEXT_PATTERN = /<(?:\w+:)?t(?:\s[^>]*)?>([\s\S]{0,8192}?)<\/(?:\w+:)?t>/g
 const OOXML_TITLE_PATTERN = /<dc:title>([\s\S]*?)<\/dc:title>/i
 const OOXML_CREATOR_PATTERN = /<dc:creator>([\s\S]*?)<\/dc:creator>/i
 const OOXML_SUBJECT_PATTERN = /<dc:subject>([\s\S]*?)<\/dc:subject>/i
@@ -988,6 +989,17 @@ function extractPdfArrayText(raw: string): string {
 
 function extractPdfTextOperations(pdfText: string): string[] {
   const operations: Array<{ index: number; text: string }> = []
+  const seenOperations = new Set<string>()
+
+  const addPdfTextOperation = (index: number, text: string): void => {
+    const key = `${index}\u0000${text}`
+    if (seenOperations.has(key)) {
+      return
+    }
+
+    seenOperations.add(key)
+    operations.push({ index, text })
+  }
 
   for (const match of pdfText.matchAll(PDF_TEXT_OPERATOR_PATTERN)) {
     const raw = match[0]
@@ -1001,7 +1013,7 @@ function extractPdfTextOperations(pdfText: string): string[] {
       continue
     }
 
-    operations.push({ index: match.index ?? operations.length, text })
+    addPdfTextOperation(match.index ?? operations.length, text)
   }
 
   for (const match of pdfText.matchAll(PDF_TEXT_ARRAY_OPERATOR_PATTERN)) {
@@ -1010,7 +1022,23 @@ function extractPdfTextOperations(pdfText: string): string[] {
       continue
     }
 
-    operations.push({ index: match.index ?? operations.length, text })
+    addPdfTextOperation(match.index ?? operations.length, text)
+  }
+
+  let lineOffset = 0
+  for (const line of pdfText.split('\n')) {
+    if (line.includes('Tj') && line.includes('(') && line.includes(')')) {
+      const startIndex = line.indexOf('(')
+      const endIndex = line.lastIndexOf(')')
+      if (startIndex >= 0 && endIndex > startIndex && /^\)\s*Tj\b/.test(line.slice(endIndex))) {
+        const text = decodePdfLiteral(line.slice(startIndex + 1, endIndex))
+        if (text) {
+          addPdfTextOperation(lineOffset + startIndex, text)
+        }
+      }
+    }
+
+    lineOffset += line.length + 1
   }
 
   return operations.sort((left, right) => left.index - right.index).map((entry) => entry.text)
@@ -1102,7 +1130,7 @@ function extractXlsxSharedStringTexts(sharedStringsXml: string): string[] {
   let count = 0
 
   for (const item of sharedStringsXml.matchAll(XLSX_SHARED_STRING_ITEM_PATTERN)) {
-    const text = decodeXmlText([...(item[0] ?? '').matchAll(DOCX_TEXT_PATTERN)].map((match) => match[1] ?? '').join(' '))
+    const text = decodeXmlText([...(item[0] ?? '').matchAll(XLSX_TEXT_PATTERN)].map((match) => match[1] ?? '').join(' '))
     if (!text) {
       continue
     }
