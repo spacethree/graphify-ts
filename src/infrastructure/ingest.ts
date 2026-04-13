@@ -1,19 +1,18 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
+import { builtinCapabilityRegistry } from './capabilities.js'
+import { dispatchIngest, type IngestHandlerMap } from './ingest/dispatch.js'
+import type { IngestOptions, UrlType } from './ingest/types.js'
+import { detectUrlType } from './ingest/url-type.js'
 import { safeFetch, safeFetchText, validateUrl } from '../shared/security.js'
 
 export interface SaveQueryOptions {
   queryType?: string
   sourceNodes?: string[]
 }
-
-export interface IngestOptions {
-  author?: string
-  contributor?: string
-}
-
-export type UrlType = 'tweet' | 'arxiv' | 'github' | 'youtube' | 'pdf' | 'image' | 'webpage'
+export type { IngestOptions, UrlType } from './ingest/types.js'
+export { detectUrlType } from './ingest/url-type.js'
 const MAX_EXTRACTED_TEXT_LENGTH = 12_000
 const MAX_SOURCE_NODES = 10
 
@@ -79,31 +78,6 @@ function extractTitle(html: string, fallback: string): string {
   return match ? stripHtml(match[1] ?? fallback) : fallback
 }
 
-export function detectUrlType(url: string): UrlType {
-  const lower = url.toLowerCase()
-  if (lower.includes('twitter.com') || lower.includes('x.com')) {
-    return 'tweet'
-  }
-  if (lower.includes('arxiv.org')) {
-    return 'arxiv'
-  }
-  if (lower.includes('github.com')) {
-    return 'github'
-  }
-  if (lower.includes('youtube.com') || lower.includes('youtu.be')) {
-    return 'youtube'
-  }
-
-  const pathname = new URL(url).pathname.toLowerCase()
-  if (pathname.endsWith('.pdf')) {
-    return 'pdf'
-  }
-  if (['.png', '.jpg', '.jpeg', '.webp', '.gif'].some((extension) => pathname.endsWith(extension))) {
-    return 'image'
-  }
-  return 'webpage'
-}
-
 async function fetchTweet(url: string, options: IngestOptions): Promise<{ content: string; fileName: string }> {
   const parsed = new URL(url)
   if (parsed.hostname === 'x.com') {
@@ -161,6 +135,21 @@ async function fetchWebpage(url: string, options: IngestOptions): Promise<{ cont
   }
 }
 
+function imageSuffixFromUrl(url: string): string {
+  const pathname = new URL(url).pathname
+  return pathname.includes('.') ? pathname.slice(pathname.lastIndexOf('.')) : '.jpg'
+}
+
+const INGEST_HANDLERS: IngestHandlerMap = {
+  'builtin:ingest:tweet': async (url, options) => ({ kind: 'text', asset: await fetchTweet(url, options) }),
+  'builtin:ingest:arxiv': async (url, options) => ({ kind: 'text', asset: await fetchArxiv(url, options) }),
+  'builtin:ingest:github': async (url, options) => ({ kind: 'text', asset: await fetchWebpage(url, options) }),
+  'builtin:ingest:youtube': async (url, options) => ({ kind: 'text', asset: await fetchWebpage(url, options) }),
+  'builtin:ingest:webpage': async (url, options) => ({ kind: 'text', asset: await fetchWebpage(url, options) }),
+  'builtin:ingest:pdf': async () => ({ kind: 'binary', suffix: '.pdf' }),
+  'builtin:ingest:image': async (url) => ({ kind: 'binary', suffix: imageSuffixFromUrl(url) }),
+}
+
 async function downloadBinary(url: string, directory: string, suffix: string): Promise<string> {
   const bytes = await safeFetch(url)
   const outputPath = ensureUniquePath(directory, safeFilename(url, suffix))
@@ -174,16 +163,14 @@ export async function ingest(url: string, targetDir: string, options: IngestOpti
   mkdirSync(directory, { recursive: true })
 
   const urlType = detectUrlType(url)
-  if (urlType === 'pdf') {
-    return downloadBinary(url, directory, '.pdf')
-  }
-  if (urlType === 'image') {
-    const pathname = new URL(url).pathname
-    const suffix = pathname.includes('.') ? pathname.slice(pathname.lastIndexOf('.')) : '.jpg'
-    return downloadBinary(url, directory, suffix)
+  const dispatched = await dispatchIngest(urlType, url, options, INGEST_HANDLERS, {
+    registry: builtinCapabilityRegistry,
+  })
+  if (dispatched.kind === 'binary') {
+    return downloadBinary(url, directory, dispatched.suffix)
   }
 
-  const asset = urlType === 'tweet' ? await fetchTweet(url, options) : urlType === 'arxiv' ? await fetchArxiv(url, options) : await fetchWebpage(url, options)
+  const asset = dispatched.asset
   const outputPath = ensureUniquePath(directory, asset.fileName)
   writeFileSync(outputPath, asset.content, 'utf8')
   return outputPath

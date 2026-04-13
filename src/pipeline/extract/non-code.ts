@@ -704,7 +704,7 @@ function extractStructuredText(filePath: string, fileType: Extract<NonCodeFileTy
   const { metadata: frontmatterMetadata, contentStartIndex } = parseStructuredTextFrontmatter(lines)
 
   if (Object.keys(frontmatterMetadata).length > 0) {
-    nodes[0] = { ...fileNode, ...frontmatterMetadata }
+    nodes[0] = { ...frontmatterMetadata, ...fileNode }
   }
 
   const headingStack: Array<{ level: number; id: string; label: string }> = []
@@ -866,7 +866,7 @@ function extractDocxDocument(filePath: string, allowedTargets: ReadonlySet<strin
   const coreXml = coreXmlBytes ? strFromU8(coreXmlBytes) : ''
   const coreMetadata = extractCoreMetadata(coreXml)
   if (Object.keys(coreMetadata).length > 0) {
-    nodes[0] = { ...fileNode, ...coreMetadata }
+    nodes[0] = { ...coreMetadata, ...fileNode }
   }
 
   const title = typeof coreMetadata.title === 'string' ? coreMetadata.title : ''
@@ -1041,10 +1041,10 @@ function extractPdfPaper(filePath: string, allowedTargets: ReadonlySet<string>):
   const subject = decodePdfLiteral(pdfText.match(PDF_METADATA_SUBJECT_PATTERN)?.[1] ?? '')
   if (title || author || subject) {
     nodes[0] = {
-      ...fileNode,
       ...(title ? { title } : {}),
       ...(author ? { author } : {}),
       ...(subject ? { subject } : {}),
+      ...fileNode,
     }
   }
   if (title && normalizeLabel(title) !== normalizeLabel(basename(filePath))) {
@@ -1152,7 +1152,7 @@ function extractXlsxDocument(filePath: string, allowedTargets: ReadonlySet<strin
   const coreXml = archive['docProps/core.xml'] ? strFromU8(archive['docProps/core.xml']!) : ''
   const coreMetadata = extractCoreMetadata(coreXml)
   if (Object.keys(coreMetadata).length > 0) {
-    nodes[0] = { ...fileNode, ...coreMetadata }
+    nodes[0] = { ...coreMetadata, ...fileNode }
   }
 
   const workbookXmlBytes = archive['xl/workbook.xml']

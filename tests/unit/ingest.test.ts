@@ -68,6 +68,66 @@ describe('ingest', () => {
       expect(content).toContain('type: webpage')
       expect(content).toContain('Example Page')
       expect(content).toContain('Source: https://example.com/post')
+      expect(content).not.toContain('provenance:')
+    })
+  })
+
+  test('saves tweets as flat annotated markdown without nested provenance', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input) => {
+          const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+          expect(requestUrl).toContain('publish.twitter.com/oembed?url=')
+          return new Response(JSON.stringify({ html: '<blockquote>Graph edges everywhere</blockquote>', author_name: 'Graphify Bot' }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })
+        }),
+      )
+
+      const output = await ingest('https://x.com/graphify/status/1', join(tempDir, 'raw'), { contributor: 'graphify-ts' })
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: tweet')
+      expect(content).toContain('source_url: "https://x.com/graphify/status/1"')
+      expect(content).toContain('author: "Graphify Bot"')
+      expect(content).toContain('contributor: "graphify-ts"')
+      expect(content).toContain('# Tweet by @Graphify Bot')
+      expect(content).not.toContain('provenance:')
+    })
+  })
+
+  test('saves arxiv papers as flat annotated markdown without nested provenance', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input) => {
+          const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+          expect(requestUrl).toBe('https://export.arxiv.org/abs/1706.03762')
+          return new Response(
+            [
+              '<html>',
+              '<h1 class="title mathjax">Attention Is All You Need</h1>',
+              '<div class="authors">Ashish Vaswani</div>',
+              '<blockquote class="abstract mathjax">Sequence modeling with attention.</blockquote>',
+              '</html>',
+            ].join(''),
+            { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } },
+          )
+        }),
+      )
+
+      const output = await ingest('https://arxiv.org/abs/1706.03762', join(tempDir, 'raw'), { contributor: 'graphify-ts' })
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: paper')
+      expect(content).toContain('source_url: "https://arxiv.org/abs/1706.03762"')
+      expect(content).toContain('arxiv_id: "1706.03762"')
+      expect(content).toContain('title: "Attention Is All You Need"')
+      expect(content).toContain('paper_authors: "Ashish Vaswani"')
+      expect(content).toContain('contributor: "graphify-ts"')
+      expect(content).not.toContain('provenance:')
     })
   })
 

@@ -6,7 +6,11 @@ import * as ts from 'typescript'
 
 import type { ExtractionData, ExtractionEdge, ExtractionNode } from '../contracts/types.js'
 import { loadCached, saveCached } from '../infrastructure/cache.js'
+import { builtinCapabilityRegistry } from '../infrastructure/capabilities.js'
 import { CODE_EXTENSIONS, FileType, classifyFile, detect } from './detect.js'
+import { mergeExtractionFragments, resolveSourceNodeReferences } from './extract/combine.js'
+import { resolveCrossFilePythonImports } from './extract/cross-file.js'
+import { dispatchSingleFileExtraction, type ExtractionFragment, type ExtractorHandlerMap } from './extract/dispatch.js'
 import { _makeId, addEdge, addNode, addUniqueEdge, createEdge, createFileNode, createNode, indentationLevel, normalizeLabel, stripHashComment } from './extract/core.js'
 import {
   createCodeFileOnlyExtraction as createTextFallbackExtraction,
@@ -22,7 +26,7 @@ import { createTreeSitterWasmParser, treeSitterWasmError, type TreeSitterNode } 
 
 export { _makeId } from './extract/core.js'
 
-const EXTRACTOR_CACHE_VERSION = 10
+const EXTRACTOR_CACHE_VERSION = 11
 const PYTHON_KEYWORDS = new Set(['if', 'elif', 'else', 'for', 'while', 'return', 'class', 'def', 'lambda', 'with', 'print', 'sum'])
 const GENERIC_CODE_EXTENSIONS = new Set(['.go', '.rs', '.java', '.kt', '.kts', '.scala', '.cs', '.c', '.cc', '.cpp', '.cxx', '.h', '.hpp', '.swift', '.php', '.zig'])
 const GENERIC_CONTROL_KEYWORDS = new Set(['if', 'for', 'while', 'switch', 'catch', 'return', 'new', 'delete', 'throw', 'sizeof', 'case', 'do', 'else'])
@@ -73,11 +77,6 @@ const TREE_SITTER_FALLBACK_WARNINGS = new Set<string>()
 
 type NonCodeFileType = Extract<ExtractionNode['file_type'], 'document' | 'paper' | 'image'>
 
-interface ExtractionFragment {
-  nodes: ExtractionNode[]
-  edges: ExtractionEdge[]
-}
-
 interface CollectFilesOptions {
   followSymlinks?: boolean
 }
@@ -104,11 +103,6 @@ interface PendingReferenceCitation {
   sourceId: string
   lineNumber: number
   referenceIndices: number[]
-}
-
-interface ImportedPythonSymbol {
-  localName: string
-  targetId: string
 }
 
 const MAX_TS_NESTED_FUNCTION_DEPTH = 10
@@ -231,20 +225,6 @@ function parseStructuredTextFrontmatter(lines: string[]): { metadata: Record<str
   }
 
   return { metadata, contentStartIndex: lines.length }
-}
-
-function lineNumberFromSourceLocation(location: unknown): number {
-  if (typeof location !== 'string') {
-    return 1
-  }
-
-  const match = location.match(/^L(\d+)$/)
-  if (!match?.[1]) {
-    return 1
-  }
-
-  const line = Number.parseInt(match[1], 10)
-  return Number.isFinite(line) && line > 0 ? line : 1
 }
 
 function normalizeSectionLabel(label: string): string {
@@ -889,7 +869,7 @@ function extractStructuredText(filePath: string, fileType: Extract<NonCodeFileTy
   const { metadata: frontmatterMetadata, contentStartIndex } = parseStructuredTextFrontmatter(lines)
 
   if (Object.keys(frontmatterMetadata).length > 0) {
-    const enrichedFileNode: ExtractionNode = { ...fileNode, ...frontmatterMetadata }
+    const enrichedFileNode: ExtractionNode = { ...frontmatterMetadata, ...fileNode }
     nodes[0] = enrichedFileNode
   }
 
@@ -1288,118 +1268,6 @@ function writeCachedExtraction(filePath: string, extraction: ExtractionFragment)
     nodes: extraction.nodes,
     edges: extraction.edges,
   })
-}
-
-function isPythonClassNode(node: ExtractionNode): boolean {
-  return extname(node.source_file).toLowerCase() === '.py' && node.file_type === 'code' && node.label !== basename(node.source_file) && !node.label.includes('(')
-}
-
-function resolveImportedPythonClassTarget(moduleSpecifier: string, importedName: string, classNodeIdsByModuleAndName: ReadonlyMap<string, string>): string | null {
-  const moduleStem = moduleSpecifier.replace(/^\.+/, '').split('.').filter(Boolean).at(-1)
-  if (!moduleStem) {
-    return null
-  }
-
-  return classNodeIdsByModuleAndName.get(`${normalizeLabel(moduleStem)}:${normalizeLabel(importedName)}`) ?? null
-}
-
-function resolveCrossFilePythonImports(files: string[], combined: ExtractionData): void {
-  const pythonFiles = files.filter((filePath) => extname(filePath).toLowerCase() === '.py')
-  if (pythonFiles.length < 2) {
-    return
-  }
-
-  const classNodeIdsByModuleAndName = new Map<string, string>()
-  for (const node of combined.nodes) {
-    if (!isPythonClassNode(node)) {
-      continue
-    }
-    const moduleStem = basename(node.source_file, extname(node.source_file))
-    classNodeIdsByModuleAndName.set(`${normalizeLabel(moduleStem)}:${normalizeLabel(node.label)}`, node.id)
-  }
-
-  const existingEdges = new Set(combined.edges.map((edge) => `${edge.source}|${edge.target}|${edge.relation}`))
-
-  for (const filePath of pythonFiles) {
-    const stem = basename(filePath, extname(filePath))
-    const lines = readFileSync(filePath, 'utf8').split(/\r?\n/)
-    const classStack: Array<{ indent: number; id: string }> = []
-    const importedSymbols: ImportedPythonSymbol[] = []
-
-    for (let index = 0; index < lines.length; index += 1) {
-      const line = lines[index] ?? ''
-      const lineNumber = index + 1
-      const trimmed = stripHashComment(line).trim()
-      if (!trimmed) {
-        continue
-      }
-
-      const indent = line.length - line.trimStart().length
-      while (classStack.length > 0 && indent <= (classStack[classStack.length - 1]?.indent ?? -1)) {
-        classStack.pop()
-      }
-
-      const importFromMatch = trimmed.match(/^from\s+([A-Za-z0-9_\.]+)\s+import\s+(.+)$/)
-      if (importFromMatch?.[1] && importFromMatch[2]) {
-        const moduleSpecifier = importFromMatch[1]
-        const importedList = importFromMatch[2].replace(/[()]/g, '')
-        for (const rawEntry of importedList.split(',')) {
-          const entry = rawEntry.trim()
-          if (!entry) {
-            continue
-          }
-          const [importedNamePart, aliasPart] = entry.split(/\s+as\s+/)
-          const importedName = importedNamePart?.trim()
-          if (!importedName) {
-            continue
-          }
-          const targetId = resolveImportedPythonClassTarget(moduleSpecifier, importedName, classNodeIdsByModuleAndName)
-          if (!targetId) {
-            continue
-          }
-          importedSymbols.push({
-            localName: aliasPart?.trim() || importedName,
-            targetId,
-          })
-        }
-        continue
-      }
-
-      const classMatch = trimmed.match(/^class\s+([A-Za-z_][A-Za-z0-9_]*)(?:\(([^)]+)\))?:/)
-      if (classMatch?.[1]) {
-        const classId = _makeId(stem, classMatch[1])
-        classStack.push({ indent, id: classId })
-
-        const baseList =
-          classMatch[2]
-            ?.split(',')
-            .map((value) => value.trim())
-            .filter(Boolean) ?? []
-        for (const baseName of baseList) {
-          const importedBase = importedSymbols.find((symbol) => symbol.localName === baseName)
-          if (!importedBase) {
-            continue
-          }
-          addUniqueEdge(combined.edges, existingEdges, createEdge(classId, importedBase.targetId, 'inherits', filePath, lineNumber, 'INFERRED'))
-        }
-        continue
-      }
-
-      const currentClass = classStack[classStack.length - 1]
-      if (!currentClass) {
-        continue
-      }
-
-      for (const importedSymbol of importedSymbols) {
-        const symbolPattern = new RegExp(`\\b${importedSymbol.localName.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')}\\b`)
-        if (!symbolPattern.test(trimmed)) {
-          continue
-        }
-
-        addUniqueEdge(combined.edges, existingEdges, createEdge(currentClass.id, importedSymbol.targetId, 'uses', filePath, lineNumber, 'INFERRED'))
-      }
-    }
-  }
 }
 
 function addPendingCall(pendingCalls: PendingCall[], call: PendingCallInput): void {
@@ -3852,119 +3720,60 @@ export function extractJs(filePath: string): ExtractionFragment {
   }
 }
 
-function extractSingleFile(filePath: string, allowedTargets: ReadonlySet<string>): ExtractionFragment {
-  const cached = readCachedExtraction(filePath)
-  if (cached) {
-    return cached
-  }
-
-  const extension = extname(filePath).toLowerCase()
-  if (extension === '.py') {
-    const extraction = extractPython(filePath)
-    writeCachedExtraction(filePath, extraction)
-    return extraction
-  }
-
-  if (extension === '.rb') {
-    const extraction = extractRuby(filePath)
-    writeCachedExtraction(filePath, extraction)
-    return extraction
-  }
-
-  if (extension === '.lua') {
-    const extraction = extractLua(filePath)
-    writeCachedExtraction(filePath, extraction)
-    return extraction
-  }
-
-  if (extension === '.toc') {
-    const extraction = extractToc(filePath, allowedTargets)
-    writeCachedExtraction(filePath, extraction)
-    return extraction
-  }
-
-  if (extension === '.ex' || extension === '.exs') {
-    const extraction = extractElixir(filePath)
-    writeCachedExtraction(filePath, extraction)
-    return extraction
-  }
-
-  if (extension === '.jl') {
-    const extraction = extractJulia(filePath)
-    writeCachedExtraction(filePath, extraction)
-    return extraction
-  }
-
-  if (extension === '.ps1') {
-    const extraction = extractPowerShell(filePath)
-    writeCachedExtraction(filePath, extraction)
-    return extraction
-  }
-
-  if (extension === '.m' || extension === '.mm') {
-    const extraction = extractObjectiveC(filePath)
-    writeCachedExtraction(filePath, extraction)
-    return extraction
-  }
-
-  if (extension === '.js' || extension === '.jsx' || extension === '.ts' || extension === '.tsx') {
-    const extraction = extractJs(filePath)
-    writeCachedExtraction(filePath, extraction)
-    return extraction
-  }
-
-  if (extension === '.go') {
+const SINGLE_FILE_EXTRACTOR_HANDLERS: ExtractorHandlerMap = {
+  'builtin:extract:python': (filePath) => extractPython(filePath),
+  'builtin:extract:ruby': (filePath) => extractRuby(filePath),
+  'builtin:extract:lua': (filePath) => extractLua(filePath),
+  'builtin:extract:toc': (filePath, allowedTargets) => extractToc(filePath, allowedTargets),
+  'builtin:extract:elixir': (filePath) => extractElixir(filePath),
+  'builtin:extract:julia': (filePath) => extractJulia(filePath),
+  'builtin:extract:powershell': (filePath) => extractPowerShell(filePath),
+  'builtin:extract:objective-c': (filePath) => extractObjectiveC(filePath),
+  'builtin:extract:typescript': (filePath) => extractJs(filePath),
+  'builtin:extract:javascript': (filePath) => extractJs(filePath),
+  'builtin:extract:go': (filePath) => {
     const extraction = extractGoTreeSitter(filePath)
-    if (extraction === null) {
-      warnTreeSitterFallback('go')
-      const fallbackExtraction = extractGenericCode(filePath)
-      writeCachedExtraction(filePath, fallbackExtraction)
-      return fallbackExtraction
+    if (extraction !== null) {
+      return extraction
     }
 
-    writeCachedExtraction(filePath, extraction)
-    return extraction
-  }
-
-  if (extension === '.java') {
+    warnTreeSitterFallback('go')
+    return extractGenericCode(filePath)
+  },
+  'builtin:extract:java': (filePath) => {
     const extraction = extractJavaTreeSitter(filePath)
-    if (extraction === null) {
-      warnTreeSitterFallback('java')
-      const fallbackExtraction = extractGenericCode(filePath)
-      writeCachedExtraction(filePath, fallbackExtraction)
-      return fallbackExtraction
+    if (extraction !== null) {
+      return extraction
     }
 
-    writeCachedExtraction(filePath, extraction)
-    return extraction
-  }
+    warnTreeSitterFallback('java')
+    return extractGenericCode(filePath)
+  },
+  'builtin:extract:c-family': (filePath) => extractGenericCode(filePath),
+  'builtin:extract:rust': (filePath) => extractGenericCode(filePath),
+  'builtin:extract:swift': (filePath) => extractGenericCode(filePath),
+  'builtin:extract:kotlin': (filePath) => extractGenericCode(filePath),
+  'builtin:extract:csharp': (filePath) => extractGenericCode(filePath),
+  'builtin:extract:scala': (filePath) => extractGenericCode(filePath),
+  'builtin:extract:php': (filePath) => extractGenericCode(filePath),
+  'builtin:extract:zig': (filePath) => extractGenericCode(filePath),
+  'builtin:extract:markdown': (filePath, allowedTargets) => extractDocumentFile(filePath, allowedTargets),
+  'builtin:extract:markdown-paper': (filePath, allowedTargets) => extractPaperFile(filePath, allowedTargets),
+  'builtin:extract:text': (filePath, allowedTargets) => extractDocumentFile(filePath, allowedTargets),
+  'builtin:extract:text-paper': (filePath, allowedTargets) => extractPaperFile(filePath, allowedTargets),
+  'builtin:extract:paper': (filePath, allowedTargets) => extractPaperFile(filePath, allowedTargets),
+  'builtin:extract:docx': (filePath, allowedTargets) => extractDocumentFile(filePath, allowedTargets),
+  'builtin:extract:xlsx': (filePath, allowedTargets) => extractDocumentFile(filePath, allowedTargets),
+  'builtin:extract:image': (filePath) => extractImageFragment(filePath),
+}
 
-  if (GENERIC_CODE_EXTENSIONS.has(extension)) {
-    const extraction = extractGenericCode(filePath)
-    writeCachedExtraction(filePath, extraction)
-    return extraction
-  }
-
-  const fileType = classifyFile(filePath)
-  if (fileType === FileType.DOCUMENT) {
-    const extraction = extractDocumentFile(filePath, allowedTargets)
-    writeCachedExtraction(filePath, extraction)
-    return extraction
-  }
-
-  if (fileType === FileType.PAPER) {
-    const extraction = extractPaperFile(filePath, allowedTargets)
-    writeCachedExtraction(filePath, extraction)
-    return extraction
-  }
-
-  if (fileType === FileType.IMAGE) {
-    const extraction = extractImageFragment(filePath)
-    writeCachedExtraction(filePath, extraction)
-    return extraction
-  }
-
-  return { nodes: [], edges: [] }
+function extractSingleFile(filePath: string, allowedTargets: ReadonlySet<string>): ExtractionFragment {
+  return dispatchSingleFileExtraction(filePath, allowedTargets, SINGLE_FILE_EXTRACTOR_HANDLERS, {
+    registry: builtinCapabilityRegistry,
+    readCached: readCachedExtraction,
+    writeCached: writeCachedExtraction,
+    classifySourceFile: classifyFile,
+  })
 }
 
 export interface ExtractOptions {
@@ -3975,72 +3784,14 @@ export interface ExtractOptions {
 export function extract(files: string[]): ExtractionData
 export function extract(files: string[], options: ExtractOptions): ExtractionData
 export function extract(files: string[], options: ExtractOptions = {}): ExtractionData {
-  const combined: ExtractionData = {
-    nodes: [],
-    edges: [],
-    input_tokens: 0,
-    output_tokens: 0,
-  }
   const allowedTargets = new Set([...(options.allowedTargets ?? files)].map((filePath) => resolve(filePath)))
+  let combined = mergeExtractionFragments(files.map((filePath) => extractSingleFile(filePath, allowedTargets)))
 
-  for (const filePath of files) {
-    const extraction = extractSingleFile(filePath, allowedTargets)
-    combined.nodes.push(...extraction.nodes)
-    combined.edges.push(...extraction.edges)
-  }
+  combined = options.contextNodes
+    ? resolveCrossFilePythonImports(files, combined, { contextNodes: options.contextNodes })
+    : resolveCrossFilePythonImports(files, combined)
 
-  if (options.contextNodes && options.contextNodes.length > 0) {
-    resolveCrossFilePythonImports(files, {
-      ...combined,
-      nodes: [...combined.nodes, ...options.contextNodes],
-      edges: combined.edges,
-    })
-  } else {
-    resolveCrossFilePythonImports(files, combined)
-  }
-
-  const allNodes = options.contextNodes && options.contextNodes.length > 0 ? [...combined.nodes, ...options.contextNodes] : combined.nodes
-  const nodeIdsByKey = new Map<string, string[]>()
-  const addNodeReferenceKey = (key: string, nodeId: string): void => {
-    const existing = nodeIdsByKey.get(key) ?? []
-    if (!existing.includes(nodeId)) {
-      nodeIdsByKey.set(key, [...existing, nodeId])
-    }
-  }
-
-  for (const node of allNodes) {
-    addNodeReferenceKey(node.id, node.id)
-    addNodeReferenceKey(normalizeLabel(String(node.label ?? '')), node.id)
-  }
-
-  const seenEdges = new Set(combined.edges.map((edge) => `${edge.source}|${edge.target}|${edge.relation}`))
-  for (const node of combined.nodes) {
-    const rawSourceNodes = node.source_nodes
-    if (!Array.isArray(rawSourceNodes) || rawSourceNodes.length === 0) {
-      continue
-    }
-
-    for (const sourceNodeReference of rawSourceNodes) {
-      if (typeof sourceNodeReference !== 'string') {
-        continue
-      }
-
-      const normalizedReference = sourceNodeReference.trim()
-      if (!normalizedReference) {
-        continue
-      }
-
-      const candidateIds = new Set([...(nodeIdsByKey.get(normalizedReference) ?? []), ...(nodeIdsByKey.get(normalizeLabel(normalizedReference)) ?? [])])
-
-      for (const targetId of candidateIds) {
-        if (targetId === node.id) {
-          continue
-        }
-
-        addUniqueEdge(combined.edges, seenEdges, createEdge(node.id, targetId, 'references', node.source_file, lineNumberFromSourceLocation(node.source_location)))
-      }
-    }
-  }
+  combined = options.contextNodes ? resolveSourceNodeReferences(combined, { contextNodes: options.contextNodes }) : resolveSourceNodeReferences(combined)
 
   return combined
 }

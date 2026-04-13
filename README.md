@@ -17,6 +17,12 @@
 
 The npm package name is `@mohammednagy/graphify-ts`, and the installed command is `graphify-ts`.
 
+## Credit to the original graphify
+
+`graphify-ts` gives full credit to the original [`graphify`](https://github.com/safishamsi/graphify) project by [Safi Shamsi](https://github.com/safishamsi). That project established the core idea and workflow of turning code, docs, and mixed project folders into a queryable knowledge graph for humans and AI coding assistants.
+
+This repository is a Node/TypeScript implementation of that vision, adapted for a Node-native CLI and local graph workflows. If you want the original Python-based project and its broader multimodal feature set, start with `graphify`.
+
 ## What is graphify?
 
 Graphify helps you move from raw files to connected understanding.
@@ -297,11 +303,13 @@ Additional coverage exists for:
 - Python, Go, Java, and Ruby via portable WASM tree-sitter
 - several additional languages via lighter structural extraction
 - deterministic document, paper, image, and office-document handling, including DOCX/XLSX metadata lifting plus richer PDF citation metadata
+- additive schema-v2 validation for `schema_version`, layered graph metadata (`base`, `semantic`, `media`), provenance records, immutable legacy-payload normalization during graph build, explicit `graph.json` / reload / `generate --update` schema-version preservation, helper-created raw extraction output that now emits explicit base-layer/provenance metadata, normalization-time projection of flat ingest frontmatter into structured ingest provenance, and registry-driven extraction/ingest dispatch via a builtin capability registry that can disambiguate shared extensions such as markdown document vs paper inputs and route URL kinds through stable ingest handlers
 - lightweight HTTP and stdio/MCP-style serving
 
 For the detailed implementation status, limitations, and roadmap material that used to live in this README, see:
 
 - [`docs/plans/current-status.md`](docs/plans/current-status.md)
+- [`docs/plans/2026-04-12-upstream-parity-and-beyond.md`](docs/plans/2026-04-12-upstream-parity-and-beyond.md)
 
 ## Contributing
 

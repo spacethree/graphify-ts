@@ -1,14 +1,24 @@
 import { KnowledgeGraph } from '../contracts/graph.js'
-import type { ExtractionData } from '../contracts/types.js'
+import type { ExtractionData, ExtractionSchemaVersion } from '../contracts/types.js'
 import { validateExtraction } from '../contracts/extraction.js'
+import { normalizeExtractionData } from '../core/schema/normalize.js'
 import { isRecord } from '../shared/guards.js'
 
 type CombinedExtraction = {
+  schema_version: ExtractionSchemaVersion
   nodes: ExtractionData['nodes']
   edges: ExtractionData['edges']
   hyperedges: NonNullable<ExtractionData['hyperedges']>
   input_tokens: number
   output_tokens: number
+}
+
+function mergeSchemaVersion(current: ExtractionData['schema_version'], next: ExtractionData['schema_version']): ExtractionSchemaVersion {
+  if (current === 2 || next === 2) {
+    return 2
+  }
+
+  return 1
 }
 
 export interface BuildGraphOptions {
@@ -28,7 +38,15 @@ export function buildFromJson(extraction: unknown, options: BuildGraphOptions = 
     console.warn(`[graphify-ts] Extraction warning (${nonDanglingErrors.length} issues): ${nonDanglingErrors[0]}`)
   }
 
-  const nodes = Array.isArray(extraction.nodes) ? extraction.nodes.filter(isRecord) : []
+  const normalized = normalizeExtractionData(extraction)
+  const normalizedErrors = validateExtraction(normalized)
+  const postNormalizationErrors = normalizedErrors.filter((error) => !errors.includes(error)).filter((error) => !error.includes('does not match any node id'))
+
+  if (postNormalizationErrors.length > 0) {
+    console.warn(`[graphify-ts] Normalization warning (${postNormalizationErrors.length} issues): ${postNormalizationErrors[0]}`)
+  }
+
+  const nodes = normalized.nodes
   for (const node of nodes) {
     const { id, ...attributes } = node
     if (typeof id === 'string') {
@@ -37,7 +55,7 @@ export function buildFromJson(extraction: unknown, options: BuildGraphOptions = 
   }
 
   const nodeIds = new Set(graph.nodeIds())
-  const edges = Array.isArray(extraction.edges) ? extraction.edges.filter(isRecord) : []
+  const edges = normalized.edges
   for (const edge of edges) {
     const source = typeof edge.source === 'string' ? edge.source : null
     const target = typeof edge.target === 'string' ? edge.target : null
@@ -53,10 +71,11 @@ export function buildFromJson(extraction: unknown, options: BuildGraphOptions = 
     })
   }
 
-  const hyperedges = Array.isArray(extraction.hyperedges) ? extraction.hyperedges : []
+  const hyperedges = normalized.hyperedges
   if (hyperedges.length > 0) {
     graph.graph.hyperedges = hyperedges
   }
+  graph.graph.schema_version = normalized.schema_version
   graph.graph.directed = graph.isDirected()
 
   return graph
@@ -64,6 +83,7 @@ export function buildFromJson(extraction: unknown, options: BuildGraphOptions = 
 
 export function build(extractions: ExtractionData[], options: BuildGraphOptions = {}): KnowledgeGraph {
   const combined: CombinedExtraction = {
+    schema_version: 1,
     nodes: [],
     edges: [],
     hyperedges: [],
@@ -72,6 +92,7 @@ export function build(extractions: ExtractionData[], options: BuildGraphOptions 
   }
 
   for (const extraction of extractions) {
+    combined.schema_version = mergeSchemaVersion(combined.schema_version, extraction.schema_version)
     combined.nodes.push(...extraction.nodes)
     combined.edges.push(...extraction.edges)
     combined.hyperedges.push(...(extraction.hyperedges ?? []))

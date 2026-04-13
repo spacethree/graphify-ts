@@ -1,7 +1,73 @@
 import { basename, extname } from 'node:path'
 
 import type { ExtractionEdge, ExtractionNode } from '../../contracts/types.js'
+import { DEFAULT_EXTRACTION_LAYER } from '../../core/layers/types.js'
+import { createBaselineProvenance } from '../../core/provenance/types.js'
+import { builtinCapabilityRegistry } from '../../infrastructure/capabilities.js'
 import { sanitizeLabel } from '../../shared/security.js'
+import { classifyFile, FileType, type FileTypeValue } from '../detect.js'
+
+const EXTRACTION_STAGE = 'extract'
+const CAPABILITY_CACHE = new Map<string, string | null>()
+
+function sourceFileTypeForNode(fileType: ExtractionNode['file_type']): FileTypeValue | null {
+  switch (fileType) {
+    case FileType.CODE:
+    case FileType.DOCUMENT:
+    case FileType.PAPER:
+    case FileType.IMAGE:
+      return fileType
+    default:
+      return null
+  }
+}
+
+function extractCapabilityId(sourceFile: string, fileType?: FileTypeValue | null): string | null {
+  const cacheKey = `${sourceFile}\u0000${fileType ?? ''}`
+  if (CAPABILITY_CACHE.has(cacheKey)) {
+    return CAPABILITY_CACHE.get(cacheKey) ?? null
+  }
+
+  const detectedFileType = fileType ?? classifyFile(sourceFile)
+  const capabilityId = builtinCapabilityRegistry.resolveExtractorForPath(sourceFile, detectedFileType)?.id ?? null
+  CAPABILITY_CACHE.set(cacheKey, capabilityId)
+  return capabilityId
+}
+
+function createExtractionProvenance(sourceFile: string, line: number, fileType?: ExtractionNode['file_type']): NonNullable<ExtractionNode['provenance']> | null {
+  const sourceFileType = fileType ? sourceFileTypeForNode(fileType) : null
+  const capabilityId = extractCapabilityId(sourceFile, sourceFileType)
+
+  if (!capabilityId) {
+    return null
+  }
+
+  return [
+    createBaselineProvenance({
+      capabilityId,
+      stage: EXTRACTION_STAGE,
+      sourceFile,
+      sourceLocation: toLocation(line),
+    }),
+  ]
+}
+
+function createEdgeProvenance(sourceFile: string, line: number): NonNullable<ExtractionEdge['provenance']> | null {
+  const capabilityId = extractCapabilityId(sourceFile)
+
+  if (!capabilityId) {
+    return null
+  }
+
+  return [
+    createBaselineProvenance({
+      capabilityId,
+      stage: EXTRACTION_STAGE,
+      sourceFile,
+      sourceLocation: toLocation(line),
+    }),
+  ]
+}
 
 export function _makeId(...parts: string[]): string {
   const combined = parts
@@ -74,12 +140,16 @@ export function stripHashComment(line: string): string {
 }
 
 export function createNode(id: string, label: string, sourceFile: string, line: number, fileType: ExtractionNode['file_type'] = 'code'): ExtractionNode {
+  const provenance = createExtractionProvenance(sourceFile, line, fileType)
+
   return {
     id,
     label: sanitizeLabel(label),
     file_type: fileType,
     source_file: sourceFile,
     source_location: toLocation(line),
+    layer: DEFAULT_EXTRACTION_LAYER,
+    ...(provenance ? { provenance } : {}),
   }
 }
 
@@ -96,6 +166,8 @@ export function createEdge(
   confidence: ExtractionEdge['confidence'] = 'EXTRACTED',
   weight = 1.0,
 ): ExtractionEdge {
+  const provenance = createEdgeProvenance(sourceFile, line)
+
   return {
     source,
     target,
@@ -103,6 +175,8 @@ export function createEdge(
     confidence,
     source_file: sourceFile,
     source_location: toLocation(line),
+    layer: DEFAULT_EXTRACTION_LAYER,
+    ...(provenance ? { provenance } : {}),
     weight,
   }
 }

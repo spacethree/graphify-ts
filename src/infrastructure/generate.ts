@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
 import { KnowledgeGraph } from '../contracts/graph.js'
-import type { ExtractionData, ExtractionEdge, ExtractionNode, Hyperedge } from '../contracts/types.js'
+import type { ExtractionData, ExtractionEdge, ExtractionNode, ExtractionSchemaVersion, Hyperedge } from '../contracts/types.js'
 import { godNodes, semanticAnomalies, suggestQuestions, surprisingConnections } from '../pipeline/analyze.js'
 import { buildFromJson } from '../pipeline/build.js'
 import { cluster, scoreAll } from '../pipeline/cluster.js'
@@ -80,6 +80,7 @@ function collectExtractableFiles(files: DetectResult['files']): string[] {
 
 function emptyExtraction(): ExtractionData {
   return {
+    schema_version: 1,
     nodes: [],
     edges: [],
     hyperedges: [],
@@ -88,8 +89,17 @@ function emptyExtraction(): ExtractionData {
   }
 }
 
+function mergeSchemaVersion(current: ExtractionData['schema_version'], next: ExtractionData['schema_version']): ExtractionSchemaVersion {
+  if (current === 2 || next === 2) {
+    return 2
+  }
+
+  return 1
+}
+
 function mergeExtractions(extractions: ExtractionData[]): ExtractionData {
   return extractions.reduce<ExtractionData>((combined, extraction) => {
+    combined.schema_version = mergeSchemaVersion(combined.schema_version, extraction.schema_version)
     combined.nodes.push(...extraction.nodes)
     combined.edges.push(...extraction.edges)
     if (extraction.hyperedges && extraction.hyperedges.length > 0) {
@@ -150,6 +160,7 @@ function retainedExtractionFromGraph(graph: KnowledgeGraph, removedSourceFiles: 
   })
 
   return {
+    schema_version: graph.graph.schema_version === 2 ? 2 : 1,
     nodes,
     edges,
     hyperedges,

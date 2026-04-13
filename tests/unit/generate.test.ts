@@ -147,6 +147,55 @@ describe('generateGraph', () => {
     })
   })
 
+  test('preserves schema version during incremental updates', async () => {
+    await withTempDirAsync(async (tempDir) => {
+      const sourcePath = join(tempDir, 'main.py')
+      const helperPath = join(tempDir, 'helper.py')
+      writeFileSync(sourcePath, 'def greet():\n    return helper()\n', 'utf8')
+      writeFileSync(helperPath, 'def helper():\n    return 1\n', 'utf8')
+
+      const initial = generateGraph(tempDir, { noHtml: true })
+      const graphData = JSON.parse(readFileSync(initial.graphPath, 'utf8')) as {
+        schema_version?: number
+        nodes: Array<Record<string, unknown>>
+        links: Array<Record<string, unknown>>
+        hyperedges?: Array<Record<string, unknown>>
+      }
+
+      graphData.schema_version = 2
+      graphData.nodes = graphData.nodes.map((node) =>
+        node.label === 'helper()'
+          ? {
+              ...node,
+              layer: 'semantic',
+              provenance: [{ capability_id: 'test:seed-helper', stage: 'seed' }],
+            }
+          : node,
+      )
+      writeFileSync(initial.graphPath, `${JSON.stringify(graphData, null, 2)}\n`, 'utf8')
+
+      await delay(10)
+      writeFileSync(sourcePath, 'def greet():\n    return helper()\n\ndef other():\n    return greet()\n', 'utf8')
+
+      const updated = generateGraph(tempDir, { update: true, noHtml: true })
+      const updatedGraphData = JSON.parse(readFileSync(updated.graphPath, 'utf8')) as {
+        schema_version?: number
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(updatedGraphData.schema_version).toBe(2)
+      expect(updatedGraphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            label: 'helper()',
+            layer: 'semantic',
+            provenance: [expect.objectContaining({ capability_id: 'test:seed-helper' })],
+          }),
+        ]),
+      )
+    })
+  })
+
   test('re-extracts only changed files during update while retaining unchanged graph context', async () => {
     await withTempDirAsync(async (tempDir) => {
       const sourcePath = join(tempDir, 'main.py')

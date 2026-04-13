@@ -1,3 +1,9 @@
+import type { ExtractionLayer } from '../core/layers/types.js'
+import type { ExtractionProvenance } from '../core/provenance/types.js'
+
+export type { ExtractionLayer } from '../core/layers/types.js'
+export type { ExtractionProvenance } from '../core/provenance/types.js'
+
 /**
  * `paper` covers both extracted paper files and virtual citation/reference nodes.
  * Use `semantic_kind` and `virtual` to distinguish semantic graph entities from
@@ -7,12 +13,16 @@ export type FileType = 'code' | 'document' | 'paper' | 'image' | 'rationale'
 
 export type Confidence = 'EXTRACTED' | 'INFERRED' | 'AMBIGUOUS'
 
+export type ExtractionSchemaVersion = 1 | 2
+
 export interface ExtractionNode {
   id: string
   label: string
   file_type: FileType
   source_file: string
   source_location?: string
+  layer?: ExtractionLayer
+  provenance?: ExtractionProvenance[]
   semantic_kind?: 'citation' | 'reference'
   citation_kind?: 'doi' | 'arxiv' | 'citation_key'
   citation_value?: string
@@ -29,6 +39,8 @@ export interface ExtractionEdge {
   confidence: Confidence
   source_file: string
   source_location?: string
+  layer?: ExtractionLayer
+  provenance?: ExtractionProvenance[]
   weight?: number
   [key: string]: unknown
 }
@@ -41,10 +53,13 @@ export interface Hyperedge {
   confidence?: Extract<Confidence, 'EXTRACTED' | 'INFERRED'>
   confidence_score?: number
   source_file?: string
+  layer?: ExtractionLayer
+  provenance?: ExtractionProvenance[]
   [key: string]: unknown
 }
 
 export interface ExtractionData {
+  schema_version?: ExtractionSchemaVersion
   nodes: ExtractionNode[]
   edges: ExtractionEdge[]
   hyperedges?: Hyperedge[]

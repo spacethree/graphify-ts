@@ -1,10 +1,57 @@
+import { EXTRACTION_LAYERS } from '../core/layers/types.js'
 import { isRecord } from '../shared/guards.js'
-import type { Confidence, ExtractionData, FileType } from './types.js'
+import type { Confidence, ExtractionData, ExtractionLayer, ExtractionSchemaVersion, FileType } from './types.js'
 
 const VALID_FILE_TYPES = new Set<FileType>(['code', 'document', 'paper', 'image', 'rationale'])
 const VALID_CONFIDENCES = new Set<Confidence>(['EXTRACTED', 'INFERRED', 'AMBIGUOUS'])
+const VALID_HYPEREDGE_CONFIDENCES = new Set<Extract<Confidence, 'EXTRACTED' | 'INFERRED'>>(['EXTRACTED', 'INFERRED'])
+const VALID_SCHEMA_VERSIONS = new Set<ExtractionSchemaVersion>([1, 2])
+const VALID_LAYERS = new Set<ExtractionLayer>(EXTRACTION_LAYERS)
 const REQUIRED_NODE_FIELDS = ['id', 'label', 'file_type', 'source_file'] as const
 const REQUIRED_EDGE_FIELDS = ['source', 'target', 'relation', 'confidence', 'source_file'] as const
+const REQUIRED_HYPEREDGE_FIELDS = ['nodes'] as const
+
+function validateSchemaVersion(data: Record<string, unknown>, errors: string[]): void {
+  if (!('schema_version' in data) || data.schema_version === undefined) {
+    return
+  }
+
+  if (typeof data.schema_version !== 'number' || !VALID_SCHEMA_VERSIONS.has(data.schema_version as ExtractionSchemaVersion)) {
+    errors.push(`Invalid schema_version '${String(data.schema_version)}' - must be one of ${JSON.stringify([...VALID_SCHEMA_VERSIONS].sort())}`)
+  }
+}
+
+function validateLayer(value: unknown, label: string, errors: string[]): void {
+  if (value === undefined) {
+    return
+  }
+
+  if (typeof value !== 'string' || !VALID_LAYERS.has(value as ExtractionLayer)) {
+    errors.push(`${label} has invalid layer '${String(value)}' - must be one of ${JSON.stringify([...VALID_LAYERS].sort())}`)
+  }
+}
+
+function validateProvenance(value: unknown, label: string, errors: string[]): void {
+  if (value === undefined) {
+    return
+  }
+
+  if (!Array.isArray(value)) {
+    errors.push(`${label} provenance must be a list`)
+    return
+  }
+
+  for (const [index, record] of value.entries()) {
+    if (!isRecord(record)) {
+      errors.push(`${label} provenance ${index} must be an object`)
+      continue
+    }
+
+    if (typeof record.capability_id !== 'string' || record.capability_id.trim().length === 0) {
+      errors.push(`${label} provenance ${index} missing required field 'capability_id'`)
+    }
+  }
+}
 
 export function validateExtraction(data: unknown): string[] {
   if (!isRecord(data)) {
@@ -12,6 +59,8 @@ export function validateExtraction(data: unknown): string[] {
   }
 
   const errors: string[] = []
+  validateSchemaVersion(data, errors)
+  const nodeIds = new Set<string>()
 
   const nodesValue = data.nodes
   if (nodesValue === undefined) {
@@ -31,11 +80,18 @@ export function validateExtraction(data: unknown): string[] {
         }
       }
 
+      if (typeof node.id === 'string') {
+        nodeIds.add(node.id)
+      }
+
       if ('file_type' in node && typeof node.file_type === 'string' && !VALID_FILE_TYPES.has(node.file_type as FileType)) {
         errors.push(
           `Node ${index} (id=${JSON.stringify(node.id ?? '?')}) has invalid file_type '${String(node.file_type)}' - must be one of ${JSON.stringify([...VALID_FILE_TYPES].sort())}`,
         )
       }
+
+      validateLayer(node.layer, `Node ${index} (id=${JSON.stringify(node.id ?? '?')})`, errors)
+      validateProvenance(node.provenance, `Node ${index} (id=${JSON.stringify(node.id ?? '?')})`, errors)
     }
   }
 
@@ -45,15 +101,6 @@ export function validateExtraction(data: unknown): string[] {
   } else if (!Array.isArray(edgesValue)) {
     errors.push("'edges' must be a list")
   } else {
-    const nodeIds = new Set(
-      Array.isArray(nodesValue)
-        ? nodesValue
-            .filter(isRecord)
-            .map((node) => node.id)
-            .filter((id): id is string => typeof id === 'string')
-        : [],
-    )
-
     for (const [index, edge] of edgesValue.entries()) {
       if (!isRecord(edge)) {
         errors.push(`Edge ${index} must be an object`)
@@ -70,12 +117,65 @@ export function validateExtraction(data: unknown): string[] {
         errors.push(`Edge ${index} has invalid confidence '${String(edge.confidence)}' - must be one of ${JSON.stringify([...VALID_CONFIDENCES].sort())}`)
       }
 
+      validateLayer(edge.layer, `Edge ${index}`, errors)
+      validateProvenance(edge.provenance, `Edge ${index}`, errors)
+
       if (typeof edge.source === 'string' && nodeIds.size > 0 && !nodeIds.has(edge.source)) {
         errors.push(`Edge ${index} source '${edge.source}' does not match any node id`)
       }
 
       if (typeof edge.target === 'string' && nodeIds.size > 0 && !nodeIds.has(edge.target)) {
         errors.push(`Edge ${index} target '${edge.target}' does not match any node id`)
+      }
+    }
+  }
+
+  const hyperedgesValue = data.hyperedges
+  if (hyperedgesValue !== undefined) {
+    if (!Array.isArray(hyperedgesValue)) {
+      errors.push("'hyperedges' must be a list")
+    } else {
+      for (const [index, hyperedge] of hyperedgesValue.entries()) {
+        if (!isRecord(hyperedge)) {
+          errors.push(`Hyperedge ${index} must be an object`)
+          continue
+        }
+
+        for (const field of REQUIRED_HYPEREDGE_FIELDS) {
+          if (!(field in hyperedge)) {
+            errors.push(`Hyperedge ${index} missing required field '${field}'`)
+          }
+        }
+
+        if ('nodes' in hyperedge) {
+          if (!Array.isArray(hyperedge.nodes)) {
+            errors.push(`Hyperedge ${index} 'nodes' must be a list`)
+          } else {
+            for (const [nodeIndex, nodeId] of hyperedge.nodes.entries()) {
+              if (typeof nodeId !== 'string') {
+                errors.push(`Hyperedge ${index} node ${nodeIndex} must be a string id`)
+                continue
+              }
+
+              if (nodeIds.size > 0 && !nodeIds.has(nodeId)) {
+                errors.push(`Hyperedge ${index} node '${nodeId}' does not match any node id`)
+              }
+            }
+          }
+        }
+
+        if (
+          'confidence' in hyperedge &&
+          typeof hyperedge.confidence === 'string' &&
+          !VALID_HYPEREDGE_CONFIDENCES.has(hyperedge.confidence as Extract<Confidence, 'EXTRACTED' | 'INFERRED'>)
+        ) {
+          errors.push(
+            `Hyperedge ${index} has invalid confidence '${String(hyperedge.confidence)}' - must be one of ${JSON.stringify([...VALID_HYPEREDGE_CONFIDENCES].sort())}`,
+          )
+        }
+
+        validateLayer(hyperedge.layer, `Hyperedge ${index}`, errors)
+        validateProvenance(hyperedge.provenance, `Hyperedge ${index}`, errors)
       }
     }
   }

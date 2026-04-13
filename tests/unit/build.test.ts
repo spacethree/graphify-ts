@@ -82,6 +82,40 @@ describe('build', () => {
     expect(graph.edgeAttributes('n_layernorm', 'n_concept_attn').confidence).toBe('AMBIGUOUS')
   })
 
+  it('preserves schema version when merging multiple extractions', () => {
+    const graph = build([
+      {
+        schema_version: 1,
+        nodes: [{ id: 'n1', label: 'A', file_type: 'code', source_file: 'a.py' }],
+        edges: [],
+        hyperedges: [],
+        input_tokens: 0,
+        output_tokens: 0,
+      },
+      {
+        schema_version: 2,
+        nodes: [{ id: 'n2', label: 'B', file_type: 'document', source_file: 'b.md', layer: 'semantic' }],
+        edges: [
+          {
+            source: 'n1',
+            target: 'n2',
+            relation: 'references',
+            confidence: 'INFERRED',
+            source_file: 'b.md',
+            layer: 'semantic',
+            provenance: [{ capability_id: 'test:merge-schema-version' }],
+            weight: 1.0,
+          },
+        ],
+        hyperedges: [],
+        input_tokens: 0,
+        output_tokens: 0,
+      },
+    ])
+
+    expect(graph.graph.schema_version).toBe(2)
+  })
+
   it('merges multiple extractions into one graph', () => {
     const graph = build([
       {
