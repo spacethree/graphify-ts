@@ -1461,8 +1461,18 @@ describe('extract', () => {
         captured_at: '2026-04-13T03:00:00Z',
         contributor: 'graphify-ts',
         layer: 'base',
-        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:image', stage: 'extract' })],
+        provenance: expect.arrayContaining([
+          expect.objectContaining({ capability_id: 'builtin:extract:image', stage: 'extract' }),
+          expect.objectContaining({
+            capability_id: 'builtin:ingest:image',
+            stage: 'ingest',
+            source_url: 'https://example.com/diagram.png',
+            captured_at: '2026-04-13T03:00:00Z',
+            contributor: 'graphify-ts',
+          }),
+        ]),
       })
+      expect(imageNode?.provenance).toHaveLength(2)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -1489,6 +1499,8 @@ describe('extract', () => {
 
       const result = extract([paperPath])
       const paperNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'paper.pdf')
+      const titleNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'Graphify Paper')
+      const containsEdges = result.edges.filter((edge) => edge.source_file === paperPath && edge.relation === 'contains')
 
       expect(paperNode).toMatchObject({
         title: 'Graphify Paper',
@@ -1497,8 +1509,37 @@ describe('extract', () => {
         captured_at: '2026-04-13T04:00:00Z',
         contributor: 'graphify-ts',
         layer: 'base',
-        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' })],
+        provenance: expect.arrayContaining([
+          expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' }),
+          expect.objectContaining({
+            capability_id: 'builtin:ingest:pdf',
+            stage: 'ingest',
+            source_url: 'https://example.com/paper.pdf',
+            captured_at: '2026-04-13T04:00:00Z',
+            contributor: 'graphify-ts',
+          }),
+        ]),
       })
+      expect(titleNode).toMatchObject({
+        layer: 'base',
+        provenance: expect.arrayContaining([
+          expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' }),
+          expect.objectContaining({ capability_id: 'builtin:ingest:pdf', stage: 'ingest' }),
+        ]),
+      })
+      expect(paperNode?.provenance).toHaveLength(2)
+      expect(titleNode?.provenance).toHaveLength(2)
+      expect(containsEdges.length).toBeGreaterThan(0)
+      expect(containsEdges.every((edge) => Array.isArray(edge.provenance) && edge.provenance.length === 2)).toBe(true)
+      for (const edge of containsEdges) {
+        expect(edge).toMatchObject({
+          layer: 'base',
+          provenance: expect.arrayContaining([
+            expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' }),
+            expect.objectContaining({ capability_id: 'builtin:ingest:pdf', stage: 'ingest' }),
+          ]),
+        })
+      }
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -1619,16 +1660,128 @@ describe('extract', () => {
         captured_at: '2026-04-13T00:00:00Z',
         author: 'Docs Team',
         contributor: 'graphify-ts',
-        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:markdown', stage: 'extract' })],
+        provenance: expect.arrayContaining([
+          expect.objectContaining({ capability_id: 'builtin:extract:markdown', stage: 'extract' }),
+          expect.objectContaining({
+            capability_id: 'builtin:ingest:webpage',
+            stage: 'ingest',
+            source_url: 'https://example.com/guide',
+            captured_at: '2026-04-13T00:00:00Z',
+            author: 'Docs Team',
+            contributor: 'graphify-ts',
+          }),
+        ]),
       })
       expect(headingNode).toMatchObject({
         layer: 'base',
-        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:markdown', stage: 'extract' })],
+        provenance: expect.arrayContaining([
+          expect.objectContaining({ capability_id: 'builtin:extract:markdown', stage: 'extract' }),
+          expect.objectContaining({ capability_id: 'builtin:ingest:webpage', stage: 'ingest' }),
+        ]),
       })
       expect(referenceEdge).toMatchObject({
         layer: 'base',
+        provenance: expect.arrayContaining([
+          expect.objectContaining({ capability_id: 'builtin:extract:markdown', stage: 'extract' }),
+          expect.objectContaining({ capability_id: 'builtin:ingest:webpage', stage: 'ingest' }),
+        ]),
+      })
+      expect(fileNode?.provenance).toHaveLength(2)
+      expect(headingNode?.provenance).toHaveLength(2)
+      expect(referenceEdge?.provenance).toHaveLength(2)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('emits capability-specific ingest provenance for registry-driven text captures before normalization', () => {
+    const root = createTempRoot()
+    try {
+      const cases = [
+        {
+          fileName: 'github-notes.md',
+          sourceUrl: 'https://github.com/mohanagy/graphify-ts',
+          ingestCapabilityId: 'builtin:ingest:github',
+        },
+        {
+          fileName: 'youtube-notes.md',
+          sourceUrl: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+          ingestCapabilityId: 'builtin:ingest:youtube',
+        },
+        {
+          fileName: 'tweet-notes.md',
+          sourceUrl: 'https://x.com/graphify/status/1234567890',
+          ingestCapabilityId: 'builtin:ingest:tweet',
+        },
+        {
+          fileName: 'arxiv-notes.md',
+          sourceUrl: 'https://arxiv.org/abs/1706.03762',
+          ingestCapabilityId: 'builtin:ingest:arxiv',
+        },
+      ] as const
+
+      for (const testCase of cases) {
+        const filePath = join(root, testCase.fileName)
+        writeFileSync(
+          filePath,
+          [
+            '---',
+            `source_url: "${testCase.sourceUrl}"`,
+            'captured_at: "2026-04-13T00:00:00Z"',
+            'author: "Graphify Team"',
+            'contributor: "graphify-ts"',
+            '---',
+            '',
+            '# Notes',
+            '',
+            'Captured for metadata parity.',
+          ].join('\n'),
+          'utf8',
+        )
+
+        const result = extract([filePath])
+        const fileNode = result.nodes.find((node) => node.label === testCase.fileName)
+        const headingNode = result.nodes.find((node) => node.label === 'Notes' && node.source_file === filePath)
+        const containsEdge = result.edges.find((edge) => edge.source_file === filePath && edge.relation === 'contains')
+
+        expect(fileNode).toMatchObject({
+          source_url: testCase.sourceUrl,
+          captured_at: '2026-04-13T00:00:00Z',
+          author: 'Graphify Team',
+          contributor: 'graphify-ts',
+          provenance: expect.arrayContaining([expect.objectContaining({ capability_id: testCase.ingestCapabilityId, stage: 'ingest' })]),
+        })
+        expect(headingNode).toMatchObject({
+          provenance: expect.arrayContaining([expect.objectContaining({ capability_id: testCase.ingestCapabilityId, stage: 'ingest' })]),
+        })
+        expect(containsEdge).toMatchObject({
+          provenance: expect.arrayContaining([expect.objectContaining({ capability_id: testCase.ingestCapabilityId, stage: 'ingest' })]),
+        })
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps frontmatter-only markdown captures on extract provenance when source_url is absent', () => {
+    const root = createTempRoot()
+    try {
+      const notePath = join(root, 'local-notes.md')
+      writeFileSync(notePath, ['---', 'title: "Local Notes"', 'author: "Graphify Team"', 'contributor: "graphify-ts"', '---', '', '# Notes'].join('\n'), 'utf8')
+
+      const result = extract([notePath])
+      const fileNode = result.nodes.find((node) => node.label === 'local-notes.md')
+      const headingNode = result.nodes.find((node) => node.label === 'Notes' && node.source_file === notePath)
+      const containsEdge = result.edges.find((edge) => edge.source_file === notePath && edge.relation === 'contains')
+
+      expect(fileNode).toMatchObject({
+        title: 'Local Notes',
+        author: 'Graphify Team',
+        contributor: 'graphify-ts',
         provenance: [expect.objectContaining({ capability_id: 'builtin:extract:markdown', stage: 'extract' })],
       })
+      expect(headingNode?.provenance).toEqual([expect.objectContaining({ capability_id: 'builtin:extract:markdown', stage: 'extract' })])
+      expect(containsEdge?.provenance).toEqual([expect.objectContaining({ capability_id: 'builtin:extract:markdown', stage: 'extract' })])
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -1922,6 +2075,82 @@ describe('extract', () => {
     }
   })
 
+  it('lifts explicit bibliography urls into markdown paper references when no doi or arxiv is present', () => {
+    const root = createTempRoot()
+    try {
+      const paperPath = join(root, 'paper.md')
+      writeFileSync(
+        paperPath,
+        [
+          '# Abstract',
+          'We compare the baselines in [1-2].',
+          '## References',
+          '[1] Smith et al. (2024). External Runtime Paper. https://example.com/runtime-paper.html.',
+          '[2] Doe et al. (2025). Follow Up Appendix. https://example.com/follow-up.pdf,',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([paperPath])
+      const referenceOne = result.nodes.find((node) => node.file_type === 'paper' && node.reference_index === 1)
+      const referenceTwo = result.nodes.find((node) => node.file_type === 'paper' && node.reference_index === 2)
+
+      expect(referenceOne).toMatchObject({
+        reference_index: 1,
+        reference_year: 2024,
+        reference_title: 'External Runtime Paper',
+        source_url: 'https://example.com/runtime-paper.html',
+      })
+      expect(referenceTwo).toMatchObject({
+        reference_index: 2,
+        reference_year: 2025,
+        reference_title: 'Follow Up Appendix',
+        source_url: 'https://example.com/follow-up.pdf',
+      })
+      expect(referenceOne?.doi).toBeUndefined()
+      expect(referenceOne?.arxiv_id).toBeUndefined()
+      expect(referenceTwo?.doi).toBeUndefined()
+      expect(referenceTwo?.arxiv_id).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps doi and arxiv source urls canonical when markdown bibliography entries also include plain urls', () => {
+    const root = createTempRoot()
+    try {
+      const paperPath = join(root, 'paper.md')
+      writeFileSync(
+        paperPath,
+        [
+          '# Abstract',
+          'We compare the baselines in [1-2].',
+          '## References',
+          '[1] Smith et al. (2024). Runtime Paper. https://example.com/runtime-paper DOI:10.4242/runtime.paper',
+          '[2] Doe et al. (2025). Follow Up Study. https://example.com/follow-up arXiv:2502.54321',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([paperPath])
+      const referenceOne = result.nodes.find((node) => node.file_type === 'paper' && node.reference_index === 1)
+      const referenceTwo = result.nodes.find((node) => node.file_type === 'paper' && node.reference_index === 2)
+
+      expect(referenceOne).toMatchObject({
+        reference_index: 1,
+        doi: '10.4242/runtime.paper',
+        source_url: 'https://doi.org/10.4242/runtime.paper',
+      })
+      expect(referenceTwo).toMatchObject({
+        reference_index: 2,
+        arxiv_id: '2502.54321',
+        source_url: 'https://arxiv.org/abs/2502.54321',
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('extracts heuristic title and section nodes from simple pdf papers', () => {
     const root = createTempRoot()
     try {
@@ -2119,6 +2348,43 @@ describe('extract', () => {
           provenance: [expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' })],
         })
       }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('lifts explicit bibliography urls into pdf reference metadata when no doi or arxiv is present', () => {
+    const root = createTempRoot()
+    try {
+      const paperPath = join(root, 'paper.pdf')
+      writeFileSync(
+        paperPath,
+        [
+          '%PDF-1.4',
+          '1 0 obj',
+          '<< /Title (Graphify Paper) >>',
+          'stream',
+          '(Abstract) Tj',
+          '([1]) Tj',
+          '(References) Tj',
+          '([1] Doe et al. (2024). Runtime Paper. https://example.com/runtime-paper.pdf.) Tj',
+          'endstream',
+          'endobj',
+        ].join('\n'),
+        'latin1',
+      )
+
+      const result = extract([paperPath])
+      const referenceNode = result.nodes.find((node) => node.file_type === 'paper' && node.reference_index === 1)
+
+      expect(referenceNode).toMatchObject({
+        reference_index: 1,
+        reference_year: 2024,
+        reference_title: 'Runtime Paper',
+        source_url: 'https://example.com/runtime-paper.pdf',
+      })
+      expect(referenceNode?.doi).toBeUndefined()
+      expect(referenceNode?.arxiv_id).toBeUndefined()
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -2326,6 +2592,19 @@ describe('extract', () => {
       })
 
       writeFileSync(docxPath, Buffer.from(archive))
+      writeFileSync(
+        binaryIngestSidecarPath(docxPath),
+        JSON.stringify(
+          {
+            source_url: 'https://example.com/guide.docx',
+            captured_at: '2026-04-14T01:00:00Z',
+            contributor: 'graphify-ts',
+          },
+          null,
+          2,
+        ),
+        'utf8',
+      )
 
       const result = extract([docxPath])
       const fileNode = result.nodes.find((node) => node.file_type === 'document' && node.label === 'guide.docx')
@@ -2337,18 +2616,39 @@ describe('extract', () => {
         author: 'Jane Doe',
         subject: 'Design Notes',
         description: 'Background material for the graph runtime.',
+        source_url: 'https://example.com/guide.docx',
+        captured_at: '2026-04-14T01:00:00Z',
+        contributor: 'graphify-ts',
         layer: 'base',
-        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+        provenance: expect.arrayContaining([
+          expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' }),
+          expect.objectContaining({
+            capability_id: 'builtin:ingest:webpage',
+            stage: 'ingest',
+            source_url: 'https://example.com/guide.docx',
+            captured_at: '2026-04-14T01:00:00Z',
+            contributor: 'graphify-ts',
+          }),
+        ]),
       })
       expect(doiNode).toMatchObject({
         source_url: 'https://doi.org/10.1000/guide.1',
         layer: 'base',
-        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+        provenance: expect.arrayContaining([
+          expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' }),
+          expect.objectContaining({ capability_id: 'builtin:ingest:webpage', stage: 'ingest' }),
+        ]),
       })
       expect(doiEdge).toMatchObject({
         layer: 'base',
-        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+        provenance: expect.arrayContaining([
+          expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' }),
+          expect.objectContaining({ capability_id: 'builtin:ingest:webpage', stage: 'ingest' }),
+        ]),
       })
+      expect(fileNode?.provenance).toHaveLength(2)
+      expect(doiNode?.provenance).toHaveLength(2)
+      expect(doiEdge?.provenance).toHaveLength(2)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -2469,6 +2769,42 @@ describe('extract', () => {
     }
   })
 
+  it('lifts explicit bibliography urls into docx reference metadata when no doi or arxiv is present', () => {
+    const root = createTempRoot()
+    try {
+      const docxPath = join(root, 'guide.docx')
+      const archive = zipSync({
+        'word/document.xml': strToU8(
+          [
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">',
+            '  <w:body>',
+            '    <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Bibliography</w:t></w:r></w:p>',
+            '    <w:p><w:r><w:t>[1] Smith et al. (2024). Runtime Paper. https://example.com/runtime-paper.html.</w:t></w:r></w:p>',
+            '  </w:body>',
+            '</w:document>',
+          ].join(''),
+        ),
+      })
+
+      writeFileSync(docxPath, Buffer.from(archive))
+
+      const result = extract([docxPath])
+      const referenceNode = result.nodes.find((node) => node.file_type === 'paper' && node.reference_index === 1)
+
+      expect(referenceNode).toMatchObject({
+        semantic_kind: 'reference',
+        reference_index: 1,
+        reference_year: 2024,
+        reference_title: 'Runtime Paper',
+        source_url: 'https://example.com/runtime-paper.html',
+      })
+      expect(referenceNode?.doi).toBeUndefined()
+      expect(referenceNode?.arxiv_id).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('extracts workbook metadata and sheet nodes from xlsx documents', () => {
     const root = createTempRoot()
     try {
@@ -2495,6 +2831,19 @@ describe('extract', () => {
       })
 
       writeFileSync(workbookPath, Buffer.from(archive))
+      writeFileSync(
+        binaryIngestSidecarPath(workbookPath),
+        JSON.stringify(
+          {
+            source_url: 'https://example.com/metrics.xlsx',
+            captured_at: '2026-04-14T02:00:00Z',
+            contributor: 'graphify-ts',
+          },
+          null,
+          2,
+        ),
+        'utf8',
+      )
 
       const result = extract([workbookPath])
       const labels = result.nodes.filter((node) => node.file_type === 'document').map((node) => node.label)
@@ -2508,16 +2857,34 @@ describe('extract', () => {
       expect(workbookNode).toMatchObject({
         title: 'Metrics Workbook',
         author: 'Jane Doe',
+        source_url: 'https://example.com/metrics.xlsx',
+        captured_at: '2026-04-14T02:00:00Z',
+        contributor: 'graphify-ts',
         layer: 'base',
-        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:xlsx', stage: 'extract' })],
+        provenance: expect.arrayContaining([
+          expect.objectContaining({ capability_id: 'builtin:extract:xlsx', stage: 'extract' }),
+          expect.objectContaining({
+            capability_id: 'builtin:ingest:webpage',
+            stage: 'ingest',
+            source_url: 'https://example.com/metrics.xlsx',
+            captured_at: '2026-04-14T02:00:00Z',
+            contributor: 'graphify-ts',
+          }),
+        ]),
       })
       expect(summaryNode).toMatchObject({
         layer: 'base',
-        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:xlsx', stage: 'extract' })],
+        provenance: expect.arrayContaining([
+          expect.objectContaining({ capability_id: 'builtin:extract:xlsx', stage: 'extract' }),
+          expect.objectContaining({ capability_id: 'builtin:ingest:webpage', stage: 'ingest' }),
+        ]),
       })
       expect(experimentsNode).toMatchObject({
         layer: 'base',
-        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:xlsx', stage: 'extract' })],
+        provenance: expect.arrayContaining([
+          expect.objectContaining({ capability_id: 'builtin:extract:xlsx', stage: 'extract' }),
+          expect.objectContaining({ capability_id: 'builtin:ingest:webpage', stage: 'ingest' }),
+        ]),
       })
       expect(labels).toContain('Summary')
       expect(labels).toContain('Experiments')
@@ -2525,11 +2892,17 @@ describe('extract', () => {
       expect(relations.has(`${nodeByKey.get('document:metrics.xlsx')}:contains:${nodeByKey.get('document:Experiments')}`)).toBe(true)
       expect(containsEdges).toHaveLength(2)
       expect(containsEdges.every((edge) => edge.layer === 'base')).toBe(true)
-      expect(containsEdges.every((edge) => Array.isArray(edge.provenance) && edge.provenance.length > 0)).toBe(true)
+      expect(containsEdges.every((edge) => Array.isArray(edge.provenance) && edge.provenance.length === 2)).toBe(true)
+      expect(workbookNode?.provenance).toHaveLength(2)
+      expect(summaryNode?.provenance).toHaveLength(2)
+      expect(experimentsNode?.provenance).toHaveLength(2)
       for (const edge of containsEdges) {
         expect(edge).toMatchObject({
           layer: 'base',
-          provenance: [expect.objectContaining({ capability_id: 'builtin:extract:xlsx', stage: 'extract' })],
+          provenance: expect.arrayContaining([
+            expect.objectContaining({ capability_id: 'builtin:extract:xlsx', stage: 'extract' }),
+            expect.objectContaining({ capability_id: 'builtin:ingest:webpage', stage: 'ingest' }),
+          ]),
         })
       }
     } finally {
@@ -2598,6 +2971,19 @@ describe('extract', () => {
     try {
       const docxPath = join(root, 'broken.docx')
       writeFileSync(docxPath, Buffer.from('not-a-zip-archive'), 'utf8')
+      writeFileSync(
+        binaryIngestSidecarPath(docxPath),
+        JSON.stringify(
+          {
+            source_url: 'https://example.com/broken.docx',
+            captured_at: '2026-04-14T03:00:00Z',
+            contributor: 'graphify-ts',
+          },
+          null,
+          2,
+        ),
+        'utf8',
+      )
 
       const result = extract([docxPath])
 
@@ -2605,9 +2991,22 @@ describe('extract', () => {
       expect(result.nodes[0]).toMatchObject({
         label: 'broken.docx',
         file_type: 'document',
+        source_url: 'https://example.com/broken.docx',
+        captured_at: '2026-04-14T03:00:00Z',
+        contributor: 'graphify-ts',
         layer: 'base',
-        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+        provenance: expect.arrayContaining([
+          expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' }),
+          expect.objectContaining({
+            capability_id: 'builtin:ingest:webpage',
+            stage: 'ingest',
+            source_url: 'https://example.com/broken.docx',
+            captured_at: '2026-04-14T03:00:00Z',
+            contributor: 'graphify-ts',
+          }),
+        ]),
       })
+      expect(result.nodes[0]?.provenance).toHaveLength(2)
       expect(result.edges).toEqual([])
     } finally {
       rmSync(root, { recursive: true, force: true })

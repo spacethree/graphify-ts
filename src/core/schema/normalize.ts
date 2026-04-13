@@ -1,11 +1,8 @@
 import type { ExtractionData, ExtractionEdge, ExtractionNode, ExtractionSchemaVersion, Hyperedge } from '../../contracts/types.js'
-import { builtinCapabilityRegistry } from '../../infrastructure/capabilities.js'
-import { detectUrlType } from '../../infrastructure/ingest/url-type.js'
 import { isRecord } from '../../shared/guards.js'
 import { DEFAULT_EXTRACTION_LAYER, type ExtractionLayer } from '../layers/types.js'
+import { appendDerivedProvenance, deriveIngestProvenanceFromRecord, normalizeMetadataString } from '../provenance/ingest.js'
 import { createBaselineProvenance, type ExtractionProvenance } from '../provenance/types.js'
-
-const INGEST_PROVENANCE_STAGE = 'ingest'
 
 export interface NormalizedExtractionNode extends ExtractionNode {
   layer: ExtractionLayer
@@ -45,63 +42,6 @@ function normalizeLayer(value: unknown): ExtractionLayer {
   return DEFAULT_EXTRACTION_LAYER
 }
 
-function normalizeMetadataString(value: unknown): string | null {
-  if (typeof value !== 'string') {
-    return null
-  }
-
-  const trimmed = value.trim()
-  return trimmed.length > 0 ? trimmed : null
-}
-
-/**
- * Project flat ingest-frontmatter fields into a structured provenance record.
- *
- * This path is intentionally lenient because normalization may be running over
- * older or hand-authored extraction payloads. Virtual nodes are excluded so
- * synthetic citation/reference records cannot become the provenance seed for a
- * source file during map construction.
- */
-function deriveIngestProvenance(record: Record<string, unknown>): ExtractionProvenance | null {
-  if (record.virtual === true) {
-    return null
-  }
-
-  const sourceFile = normalizeMetadataString(record.source_file)
-  const sourceUrl = normalizeMetadataString(record.source_url)
-  if (!sourceFile || !sourceUrl) {
-    return null
-  }
-
-  let urlType: ReturnType<typeof detectUrlType>
-  try {
-    urlType = detectUrlType(sourceUrl)
-  } catch {
-    return null
-  }
-
-  const capability = builtinCapabilityRegistry.resolveIngestorForUrlType(urlType) ?? builtinCapabilityRegistry.resolveIngestorForUrlType('webpage')
-  if (!capability) {
-    return null
-  }
-
-  const capturedAt = normalizeMetadataString(record.captured_at)
-  const author = normalizeMetadataString(record.author)
-  const contributor = normalizeMetadataString(record.contributor)
-
-  return {
-    ...createBaselineProvenance({
-      capabilityId: capability.id,
-      stage: INGEST_PROVENANCE_STAGE,
-      sourceFile,
-    }),
-    source_url: sourceUrl,
-    ...(capturedAt ? { captured_at: capturedAt } : {}),
-    ...(author ? { author } : {}),
-    ...(contributor ? { contributor } : {}),
-  }
-}
-
 function buildIngestProvenanceBySourceFile(nodes: unknown): Map<string, ExtractionProvenance> {
   const records = Array.isArray(nodes) ? nodes.filter(isRecord) : []
   const provenanceBySourceFile = new Map<string, ExtractionProvenance>()
@@ -112,30 +52,13 @@ function buildIngestProvenanceBySourceFile(nodes: unknown): Map<string, Extracti
       continue
     }
 
-    const ingestProvenance = deriveIngestProvenance(node)
+    const ingestProvenance = deriveIngestProvenanceFromRecord(node)
     if (ingestProvenance) {
       provenanceBySourceFile.set(sourceFile, ingestProvenance)
     }
   }
 
   return provenanceBySourceFile
-}
-
-function provenanceKey(record: ExtractionProvenance): string {
-  return `${String(record.capability_id)}|${String(record.stage ?? '')}|${String(record.source_file ?? '')}|${String(record.source_url ?? '')}|${String(record.captured_at ?? '')}`
-}
-
-function appendDerivedProvenance(records: ExtractionProvenance[], derivedProvenance: ExtractionProvenance | null): ExtractionProvenance[] {
-  if (!derivedProvenance) {
-    return records
-  }
-
-  const derivedKey = provenanceKey(derivedProvenance)
-  if (records.some((record) => provenanceKey(record) === derivedKey)) {
-    return records
-  }
-
-  return [...records, deepCloneValue(derivedProvenance)]
 }
 
 function normalizeProvenance(

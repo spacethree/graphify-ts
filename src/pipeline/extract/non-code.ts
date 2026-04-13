@@ -4,6 +4,8 @@ import { existsSync, readFileSync, statSync } from 'node:fs'
 import { strFromU8, unzipSync, type UnzipFileInfo } from 'fflate'
 
 import type { ExtractionEdge, ExtractionNode } from '../../contracts/types.js'
+import { appendDerivedProvenance, deriveIngestProvenanceFromRecord } from '../../core/provenance/ingest.js'
+import type { ExtractionProvenance } from '../../core/provenance/types.js'
 import { readBinaryIngestSidecar } from '../../shared/binary-ingest-sidecar.js'
 import { MAX_TEXT_BYTES, sanitizeLabel } from '../../shared/security.js'
 import { FileType, classifyFile } from '../detect.js'
@@ -14,9 +16,34 @@ interface ExtractionFragment {
   edges: ExtractionEdge[]
 }
 
+interface ProvenanceBearingRecord {
+  provenance?: ExtractionProvenance[]
+}
+
 function createBinaryMetadataAwareFileNode(filePath: string, fileType: NonCodeFileType): ExtractionNode {
   const sidecarMetadata = readBinaryIngestSidecar(filePath)
   return sidecarMetadata ? { ...sidecarMetadata, ...createFileNode(filePath, fileType) } : createFileNode(filePath, fileType)
+}
+
+function applyDerivedIngestProvenance<T extends ProvenanceBearingRecord>(records: readonly T[], derivedProvenance: ExtractionProvenance | null): T[] {
+  if (!derivedProvenance) {
+    return [...records]
+  }
+
+  return records.map((record) => ({
+    ...record,
+    provenance: appendDerivedProvenance(record.provenance ?? [], derivedProvenance),
+  }))
+}
+
+function finalizeNonCodeFragment(fragment: ExtractionFragment): ExtractionFragment {
+  // Non-code extractors add the file node first, then lift any source metadata onto that same node.
+  const derivedIngestProvenance = fragment.nodes[0] ? deriveIngestProvenanceFromRecord(fragment.nodes[0]) : null
+
+  return {
+    nodes: applyDerivedIngestProvenance(fragment.nodes, derivedIngestProvenance),
+    edges: applyDerivedIngestProvenance(fragment.edges, derivedIngestProvenance),
+  }
 }
 
 interface PendingReferenceCitation {
@@ -71,6 +98,7 @@ const LATEX_CITATION_PATTERN = /\\cite\w{0,20}\{([^}]{1,512})\}/g
 const MAX_REFERENCE_LABEL_CHARS = 220
 const MAX_CITATION_KEYS_PER_LINE = 16
 const REFERENCE_SECTION_LABELS = new Set(['references', 'bibliography', 'works cited', 'citations'])
+const REFERENCE_URL_PATTERN = /\bhttps?:\/\/[^\s<>"']{4,400}/i
 const MAX_STRUCTURED_TEXT_LINES = 100_000
 
 function parseFrontmatterScalar(value: string): string {
@@ -369,6 +397,33 @@ function citationSourceUrl(kind: 'doi' | 'arxiv' | 'citation_key', value: string
   return null
 }
 
+function trimReferenceSourceUrl(value: string): string {
+  return value.trim().replace(/[),.;:\]]+$/g, '')
+}
+
+function explicitReferenceSourceUrl(summary: string): string | null {
+  const rawUrl = summary.match(REFERENCE_URL_PATTERN)?.[0]
+  if (!rawUrl) {
+    return null
+  }
+
+  const normalizedUrl = trimReferenceSourceUrl(rawUrl)
+  if (!normalizedUrl) {
+    return null
+  }
+
+  try {
+    const parsedUrl = new URL(normalizedUrl)
+    if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+      return null
+    }
+
+    return parsedUrl.toString()
+  } catch {
+    return null
+  }
+}
+
 function stripInlineCodeSpans(text: string): string {
   return text.replace(/`[^`\n]{1,200}`/g, ' ')
 }
@@ -538,6 +593,7 @@ function parseReferenceMetadata(summary: string): Record<string, unknown> {
   const metadata: Record<string, unknown> = {}
   const doi = summary.match(/\b10\.\d{4,9}\/[\-._;()/:A-Za-z0-9]{1,200}\b/i)?.[0]
   const arxivId = summary.match(/(?:\barxiv\s{0,5}:?\s{0,5}|arxiv\.org\/abs\/)([A-Za-z\-.]{1,50}\/\d{7}|\d{4}\.\d{4,5}(?:v\d{1,3})?)/i)?.[1]
+  const referenceUrl = explicitReferenceSourceUrl(summary)
   const yearMatch = summary.match(/\b(19|20)\d{2}\b/)
 
   if (doi) {
@@ -547,6 +603,9 @@ function parseReferenceMetadata(summary: string): Record<string, unknown> {
   if (arxivId) {
     metadata.arxiv_id = trimCitationValue(arxivId)
     metadata.source_url ??= citationSourceUrl('arxiv', trimCitationValue(arxivId))
+  }
+  if (referenceUrl) {
+    metadata.source_url ??= referenceUrl
   }
   if (yearMatch?.[0]) {
     const parsedYear = Number.parseInt(yearMatch[0], 10)
@@ -776,7 +835,7 @@ function extractStructuredText(filePath: string, fileType: Extract<NonCodeFileTy
 
   flushPendingReferenceCitations(edges, seenSemanticEdges, filePath, referenceNodeIdsByIndex, pendingReferenceCitations)
 
-  return { nodes, edges }
+  return finalizeNonCodeFragment({ nodes, edges })
 }
 
 export function createCodeFileOnlyExtraction(filePath: string): ExtractionFragment {
@@ -844,11 +903,13 @@ function extractDocxDocument(filePath: string, allowedTargets: ReadonlySet<strin
 
   addNode(nodes, seenIds, fileNode)
 
+  const finalize = (): ExtractionFragment => finalizeNonCodeFragment({ nodes, edges })
+
   let archive: Record<string, Uint8Array>
   try {
     const buffer = readFileSync(filePath)
     if (buffer.byteLength > MAX_TEXT_BYTES) {
-      return { nodes, edges }
+      return finalize()
     }
     const selectedOriginalBytes = { value: 0 }
     archive = unzipSync(new Uint8Array(buffer), {
@@ -863,12 +924,12 @@ function extractDocxDocument(filePath: string, allowedTargets: ReadonlySet<strin
         ),
     })
   } catch {
-    return { nodes, edges }
+    return finalize()
   }
 
   const coreXmlBytes = archive['docProps/core.xml']
   if (coreXmlBytes && coreXmlBytes.byteLength > DOCX_MAX_ENTRY_ORIGINAL_BYTES) {
-    return { nodes, edges }
+    return finalize()
   }
   const coreXml = coreXmlBytes ? strFromU8(coreXmlBytes) : ''
   const coreMetadata = extractCoreMetadata(coreXml)
@@ -885,7 +946,7 @@ function extractDocxDocument(filePath: string, allowedTargets: ReadonlySet<strin
 
   const documentXmlBytes = archive['word/document.xml']
   if (!documentXmlBytes || documentXmlBytes.byteLength > DOCX_MAX_ENTRY_ORIGINAL_BYTES) {
-    return { nodes, edges }
+    return finalize()
   }
 
   const documentXml = strFromU8(documentXmlBytes)
@@ -962,14 +1023,14 @@ function extractDocxDocument(filePath: string, allowedTargets: ReadonlySet<strin
 
   flushPendingReferenceCitations(edges, seenSemanticEdges, filePath, referenceNodeIdsByIndex, pendingReferenceCitations)
 
-  return { nodes, edges }
+  return finalize()
 }
 
 function extractImage(filePath: string): ExtractionFragment {
-  return {
+  return finalizeNonCodeFragment({
     nodes: [createBinaryMetadataAwareFileNode(filePath, 'image')],
     edges: [],
-  }
+  })
 }
 
 function decodePdfLiteral(raw: string): string {
@@ -1059,14 +1120,16 @@ function extractPdfPaper(filePath: string, allowedTargets: ReadonlySet<string>):
 
   addNode(nodes, seenIds, fileNode)
 
+  const finalize = (): ExtractionFragment => finalizeNonCodeFragment({ nodes, edges })
+
   let buffer: Buffer
   try {
     buffer = readFileSync(filePath)
     if (buffer.byteLength > MAX_TEXT_BYTES) {
-      return { nodes, edges }
+      return finalize()
     }
   } catch {
-    return { nodes, edges }
+    return finalize()
   }
 
   const pdfText = buffer.toString('latin1')
@@ -1128,7 +1191,7 @@ function extractPdfPaper(filePath: string, allowedTargets: ReadonlySet<string>):
 
   flushPendingReferenceCitations(edges, seenSemanticEdges, filePath, referenceNodeIdsByIndex, pendingReferenceCitations)
 
-  return { nodes, edges }
+  return finalize()
 }
 
 function extractXlsxSharedStringTexts(sharedStringsXml: string): string[] {
@@ -1160,11 +1223,13 @@ function extractXlsxDocument(filePath: string, allowedTargets: ReadonlySet<strin
 
   addNode(nodes, seenIds, fileNode)
 
+  const finalize = (): ExtractionFragment => finalizeNonCodeFragment({ nodes, edges })
+
   let archive: Record<string, Uint8Array>
   try {
     const buffer = readFileSync(filePath)
     if (buffer.byteLength > MAX_TEXT_BYTES) {
-      return { nodes, edges }
+      return finalize()
     }
 
     const selectedOriginalBytes = { value: 0 }
@@ -1180,7 +1245,7 @@ function extractXlsxDocument(filePath: string, allowedTargets: ReadonlySet<strin
         ),
     })
   } catch {
-    return { nodes, edges }
+    return finalize()
   }
 
   const coreXml = archive['docProps/core.xml'] ? strFromU8(archive['docProps/core.xml']!) : ''
@@ -1191,7 +1256,7 @@ function extractXlsxDocument(filePath: string, allowedTargets: ReadonlySet<strin
 
   const workbookXmlBytes = archive['xl/workbook.xml']
   if (!workbookXmlBytes || workbookXmlBytes.byteLength > DOCX_MAX_ENTRY_ORIGINAL_BYTES) {
-    return { nodes, edges }
+    return finalize()
   }
 
   const workbookXml = strFromU8(workbookXmlBytes)
@@ -1223,7 +1288,7 @@ function extractXlsxDocument(filePath: string, allowedTargets: ReadonlySet<strin
 
   flushPendingReferenceCitations(edges, seenSemanticEdges, filePath, referenceNodeIdsByIndex, pendingReferenceCitations)
 
-  return { nodes, edges }
+  return finalize()
 }
 
 export function extractPaper(filePath: string, allowedTargets: ReadonlySet<string>): ExtractionFragment {

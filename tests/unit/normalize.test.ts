@@ -324,6 +324,102 @@ describe('normalizeExtractionData', () => {
     )
   })
 
+  it('does not duplicate explicit ingest provenance already emitted during raw extraction', () => {
+    const extraction = {
+      schema_version: 2 as const,
+      nodes: [
+        {
+          id: 'n_doc',
+          label: 'notes.md',
+          file_type: 'document' as const,
+          source_file: 'notes.md',
+          source_location: 'L1',
+          source_url: 'https://github.com/mohanagy/graphify-ts',
+          captured_at: '2026-04-13T00:00:00Z',
+          author: 'Docs Team',
+          contributor: 'graphify-ts',
+          provenance: [
+            { capability_id: 'builtin:extract:markdown', stage: 'extract' },
+            {
+              capability_id: 'builtin:ingest:github',
+              stage: 'ingest',
+              source_file: 'notes.md',
+              source_url: 'https://github.com/mohanagy/graphify-ts',
+              captured_at: '2026-04-13T00:00:00Z',
+              author: 'Docs Team',
+              contributor: 'graphify-ts',
+            },
+          ],
+        },
+        {
+          id: 'n_heading',
+          label: 'Notes',
+          file_type: 'document' as const,
+          source_file: 'notes.md',
+          source_location: 'L5',
+          provenance: [
+            { capability_id: 'builtin:extract:markdown', stage: 'extract' },
+            {
+              capability_id: 'builtin:ingest:github',
+              stage: 'ingest',
+              source_file: 'notes.md',
+              source_url: 'https://github.com/mohanagy/graphify-ts',
+              captured_at: '2026-04-13T00:00:00Z',
+              author: 'Docs Team',
+              contributor: 'graphify-ts',
+            },
+          ],
+        },
+      ],
+      edges: [
+        {
+          source: 'n_doc',
+          target: 'n_heading',
+          relation: 'contains',
+          confidence: 'EXTRACTED' as const,
+          source_file: 'notes.md',
+          source_location: 'L5',
+          provenance: [
+            { capability_id: 'builtin:extract:markdown', stage: 'extract' },
+            {
+              capability_id: 'builtin:ingest:github',
+              stage: 'ingest',
+              source_file: 'notes.md',
+              source_url: 'https://github.com/mohanagy/graphify-ts',
+              captured_at: '2026-04-13T00:00:00Z',
+              author: 'Docs Team',
+              contributor: 'graphify-ts',
+            },
+          ],
+        },
+      ],
+    }
+
+    const normalized = normalizeExtractionData(extraction)
+
+    expect(normalized.nodes[0]?.provenance).toHaveLength(2)
+    expect(normalized.nodes[1]?.provenance).toHaveLength(2)
+    expect(normalized.edges[0]?.provenance).toHaveLength(2)
+    expect(normalized.nodes[0]?.provenance).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ capability_id: 'builtin:extract:markdown', stage: 'extract' }),
+        expect.objectContaining({ capability_id: 'builtin:ingest:github', stage: 'ingest' }),
+      ]),
+    )
+    expect(normalized.nodes[1]?.provenance).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ capability_id: 'builtin:extract:markdown', stage: 'extract' }),
+        expect.objectContaining({ capability_id: 'builtin:ingest:github', stage: 'ingest' }),
+      ]),
+    )
+    expect(normalized.edges[0]?.provenance).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ capability_id: 'builtin:extract:markdown', stage: 'extract' }),
+        expect.objectContaining({ capability_id: 'builtin:ingest:github', stage: 'ingest' }),
+      ]),
+    )
+  })
+
   it.each([
     {
       label: 'paper.pdf',
