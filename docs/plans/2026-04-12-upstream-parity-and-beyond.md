@@ -114,6 +114,8 @@ Status docs, README claims, and command help must reflect what actually ships. R
 
 **Objective:** Turn semantic enrichment from mostly planned/scaffolded behavior into a real, optional runtime with cache, budget, and provider boundaries.
 
+**Progress update (2026-04-13):** The first structured-ingest slices are now shipped for GitHub URLs and generic article-style webpages: repository, issue, pull request, and discussion pages no longer fall back to generic webpage capture, and article-style pages can now land as deterministic markdown/frontmatter with canonical URL normalization plus author/description lift, section headings, inline markdown links, and outbound-link lists. Broader social/thread handling and YouTube/video metadata remain open.
+
 **Primary outcomes:**
 - provider-neutral semantic extraction interface
 - cached semantic overlays with token/cost accounting
@@ -239,6 +241,8 @@ Status docs, README claims, and command help must reflect what actually ships. R
 **Outcome:** Source-specific ingestion for webpages, GitHub objects, and social/tweet-like content.
 
 **Why now:** URL detection already exists, but some important source types still degrade to generic webpage capture.
+
+**Progress update (2026-04-14):** `src/infrastructure/ingest-github.ts`, `src/infrastructure/ingest-web.ts`, and `src/infrastructure/ingest-social.ts` now cover the first GitHub-specific slice, richer generic article-style webpage capture, and a first structured single-post tweet/X slice with canonicalized source URLs, derived handle/post metadata, explicit capture-status context, and deterministic oEmbed fallback behavior. The remaining gap in this workstream is broader social/thread-specific handling beyond single-post tweet/X capture plus dedicated YouTube/video metadata.
 
 **Likely work areas:**
 - Modify: `src/infrastructure/ingest.ts`

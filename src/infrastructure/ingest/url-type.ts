@@ -1,14 +1,16 @@
 import type { UrlType } from './types.js'
+import { isTweetPostUrl } from '../ingest-social.js'
 
 export function detectUrlType(url: string): UrlType {
+  const hostname = new URL(url).hostname.toLowerCase()
   const lower = url.toLowerCase()
-  if (lower.includes('twitter.com') || lower.includes('x.com')) {
+  if (isTweetPostUrl(url)) {
     return 'tweet'
   }
   if (lower.includes('arxiv.org')) {
     return 'arxiv'
   }
-  if (lower.includes('github.com')) {
+  if (hostname === 'github.com' || hostname === 'www.github.com') {
     return 'github'
   }
   if (lower.includes('youtube.com') || lower.includes('youtu.be')) {

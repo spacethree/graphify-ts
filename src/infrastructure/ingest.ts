@@ -5,6 +5,9 @@ import { builtinCapabilityRegistry } from './capabilities.js'
 import { dispatchIngest, type IngestHandlerMap } from './ingest/dispatch.js'
 import type { IngestOptions, UrlType } from './ingest/types.js'
 import { detectUrlType } from './ingest/url-type.js'
+import { fetchGitHub } from './ingest-github.js'
+import { fetchTweet } from './ingest-social.js'
+import { fetchWebpage, resolveContributor, safeFilename, stripHtml, yamlString } from './ingest-web.js'
 import { writeBinaryIngestSidecar } from '../shared/binary-ingest-sidecar.js'
 import { safeFetch, safeFetchText, validateUrl } from '../shared/security.js'
 
@@ -14,12 +17,7 @@ export interface SaveQueryOptions {
 }
 export type { IngestOptions, UrlType } from './ingest/types.js'
 export { detectUrlType } from './ingest/url-type.js'
-const MAX_EXTRACTED_TEXT_LENGTH = 12_000
 const MAX_SOURCE_NODES = 10
-
-function yamlString(value: string): string {
-  return JSON.stringify(value.replace(/[\r\n]+/g, ' '))
-}
 
 function timestampSlug(date: Date): string {
   const parts = [date.getUTCFullYear().toString().padStart(4, '0'), (date.getUTCMonth() + 1).toString().padStart(2, '0'), date.getUTCDate().toString().padStart(2, '0')]
@@ -37,17 +35,6 @@ function questionSlug(question: string): string {
   )
 }
 
-function safeFilename(url: string, suffix: string): string {
-  const parsed = new URL(url)
-  const base = `${parsed.hostname}${parsed.pathname}`
-    .replace(/[^\w-]/g, '_')
-    .replace(/_+/g, '_')
-    .replace(/^_+|_+$/g, '')
-    .slice(0, 80)
-
-  return `${base || 'resource'}${suffix}`
-}
-
 function ensureUniquePath(directory: string, fileName: string): string {
   let candidate = join(directory, fileName)
   let counter = 1
@@ -59,53 +46,6 @@ function ensureUniquePath(directory: string, fileName: string): string {
     counter += 1
   }
   return candidate
-}
-
-function stripHtml(value: string): string {
-  return value
-    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
-function extractTextContent(html: string): string {
-  return stripHtml(html).slice(0, MAX_EXTRACTED_TEXT_LENGTH)
-}
-
-function extractTitle(html: string, fallback: string): string {
-  const match = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)
-  return match ? stripHtml(match[1] ?? fallback) : fallback
-}
-
-function resolveContributor(options: IngestOptions): string {
-  return options.contributor ?? options.author ?? 'unknown'
-}
-
-async function fetchTweet(url: string, options: IngestOptions): Promise<{ content: string; fileName: string }> {
-  const parsed = new URL(url)
-  if (parsed.hostname === 'x.com') {
-    parsed.hostname = 'twitter.com'
-  }
-  const normalizedUrl = parsed.toString()
-  const oembedUrl = `https://publish.twitter.com/oembed?url=${encodeURIComponent(normalizedUrl)}&omit_script=true`
-  let tweetText = `Tweet at ${url} (could not fetch content)`
-  let tweetAuthor = 'unknown'
-
-  try {
-    const parsed = JSON.parse(await safeFetchText(oembedUrl)) as { html?: string; author_name?: string }
-    tweetText = stripHtml(parsed.html ?? tweetText)
-    tweetAuthor = parsed.author_name ?? tweetAuthor
-  } catch {
-    // Fall back to a URL stub if oEmbed fails.
-  }
-
-  const capturedAt = new Date().toISOString()
-  return {
-    fileName: safeFilename(url, '.md'),
-    content: `---\nsource_url: ${yamlString(url)}\ntype: tweet\nauthor: ${yamlString(tweetAuthor)}\ncaptured_at: ${yamlString(capturedAt)}\ncontributor: ${yamlString(resolveContributor(options))}\n---\n\n# Tweet by @${tweetAuthor}\n\n${tweetText}\n\nSource: ${url}\n`,
-  }
 }
 
 async function fetchArxiv(url: string, options: IngestOptions): Promise<{ content: string; fileName: string }> {
@@ -130,16 +70,6 @@ async function fetchArxiv(url: string, options: IngestOptions): Promise<{ conten
   }
 }
 
-async function fetchWebpage(url: string, options: IngestOptions): Promise<{ content: string; fileName: string }> {
-  const html = await safeFetchText(url)
-  const title = extractTitle(html, url)
-  const capturedAt = new Date().toISOString()
-  return {
-    fileName: safeFilename(url, '.md'),
-    content: `---\nsource_url: ${yamlString(url)}\ntype: webpage\ntitle: ${yamlString(title)}\ncaptured_at: ${yamlString(capturedAt)}\ncontributor: ${yamlString(resolveContributor(options))}\n---\n\n# ${title}\n\nSource: ${url}\n\n---\n\n${extractTextContent(html)}\n`,
-  }
-}
-
 function imageSuffixFromUrl(url: string): string {
   const pathname = new URL(url).pathname
   return pathname.includes('.') ? pathname.slice(pathname.lastIndexOf('.')) : '.jpg'
@@ -148,7 +78,7 @@ function imageSuffixFromUrl(url: string): string {
 const INGEST_HANDLERS: IngestHandlerMap = {
   'builtin:ingest:tweet': async (url, options) => ({ kind: 'text', asset: await fetchTweet(url, options) }),
   'builtin:ingest:arxiv': async (url, options) => ({ kind: 'text', asset: await fetchArxiv(url, options) }),
-  'builtin:ingest:github': async (url, options) => ({ kind: 'text', asset: await fetchWebpage(url, options) }),
+  'builtin:ingest:github': async (url, options) => ({ kind: 'text', asset: await fetchGitHub(url, options) }),
   'builtin:ingest:youtube': async (url, options) => ({ kind: 'text', asset: await fetchWebpage(url, options) }),
   'builtin:ingest:webpage': async (url, options) => ({ kind: 'text', asset: await fetchWebpage(url, options) }),
   'builtin:ingest:pdf': async () => ({ kind: 'binary', suffix: '.pdf' }),
