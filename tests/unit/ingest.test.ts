@@ -91,6 +91,7 @@ describe('detectUrlType', () => {
     expect(detectUrlType('https://www.youtube.com/playlist?list=PLgraphifyRoadmap123&feature=share')).toBe('youtube')
     expect(detectUrlType('https://www.youtube.com/@graphify?feature=share')).toBe('youtube')
     expect(detectUrlType('https://www.youtube.com/channel/UCgraphifyRoadmap1234567?feature=share')).toBe('youtube')
+    expect(detectUrlType('https://www.youtube.com/c/graphify?feature=share')).toBe('youtube')
     expect(detectUrlType('https://notyoutube.com/watch?v=dQw4w9WgXcQ')).toBe('webpage')
     expect(detectUrlType('https://www.youtube.com/playlist')).toBe('webpage')
     expect(detectUrlType('https://www.youtube.com/playlist?list=')).toBe('webpage')
@@ -102,6 +103,8 @@ describe('detectUrlType', () => {
     expect(detectUrlType('https://www.youtube.com/channel/UCgraphifyRoadmap1234567/')).toBe('webpage')
     expect(detectUrlType('https://www.youtube.com/channel/UCgraphifyRoadmap1234567/videos')).toBe('webpage')
     expect(detectUrlType('https://www.youtube.com/channel/not-a-channel-id')).toBe('webpage')
+    expect(detectUrlType('https://www.youtube.com/c/graphify/')).toBe('webpage')
+    expect(detectUrlType('https://www.youtube.com/c/graphify/videos')).toBe('webpage')
     expect(detectUrlType('https://www.youtube.com/shorts/dQw4w9WgXcQ/clips')).toBe('webpage')
     expect(detectUrlType('https://www.youtube.com/embed/dQw4w9WgXcQ/live_chat')).toBe('webpage')
     expect(detectUrlType('https://www.youtube.com/live/dQw4w9WgXcQ/chat')).toBe('webpage')
@@ -825,32 +828,43 @@ describe('ingest', () => {
 
   test('saves YouTube video URLs as structured video markdown', async () => {
     await withTempDir(async (tempDir) => {
+      const requestUrls: string[] = []
       vi.stubGlobal(
         'fetch',
         vi.fn(async (input) => {
           const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
-          expect(requestUrl).toBe(
-            'https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ&format=json',
-          )
-          return new Response(
-            JSON.stringify({
-              title: 'Graphify Demo Walkthrough',
-              author_name: 'Graphify Channel',
-              author_url: 'https://www.youtube.com/@graphify',
-              provider_name: 'YouTube',
-              thumbnail_url: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg',
-            }),
-            {
-              status: 200,
-              headers: { 'content-type': 'application/json' },
-            },
-          )
+          requestUrls.push(requestUrl)
+          if (requestUrl === 'https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ&format=json') {
+            return new Response(
+              JSON.stringify({
+                title: 'Graphify Demo Walkthrough',
+                author_name: 'Graphify Channel',
+                author_url: 'https://www.youtube.com/@graphify',
+                provider_name: 'YouTube',
+                thumbnail_url: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg',
+              }),
+              {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              },
+            )
+          }
+
+          expect(requestUrl).toBe('https://www.youtube.com/watch?v=dQw4w9WgXcQ')
+          return new Response(readIngestFixture('youtube-video-no-chapters.html'), {
+            status: 200,
+            headers: { 'content-type': 'text/html; charset=utf-8' },
+          })
         }),
       )
 
       const output = await ingest('https://youtu.be/dQw4w9WgXcQ?si=graphify', join(tempDir, 'raw'), { contributor: 'graphify-ts' })
       const content = readFileSync(output, 'utf8')
 
+      expect(requestUrls).toEqual([
+        'https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ&format=json',
+        'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+      ])
       expect(content).toContain('type: youtube_video')
       expect(content).toContain('source_url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"')
       expect(content).toContain('title: "Graphify Demo Walkthrough"')
@@ -874,6 +888,64 @@ describe('ingest', () => {
       expect(content).toContain('[Watch on YouTube](https://www.youtube.com/watch?v=dQw4w9WgXcQ)')
       expect(content).toContain('[Embed Player](https://www.youtube.com/embed/dQw4w9WgXcQ)')
       expect(content).toContain('[Thumbnail](https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg)')
+      expect(content).not.toContain('video_chapter_count:')
+      expect(content).not.toContain('## Chapters')
+      expect(content).not.toContain('provenance:')
+    })
+  })
+
+  test('adds YouTube chapter context when the canonical watch page exposes chapter markers', async () => {
+    await withTempDir(async (tempDir) => {
+      const requestUrls: string[] = []
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input) => {
+          const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+          requestUrls.push(requestUrl)
+          if (requestUrl === 'https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ&format=json') {
+            return new Response(
+              JSON.stringify({
+                title: 'Graphify Demo Walkthrough',
+                author_name: 'Graphify Channel',
+                author_url: 'https://www.youtube.com/@graphify',
+                provider_name: 'YouTube',
+                thumbnail_url: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg',
+              }),
+              {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              },
+            )
+          }
+
+          expect(requestUrl).toBe('https://www.youtube.com/watch?v=dQw4w9WgXcQ')
+          return new Response(readIngestFixture('youtube-video.html'), {
+            status: 200,
+            headers: { 'content-type': 'text/html; charset=utf-8' },
+          })
+        }),
+      )
+
+      const output = await ingest('https://www.youtube.com/watch?v=dQw4w9WgXcQ&feature=share', join(tempDir, 'raw'), {
+        contributor: 'graphify-ts',
+      })
+      const content = readFileSync(output, 'utf8')
+
+      expect(requestUrls).toEqual([
+        'https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ&format=json',
+        'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+      ])
+      expect(content).toContain('type: youtube_video')
+      expect(content).toContain('source_url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"')
+      expect(content).toContain('video_capture_status: "oembed"')
+      expect(content).toContain('video_chapter_count: 3')
+      expect(content).toContain('## Chapters')
+      expect(content).toContain('- 00:00 Intro')
+      expect(content).toContain('- 02:35 Route-aware ingest')
+      expect(content).toContain('- 05:20 Next roadmap slice')
+      expect(content).toContain('## Context')
+      expect(content).toContain('- Chapters: 3')
+      expect(content).not.toContain('feature=share')
       expect(content).not.toContain('provenance:')
     })
   })
@@ -886,19 +958,27 @@ describe('ingest', () => {
         vi.fn(async (input) => {
           const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
           requestUrls.push(requestUrl)
-          return new Response(
-            JSON.stringify({
-              title: 'Graphify Demo Walkthrough',
-              author_name: 'Graphify Channel',
-              author_url: 'https://www.youtube.com/@graphify',
-              provider_name: 'YouTube',
-              thumbnail_url: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg',
-            }),
-            {
-              status: 200,
-              headers: { 'content-type': 'application/json' },
-            },
-          )
+          if (requestUrl === 'https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ&format=json') {
+            return new Response(
+              JSON.stringify({
+                title: 'Graphify Demo Walkthrough',
+                author_name: 'Graphify Channel',
+                author_url: 'https://www.youtube.com/@graphify',
+                provider_name: 'YouTube',
+                thumbnail_url: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg',
+              }),
+              {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              },
+            )
+          }
+
+          expect(requestUrl).toBe('https://www.youtube.com/watch?v=dQw4w9WgXcQ')
+          return new Response(readIngestFixture('youtube-video-no-chapters.html'), {
+            status: 200,
+            headers: { 'content-type': 'text/html; charset=utf-8' },
+          })
         }),
       )
 
@@ -909,8 +989,11 @@ describe('ingest', () => {
 
       expect(requestUrls).toEqual([
         'https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ&format=json',
+        'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
         'https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ&format=json',
+        'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
         'https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ&format=json',
+        'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
       ])
       expect(basename(shortsOutput)).toBe('youtube_dQw4w9WgXcQ.md')
       expect(basename(liveOutput)).toMatch(/^youtube_dQw4w9WgXcQ(?:_\d+)?\.md$/)
@@ -921,6 +1004,7 @@ describe('ingest', () => {
       expect(content).toContain('video_capture_status: "oembed"')
       expect(content).toContain('[Watch on YouTube](https://www.youtube.com/watch?v=dQw4w9WgXcQ)')
       expect(content).toContain('[Embed Player](https://www.youtube.com/embed/dQw4w9WgXcQ)')
+      expect(content).not.toContain('## Chapters')
     })
   })
 
@@ -1138,6 +1222,121 @@ describe('ingest', () => {
     })
   })
 
+  test('saves YouTube /c/<slug> URLs as structured channel markdown', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input) => {
+          const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+          expect(requestUrl).toBe('https://www.youtube.com/c/graphify')
+          return new Response(readIngestFixture('youtube-channel.html'), {
+            status: 200,
+            headers: { 'content-type': 'text/html; charset=utf-8' },
+          })
+        }),
+      )
+
+      const output = await ingest('https://www.youtube.com/c/graphify?feature=share', join(tempDir, 'raw'), {
+        contributor: 'graphify-ts',
+      })
+      const content = readFileSync(output, 'utf8')
+
+      expect(basename(output)).toBe('youtube_channel_graphify.md')
+      expect(content).toContain('type: youtube_channel')
+      expect(content).toContain('source_url: "https://www.youtube.com/@graphify"')
+      expect(content).toContain('title: "Graphify Channel"')
+      expect(content).toContain('author: "Graphify Channel"')
+      expect(content).toContain('description: "Deterministic roadmap demos, graph explainers, and structured ingest updates."')
+      expect(content).toContain('contributor: "graphify-ts"')
+      expect(content).toContain('youtube_platform: "youtube"')
+      expect(content).toContain('youtube_kind: "channel"')
+      expect(content).toContain('youtube_channel_handle: "graphify"')
+      expect(content).toContain('youtube_channel_id: "UCgraphifyRoadmap1234567"')
+      expect(content).toContain('youtube_channel_custom_slug: "graphify"')
+      expect(content).toContain('youtube_capture_status: "html"')
+      expect(content).toContain('youtube_thumbnail_url: "https://yt3.googleusercontent.com/graphify-channel-photo=s176"')
+      expect(content).toContain('# YouTube Channel: Graphify Channel')
+      expect(content).toContain('## Channel')
+      expect(content).toContain('YouTube channel @graphify.')
+      expect(content).toContain('## Context')
+      expect(content).toContain('- Handle: @graphify')
+      expect(content).toContain('- Channel ID: UCgraphifyRoadmap1234567')
+      expect(content).toContain('- Custom URL: /c/graphify')
+      expect(content).toContain('- Capture Status: html')
+      expect(content).toContain('## Links')
+      expect(content).toContain('[Open Channel](https://www.youtube.com/@graphify)')
+      expect(content).not.toContain('feature=share')
+      expect(content).not.toContain('provenance:')
+    })
+  })
+
+  test('saves YouTube /c/<slug> URLs as structured channel markdown when the root page canonicalizes to @handle without exposing externalId', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input) => {
+          const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+          expect(requestUrl).toBe('https://www.youtube.com/c/graphify')
+          return new Response(
+            '<html><head><title>Graphify Channel - YouTube</title><link rel="canonical" href="https://www.youtube.com/@graphify" /><meta property="og:url" content="https://www.youtube.com/@graphify" /><meta property="og:title" content="Graphify Channel" /><meta property="og:description" content="Deterministic roadmap demos, graph explainers, and structured ingest updates." /><meta property="og:image" content="https://yt3.googleusercontent.com/graphify-channel-photo=s176" /><meta name="author" content="Graphify Channel" /><script>var ytInitialData = {"header":{"c4TabbedHeaderRenderer":{"channelHandleText":{"simpleText":"@graphify"}}},"metadata":{"channelMetadataRenderer":{"title":"Graphify Channel","description":"Deterministic roadmap demos, graph explainers, and structured ingest updates.","vanityChannelUrl":"https://www.youtube.com/@graphify"}}};</script></head><body><main><h1>Graphify Channel</h1></main></body></html>',
+            {
+              status: 200,
+              headers: { 'content-type': 'text/html; charset=utf-8' },
+            },
+          )
+        }),
+      )
+
+      const output = await ingest('https://www.youtube.com/c/graphify', join(tempDir, 'raw'))
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: youtube_channel')
+      expect(content).toContain('source_url: "https://www.youtube.com/@graphify"')
+      expect(content).toContain('youtube_channel_handle: "graphify"')
+      expect(content).toContain('youtube_channel_custom_slug: "graphify"')
+      expect(content).toContain('youtube_capture_status: "html"')
+      expect(content).not.toContain('type: webpage')
+    })
+  })
+
+  test('drops unconfirmed /c/<slug> metadata when a custom-channel request redirects to a different root channel identity', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input) => {
+          const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+          if (requestUrl === 'https://www.youtube.com/c/graphify') {
+            return new Response(null, {
+              status: 302,
+              headers: { location: 'https://www.youtube.com/@otherchannel' },
+            })
+          }
+
+          expect(requestUrl).toBe('https://www.youtube.com/@otherchannel')
+          return new Response(
+            '<html><head><title>Other Channel - YouTube</title><link rel="canonical" href="https://www.youtube.com/@otherchannel" /><meta property="og:url" content="https://www.youtube.com/@otherchannel" /><meta property="og:title" content="Other Channel" /><meta property="og:description" content="Different redirected channel." /><meta property="og:image" content="https://yt3.googleusercontent.com/other-channel-photo=s176" /><meta name="author" content="Other Channel" /><script>var ytInitialData = {"header":{"c4TabbedHeaderRenderer":{"channelHandleText":{"simpleText":"@otherchannel"}}},"metadata":{"channelMetadataRenderer":{"title":"Other Channel","description":"Different redirected channel.","vanityChannelUrl":"https://www.youtube.com/@otherchannel","externalId":"UC1234567890123456789012"}}};</script></head><body><main><h1>Other Channel</h1></main></body></html>',
+            {
+              status: 200,
+              headers: { 'content-type': 'text/html; charset=utf-8' },
+            },
+          )
+        }),
+      )
+
+      const output = await ingest('https://www.youtube.com/c/graphify', join(tempDir, 'raw'))
+      const content = readFileSync(output, 'utf8')
+
+      expect(basename(output)).toBe('youtube_channel_otherchannel.md')
+      expect(content).toContain('type: youtube_channel')
+      expect(content).toContain('source_url: "https://www.youtube.com/@otherchannel"')
+      expect(content).toContain('youtube_channel_handle: "otherchannel"')
+      expect(content).toContain('youtube_channel_id: "UC1234567890123456789012"')
+      expect(content).not.toContain('youtube_channel_custom_slug:')
+      expect(content).not.toContain('- Custom URL: /c/graphify')
+      expect(content).not.toContain('type: webpage')
+    })
+  })
+
   test('saves YouTube /channel/<id> URLs as structured channel markdown when the root page canonicalizes to @handle without exposing externalId', async () => {
     await withTempDir(async (tempDir) => {
       vi.stubGlobal(
@@ -1183,6 +1382,22 @@ describe('ingest', () => {
     })
   })
 
+  test('falls back to generic webpage capture when fetched YouTube /c/<slug> HTML does not confirm a channel page', async () => {
+    await withTempDir(async (tempDir) => {
+      stubHtmlFetch(
+        '<html><head><title>Graphify Consent - YouTube</title><link rel="canonical" href="https://www.youtube.com/c/graphify" /></head><body><main><script>var ytInitialData = {"vanityChannelUrl":"https://www.youtube.com/@graphify"};</script><p>Consent page.</p></main></body></html>',
+      )
+
+      const output = await ingest('https://www.youtube.com/c/graphify', join(tempDir, 'raw'))
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: webpage')
+      expect(content).toContain('source_url: "https://www.youtube.com/c/graphify"')
+      expect(content).not.toContain('type: youtube_channel')
+      expect(content).not.toContain('youtube_kind:')
+    })
+  })
+
   test('falls back to generic webpage capture when a root YouTube @handle request resolves to a nested channel tab', async () => {
     await withTempDir(async (tempDir) => {
       stubHtmlFetch(
@@ -1190,6 +1405,22 @@ describe('ingest', () => {
       )
 
       const output = await ingest('https://www.youtube.com/@graphify', join(tempDir, 'raw'))
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: webpage')
+      expect(content).toContain('source_url: "https://www.youtube.com/@graphify/videos"')
+      expect(content).not.toContain('type: youtube_channel')
+      expect(content).not.toContain('youtube_kind:')
+    })
+  })
+
+  test('falls back to generic webpage capture when a root YouTube /c/<slug> request resolves to a nested channel tab', async () => {
+    await withTempDir(async (tempDir) => {
+      stubHtmlFetch(
+        '<html><head><title>Graphify Videos - YouTube</title><link rel="canonical" href="https://www.youtube.com/@graphify/videos" /><meta property="og:url" content="https://www.youtube.com/@graphify/videos" /><meta property="og:title" content="Graphify Videos" /><meta name="description" content="Channel videos tab." /></head><body><main><script>var ytInitialData = {"channelMetadataRenderer":{"title":"Graphify Channel","vanityChannelUrl":"https://www.youtube.com/@graphify","externalId":"UCgraphifyRoadmap1234567"},"header":{"c4TabbedHeaderRenderer":{"channelHandleText":{"simpleText":"@graphify"}}}};</script><p>Videos tab content.</p></main></body></html>',
+      )
+
+      const output = await ingest('https://www.youtube.com/c/graphify', join(tempDir, 'raw'))
       const content = readFileSync(output, 'utf8')
 
       expect(content).toContain('type: webpage')
@@ -1224,6 +1455,22 @@ describe('ingest', () => {
 
       expect(content).toContain('type: webpage')
       expect(content).toContain('source_url: "https://www.youtube.com/@graphify"')
+      expect(content).not.toContain('type: youtube_channel')
+      expect(content).not.toContain('youtube_kind:')
+    })
+  })
+
+  test('falls back to generic webpage capture for YouTube /c/<slug> routes with a trailing slash', async () => {
+    await withTempDir(async (tempDir) => {
+      stubHtmlFetch(
+        '<html><head><title>Graphify Channel - YouTube</title><link rel="canonical" href="https://www.youtube.com/c/graphify" /><meta property="og:url" content="https://www.youtube.com/c/graphify" /></head><body><main><p>Channel page.</p></main></body></html>',
+      )
+
+      const output = await ingest('https://www.youtube.com/c/graphify/', join(tempDir, 'raw'))
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: webpage')
+      expect(content).toContain('source_url: "https://www.youtube.com/c/graphify"')
       expect(content).not.toContain('type: youtube_channel')
       expect(content).not.toContain('youtube_kind:')
     })
@@ -1275,6 +1522,41 @@ describe('ingest', () => {
       expect(content).toContain('- Note: channel metadata unavailable; preserved canonical channel URL and derived handle metadata only.')
       expect(content).toContain('## Links')
       expect(content).toContain('[Open Channel](https://www.youtube.com/@graphify)')
+      expect(content).not.toContain('feature=share')
+      expect(content).not.toContain('provenance:')
+    })
+  })
+
+  test('makes youtube custom-channel fallback behavior explicit when channel metadata fetch fails', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response('unavailable', { status: 503, headers: { 'content-type': 'text/plain' } })),
+      )
+
+      const output = await ingest('https://www.youtube.com/c/graphify?feature=share', join(tempDir, 'raw'), {
+        contributor: 'graphify-ts',
+      })
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: youtube_channel')
+      expect(content).toContain('source_url: "https://www.youtube.com/c/graphify"')
+      expect(content).toContain('title: "YouTube Channel: /c/graphify"')
+      expect(content).toContain('author: "unknown"')
+      expect(content).toContain('youtube_platform: "youtube"')
+      expect(content).toContain('youtube_kind: "channel"')
+      expect(content).not.toContain('youtube_channel_handle:')
+      expect(content).toContain('youtube_channel_custom_slug: "graphify"')
+      expect(content).toContain('youtube_capture_status: "fallback"')
+      expect(content).toContain('# YouTube Channel: /c/graphify')
+      expect(content).toContain('## Channel')
+      expect(content).toContain('Channel metadata could not be fetched.')
+      expect(content).toContain('## Context')
+      expect(content).toContain('- Custom URL: /c/graphify')
+      expect(content).toContain('- Capture Status: fallback')
+      expect(content).toContain('- Note: channel metadata unavailable; preserved canonical channel URL and derived custom-channel metadata only.')
+      expect(content).toContain('## Links')
+      expect(content).toContain('[Open Channel](https://www.youtube.com/c/graphify)')
       expect(content).not.toContain('feature=share')
       expect(content).not.toContain('provenance:')
     })
@@ -1424,7 +1706,17 @@ describe('ingest', () => {
 
       vi.stubGlobal(
         'fetch',
-        vi.fn(async () => new Response(JSON.stringify(responses.shift()), { status: 200, headers: { 'content-type': 'application/json' } })),
+        vi.fn(async (input) => {
+          const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+          if (requestUrl.includes('/oembed?url=')) {
+            return new Response(JSON.stringify(responses.shift()), { status: 200, headers: { 'content-type': 'application/json' } })
+          }
+
+          return new Response(readIngestFixture('youtube-video-no-chapters.html'), {
+            status: 200,
+            headers: { 'content-type': 'text/html; charset=utf-8' },
+          })
+        }),
       )
 
       const firstOutput = await ingest('https://youtu.be/dQw4w9WgXcQ', join(tempDir, 'raw'))

@@ -1,7 +1,7 @@
 import type { IngestTextAsset } from './ingest/dispatch.js'
 import type { IngestOptions } from './ingest/types.js'
 import { buildWebpageAsset, extractCanonicalUrl, extractMetaContent, extractTitle, fetchWebpage, findCanonicalUrl, resolveContributor, yamlString } from './ingest-web.js'
-import { safeFetchText } from '../shared/security.js'
+import { safeFetchText, safeFetchTextWithMetadata } from '../shared/security.js'
 
 const YOUTUBE_HOSTS = new Set(['youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be'])
 
@@ -29,6 +29,7 @@ interface YouTubeChannelUrlMetadata extends YouTubeBaseMetadata {
   route: 'channel'
   handle: string | null
   channelId: string | null
+  customSlug: string | null
 }
 
 interface YouTubeCapture {
@@ -37,6 +38,7 @@ interface YouTubeCapture {
   authorUrl: string | null
   providerName: string
   thumbnailUrl: string | null
+  chapters: YouTubeVideoChapter[]
   captureStatus: 'oembed' | 'fallback'
 }
 
@@ -48,12 +50,18 @@ interface YouTubePlaylistCapture {
   captureStatus: 'html' | 'fallback'
 }
 
+interface YouTubeVideoChapter {
+  title: string
+  startMillis: number
+}
+
 interface YouTubeChannelCapture {
   title: string
   authorName: string
   description: string
   handle: string | null
   channelId: string | null
+  customSlug: string | null
   thumbnailUrl: string | null
   captureStatus: 'html' | 'fallback'
 }
@@ -80,8 +88,16 @@ function isYouTubeChannelId(value: string): boolean {
   return /^UC[A-Za-z0-9_-]{22}$/.test(value)
 }
 
+function isYouTubeCustomSlug(value: string): boolean {
+  return /^[A-Za-z0-9._-]{1,100}$/.test(value)
+}
+
 function normalizeYouTubeHandle(handle: string): string {
   return handle.toLowerCase()
+}
+
+function normalizeYouTubeCustomSlug(customSlug: string): string {
+  return customSlug.toLowerCase()
 }
 
 function trimOptional(value?: string): string | null {
@@ -99,6 +115,10 @@ function canonicalChannelUrl(handle: string): string {
 
 function canonicalChannelIdUrl(channelId: string): string {
   return `https://www.youtube.com/channel/${encodeURIComponent(channelId)}`
+}
+
+function canonicalCustomChannelUrl(customSlug: string): string {
+  return `https://www.youtube.com/c/${encodeURIComponent(normalizeYouTubeCustomSlug(customSlug))}`
 }
 
 function extractPlaylistIdFromUrl(url: string): string | null {
@@ -146,6 +166,23 @@ function extractChannelIdFromUrl(url: string): string | null {
   }
 }
 
+function extractCustomChannelSlugFromUrl(url: string): string | null {
+  try {
+    const parsed = new URL(url)
+    const hostname = parsed.hostname.toLowerCase()
+    if (!isYouTubeHost(hostname) || hostname === 'youtu.be') {
+      return null
+    }
+
+    const customSlugMatch = /^\/c\/([A-Za-z0-9._-]{1,100})$/.exec(parsed.pathname)
+    return customSlugMatch?.[1] && isYouTubeCustomSlug(customSlugMatch[1])
+      ? normalizeYouTubeCustomSlug(customSlugMatch[1])
+      : null
+  } catch {
+    return null
+  }
+}
+
 function parseYouTubeUrl(url: string): YouTubeUrlMetadata | null {
   const parsed = new URL(url)
   const hostname = parsed.hostname.toLowerCase()
@@ -160,6 +197,7 @@ function parseYouTubeUrl(url: string): YouTubeUrlMetadata | null {
       sourceUrl: canonicalChannelUrl(channelHandle),
       handle: channelHandle,
       channelId: null,
+      customSlug: null,
       platform: 'youtube',
     }
   }
@@ -171,6 +209,19 @@ function parseYouTubeUrl(url: string): YouTubeUrlMetadata | null {
       sourceUrl: canonicalChannelIdUrl(channelId),
       handle: null,
       channelId,
+      customSlug: null,
+      platform: 'youtube',
+    }
+  }
+
+  const customSlug = extractCustomChannelSlugFromUrl(url)
+  if (customSlug) {
+    return {
+      route: 'channel',
+      sourceUrl: canonicalCustomChannelUrl(customSlug),
+      handle: null,
+      channelId: null,
+      customSlug,
       platform: 'youtube',
     }
   }
@@ -220,6 +271,42 @@ export function isYouTubeContentUrl(url: string): boolean {
   return parseYouTubeUrl(url) !== null
 }
 
+function extractYouTubeVideoIdFromUrl(url: string): string | null {
+  const metadata = parseYouTubeUrl(url)
+  return metadata?.route === 'video' ? metadata.videoId : null
+}
+
+function extractYouTubeVideoChaptersFromHtml(html: string): YouTubeVideoChapter[] {
+  const chapters: YouTubeVideoChapter[] = []
+  const seen = new Set<string>()
+  const chapterPattern =
+    /"chapterRenderer"\s*:\s*\{[\s\S]*?"title"\s*:\s*\{[\s\S]*?(?:"simpleText"\s*:\s*"([^"]+)"|"runs"\s*:\s*\[\s*\{\s*"text"\s*:\s*"([^"]+)")[\s\S]*?"timeRangeStartMillis"\s*:\s*(\d+)/gi
+
+  for (const match of html.matchAll(chapterPattern)) {
+    const title = trimOptional(match[1] ?? match[2])
+    const startMillis = Number.parseInt(match[3] ?? '', 10)
+    if (!title || Number.isNaN(startMillis)) {
+      continue
+    }
+
+    const key = `${startMillis}:${title}`
+    if (seen.has(key)) {
+      continue
+    }
+
+    seen.add(key)
+    chapters.push({ title, startMillis })
+  }
+
+  return chapters.sort((left, right) => left.startMillis - right.startMillis)
+}
+
+function confirmVideoRoute(html: string, metadata: YouTubeVideoUrlMetadata, finalUrl: string): boolean {
+  const canonicalVideoId = extractYouTubeVideoIdFromUrl(extractCanonicalUrl(html, finalUrl))
+  const finalVideoId = extractYouTubeVideoIdFromUrl(finalUrl)
+  return canonicalVideoId === metadata.videoId || finalVideoId === metadata.videoId
+}
+
 async function captureYouTubeVideo(metadata: YouTubeVideoUrlMetadata): Promise<YouTubeCapture> {
   const fallbackTitle = `YouTube Video: ${metadata.videoId}`
   let title = fallbackTitle
@@ -227,6 +314,7 @@ async function captureYouTubeVideo(metadata: YouTubeVideoUrlMetadata): Promise<Y
   let authorUrl: string | null = null
   let providerName = 'YouTube'
   let thumbnailUrl: string | null = null
+  let chapters: YouTubeVideoChapter[] = []
   let captureStatus: 'oembed' | 'fallback' = 'fallback'
 
   try {
@@ -248,11 +336,22 @@ async function captureYouTubeVideo(metadata: YouTubeVideoUrlMetadata): Promise<Y
     authorUrl = trimOptional(parsed.author_url)
     providerName = trimOptional(parsed.provider_name) ?? providerName
     thumbnailUrl = trimOptional(parsed.thumbnail_url)
+
+    if (captureStatus === 'oembed') {
+      try {
+        const { text: html, finalUrl } = await safeFetchTextWithMetadata(metadata.sourceUrl)
+        if (confirmVideoRoute(html, metadata, finalUrl)) {
+          chapters = extractYouTubeVideoChaptersFromHtml(html)
+        }
+      } catch {
+        // Keep chapter context optional so successful oEmbed metadata still lands.
+      }
+    }
   } catch {
     // Keep the explicit fallback payload below.
   }
 
-  return { title, authorName, authorUrl, providerName, thumbnailUrl, captureStatus }
+  return { title, authorName, authorUrl, providerName, thumbnailUrl, chapters, captureStatus }
 }
 
 function stripYouTubeTitleSuffix(value: string): string {
@@ -295,7 +394,26 @@ function extractChannelId(html: string): string | null {
   return /"externalId"\s*:\s*"(UC[A-Za-z0-9_-]{22})"/i.exec(html)?.[1] ?? null
 }
 
-function confirmChannelRoute(html: string, metadata: YouTubeChannelUrlMetadata): boolean {
+function extractCustomChannelSlugFromHtml(html: string): string | null {
+  const vanityUrlMatch = /"vanityChannelUrl"\s*:\s*"https?:\/\/www\.youtube\.com\/c\/([A-Za-z0-9._-]{1,100})"/i.exec(html)
+  return vanityUrlMatch?.[1] ? normalizeYouTubeCustomSlug(vanityUrlMatch[1]) : null
+}
+
+function resolveConfirmedCustomSlug(html: string, metadata: YouTubeChannelUrlMetadata, finalUrl: string): string | null {
+  if (metadata.customSlug === null) {
+    return null
+  }
+
+  const canonicalUrl = findCanonicalUrl(html)
+  const canonicalCustomSlug = canonicalUrl ? extractCustomChannelSlugFromUrl(canonicalUrl) : null
+  const htmlCustomSlug = extractCustomChannelSlugFromHtml(html)
+  const finalCustomSlug = extractCustomChannelSlugFromUrl(finalUrl)
+  return canonicalCustomSlug === metadata.customSlug || htmlCustomSlug === metadata.customSlug || finalCustomSlug === metadata.customSlug
+    ? metadata.customSlug
+    : null
+}
+
+function confirmChannelRoute(html: string, metadata: YouTubeChannelUrlMetadata, finalUrl: string): boolean {
   if (!hasChannelPageMarker(html)) {
     return false
   }
@@ -303,19 +421,42 @@ function confirmChannelRoute(html: string, metadata: YouTubeChannelUrlMetadata):
   const canonicalUrl = findCanonicalUrl(html)
   const canonicalHandle = canonicalUrl ? extractChannelHandleFromUrl(canonicalUrl) : null
   const canonicalChannelId = canonicalUrl ? extractChannelIdFromUrl(canonicalUrl) : null
-  if (canonicalUrl && !canonicalHandle && !canonicalChannelId) {
+  const canonicalCustomSlug = canonicalUrl ? extractCustomChannelSlugFromUrl(canonicalUrl) : null
+  if (canonicalUrl && !canonicalHandle && !canonicalChannelId && !canonicalCustomSlug) {
+    return false
+  }
+
+  const finalHandle = extractChannelHandleFromUrl(finalUrl)
+  const finalChannelId = extractChannelIdFromUrl(finalUrl)
+  const finalCustomSlug = extractCustomChannelSlugFromUrl(finalUrl)
+  if (metadata.customSlug !== null && finalHandle === null && finalChannelId === null && finalCustomSlug === null) {
     return false
   }
 
   const htmlHandle = extractChannelHandleFromHtml(html)
   const htmlChannelId = extractChannelId(html)
-  const handleMatches = metadata.handle !== null && (canonicalHandle === metadata.handle || htmlHandle === metadata.handle)
-  const channelIdMatches = metadata.channelId !== null && (canonicalChannelId === metadata.channelId || htmlChannelId === metadata.channelId)
-  if (channelIdMatches || handleMatches) {
+  const htmlCustomSlug = extractCustomChannelSlugFromHtml(html)
+  const handleMatches = metadata.handle !== null && (canonicalHandle === metadata.handle || htmlHandle === metadata.handle || finalHandle === metadata.handle)
+  const channelIdMatches =
+    metadata.channelId !== null && (canonicalChannelId === metadata.channelId || htmlChannelId === metadata.channelId || finalChannelId === metadata.channelId)
+  const customSlugMatches =
+    metadata.customSlug !== null &&
+    (canonicalCustomSlug === metadata.customSlug || htmlCustomSlug === metadata.customSlug || finalCustomSlug === metadata.customSlug)
+  if (channelIdMatches || handleMatches || customSlugMatches) {
     return true
   }
 
-  return metadata.channelId !== null && canonicalChannelId === null && htmlChannelId === null && (canonicalHandle !== null || htmlHandle !== null)
+  if (
+    metadata.channelId !== null &&
+    canonicalChannelId === null &&
+    htmlChannelId === null &&
+    finalChannelId === null &&
+    (canonicalHandle !== null || htmlHandle !== null || finalHandle !== null)
+  ) {
+    return true
+  }
+
+  return metadata.customSlug !== null && finalCustomSlug === null && (finalHandle !== null || finalChannelId !== null)
 }
 
 async function captureYouTubePlaylist(
@@ -355,17 +496,24 @@ async function captureYouTubePlaylist(
 async function captureYouTubeChannel(
   metadata: YouTubeChannelUrlMetadata,
 ): Promise<{ kind: 'channel'; capture: YouTubeChannelCapture } | { kind: 'webpage'; html: string }> {
-  const fallbackTitle = metadata.handle ? `YouTube Channel: @${metadata.handle}` : `YouTube Channel: ${metadata.channelId ?? metadata.sourceUrl}`
+  const fallbackTitle = metadata.handle
+    ? `YouTube Channel: @${metadata.handle}`
+    : metadata.channelId
+      ? `YouTube Channel: ${metadata.channelId}`
+      : metadata.customSlug
+        ? `YouTube Channel: /c/${metadata.customSlug}`
+        : `YouTube Channel: ${metadata.sourceUrl}`
   const fallbackAuthorName = metadata.handle ? `@${metadata.handle}` : 'unknown'
 
   try {
-    const html = await safeFetchText(metadata.sourceUrl)
-    if (!confirmChannelRoute(html, metadata)) {
+    const { text: html, finalUrl } = await safeFetchTextWithMetadata(metadata.sourceUrl)
+    if (!confirmChannelRoute(html, metadata, finalUrl)) {
       return { kind: 'webpage', html }
     }
 
     const resolvedHandle = extractChannelHandleFromHtml(html) ?? metadata.handle
     const resolvedChannelId = extractChannelId(html) ?? metadata.channelId
+    const resolvedCustomSlug = resolveConfirmedCustomSlug(html, metadata, finalUrl)
     const title = stripYouTubeTitleSuffix(extractMetaContent(html, 'property', 'og:title') || extractTitle(html, fallbackTitle))
     return {
       kind: 'channel',
@@ -375,6 +523,7 @@ async function captureYouTubeChannel(
         description: trimOptional(extractMetaContent(html, 'name', 'description') || extractMetaContent(html, 'property', 'og:description')) ?? '',
         handle: resolvedHandle,
         channelId: resolvedChannelId,
+        customSlug: resolvedCustomSlug,
         thumbnailUrl: trimOptional(extractMetaContent(html, 'property', 'og:image')),
         captureStatus: 'html',
       },
@@ -388,6 +537,7 @@ async function captureYouTubeChannel(
         description: '',
         handle: metadata.handle,
         channelId: metadata.channelId,
+        customSlug: metadata.customSlug,
         thumbnailUrl: null,
         captureStatus: 'fallback',
       },
@@ -401,6 +551,18 @@ function youTubeHeading(title: string): string {
 
 function youTubeFilename(videoId: string): string {
   return `youtube_${videoId}.md`
+}
+
+function formatYouTubeChapterTimestamp(startMillis: number): string {
+  const totalSeconds = Math.max(0, Math.floor(startMillis / 1000))
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+  }
+
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
 }
 
 function youTubePlaylistHeading(title: string): string {
@@ -463,17 +625,13 @@ function renderChannelSummary(metadata: YouTubeChannelUrlMetadata, captured: You
   return 'YouTube channel metadata captured from the webpage.'
 }
 
-function channelFallbackMetadataLabel(handle: string | null, channelId: string | null): string {
-  if (handle && channelId) {
-    return 'handle/channel-id'
-  }
-  if (handle) {
-    return 'handle'
-  }
-  if (channelId) {
-    return 'channel-id'
-  }
-  return 'channel'
+function channelFallbackMetadataLabel(handle: string | null, channelId: string | null, customSlug: string | null): string {
+  const labels = [
+    ...(handle ? ['handle'] : []),
+    ...(channelId ? ['channel-id'] : []),
+    ...(customSlug ? ['custom-channel'] : []),
+  ]
+  return labels.length > 0 ? labels.join('/') : 'channel'
 }
 
 async function fetchYouTubeVideoAsset(metadata: YouTubeVideoUrlMetadata, options: IngestOptions): Promise<IngestTextAsset> {
@@ -483,6 +641,7 @@ async function fetchYouTubeVideoAsset(metadata: YouTubeVideoUrlMetadata, options
     `- Platform: ${metadata.platform}`,
     `- Video ID: ${metadata.videoId}`,
     ...(captured.authorName !== 'unknown' ? [`- Channel: ${captured.authorName}`] : []),
+    ...(captured.chapters.length > 0 ? [`- Chapters: ${captured.chapters.length}`] : []),
     `- Capture Status: ${captured.captureStatus}`,
     ...(captured.captureStatus === 'fallback' ? ['- Note: oEmbed unavailable; preserved canonical video URL and derived video metadata only.'] : []),
   ]
@@ -508,6 +667,7 @@ async function fetchYouTubeVideoAsset(metadata: YouTubeVideoUrlMetadata, options
       `video_provider: ${yamlString(captured.providerName)}`,
       `video_capture_status: ${yamlString(captured.captureStatus)}`,
       ...(captured.authorUrl ? [`video_channel_url: ${yamlString(captured.authorUrl)}`] : []),
+      ...(captured.chapters.length > 0 ? [`video_chapter_count: ${captured.chapters.length}`] : []),
       ...(captured.thumbnailUrl ? [`video_thumbnail_url: ${yamlString(captured.thumbnailUrl)}`] : []),
       `video_embed_url: ${yamlString(metadata.embedUrl)}`,
       '---',
@@ -517,6 +677,14 @@ async function fetchYouTubeVideoAsset(metadata: YouTubeVideoUrlMetadata, options
       '## Video',
       '',
       renderVideoSummary(captured),
+      ...(captured.chapters.length > 0
+        ? [
+            '',
+            '## Chapters',
+            '',
+            ...captured.chapters.map((chapter) => `- ${formatYouTubeChapterTimestamp(chapter.startMillis)} ${chapter.title}`),
+          ]
+        : []),
       '',
       '## Context',
       '',
@@ -600,6 +768,7 @@ async function fetchYouTubeChannelAsset(metadata: YouTubeChannelUrlMetadata, opt
   const captured = capturedResult.capture
   const resolvedHandle = captured.handle ?? metadata.handle
   const resolvedChannelId = captured.channelId ?? metadata.channelId
+  const resolvedCustomSlug = captured.customSlug
   const sourceUrl = resolvedHandle ? canonicalChannelUrl(resolvedHandle) : metadata.sourceUrl
   const capturedAt = new Date().toISOString()
   const contextLines = [
@@ -607,9 +776,16 @@ async function fetchYouTubeChannelAsset(metadata: YouTubeChannelUrlMetadata, opt
     '- Kind: channel',
     ...(resolvedHandle ? [`- Handle: @${resolvedHandle}`] : []),
     ...(resolvedChannelId ? [`- Channel ID: ${resolvedChannelId}`] : []),
+    ...(resolvedCustomSlug ? [`- Custom URL: /c/${resolvedCustomSlug}`] : []),
     `- Capture Status: ${captured.captureStatus}`,
     ...(captured.captureStatus === 'fallback'
-      ? [`- Note: channel metadata unavailable; preserved canonical channel URL and derived ${channelFallbackMetadataLabel(resolvedHandle, resolvedChannelId)} metadata only.`]
+      ? [
+          `- Note: channel metadata unavailable; preserved canonical channel URL and derived ${channelFallbackMetadataLabel(
+            resolvedHandle,
+            resolvedChannelId,
+            resolvedCustomSlug,
+          )} metadata only.`,
+        ]
       : []),
   ]
   const linkLines = [
@@ -618,7 +794,7 @@ async function fetchYouTubeChannelAsset(metadata: YouTubeChannelUrlMetadata, opt
   ]
 
   return {
-    fileName: youTubeChannelFilename(resolvedHandle ?? resolvedChannelId ?? 'channel'),
+    fileName: youTubeChannelFilename(resolvedHandle ?? resolvedCustomSlug ?? resolvedChannelId ?? 'channel'),
     content: [
       '---',
       `source_url: ${yamlString(sourceUrl)}`,
@@ -632,6 +808,7 @@ async function fetchYouTubeChannelAsset(metadata: YouTubeChannelUrlMetadata, opt
       `youtube_kind: ${yamlString('channel')}`,
       ...(resolvedHandle ? [`youtube_channel_handle: ${yamlString(resolvedHandle)}`] : []),
       ...(resolvedChannelId ? [`youtube_channel_id: ${yamlString(resolvedChannelId)}`] : []),
+      ...(resolvedCustomSlug ? [`youtube_channel_custom_slug: ${yamlString(resolvedCustomSlug)}`] : []),
       `youtube_capture_status: ${yamlString(captured.captureStatus)}`,
       ...(captured.thumbnailUrl ? [`youtube_thumbnail_url: ${yamlString(captured.thumbnailUrl)}`] : []),
       '---',
