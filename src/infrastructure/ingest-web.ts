@@ -120,7 +120,7 @@ function extractTagAttribute(tag: string, attribute: string): string {
   return normalizeWhitespace(decodeHtmlEntities(match?.[1] ?? ''))
 }
 
-export function extractMetaContent(html: string, attribute: 'name' | 'property', key: string): string {
+export function extractMetaContent(html: string, attribute: 'name' | 'property' | 'itemprop', key: string): string {
   const patterns = [
     new RegExp(`<meta\\b[^>]*${attribute}=["']${escapeRegExp(key)}["'][^>]*>`, 'i'),
     new RegExp(`<meta\\b[^>]*content=["'][\\s\\S]*?["'][^>]*${attribute}=["']${escapeRegExp(key)}["'][^>]*>`, 'i'),

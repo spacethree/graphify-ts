@@ -151,6 +151,8 @@ const BUILTIN_EXTRACT_CAPABILITIES = [
   { id: 'builtin:extract:docx', kind: 'extract', fileType: 'document', extensions: ['.docx'] },
   { id: 'builtin:extract:xlsx', kind: 'extract', fileType: 'document', extensions: ['.xlsx'] },
   { id: 'builtin:extract:image', kind: 'extract', fileType: 'image', extensions: ['.gif', '.jpeg', '.jpg', '.png', '.svg', '.webp'] },
+  { id: 'builtin:extract:audio', kind: 'extract', fileType: 'audio', extensions: ['.aac', '.flac', '.m4a', '.mp3', '.ogg', '.opus', '.wav'] },
+  { id: 'builtin:extract:video', kind: 'extract', fileType: 'video', extensions: ['.avi', '.m4v', '.mkv', '.mov', '.mp4', '.webm'] },
 ] satisfies readonly ExtractCapabilityDefinition[]
 
 const BUILTIN_INGEST_CAPABILITIES = [

@@ -2,7 +2,7 @@ import { EXTRACTION_LAYERS } from '../core/layers/types.js'
 import { isRecord } from '../shared/guards.js'
 import type { Confidence, ExtractionData, ExtractionLayer, ExtractionSchemaVersion, FileType } from './types.js'
 
-const VALID_FILE_TYPES = new Set<FileType>(['code', 'document', 'paper', 'image', 'rationale'])
+const VALID_FILE_TYPES = new Set<FileType>(['code', 'document', 'paper', 'image', 'audio', 'video', 'rationale'])
 const VALID_CONFIDENCES = new Set<Confidence>(['EXTRACTED', 'INFERRED', 'AMBIGUOUS'])
 const VALID_HYPEREDGE_CONFIDENCES = new Set<Extract<Confidence, 'EXTRACTED' | 'INFERRED'>>(['EXTRACTED', 'INFERRED'])
 const VALID_SCHEMA_VERSIONS = new Set<ExtractionSchemaVersion>([1, 2])

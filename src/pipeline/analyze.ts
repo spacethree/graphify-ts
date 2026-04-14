@@ -1,5 +1,5 @@
 import { KnowledgeGraph } from '../contracts/graph.js'
-import { CODE_EXTENSIONS, DOC_EXTENSIONS, IMAGE_EXTENSIONS, PAPER_EXTENSIONS } from './detect.js'
+import { AUDIO_EXTENSIONS, CODE_EXTENSIONS, DOC_EXTENSIONS, IMAGE_EXTENSIONS, PAPER_EXTENSIONS, VIDEO_EXTENSIONS } from './detect.js'
 import { cohesionScore, type Communities } from './cluster.js'
 
 export interface GodNode {
@@ -241,7 +241,7 @@ export function _isConceptNode(graph: KnowledgeGraph, nodeId: string): boolean {
   return !sourceFile.split('/').at(-1)?.includes('.')
 }
 
-export function _fileCategory(path: string): 'code' | 'paper' | 'image' | 'doc' {
+export function _fileCategory(path: string): 'code' | 'paper' | 'image' | 'audio' | 'video' | 'doc' {
   const extension = path.includes('.') ? `.${path.split('.').at(-1)?.toLowerCase() ?? ''}` : ''
   if (CODE_EXTENSIONS.has(extension)) {
     return 'code'
@@ -251,6 +251,12 @@ export function _fileCategory(path: string): 'code' | 'paper' | 'image' | 'doc' 
   }
   if (IMAGE_EXTENSIONS.has(extension)) {
     return 'image'
+  }
+  if (AUDIO_EXTENSIONS.has(extension)) {
+    return 'audio'
+  }
+  if (VIDEO_EXTENSIONS.has(extension)) {
+    return 'video'
   }
   if (DOC_EXTENSIONS.has(extension)) {
     return 'doc'

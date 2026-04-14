@@ -62,7 +62,7 @@ function detectOptions(options: GenerateGraphOptions): { followSymlinks?: boolea
 }
 
 function countNonCodeFiles(files: DetectResult['files']): number {
-  return files[FileType.DOCUMENT].length + files[FileType.PAPER].length + files[FileType.IMAGE].length
+  return files[FileType.DOCUMENT].length + files[FileType.PAPER].length + files[FileType.IMAGE].length + files[FileType.AUDIO].length + files[FileType.VIDEO].length
 }
 
 function detectionSummary(detection: DetectResult): Record<string, unknown> {
@@ -75,7 +75,7 @@ function detectionSummary(detection: DetectResult): Record<string, unknown> {
 }
 
 function collectExtractableFiles(files: DetectResult['files']): string[] {
-  return [...files[FileType.CODE], ...files[FileType.DOCUMENT], ...files[FileType.PAPER], ...files[FileType.IMAGE]]
+  return [...files[FileType.CODE], ...files[FileType.DOCUMENT], ...files[FileType.PAPER], ...files[FileType.IMAGE], ...files[FileType.AUDIO], ...files[FileType.VIDEO]]
 }
 
 function emptyExtraction(): ExtractionData {
@@ -204,7 +204,7 @@ export function generateGraph(rootPath = '.', options: GenerateGraphOptions = {}
 
   mkdirSync(resolvedOutputDir, { recursive: true })
 
-  const detected = options.update ? detectIncremental(resolvedRootPath, manifestPath) : detect(resolvedRootPath, detectOptions(options))
+  const detected = options.update ? detectIncremental(resolvedRootPath, manifestPath, detectOptions(options)) : detect(resolvedRootPath, detectOptions(options))
   const notes: string[] = []
   const mode: GenerateGraphResult['mode'] = options.clusterOnly ? 'cluster-only' : options.update ? 'update' : 'generate'
 

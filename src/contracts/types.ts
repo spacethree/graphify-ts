@@ -9,7 +9,7 @@ export type { ExtractionProvenance } from '../core/provenance/types.js'
  * Use `semantic_kind` and `virtual` to distinguish semantic graph entities from
  * top-level source files when needed.
  */
-export type FileType = 'code' | 'document' | 'paper' | 'image' | 'rationale'
+export type FileType = 'code' | 'document' | 'paper' | 'image' | 'audio' | 'video' | 'rationale'
 
 export type Confidence = 'EXTRACTED' | 'INFERRED' | 'AMBIGUOUS'
 

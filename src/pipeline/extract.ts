@@ -13,11 +13,13 @@ import { resolveCrossFilePythonImports } from './extract/cross-file.js'
 import { dispatchSingleFileExtraction, type ExtractionFragment, type ExtractorHandlerMap } from './extract/dispatch.js'
 import { _makeId, addEdge, addNode, addUniqueEdge, createEdge, createFileNode, createNode, indentationLevel, normalizeLabel, stripHashComment } from './extract/core.js'
 import {
+  extractAudioFile as extractAudioFragment,
   createCodeFileOnlyExtraction as createTextFallbackExtraction,
   ensureTextFileWithinLimit as isTextFileWithinLimit,
   extractDocument as extractDocumentFile,
   extractImageFile as extractImageFragment,
   extractPaper as extractPaperFile,
+  extractVideoFile as extractVideoFragment,
 } from './extract/non-code.js'
 import { extractPythonRationale } from './extract/python-rationale.js'
 import { isRecord } from '../shared/guards.js'
@@ -75,7 +77,7 @@ const MAX_CITATION_KEYS_PER_LINE = 16
 const REFERENCE_SECTION_LABELS = new Set(['references', 'bibliography', 'works cited', 'citations'])
 const TREE_SITTER_FALLBACK_WARNINGS = new Set<string>()
 
-type NonCodeFileType = Extract<ExtractionNode['file_type'], 'document' | 'paper' | 'image'>
+type NonCodeFileType = Extract<ExtractionNode['file_type'], 'document' | 'paper' | 'image' | 'audio' | 'video'>
 
 interface CollectFilesOptions {
   followSymlinks?: boolean
@@ -3765,6 +3767,8 @@ const SINGLE_FILE_EXTRACTOR_HANDLERS: ExtractorHandlerMap = {
   'builtin:extract:docx': (filePath, allowedTargets) => extractDocumentFile(filePath, allowedTargets),
   'builtin:extract:xlsx': (filePath, allowedTargets) => extractDocumentFile(filePath, allowedTargets),
   'builtin:extract:image': (filePath) => extractImageFragment(filePath),
+  'builtin:extract:audio': (filePath) => extractAudioFragment(filePath),
+  'builtin:extract:video': (filePath) => extractVideoFragment(filePath),
 }
 
 function extractSingleFile(filePath: string, allowedTargets: ReadonlySet<string>): ExtractionFragment {

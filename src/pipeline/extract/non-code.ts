@@ -52,7 +52,7 @@ interface PendingReferenceCitation {
   referenceIndices: number[]
 }
 
-type NonCodeFileType = Extract<ExtractionNode['file_type'], 'document' | 'paper' | 'image'>
+type NonCodeFileType = Extract<ExtractionNode['file_type'], 'document' | 'paper' | 'image' | 'audio' | 'video'>
 
 const MARKDOWN_HEADING_PATTERN = /^(#{1,6})\s+(.+?)\s*#*\s*$/
 const SETEXT_H1_PATTERN = /^={3,}\s*$/
@@ -1026,9 +1026,9 @@ function extractDocxDocument(filePath: string, allowedTargets: ReadonlySet<strin
   return finalize()
 }
 
-function extractImage(filePath: string): ExtractionFragment {
+function extractBinaryAsset(filePath: string, fileType: Extract<NonCodeFileType, 'image' | 'audio' | 'video'>): ExtractionFragment {
   return finalizeNonCodeFragment({
-    nodes: [createBinaryMetadataAwareFileNode(filePath, 'image')],
+    nodes: [createBinaryMetadataAwareFileNode(filePath, fileType)],
     edges: [],
   })
 }
@@ -1313,5 +1313,13 @@ export function extractDocument(filePath: string, allowedTargets: ReadonlySet<st
 }
 
 export function extractImageFile(filePath: string): ExtractionFragment {
-  return extractImage(filePath)
+  return extractBinaryAsset(filePath, 'image')
+}
+
+export function extractAudioFile(filePath: string): ExtractionFragment {
+  return extractBinaryAsset(filePath, 'audio')
+}
+
+export function extractVideoFile(filePath: string): ExtractionFragment {
+  return extractBinaryAsset(filePath, 'video')
 }

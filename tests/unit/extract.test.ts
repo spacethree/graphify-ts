@@ -1545,6 +1545,83 @@ describe('extract', () => {
     }
   })
 
+  it('extracts local audio and video files as metadata-aware file nodes', () => {
+    const root = createTempRoot()
+    try {
+      const audioPath = join(root, 'episode.mp3')
+      const videoPath = join(root, 'demo.mp4')
+      writeFileSync(audioPath, Buffer.from('ID3'))
+      writeFileSync(videoPath, Buffer.from([0, 0, 0, 24, 102, 116, 121, 112]))
+      writeFileSync(
+        binaryIngestSidecarPath(audioPath),
+        JSON.stringify(
+          {
+            source_url: 'https://example.com/podcast/episodes/1',
+            captured_at: '2026-04-14T01:00:00Z',
+            contributor: 'graphify-ts',
+          },
+          null,
+          2,
+        ),
+        'utf8',
+      )
+      writeFileSync(
+        binaryIngestSidecarPath(videoPath),
+        JSON.stringify(
+          {
+            source_url: 'https://example.com/sessions/demo',
+            captured_at: '2026-04-14T01:05:00Z',
+            contributor: 'graphify-ts',
+          },
+          null,
+          2,
+        ),
+        'utf8',
+      )
+
+      const result = extract([audioPath, videoPath])
+      const audioNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'episode.mp3')
+      const videoNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'demo.mp4')
+
+      expect(audioNode).toMatchObject({
+        source_url: 'https://example.com/podcast/episodes/1',
+        captured_at: '2026-04-14T01:00:00Z',
+        contributor: 'graphify-ts',
+        layer: 'base',
+        provenance: expect.arrayContaining([
+          expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' }),
+          expect.objectContaining({
+            capability_id: 'builtin:ingest:webpage',
+            stage: 'ingest',
+            source_url: 'https://example.com/podcast/episodes/1',
+            captured_at: '2026-04-14T01:00:00Z',
+            contributor: 'graphify-ts',
+          }),
+        ]),
+      })
+      expect(videoNode).toMatchObject({
+        source_url: 'https://example.com/sessions/demo',
+        captured_at: '2026-04-14T01:05:00Z',
+        contributor: 'graphify-ts',
+        layer: 'base',
+        provenance: expect.arrayContaining([
+          expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' }),
+          expect.objectContaining({
+            capability_id: 'builtin:ingest:webpage',
+            stage: 'ingest',
+            source_url: 'https://example.com/sessions/demo',
+            captured_at: '2026-04-14T01:05:00Z',
+            contributor: 'graphify-ts',
+          }),
+        ]),
+      })
+      expect(audioNode?.provenance).toHaveLength(2)
+      expect(videoNode?.provenance).toHaveLength(2)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('ignores malformed hidden sidecar metadata for binary extraction', () => {
     const root = createTempRoot()
     try {

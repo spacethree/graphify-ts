@@ -850,6 +850,13 @@ describe('ingest', () => {
             )
           }
 
+          if (requestUrl === 'https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=en') {
+            return new Response(readIngestFixture('youtube-caption-en.xml'), {
+              status: 200,
+              headers: { 'content-type': 'application/xml; charset=utf-8' },
+            })
+          }
+
           expect(requestUrl).toBe('https://www.youtube.com/watch?v=dQw4w9WgXcQ')
           return new Response(readIngestFixture('youtube-video-no-chapters.html'), {
             status: 200,
@@ -864,6 +871,7 @@ describe('ingest', () => {
       expect(requestUrls).toEqual([
         'https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ&format=json',
         'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+        'https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=en',
       ])
       expect(content).toContain('type: youtube_video')
       expect(content).toContain('source_url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"')
@@ -875,14 +883,31 @@ describe('ingest', () => {
       expect(content).toContain('video_provider: "YouTube"')
       expect(content).toContain('video_capture_status: "oembed"')
       expect(content).toContain('video_channel_url: "https://www.youtube.com/@graphify"')
+      expect(content).toContain('video_published_date: "2026-04-10"')
+      expect(content).toContain('video_duration_seconds: 462')
+      expect(content).toContain('video_transcript_available: true')
+      expect(content).toContain('video_caption_track_count: 2')
+      expect(content).toContain('video_caption_language_codes: ["en", "es"]')
+      expect(content).toContain('video_transcript_language_code: "en"')
+      expect(content).toContain('video_transcript_segment_count: 3')
       expect(content).toContain('video_thumbnail_url: "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg"')
       expect(content).toContain('video_embed_url: "https://www.youtube.com/embed/dQw4w9WgXcQ"')
       expect(content).toContain('# YouTube Video: Graphify Demo Walkthrough')
       expect(content).toContain('## Video')
       expect(content).toContain('[Graphify Channel](https://www.youtube.com/@graphify)')
+      expect(content).toContain('## Transcript')
+      expect(content).toContain("- 00:00-00:04 Hello & welcome.")
+      expect(content).toContain("- 00:15-00:20 Route-aware ingest's next step.")
+      expect(content).toContain('- 00:32-00:37 Transcript line with cue evidence.')
       expect(content).toContain('## Context')
       expect(content).toContain('- Platform: youtube')
       expect(content).toContain('- Video ID: dQw4w9WgXcQ')
+      expect(content).toContain('- Published: 2026-04-10')
+      expect(content).toContain('- Duration: 07:42')
+      expect(content).toContain('- Transcript: available')
+      expect(content).toContain('- Caption Languages: en, es')
+      expect(content).toContain('- Transcript Language: en')
+      expect(content).toContain('- Transcript Segments: 3')
       expect(content).toContain('- Capture Status: oembed')
       expect(content).toContain('## Links')
       expect(content).toContain('[Watch on YouTube](https://www.youtube.com/watch?v=dQw4w9WgXcQ)')
@@ -918,6 +943,13 @@ describe('ingest', () => {
             )
           }
 
+          if (requestUrl === 'https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=en') {
+            return new Response(readIngestFixture('youtube-caption-en.xml'), {
+              status: 200,
+              headers: { 'content-type': 'application/xml; charset=utf-8' },
+            })
+          }
+
           expect(requestUrl).toBe('https://www.youtube.com/watch?v=dQw4w9WgXcQ')
           return new Response(readIngestFixture('youtube-video.html'), {
             status: 200,
@@ -934,19 +966,576 @@ describe('ingest', () => {
       expect(requestUrls).toEqual([
         'https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ&format=json',
         'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+        'https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=en',
       ])
       expect(content).toContain('type: youtube_video')
       expect(content).toContain('source_url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"')
       expect(content).toContain('video_capture_status: "oembed"')
+      expect(content).toContain('video_published_date: "2026-04-10"')
+      expect(content).toContain('video_duration_seconds: 462')
+      expect(content).toContain('video_transcript_available: true')
+      expect(content).toContain('video_caption_track_count: 2')
+      expect(content).toContain('video_caption_language_codes: ["en", "es"]')
+      expect(content).toContain('video_transcript_language_code: "en"')
+      expect(content).toContain('video_transcript_segment_count: 3')
       expect(content).toContain('video_chapter_count: 3')
+      expect(content).toContain('## Transcript')
+      expect(content).toContain("- 00:00-00:04 Hello & welcome.")
+      expect(content).toContain("- 00:15-00:20 Route-aware ingest's next step.")
+      expect(content).toContain('- 00:32-00:37 Transcript line with cue evidence.')
       expect(content).toContain('## Chapters')
       expect(content).toContain('- 00:00 Intro')
       expect(content).toContain('- 02:35 Route-aware ingest')
       expect(content).toContain('- 05:20 Next roadmap slice')
       expect(content).toContain('## Context')
+      expect(content).toContain('- Published: 2026-04-10')
+      expect(content).toContain('- Duration: 07:42')
+      expect(content).toContain('- Transcript: available')
+      expect(content).toContain('- Caption Languages: en, es')
+      expect(content).toContain('- Transcript Language: en')
+      expect(content).toContain('- Transcript Segments: 3')
       expect(content).toContain('- Chapters: 3')
       expect(content).not.toContain('feature=share')
       expect(content).not.toContain('provenance:')
+    })
+  })
+
+  test('prefers non-auto YouTube caption tracks over auto-generated tracks in the primary language', async () => {
+    await withTempDir(async (tempDir) => {
+      const requestUrls: string[] = []
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input) => {
+          const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+          requestUrls.push(requestUrl)
+          if (requestUrl === 'https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ&format=json') {
+            return new Response(
+              JSON.stringify({
+                title: 'Graphify Demo Walkthrough',
+                author_name: 'Graphify Channel',
+                author_url: 'https://www.youtube.com/@graphify',
+                provider_name: 'YouTube',
+                thumbnail_url: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg',
+              }),
+              {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              },
+            )
+          }
+
+          if (requestUrl === 'https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=en') {
+            return new Response(readIngestFixture('youtube-caption-en.xml'), {
+              status: 200,
+              headers: { 'content-type': 'application/xml; charset=utf-8' },
+            })
+          }
+
+          if (requestUrl === 'https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=en&kind=asr') {
+            return new Response(readIngestFixture('youtube-caption-en-auto.xml'), {
+              status: 200,
+              headers: { 'content-type': 'application/xml; charset=utf-8' },
+            })
+          }
+
+          expect(requestUrl).toBe('https://www.youtube.com/watch?v=dQw4w9WgXcQ')
+          return new Response(
+            '<html><head><title>Graphify Demo Walkthrough - YouTube</title><link rel="canonical" href="https://www.youtube.com/watch?v=dQw4w9WgXcQ" /><meta property="og:url" content="https://www.youtube.com/watch?v=dQw4w9WgXcQ" /><meta property="og:title" content="Graphify Demo Walkthrough" /><meta property="og:image" content="https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg" /><meta itemprop="datePublished" content="2026-04-10" /><meta itemprop="duration" content="PT7M42S" /><meta name="author" content="Graphify Channel" /><script>var ytInitialData = {"videoDetails":{"videoId":"dQw4w9WgXcQ","title":"Graphify Demo Walkthrough"}}; var ytInitialPlayerResponse = {"captions":{"playerCaptionsTracklistRenderer":{"captionTracks":[{"baseUrl":"https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=en&kind=asr","languageCode":"en","kind":"asr","name":{"simpleText":"English (auto-generated)"}},{"baseUrl":"https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=en","languageCode":"en","name":{"simpleText":"English"}},{"baseUrl":"https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=es","languageCode":"es","name":{"simpleText":"Español"}}]}}};</script></head><body><ytd-watch-flexy><main><h1>Graphify Demo Walkthrough</h1></main></ytd-watch-flexy></body></html>',
+            {
+              status: 200,
+              headers: { 'content-type': 'text/html; charset=utf-8' },
+            },
+          )
+        }),
+      )
+
+      const output = await ingest('https://www.youtube.com/watch?v=dQw4w9WgXcQ', join(tempDir, 'raw'))
+      const content = readFileSync(output, 'utf8')
+
+      expect(requestUrls).toEqual([
+        'https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ&format=json',
+        'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+        'https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=en',
+      ])
+      expect(content).toContain('video_transcript_language_code: "en"')
+      expect(content).toContain('video_transcript_segment_count: 3')
+      expect(content).toContain('video_caption_track_count: 3')
+      expect(content).toContain('video_caption_language_codes: ["en", "es"]')
+      expect(content).toContain("- 00:00-00:04 Hello & welcome.")
+      expect(content).not.toContain('Auto-generated intro.')
+    })
+  })
+
+  test('falls back to another confirmed caption track when the preferred YouTube transcript track yields no cues', async () => {
+    await withTempDir(async (tempDir) => {
+      const requestUrls: string[] = []
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input) => {
+          const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+          requestUrls.push(requestUrl)
+          if (requestUrl === 'https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ&format=json') {
+            return new Response(
+              JSON.stringify({
+                title: 'Graphify Demo Walkthrough',
+                author_name: 'Graphify Channel',
+                author_url: 'https://www.youtube.com/@graphify',
+                provider_name: 'YouTube',
+                thumbnail_url: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg',
+              }),
+              {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              },
+            )
+          }
+
+          if (requestUrl === 'https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=en') {
+            return new Response('<transcript></transcript>', {
+              status: 200,
+              headers: { 'content-type': 'application/xml; charset=utf-8' },
+            })
+          }
+
+          if (requestUrl === 'https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=en&kind=asr') {
+            return new Response(readIngestFixture('youtube-caption-en-auto.xml'), {
+              status: 200,
+              headers: { 'content-type': 'application/xml; charset=utf-8' },
+            })
+          }
+
+          expect(requestUrl).toBe('https://www.youtube.com/watch?v=dQw4w9WgXcQ')
+          return new Response(
+            '<html><head><title>Graphify Demo Walkthrough - YouTube</title><link rel="canonical" href="https://www.youtube.com/watch?v=dQw4w9WgXcQ" /><meta property="og:url" content="https://www.youtube.com/watch?v=dQw4w9WgXcQ" /><meta property="og:title" content="Graphify Demo Walkthrough" /><meta property="og:image" content="https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg" /><meta itemprop="datePublished" content="2026-04-10" /><meta itemprop="duration" content="PT7M42S" /><meta name="author" content="Graphify Channel" /><script>var ytInitialData = {"videoDetails":{"videoId":"dQw4w9WgXcQ","title":"Graphify Demo Walkthrough"}}; var ytInitialPlayerResponse = {"captions":{"playerCaptionsTracklistRenderer":{"captionTracks":[{"baseUrl":"https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=en&kind=asr","languageCode":"en","kind":"asr","name":{"simpleText":"English (auto-generated)"}},{"baseUrl":"https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=en","languageCode":"en","name":{"simpleText":"English"}},{"baseUrl":"https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=es","languageCode":"es","name":{"simpleText":"Español"}}]}}};</script></head><body><ytd-watch-flexy><main><h1>Graphify Demo Walkthrough</h1></main></ytd-watch-flexy></body></html>',
+            {
+              status: 200,
+              headers: { 'content-type': 'text/html; charset=utf-8' },
+            },
+          )
+        }),
+      )
+
+      const output = await ingest('https://www.youtube.com/watch?v=dQw4w9WgXcQ', join(tempDir, 'raw'))
+      const content = readFileSync(output, 'utf8')
+
+      expect(requestUrls).toEqual([
+        'https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ&format=json',
+        'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+        'https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=en',
+        'https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=en&kind=asr',
+      ])
+      expect(content).toContain('video_transcript_language_code: "en"')
+      expect(content).toContain('video_transcript_segment_count: 3')
+      expect(content).toContain('- 00:00-00:03 Auto-generated intro.')
+      expect(content).toContain('- 00:09-00:12 Auto-generated fallback path.')
+      expect(content).not.toContain('Hello & welcome.')
+    })
+  })
+
+  test('keeps YouTube watch metadata optional when the canonical watch page does not expose publish, duration, or transcript fields', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input) => {
+          const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+          if (requestUrl === 'https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ&format=json') {
+            return new Response(
+              JSON.stringify({
+                title: 'Graphify Demo Walkthrough',
+                author_name: 'Graphify Channel',
+                author_url: 'https://www.youtube.com/@graphify',
+                provider_name: 'YouTube',
+                thumbnail_url: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg',
+              }),
+              {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              },
+            )
+          }
+
+          expect(requestUrl).toBe('https://www.youtube.com/watch?v=dQw4w9WgXcQ')
+          return new Response(
+            '<html><head><title>Graphify Demo Walkthrough - YouTube</title><link rel="canonical" href="https://www.youtube.com/watch?v=dQw4w9WgXcQ" /><meta property="og:url" content="https://www.youtube.com/watch?v=dQw4w9WgXcQ" /><meta property="og:title" content="Graphify Demo Walkthrough" /><meta property="og:image" content="https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg" /><meta name="author" content="Graphify Channel" /></head><body><main><h1>Graphify Demo Walkthrough</h1></main></body></html>',
+            {
+              status: 200,
+              headers: { 'content-type': 'text/html; charset=utf-8' },
+            },
+          )
+        }),
+      )
+
+      const output = await ingest('https://www.youtube.com/watch?v=dQw4w9WgXcQ', join(tempDir, 'raw'))
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: youtube_video')
+      expect(content).not.toContain('video_published_date:')
+      expect(content).not.toContain('video_duration_seconds:')
+      expect(content).not.toContain('video_transcript_available:')
+      expect(content).not.toContain('video_caption_track_count:')
+      expect(content).not.toContain('video_caption_language_codes:')
+      expect(content).not.toContain('- Published:')
+      expect(content).not.toContain('- Duration:')
+      expect(content).not.toContain('- Transcript:')
+      expect(content).not.toContain('- Caption Languages:')
+    })
+  })
+
+  test('preserves raw YouTube caption track count even when multiple tracks share a language code', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input) => {
+          const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+          if (requestUrl === 'https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ&format=json') {
+            return new Response(
+              JSON.stringify({
+                title: 'Graphify Demo Walkthrough',
+                author_name: 'Graphify Channel',
+                author_url: 'https://www.youtube.com/@graphify',
+                provider_name: 'YouTube',
+                thumbnail_url: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg',
+              }),
+              {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              },
+            )
+          }
+
+          expect(requestUrl).toBe('https://www.youtube.com/watch?v=dQw4w9WgXcQ')
+          return new Response(
+            '<html><head><title>Graphify Demo Walkthrough - YouTube</title><link rel="canonical" href="https://www.youtube.com/watch?v=dQw4w9WgXcQ" /><meta property="og:url" content="https://www.youtube.com/watch?v=dQw4w9WgXcQ" /><meta property="og:title" content="Graphify Demo Walkthrough" /><meta property="og:image" content="https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg" /><meta itemprop="datePublished" content="2026-04-10" /><meta itemprop="duration" content="PT7M42S" /><meta name="author" content="Graphify Channel" /><script>var ytInitialData = {"videoDetails":{"videoId":"dQw4w9WgXcQ","title":"Graphify Demo Walkthrough"}}; var ytInitialPlayerResponse = {"captions":{"playerCaptionsTracklistRenderer":{"captionTracks":[{"baseUrl":"https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=en","languageCode":"en","name":{"simpleText":"English"}},{"baseUrl":"https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=en&kind=asr","languageCode":"en","name":{"simpleText":"English (auto-generated)"}},{"baseUrl":"https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=es","languageCode":"es","name":{"simpleText":"Español"}}]}}};</script></head><body><ytd-watch-flexy><main><h1>Graphify Demo Walkthrough</h1></main></ytd-watch-flexy></body></html>',
+            {
+              status: 200,
+              headers: { 'content-type': 'text/html; charset=utf-8' },
+            },
+          )
+        }),
+      )
+
+      const output = await ingest('https://www.youtube.com/watch?v=dQw4w9WgXcQ', join(tempDir, 'raw'))
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: youtube_video')
+      expect(content).toContain('video_transcript_available: true')
+      expect(content).toContain('video_caption_track_count: 3')
+      expect(content).toContain('video_caption_language_codes: ["en", "es"]')
+      expect(content).toContain('- Transcript: available')
+      expect(content).toContain('- Caption Languages: en, es')
+    })
+  })
+
+  test('emits a zero caption-track count when confirmed watch HTML exposes an empty caption track list', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input) => {
+          const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+          if (requestUrl === 'https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ&format=json') {
+            return new Response(
+              JSON.stringify({
+                title: 'Graphify Demo Walkthrough',
+                author_name: 'Graphify Channel',
+                author_url: 'https://www.youtube.com/@graphify',
+                provider_name: 'YouTube',
+                thumbnail_url: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg',
+              }),
+              {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              },
+            )
+          }
+
+          expect(requestUrl).toBe('https://www.youtube.com/watch?v=dQw4w9WgXcQ')
+          return new Response(
+            '<html><head><title>Graphify Demo Walkthrough - YouTube</title><link rel="canonical" href="https://www.youtube.com/watch?v=dQw4w9WgXcQ" /><meta property="og:url" content="https://www.youtube.com/watch?v=dQw4w9WgXcQ" /><meta property="og:title" content="Graphify Demo Walkthrough" /><meta property="og:image" content="https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg" /><meta name="author" content="Graphify Channel" /><script>var ytInitialData = {"videoDetails":{"videoId":"dQw4w9WgXcQ","title":"Graphify Demo Walkthrough"}}; var ytInitialPlayerResponse = {"captions":{"playerCaptionsTracklistRenderer":{"captionTracks":[]}}};</script></head><body><ytd-watch-flexy><main><h1>Graphify Demo Walkthrough</h1></main></ytd-watch-flexy></body></html>',
+            {
+              status: 200,
+              headers: { 'content-type': 'text/html; charset=utf-8' },
+            },
+          )
+        }),
+      )
+
+      const output = await ingest('https://www.youtube.com/watch?v=dQw4w9WgXcQ', join(tempDir, 'raw'))
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: youtube_video')
+      expect(content).toContain('video_caption_track_count: 0')
+      expect(content).not.toContain('video_transcript_available:')
+      expect(content).not.toContain('video_caption_language_codes:')
+      expect(content).not.toContain('- Transcript:')
+      expect(content).not.toContain('- Caption Languages:')
+    })
+  })
+
+  test('keeps YouTube transcript cue evidence optional when all confirmed caption track fetches fail', async () => {
+    await withTempDir(async (tempDir) => {
+      const requestUrls: string[] = []
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input) => {
+          const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+          requestUrls.push(requestUrl)
+          if (requestUrl === 'https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ&format=json') {
+            return new Response(
+              JSON.stringify({
+                title: 'Graphify Demo Walkthrough',
+                author_name: 'Graphify Channel',
+                author_url: 'https://www.youtube.com/@graphify',
+                provider_name: 'YouTube',
+                thumbnail_url: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg',
+              }),
+              {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              },
+            )
+          }
+
+          if (requestUrl === 'https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=en') {
+            return new Response('upstream unavailable', {
+              status: 502,
+              headers: { 'content-type': 'text/plain; charset=utf-8' },
+            })
+          }
+
+          if (requestUrl === 'https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=es') {
+            return new Response('upstream unavailable', {
+              status: 502,
+              headers: { 'content-type': 'text/plain; charset=utf-8' },
+            })
+          }
+
+          expect(requestUrl).toBe('https://www.youtube.com/watch?v=dQw4w9WgXcQ')
+          return new Response(readIngestFixture('youtube-video-no-chapters.html'), {
+            status: 200,
+            headers: { 'content-type': 'text/html; charset=utf-8' },
+          })
+        }),
+      )
+
+      const output = await ingest('https://www.youtube.com/watch?v=dQw4w9WgXcQ', join(tempDir, 'raw'))
+      const content = readFileSync(output, 'utf8')
+
+      expect(requestUrls).toEqual([
+        'https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ&format=json',
+        'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+        'https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=en',
+        'https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=es',
+      ])
+      expect(content).toContain('type: youtube_video')
+      expect(content).toContain('video_transcript_available: true')
+      expect(content).toContain('video_caption_track_count: 2')
+      expect(content).toContain('video_caption_language_codes: ["en", "es"]')
+      expect(content).not.toContain('video_transcript_language_code:')
+      expect(content).not.toContain('video_transcript_segment_count:')
+      expect(content).not.toContain('## Transcript')
+      expect(content).not.toContain('- Transcript Language:')
+      expect(content).not.toContain('- Transcript Segments:')
+    })
+  })
+
+  test('keeps start-only YouTube transcript cue bullets for malformed durations and skips malformed starts', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input) => {
+          const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+          if (requestUrl === 'https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ&format=json') {
+            return new Response(
+              JSON.stringify({
+                title: 'Graphify Demo Walkthrough',
+                author_name: 'Graphify Channel',
+                author_url: 'https://www.youtube.com/@graphify',
+                provider_name: 'YouTube',
+                thumbnail_url: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg',
+              }),
+              {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              },
+            )
+          }
+
+          if (requestUrl === 'https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=en') {
+            return new Response(readIngestFixture('youtube-caption-mixed-timing.xml'), {
+              status: 200,
+              headers: { 'content-type': 'application/xml; charset=utf-8' },
+            })
+          }
+
+          expect(requestUrl).toBe('https://www.youtube.com/watch?v=dQw4w9WgXcQ')
+          return new Response(readIngestFixture('youtube-video-no-chapters.html'), {
+            status: 200,
+            headers: { 'content-type': 'text/html; charset=utf-8' },
+          })
+        }),
+      )
+
+      const output = await ingest('https://www.youtube.com/watch?v=dQw4w9WgXcQ', join(tempDir, 'raw'))
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: youtube_video')
+      expect(content).toContain('video_transcript_language_code: "en"')
+      expect(content).toContain('video_transcript_segment_count: 3')
+      expect(content).toContain('## Transcript')
+      expect(content).toContain('- 00:00-00:04 Timed intro.')
+      expect(content).toContain('- 00:08 Start-only cue.')
+      expect(content).toContain('- 00:12 Invalid-duration cue.')
+      expect(content).not.toContain('Invalid-start cue.')
+    })
+  })
+
+  test('does not enrich YouTube watch metadata from same-url HTML that lacks a real watch-page marker', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input) => {
+          const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+          if (requestUrl === 'https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ&format=json') {
+            return new Response(
+              JSON.stringify({
+                title: 'Graphify Demo Walkthrough',
+                author_name: 'Graphify Channel',
+                author_url: 'https://www.youtube.com/@graphify',
+                provider_name: 'YouTube',
+                thumbnail_url: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg',
+              }),
+              {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              },
+            )
+          }
+
+          expect(requestUrl).toBe('https://www.youtube.com/watch?v=dQw4w9WgXcQ')
+          return new Response(
+            '<html><head><title>Before you continue - YouTube</title><link rel="canonical" href="https://www.youtube.com/watch?v=dQw4w9WgXcQ" /><meta property="og:url" content="https://www.youtube.com/watch?v=dQw4w9WgXcQ" /><meta itemprop="datePublished" content="2026-04-10" /><meta itemprop="duration" content="PT7M42S" /><script>var ytInitialPlayerResponse = {"captions":{"playerCaptionsTracklistRenderer":{"captionTracks":[{"baseUrl":"https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=en","languageCode":"en","name":{"simpleText":"English"}}]}}}; var ytInitialData = {"videoDetails":{"videoId":"dQw4w9WgXcQ","title":"Graphify Demo Walkthrough"},"consentRenderer":{"message":"Consent required"},"playerOverlays":{"consentBumpRenderer":{}}};</script></head><body><div id="consent-bump">Consent required</div></body></html>',
+            {
+              status: 200,
+              headers: { 'content-type': 'text/html; charset=utf-8' },
+            },
+          )
+        }),
+      )
+
+      const output = await ingest('https://www.youtube.com/watch?v=dQw4w9WgXcQ', join(tempDir, 'raw'))
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: youtube_video')
+      expect(content).toContain('video_capture_status: "oembed"')
+      expect(content).not.toContain('video_published_date:')
+      expect(content).not.toContain('video_duration_seconds:')
+      expect(content).not.toContain('video_transcript_available:')
+      expect(content).not.toContain('video_caption_track_count:')
+      expect(content).not.toContain('video_caption_language_codes:')
+      expect(content).not.toContain('- Published:')
+      expect(content).not.toContain('- Duration:')
+      expect(content).not.toContain('- Transcript:')
+      expect(content).not.toContain('- Caption Languages:')
+    })
+  })
+
+  test('does not enrich YouTube watch metadata when watch-shell HTML confirms a different video identity', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input) => {
+          const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+          if (requestUrl === 'https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ&format=json') {
+            return new Response(
+              JSON.stringify({
+                title: 'Graphify Demo Walkthrough',
+                author_name: 'Graphify Channel',
+                author_url: 'https://www.youtube.com/@graphify',
+                provider_name: 'YouTube',
+                thumbnail_url: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg',
+              }),
+              {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              },
+            )
+          }
+
+          expect(requestUrl).toBe('https://www.youtube.com/watch?v=dQw4w9WgXcQ')
+          return new Response(
+            '<html><head><title>Different Video - YouTube</title><link rel="canonical" href="https://www.youtube.com/watch?v=oHg5SJYRHA0" /><meta property="og:url" content="https://www.youtube.com/watch?v=oHg5SJYRHA0" /><meta itemprop="datePublished" content="2026-04-10" /><meta itemprop="duration" content="PT7M42S" /><script>var ytInitialData = {"videoDetails":{"videoId":"oHg5SJYRHA0","title":"Different Video"}}; var ytInitialPlayerResponse = {"captions":{"playerCaptionsTracklistRenderer":{"captionTracks":[{"baseUrl":"https://www.youtube.com/api/timedtext?v=oHg5SJYRHA0&lang=en","languageCode":"en","name":{"simpleText":"English"}}]}}};</script></head><body><ytd-watch-flexy><main><h1>Different Video</h1></main></ytd-watch-flexy></body></html>',
+            {
+              status: 200,
+              headers: { 'content-type': 'text/html; charset=utf-8' },
+            },
+          )
+        }),
+      )
+
+      const output = await ingest('https://www.youtube.com/watch?v=dQw4w9WgXcQ', join(tempDir, 'raw'))
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: youtube_video')
+      expect(content).toContain('video_capture_status: "oembed"')
+      expect(content).not.toContain('video_published_date:')
+      expect(content).not.toContain('video_duration_seconds:')
+      expect(content).not.toContain('video_transcript_available:')
+      expect(content).not.toContain('video_caption_track_count:')
+      expect(content).not.toContain('video_caption_language_codes:')
+      expect(content).not.toContain('- Published:')
+      expect(content).not.toContain('- Duration:')
+      expect(content).not.toContain('- Transcript:')
+      expect(content).not.toContain('- Caption Languages:')
+    })
+  })
+
+  test('does not enrich YouTube watch metadata when HTML identity signals conflict', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input) => {
+          const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+          if (requestUrl === 'https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ&format=json') {
+            return new Response(
+              JSON.stringify({
+                title: 'Graphify Demo Walkthrough',
+                author_name: 'Graphify Channel',
+                author_url: 'https://www.youtube.com/@graphify',
+                provider_name: 'YouTube',
+                thumbnail_url: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg',
+              }),
+              {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              },
+            )
+          }
+
+          expect(requestUrl).toBe('https://www.youtube.com/watch?v=dQw4w9WgXcQ')
+          return new Response(
+            '<html><head><title>Conflicting Video - YouTube</title><link rel="canonical" href="https://www.youtube.com/watch?v=dQw4w9WgXcQ" /><meta property="og:url" content="https://www.youtube.com/watch?v=dQw4w9WgXcQ" /><meta itemprop="datePublished" content="2026-04-10" /><meta itemprop="duration" content="PT7M42S" /><script>var ytInitialData = {"videoDetails":{"videoId":"oHg5SJYRHA0","title":"Conflicting Video"}}; var ytInitialPlayerResponse = {"captions":{"playerCaptionsTracklistRenderer":{"captionTracks":[{"baseUrl":"https://www.youtube.com/api/timedtext?v=oHg5SJYRHA0&lang=en","languageCode":"en","name":{"simpleText":"English"}}]}}};</script></head><body><ytd-watch-flexy><main><h1>Conflicting Video</h1></main></ytd-watch-flexy></body></html>',
+            {
+              status: 200,
+              headers: { 'content-type': 'text/html; charset=utf-8' },
+            },
+          )
+        }),
+      )
+
+      const output = await ingest('https://www.youtube.com/watch?v=dQw4w9WgXcQ', join(tempDir, 'raw'))
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: youtube_video')
+      expect(content).toContain('video_capture_status: "oembed"')
+      expect(content).not.toContain('video_published_date:')
+      expect(content).not.toContain('video_duration_seconds:')
+      expect(content).not.toContain('video_transcript_available:')
+      expect(content).not.toContain('video_caption_track_count:')
+      expect(content).not.toContain('video_caption_language_codes:')
+      expect(content).not.toContain('- Published:')
+      expect(content).not.toContain('- Duration:')
+      expect(content).not.toContain('- Transcript:')
+      expect(content).not.toContain('- Caption Languages:')
     })
   })
 
@@ -974,6 +1563,13 @@ describe('ingest', () => {
             )
           }
 
+          if (requestUrl === 'https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=en') {
+            return new Response(readIngestFixture('youtube-caption-en.xml'), {
+              status: 200,
+              headers: { 'content-type': 'application/xml; charset=utf-8' },
+            })
+          }
+
           expect(requestUrl).toBe('https://www.youtube.com/watch?v=dQw4w9WgXcQ')
           return new Response(readIngestFixture('youtube-video-no-chapters.html'), {
             status: 200,
@@ -990,10 +1586,13 @@ describe('ingest', () => {
       expect(requestUrls).toEqual([
         'https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ&format=json',
         'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+        'https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=en',
         'https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ&format=json',
         'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+        'https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=en',
         'https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ&format=json',
         'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+        'https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=en',
       ])
       expect(basename(shortsOutput)).toBe('youtube_dQw4w9WgXcQ.md')
       expect(basename(liveOutput)).toMatch(/^youtube_dQw4w9WgXcQ(?:_\d+)?\.md$/)
@@ -1002,8 +1601,16 @@ describe('ingest', () => {
       expect(content).toContain('source_url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"')
       expect(content).toContain('video_id: "dQw4w9WgXcQ"')
       expect(content).toContain('video_capture_status: "oembed"')
+      expect(content).toContain('video_transcript_available: true')
+      expect(content).toContain('video_caption_language_codes: ["en", "es"]')
+      expect(content).toContain('video_transcript_language_code: "en"')
+      expect(content).toContain('video_transcript_segment_count: 3')
       expect(content).toContain('[Watch on YouTube](https://www.youtube.com/watch?v=dQw4w9WgXcQ)')
       expect(content).toContain('[Embed Player](https://www.youtube.com/embed/dQw4w9WgXcQ)')
+      expect(content).toContain('## Transcript')
+      expect(content).toContain('- 00:00-00:04 Hello & welcome.')
+      expect(content).toContain("- 00:15-00:20 Route-aware ingest's next step.")
+      expect(content).toContain('- 00:32-00:37 Transcript line with cue evidence.')
       expect(content).not.toContain('## Chapters')
     })
   })

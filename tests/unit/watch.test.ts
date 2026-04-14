@@ -7,6 +7,7 @@ import { describe, expect, test, vi } from 'vitest'
 
 import { WATCHED_EXTENSIONS, hasNonCode, notifyOnly, rebuildCode, watch } from '../../src/infrastructure/watch.js'
 import { generateGraph } from '../../src/infrastructure/generate.js'
+import { binaryIngestSidecarPath } from '../../src/shared/binary-ingest-sidecar.js'
 
 function withTempDir(callback: (tempDir: string) => void): void {
   const tempDir = mkdtempSync(join(tmpdir(), 'graphify-ts-watch-'))
@@ -29,13 +30,15 @@ describe('notifyOnly', () => {
 })
 
 describe('WATCHED_EXTENSIONS', () => {
-  test('includes code, docs, papers, images, and office documents', () => {
+  test('includes code, docs, papers, images, local media, and office documents', () => {
     expect(WATCHED_EXTENSIONS.has('.py')).toBe(true)
     expect(WATCHED_EXTENSIONS.has('.ts')).toBe(true)
     expect(WATCHED_EXTENSIONS.has('.md')).toBe(true)
     expect(WATCHED_EXTENSIONS.has('.pdf')).toBe(true)
     expect(WATCHED_EXTENSIONS.has('.png')).toBe(true)
     expect(WATCHED_EXTENSIONS.has('.jpg')).toBe(true)
+    expect(WATCHED_EXTENSIONS.has('.mp3')).toBe(true)
+    expect(WATCHED_EXTENSIONS.has('.mp4')).toBe(true)
     expect(WATCHED_EXTENSIONS.has('.docx')).toBe(true)
     expect(WATCHED_EXTENSIONS.has('.xlsx')).toBe(true)
   })
@@ -159,6 +162,129 @@ describe('watch', () => {
       writeFileSync(join(tempDir, 'README.md'), '# docs\n', 'utf8')
 
       await watcher
+
+      expect(rebuild).toHaveBeenCalledTimes(1)
+      expect(notify).not.toHaveBeenCalled()
+    })
+  })
+
+  test('triggers rebuild when a local media sidecar changes', async () => {
+    await withTempDirAsync(async (tempDir) => {
+      const controller = new AbortController()
+      const rebuild = vi.fn(() => {
+        controller.abort()
+        return true
+      })
+      const notify = vi.fn(() => {
+        controller.abort()
+      })
+      const audioPath = join(tempDir, 'episode.mp3')
+      const sidecarPath = binaryIngestSidecarPath(audioPath)
+      writeFileSync(audioPath, Buffer.from('ID3'))
+      writeFileSync(
+        sidecarPath,
+        JSON.stringify(
+          {
+            source_url: 'https://example.com/podcast/episodes/1',
+            captured_at: '2026-04-14T03:00:00Z',
+            contributor: 'graphify-ts',
+          },
+          null,
+          2,
+        ),
+        'utf8',
+      )
+
+      const watcher = watch(tempDir, 0.02, {
+        signal: controller.signal,
+        pollIntervalMs: 10,
+        rebuildCode: rebuild,
+        notifyOnly: notify,
+        logger: { log() {}, error() {} },
+      })
+      const timeout = setTimeout(() => controller.abort(), 200)
+
+      await delay(30)
+      writeFileSync(
+        sidecarPath,
+        JSON.stringify(
+          {
+            source_url: 'https://example.com/podcast/episodes/2',
+            captured_at: '2026-04-14T03:05:00Z',
+            contributor: 'graphify-ts',
+          },
+          null,
+          2,
+        ),
+        'utf8',
+      )
+
+      await watcher
+      clearTimeout(timeout)
+
+      expect(rebuild).toHaveBeenCalledTimes(1)
+      expect(notify).not.toHaveBeenCalled()
+    })
+  })
+
+  test.runIf(process.platform !== 'win32')('triggers rebuild when a followed symlink media sidecar changes', async () => {
+    await withTempDirAsync(async (tempDir) => {
+      const controller = new AbortController()
+      const rebuild = vi.fn(() => {
+        controller.abort()
+        return true
+      })
+      const notify = vi.fn(() => {
+        controller.abort()
+      })
+      const mediaDir = join(tempDir, 'media')
+      const targetPath = join(mediaDir, 'episode.mp3')
+      const linkPath = join(tempDir, 'episode-link.mp3')
+      const sidecarPath = binaryIngestSidecarPath(linkPath)
+      mkdirSync(mediaDir, { recursive: true })
+      writeFileSync(targetPath, Buffer.from('ID3'))
+      symlinkSync(targetPath, linkPath)
+      writeFileSync(
+        sidecarPath,
+        JSON.stringify(
+          {
+            source_url: 'https://example.com/podcast/episodes/1',
+            captured_at: '2026-04-14T03:10:00Z',
+            contributor: 'graphify-ts',
+          },
+          null,
+          2,
+        ),
+        'utf8',
+      )
+
+      const watcher = watch(tempDir, 0.02, {
+        signal: controller.signal,
+        pollIntervalMs: 10,
+        followSymlinks: true,
+        rebuildCode: rebuild,
+        notifyOnly: notify,
+        logger: { log() {}, error() {} },
+      })
+      const timeout = setTimeout(() => controller.abort(), 200)
+
+      await delay(30)
+      writeFileSync(
+        sidecarPath,
+        JSON.stringify(
+          {
+            source_url: 'https://example.com/podcast/episodes/2',
+            captured_at: '2026-04-14T03:15:00Z',
+            contributor: 'graphify-ts',
+          },
+          null,
+          2,
+        ),
+        'utf8',
+      )
+
+      await watcher
+      clearTimeout(timeout)
 
       expect(rebuild).toHaveBeenCalledTimes(1)
       expect(notify).not.toHaveBeenCalled()

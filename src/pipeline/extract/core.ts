@@ -16,6 +16,8 @@ function sourceFileTypeForNode(fileType: ExtractionNode['file_type']): FileTypeV
     case FileType.DOCUMENT:
     case FileType.PAPER:
     case FileType.IMAGE:
+    case FileType.AUDIO:
+    case FileType.VIDEO:
       return fileType
     default:
       return null

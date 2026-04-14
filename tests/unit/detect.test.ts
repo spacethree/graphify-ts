@@ -11,12 +11,14 @@ describe('detect', () => {
     return mkdtempSync(join(tmpdir(), 'graphify-ts-detect-'))
   }
 
-  it('classifies code, docs, papers, images, and unknown files', () => {
+  it('classifies code, docs, papers, images, audio, video, and unknown files', () => {
     expect(classifyFile('foo.py')).toBe(FileType.CODE)
     expect(classifyFile('bar.ts')).toBe(FileType.CODE)
     expect(classifyFile('README.md')).toBe(FileType.DOCUMENT)
     expect(classifyFile('paper.pdf')).toBe(FileType.PAPER)
     expect(classifyFile('screenshot.png')).toBe(FileType.IMAGE)
+    expect(classifyFile('episode.mp3')).toBe(FileType.AUDIO)
+    expect(classifyFile('demo.mp4')).toBe(FileType.VIDEO)
     expect(classifyFile('archive.zip')).toBeNull()
   })
 

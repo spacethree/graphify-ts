@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 
 import { isRecord } from './guards.js'
@@ -48,4 +48,28 @@ export function readBinaryIngestSidecar(assetPath: string): Partial<BinaryIngest
   } catch {
     return null
   }
+}
+
+function normalizedMtimeMs(path: string): number {
+  try {
+    const modifiedAt = statSync(path).mtimeMs
+    return Number.isFinite(modifiedAt) ? Math.round(modifiedAt) : 0
+  } catch {
+    return 0
+  }
+}
+
+function fingerprintText(value: string): number {
+  let hash = 2166136261
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return hash >>> 0
+}
+
+export function sidecarAwareFileFingerprint(filePath: string, fileModifiedAt?: number): number {
+  const normalizedFileModifiedAt = Number.isFinite(fileModifiedAt) ? Math.round(fileModifiedAt ?? 0) : normalizedMtimeMs(filePath)
+  const normalizedSidecarModifiedAt = normalizedMtimeMs(binaryIngestSidecarPath(filePath))
+  return fingerprintText(`${normalizedFileModifiedAt}|${normalizedSidecarModifiedAt}`)
 }

@@ -1,10 +1,11 @@
 import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync, unlinkSync, watch as createFileSystemWatcher, writeFileSync } from 'node:fs'
 import { extname, join, resolve, sep } from 'node:path'
 
-import { CODE_EXTENSIONS, DOC_EXTENSIONS, IMAGE_EXTENSIONS, OFFICE_EXTENSIONS, PAPER_EXTENSIONS } from '../pipeline/detect.js'
+import { AUDIO_EXTENSIONS, CODE_EXTENSIONS, DOC_EXTENSIONS, IMAGE_EXTENSIONS, OFFICE_EXTENSIONS, PAPER_EXTENSIONS, VIDEO_EXTENSIONS } from '../pipeline/detect.js'
+import { sidecarAwareFileFingerprint } from '../shared/binary-ingest-sidecar.js'
 import { generateGraph } from './generate.js'
 
-export const WATCHED_EXTENSIONS = new Set([...CODE_EXTENSIONS, ...DOC_EXTENSIONS, ...PAPER_EXTENSIONS, ...IMAGE_EXTENSIONS, ...OFFICE_EXTENSIONS])
+export const WATCHED_EXTENSIONS = new Set([...CODE_EXTENSIONS, ...DOC_EXTENSIONS, ...PAPER_EXTENSIONS, ...IMAGE_EXTENSIONS, ...AUDIO_EXTENSIONS, ...VIDEO_EXTENSIONS, ...OFFICE_EXTENSIONS])
 const MAX_SYMLINK_DEPTH = 40
 const MAX_WATCHED_FILES = 10_000
 
@@ -175,7 +176,7 @@ function collectWatchedFiles(
       }
 
       if (targetStats.isDirectory()) {
-        collectWatchedFiles(realTarget, followSymlinks, rootRealPath, [...ancestorRealPaths, realTarget], snapshots, depth + 1)
+        collectWatchedFiles(entryPath, followSymlinks, rootRealPath, [...ancestorRealPaths, realTarget], snapshots, depth + 1)
         continue
       }
 
@@ -183,9 +184,9 @@ function collectWatchedFiles(
         continue
       }
 
-      const extension = extname(realTarget).toLowerCase()
+      const extension = extname(entryPath).toLowerCase()
       if (WATCHED_EXTENSIONS.has(extension)) {
-        snapshots.set(realTarget, targetStats.mtimeMs)
+        snapshots.set(entryPath, sidecarAwareFileFingerprint(entryPath, targetStats.mtimeMs))
       }
       continue
     }
@@ -196,7 +197,7 @@ function collectWatchedFiles(
 
     const extension = extname(entryPath).toLowerCase()
     if (WATCHED_EXTENSIONS.has(extension)) {
-      snapshots.set(entryPath, stats.mtimeMs)
+      snapshots.set(entryPath, sidecarAwareFileFingerprint(entryPath, stats.mtimeMs))
     }
   }
 }
@@ -303,7 +304,7 @@ export async function watch(watchPath: string, debounce = 3, options: WatchOptio
 
   output.log(`[graphify watch] Watching ${resolvedWatchPath} - abort the process to stop`)
   output.log(
-    '[graphify watch] Supported code, docs, papers, images, and office documents rebuild automatically; manual refresh is only needed for unsupported future formats.',
+    '[graphify watch] Supported code, docs, papers, images, local audio/video, and office documents rebuild automatically; manual refresh is only needed for unsupported future formats.',
   )
   output.log(`[graphify watch] Debounce: ${debounce}s`)
   if (eventWatcher) {

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -7,6 +7,7 @@ import { describe, expect, test, vi } from 'vitest'
 
 import { generateGraph } from '../../src/infrastructure/generate.js'
 import { loadGraph } from '../../src/runtime/serve.js'
+import { binaryIngestSidecarPath } from '../../src/shared/binary-ingest-sidecar.js'
 
 function withTempDir<T>(callback: (tempDir: string) => T): T {
   const tempDir = mkdtempSync(join(tmpdir(), 'graphify-ts-generate-'))
@@ -72,6 +73,26 @@ describe('generateGraph', () => {
       expect(result.notes.join('\n')).not.toContain('semantic extraction')
       expect(graphData.nodes.some((node) => node.file_type === 'document')).toBe(true)
       expect(graphData.nodes.some((node) => node.file_type === 'image')).toBe(true)
+    })
+  })
+
+  test('builds graph artifacts for a docs-and-local-media corpus without code', () => {
+    withTempDir((tempDir) => {
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Episode](episode.mp3)\nSee [Demo](demo.mp4)\n', 'utf8')
+      writeFileSync(join(tempDir, 'episode.mp3'), Buffer.from('ID3'))
+      writeFileSync(join(tempDir, 'demo.mp4'), Buffer.from([0, 0, 0, 24, 102, 116, 121, 112]))
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.codeFiles).toBe(0)
+      expect(result.nonCodeFiles).toBe(3)
+      expect(result.nodeCount).toBeGreaterThan(0)
+      expect(graphData.nodes.some((node) => node.file_type === 'document')).toBe(true)
+      expect(graphData.nodes.some((node) => node.file_type === 'audio')).toBe(true)
+      expect(graphData.nodes.some((node) => node.file_type === 'video')).toBe(true)
     })
   })
 
@@ -144,6 +165,114 @@ describe('generateGraph', () => {
       expect(result.changedFiles).toBeGreaterThan(0)
       expect(result.deletedFiles).toBe(0)
       expect(existsSync(join(tempDir, 'graphify-out', 'manifest.json'))).toBe(true)
+    })
+  })
+
+  test('treats local media sidecar-only changes as incremental updates', async () => {
+    await withTempDirAsync(async (tempDir) => {
+      const audioPath = join(tempDir, 'episode.mp3')
+      const sidecarPath = binaryIngestSidecarPath(audioPath)
+      writeFileSync(audioPath, Buffer.from('ID3'))
+      writeFileSync(
+        sidecarPath,
+        JSON.stringify(
+          {
+            source_url: 'https://example.com/podcast/episodes/1',
+            captured_at: '2026-04-14T02:00:00Z',
+            contributor: 'graphify-ts',
+          },
+          null,
+          2,
+        ),
+        'utf8',
+      )
+
+      const initial = generateGraph(tempDir, { noHtml: true })
+      const initialGraphData = JSON.parse(readFileSync(initial.graphPath, 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(initialGraphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'audio',
+            source_url: 'https://example.com/podcast/episodes/1',
+          }),
+        ]),
+      )
+
+      await delay(10)
+      writeFileSync(
+        sidecarPath,
+        JSON.stringify(
+          {
+            source_url: 'https://example.com/podcast/episodes/2',
+            captured_at: '2026-04-14T02:05:00Z',
+            contributor: 'graphify-ts',
+          },
+          null,
+          2,
+        ),
+        'utf8',
+      )
+
+      const updated = generateGraph(tempDir, { update: true, noHtml: true })
+      const updatedGraphData = JSON.parse(readFileSync(updated.graphPath, 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(updated.changedFiles).toBeGreaterThan(0)
+      expect(updatedGraphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'audio',
+            source_url: 'https://example.com/podcast/episodes/2',
+            captured_at: '2026-04-14T02:05:00Z',
+          }),
+        ]),
+      )
+    })
+  })
+
+  test.runIf(process.platform !== 'win32')('preserves symlink-following local media files during incremental updates', async () => {
+    await withTempDirAsync(async (tempDir) => {
+      const mediaDir = join(tempDir, 'media')
+      const targetPath = join(mediaDir, 'episode.mp3')
+      const linkPath = join(tempDir, 'episode-link.mp3')
+      mkdirSync(mediaDir, { recursive: true })
+      writeFileSync(targetPath, Buffer.from('ID3'))
+      symlinkSync(targetPath, linkPath)
+
+      const initial = generateGraph(tempDir, { followSymlinks: true, noHtml: true })
+      const initialGraphData = JSON.parse(readFileSync(initial.graphPath, 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(initialGraphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'audio',
+            label: 'episode-link.mp3',
+            source_file: linkPath,
+          }),
+        ]),
+      )
+
+      const updated = generateGraph(tempDir, { update: true, followSymlinks: true, noHtml: true })
+      const updatedGraphData = JSON.parse(readFileSync(updated.graphPath, 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(updated.deletedFiles).toBe(0)
+      expect(updatedGraphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'audio',
+            label: 'episode-link.mp3',
+            source_file: linkPath,
+          }),
+        ]),
+      )
     })
   })
 

@@ -39,11 +39,23 @@ describe('validateExtraction', () => {
 
   it('reports invalid file_type values', () => {
     const errors = validateExtraction({
-      nodes: [{ id: 'n1', label: 'X', file_type: 'video', source_file: 'x.mp4' }],
+      nodes: [{ id: 'n1', label: 'X', file_type: 'binary', source_file: 'x.bin' }],
       edges: [],
     })
 
     expect(errors.some((error) => error.includes('file_type'))).toBe(true)
+  })
+
+  it('accepts audio and video file_type values', () => {
+    const errors = validateExtraction({
+      nodes: [
+        { id: 'n1', label: 'Episode', file_type: 'audio', source_file: 'episode.mp3' },
+        { id: 'n2', label: 'Demo', file_type: 'video', source_file: 'demo.mp4' },
+      ],
+      edges: [],
+    })
+
+    expect(errors).toEqual([])
   })
 
   it('reports invalid confidence values', () => {

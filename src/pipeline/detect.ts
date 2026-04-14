@@ -1,11 +1,15 @@
 import { Dirent, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, extname, relative, resolve, sep } from 'node:path'
 
+import { sidecarAwareFileFingerprint } from '../shared/binary-ingest-sidecar.js'
+
 export const FileType = {
   CODE: 'code',
   DOCUMENT: 'document',
   PAPER: 'paper',
   IMAGE: 'image',
+  AUDIO: 'audio',
+  VIDEO: 'video',
 } as const
 
 export type FileTypeValue = (typeof FileType)[keyof typeof FileType]
@@ -59,6 +63,8 @@ export const CODE_EXTENSIONS = new Set([
 export const DOC_EXTENSIONS = new Set(['.md', '.txt', '.rst'])
 export const PAPER_EXTENSIONS = new Set(['.pdf'])
 export const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'])
+export const AUDIO_EXTENSIONS = new Set(['.aac', '.flac', '.m4a', '.mp3', '.ogg', '.opus', '.wav'])
+export const VIDEO_EXTENSIONS = new Set(['.avi', '.m4v', '.mkv', '.mov', '.mp4', '.webm'])
 export const OFFICE_EXTENSIONS = new Set(['.docx', '.xlsx'])
 
 const CORPUS_WARN_THRESHOLD = 50_000
@@ -168,6 +174,12 @@ export function classifyFile(path: string): FileTypeValue | null {
   if (IMAGE_EXTENSIONS.has(extension)) {
     return FileType.IMAGE
   }
+  if (AUDIO_EXTENSIONS.has(extension)) {
+    return FileType.AUDIO
+  }
+  if (VIDEO_EXTENSIONS.has(extension)) {
+    return FileType.VIDEO
+  }
   if (DOC_EXTENSIONS.has(extension)) {
     return _looksLikePaper(path) ? FileType.PAPER : FileType.DOCUMENT
   }
@@ -180,7 +192,7 @@ export function classifyFile(path: string): FileTypeValue | null {
 export function countWords(path: string): number {
   try {
     const extension = extname(path).toLowerCase()
-    if (IMAGE_EXTENSIONS.has(extension) || PAPER_EXTENSIONS.has(extension)) {
+    if (IMAGE_EXTENSIONS.has(extension) || PAPER_EXTENSIONS.has(extension) || AUDIO_EXTENSIONS.has(extension) || VIDEO_EXTENSIONS.has(extension)) {
       return 0
     }
     return readFileSync(path, 'utf8').split(/\s+/).filter(Boolean).length
@@ -384,6 +396,8 @@ export function detect(root: string, options: DetectOptions = {}): DetectResult 
     [FileType.DOCUMENT]: [],
     [FileType.PAPER]: [],
     [FileType.IMAGE]: [],
+    [FileType.AUDIO]: [],
+    [FileType.VIDEO]: [],
   }
 
   let totalWords = 0
@@ -446,7 +460,7 @@ export function saveManifest(files: Record<string, string[]>, manifestPath: stri
       try {
         const modifiedAt = statSync(filePath).mtimeMs
         if (Number.isFinite(modifiedAt)) {
-          manifest[filePath] = modifiedAt
+          manifest[filePath] = sidecarAwareFileFingerprint(filePath, modifiedAt)
         }
       } catch {
         // Ignore files deleted between detect() and manifest write.
@@ -462,6 +476,7 @@ export function saveManifest(files: Record<string, string[]>, manifestPath: stri
 export function detectIncremental(
   root: string,
   manifestPath: string = DEFAULT_MANIFEST_PATH,
+  options: DetectOptions = {},
 ): DetectResult & {
   incremental: true
   new_files: Record<FileTypeValue, string[]>
@@ -469,7 +484,7 @@ export function detectIncremental(
   new_total: number
   deleted_files: string[]
 } {
-  const full = detect(root)
+  const full = detect(root, options)
   const manifest = loadManifest(manifestPath)
 
   if (Object.keys(manifest).length === 0) {
@@ -482,6 +497,8 @@ export function detectIncremental(
         [FileType.DOCUMENT]: [],
         [FileType.PAPER]: [],
         [FileType.IMAGE]: [],
+        [FileType.AUDIO]: [],
+        [FileType.VIDEO]: [],
       },
       new_total: full.total_files,
       deleted_files: [],
@@ -493,25 +510,29 @@ export function detectIncremental(
     [FileType.DOCUMENT]: [],
     [FileType.PAPER]: [],
     [FileType.IMAGE]: [],
+    [FileType.AUDIO]: [],
+    [FileType.VIDEO]: [],
   }
   const unchangedFiles: Record<FileTypeValue, string[]> = {
     [FileType.CODE]: [],
     [FileType.DOCUMENT]: [],
     [FileType.PAPER]: [],
     [FileType.IMAGE]: [],
+    [FileType.AUDIO]: [],
+    [FileType.VIDEO]: [],
   }
 
   for (const [fileType, fileList] of Object.entries(full.files) as Array<[FileTypeValue, string[]]>) {
     for (const filePath of fileList) {
-      let currentMtime = 0
+      let currentFingerprint = 0
       try {
-        currentMtime = statSync(filePath).mtimeMs
+        currentFingerprint = sidecarAwareFileFingerprint(filePath, statSync(filePath).mtimeMs)
       } catch {
-        currentMtime = 0
+        currentFingerprint = 0
       }
 
-      const storedMtime = manifest[filePath]
-      if (storedMtime === undefined || currentMtime > storedMtime) {
+      const storedFingerprint = manifest[filePath]
+      if (storedFingerprint === undefined || currentFingerprint !== storedFingerprint) {
         newFiles[fileType].push(filePath)
       } else {
         unchangedFiles[fileType].push(filePath)

@@ -167,6 +167,8 @@ describe('analyze', () => {
     expect(_fileCategory('model.py')).toBe('code')
     expect(_fileCategory('flash.pdf')).toBe('paper')
     expect(_fileCategory('diagram.png')).toBe('image')
+    expect(_fileCategory('episode.mp3')).toBe('audio')
+    expect(_fileCategory('demo.mp4')).toBe('video')
     expect(_fileCategory('notes.md')).toBe('doc')
     expect(_fileCategory('app.swift')).toBe('code')
     expect(_fileCategory('plugin.lua')).toBe('code')
