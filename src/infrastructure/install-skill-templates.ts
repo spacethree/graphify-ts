@@ -124,7 +124,7 @@ Use it for:
 - a research corpus
 - a personal /raw folder that keeps growing
 
-Current media scope: local audio/video currently land as deterministic file nodes only with sidecar metadata lift. There is no transcription or segment extraction yet.
+Current media scope: local audio/video, plus direct audio/video URL ingests that download into the same hidden-sidecar path, currently land as deterministic file nodes only. There is no transcription or segment extraction yet.
 
 ## What You Must Do When Invoked
 

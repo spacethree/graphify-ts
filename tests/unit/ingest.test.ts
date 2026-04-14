@@ -113,6 +113,8 @@ describe('detectUrlType', () => {
     expect(detectUrlType('https://www.youtube.com/watch?v=short')).toBe('webpage')
     expect(detectUrlType('https://example.com/file.pdf')).toBe('pdf')
     expect(detectUrlType('https://example.com/diagram.png')).toBe('image')
+    expect(detectUrlType('https://example.com/episode.mp3?download=1')).toBe('audio')
+    expect(detectUrlType('https://example.com/demo.mp4?download=1')).toBe('video')
     expect(detectUrlType('https://example.com/post')).toBe('webpage')
   })
 })
@@ -2542,6 +2544,14 @@ describe('ingest', () => {
           url: 'https://example.com/diagram.png',
           expectedSuffix: '.png',
         },
+        {
+          url: 'https://example.com/audio/episode.mp3?download=1',
+          expectedSuffix: '.mp3',
+        },
+        {
+          url: 'https://example.com/video/demo.mp4?download=1',
+          expectedSuffix: '.mp4',
+        },
       ]
 
       for (const testCase of cases) {
@@ -2561,6 +2571,80 @@ describe('ingest', () => {
         )
         expect(typeof sidecar.captured_at).toBe('string')
       }
+    })
+  })
+
+  test('falls back to binary ingest when a webpage-typed url responds with direct audio bytes', async () => {
+    await withTempDir(async (tempDir) => {
+      const payload = Uint8Array.from([9, 8, 7, 6])
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input) => {
+          const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+          expect(requestUrl).toBe('https://example.com/download/audio')
+          return new Response(payload, {
+            status: 200,
+            headers: { 'content-type': 'audio/mpeg' },
+          })
+        }),
+      )
+
+      const output = await ingest('https://example.com/download/audio', join(tempDir, 'raw'), { contributor: 'graphify-ts' })
+      const sidecarPath = binaryIngestSidecarPath(output)
+      const sidecar = JSON.parse(readFileSync(sidecarPath, 'utf8')) as Record<string, unknown>
+
+      expect(output.endsWith('.mp3')).toBe(true)
+      expect(readFileSync(output)).toEqual(Buffer.from(payload))
+      expect(existsSync(sidecarPath)).toBe(true)
+      expect(sidecar).toEqual(
+        expect.objectContaining({
+          source_url: 'https://example.com/download/audio',
+          captured_at: expect.any(String),
+          contributor: 'graphify-ts',
+        }),
+      )
+    })
+  })
+
+  test('canonicalizes redirected binary ingests to the final asset url and suffix', async () => {
+    await withTempDir(async (tempDir) => {
+      const payload = Uint8Array.from([5, 6, 7, 8])
+      const requestUrls: string[] = []
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input) => {
+          const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+          requestUrls.push(requestUrl)
+          if (requestUrl === 'https://example.com/video/download.mp4') {
+            return new Response(null, {
+              status: 302,
+              headers: { location: 'https://cdn.example.com/assets/demo.webm' },
+            })
+          }
+
+          expect(requestUrl).toBe('https://cdn.example.com/assets/demo.webm')
+          return new Response(payload, {
+            status: 200,
+            headers: { 'content-type': 'application/octet-stream' },
+          })
+        }),
+      )
+
+      const output = await ingest('https://example.com/video/download.mp4', join(tempDir, 'raw'), { contributor: 'graphify-ts' })
+      const sidecarPath = binaryIngestSidecarPath(output)
+      const sidecar = JSON.parse(readFileSync(sidecarPath, 'utf8')) as Record<string, unknown>
+
+      expect(requestUrls).toEqual(['https://example.com/video/download.mp4', 'https://cdn.example.com/assets/demo.webm'])
+      expect(output.endsWith('.webm')).toBe(true)
+      expect(readFileSync(output)).toEqual(Buffer.from(payload))
+      expect(existsSync(sidecarPath)).toBe(true)
+      expect(sidecar).toEqual(
+        expect.objectContaining({
+          source_url: 'https://cdn.example.com/assets/demo.webm',
+          captured_at: expect.any(String),
+          contributor: 'graphify-ts',
+        }),
+      )
     })
   })
 

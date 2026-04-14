@@ -168,23 +168,44 @@ async function fetchWithRedirects(url: string, timeoutMs: number): Promise<{ res
   throw new Error(`Too many redirects while fetching ${JSON.stringify(url)}`)
 }
 
-async function safeFetchWithMetadata(
+function normalizeContentType(value: string | null): string {
+  return value?.split(';', 1)[0]?.trim().toLowerCase() ?? ''
+}
+
+export async function safeFetchResponseWithMetadata(
   url: string,
-  maxBytes: number = MAX_FETCH_BYTES,
   timeout: number = 30_000,
-): Promise<{ bytes: Uint8Array; finalUrl: string }> {
+): Promise<{ response: Response; finalUrl: string; contentType: string }> {
   validateUrl(url)
   const { response, finalUrl } = await fetchWithRedirects(url, timeout)
   if (response.status < 200 || response.status >= 300) {
     throw new Error(`HTTP ${response.status}`)
   }
 
+  return {
+    response,
+    finalUrl,
+    contentType: normalizeContentType(response.headers.get('content-type')),
+  }
+}
+
+export async function readResponseBytes(response: Response, url: string, maxBytes: number): Promise<Uint8Array> {
   const bytes = new Uint8Array(await response.arrayBuffer())
   if (bytes.byteLength > maxBytes) {
     throw new Error(`Response from ${JSON.stringify(url)} exceeds size limit (${Math.floor(maxBytes / 1_048_576)} MB). Aborting download.`)
   }
 
-  return { bytes, finalUrl }
+  return bytes
+}
+
+export async function safeFetchWithMetadata(
+  url: string,
+  maxBytes: number = MAX_FETCH_BYTES,
+  timeout: number = 30_000,
+): Promise<{ bytes: Uint8Array; finalUrl: string; contentType: string }> {
+  const { response, finalUrl, contentType } = await safeFetchResponseWithMetadata(url, timeout)
+  const bytes = await readResponseBytes(response, url, maxBytes)
+  return { bytes, finalUrl, contentType }
 }
 
 export async function safeFetch(url: string, maxBytes: number = MAX_FETCH_BYTES, timeout: number = 30_000): Promise<Uint8Array> {
@@ -201,11 +222,12 @@ export async function safeFetchTextWithMetadata(
   url: string,
   maxBytes: number = MAX_TEXT_BYTES,
   timeout: number = 15_000,
-): Promise<{ text: string; finalUrl: string }> {
-  const { bytes, finalUrl } = await safeFetchWithMetadata(url, maxBytes, timeout)
+): Promise<{ text: string; finalUrl: string; contentType: string }> {
+  const { bytes, finalUrl, contentType } = await safeFetchWithMetadata(url, maxBytes, timeout)
   return {
     text: new TextDecoder('utf-8', { fatal: false }).decode(bytes),
     finalUrl,
+    contentType,
   }
 }
 

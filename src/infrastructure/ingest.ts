@@ -10,9 +10,10 @@ import { fetchGitHub } from './ingest-github.js'
 import { fetchReddit } from './ingest-reddit.js'
 import { fetchTweet } from './ingest-social.js'
 import { fetchYouTubeAsset } from './ingest-youtube.js'
-import { fetchWebpage, resolveContributor, safeFilename, stripHtml, yamlString } from './ingest-web.js'
+import { buildWebpageAsset, fetchWebpage, resolveContributor, safeFilename, stripHtml, yamlString } from './ingest-web.js'
+import { AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS } from '../pipeline/detect.js'
 import { writeBinaryIngestSidecar } from '../shared/binary-ingest-sidecar.js'
-import { safeFetch, safeFetchText, validateUrl } from '../shared/security.js'
+import { MAX_FETCH_BYTES, MAX_TEXT_BYTES, readResponseBytes, safeFetchResponseWithMetadata, safeFetchText, safeFetchWithMetadata, validateUrl } from '../shared/security.js'
 
 export interface SaveQueryOptions {
   queryType?: string
@@ -73,9 +74,91 @@ async function fetchArxiv(url: string, options: IngestOptions): Promise<{ conten
   }
 }
 
-function imageSuffixFromUrl(url: string): string {
+function suffixFromUrl(url: string, fallback: string): string {
   const pathname = new URL(url).pathname
-  return pathname.includes('.') ? pathname.slice(pathname.lastIndexOf('.')) : '.jpg'
+  return pathname.includes('.') ? pathname.slice(pathname.lastIndexOf('.')) : fallback
+}
+
+function binarySuffixFromUrl(url: string): string | null {
+  const pathname = new URL(url).pathname.toLowerCase()
+  const suffix = pathname.includes('.') ? pathname.slice(pathname.lastIndexOf('.')) : ''
+  if (!suffix) {
+    return null
+  }
+  if (suffix === '.pdf' || IMAGE_EXTENSIONS.has(suffix) || AUDIO_EXTENSIONS.has(suffix) || VIDEO_EXTENSIONS.has(suffix)) {
+    return suffix
+  }
+  return null
+}
+
+function binarySuffixFromContentType(contentType: string): string | null {
+  const normalized = contentType.trim().toLowerCase()
+  if (!normalized) {
+    return null
+  }
+  if (normalized === 'application/pdf') {
+    return '.pdf'
+  }
+
+  const exact = new Map<string, string>([
+    ['image/gif', '.gif'],
+    ['image/jpeg', '.jpg'],
+    ['image/jpg', '.jpg'],
+    ['image/png', '.png'],
+    ['image/svg+xml', '.svg'],
+    ['image/webp', '.webp'],
+    ['audio/aac', '.aac'],
+    ['audio/flac', '.flac'],
+    ['audio/mp4', '.m4a'],
+    ['audio/mpeg', '.mp3'],
+    ['audio/ogg', '.ogg'],
+    ['audio/opus', '.opus'],
+    ['audio/wav', '.wav'],
+    ['audio/wave', '.wav'],
+    ['audio/x-m4a', '.m4a'],
+    ['audio/x-wav', '.wav'],
+    ['video/mp4', '.mp4'],
+    ['video/quicktime', '.mov'],
+    ['video/webm', '.webm'],
+    ['video/x-m4v', '.m4v'],
+    ['video/x-matroska', '.mkv'],
+    ['video/x-msvideo', '.avi'],
+  ])
+  const mapped = exact.get(normalized)
+  if (mapped) {
+    return mapped
+  }
+  if (normalized.startsWith('image/')) {
+    return '.jpg'
+  }
+  if (normalized.startsWith('audio/')) {
+    return '.mp3'
+  }
+  if (normalized.startsWith('video/')) {
+    return '.mp4'
+  }
+  return null
+}
+
+async function fetchBinaryAwareWebpage(url: string, options: IngestOptions) {
+  const { response, finalUrl, contentType } = await safeFetchResponseWithMetadata(url)
+  const binarySuffix = binarySuffixFromUrl(finalUrl) ?? binarySuffixFromContentType(contentType)
+  if (binarySuffix) {
+    const bytes = await readResponseBytes(response, url, MAX_FETCH_BYTES)
+    return {
+      kind: 'binary' as const,
+      suffix: binarySuffix,
+      bytes,
+      sourceUrl: finalUrl,
+    }
+  }
+
+  const bytes = await readResponseBytes(response, url, MAX_TEXT_BYTES)
+  const html = new TextDecoder('utf-8', { fatal: false }).decode(bytes)
+  return {
+    kind: 'text' as const,
+    asset: buildWebpageAsset(url, html, options),
+  }
 }
 
 const INGEST_HANDLERS: IngestHandlerMap = {
@@ -85,19 +168,31 @@ const INGEST_HANDLERS: IngestHandlerMap = {
   'builtin:ingest:arxiv': async (url, options) => ({ kind: 'text', asset: await fetchArxiv(url, options) }),
   'builtin:ingest:github': async (url, options) => ({ kind: 'text', asset: await fetchGitHub(url, options) }),
   'builtin:ingest:youtube': async (url, options) => ({ kind: 'text', asset: await fetchYouTubeAsset(url, options) }),
-  'builtin:ingest:webpage': async (url, options) => ({ kind: 'text', asset: await fetchWebpage(url, options) }),
+  'builtin:ingest:webpage': async (url, options) => fetchBinaryAwareWebpage(url, options),
   'builtin:ingest:pdf': async () => ({ kind: 'binary', suffix: '.pdf' }),
-  'builtin:ingest:image': async (url) => ({ kind: 'binary', suffix: imageSuffixFromUrl(url) }),
+  'builtin:ingest:image': async (url) => ({ kind: 'binary', suffix: suffixFromUrl(url, '.jpg') }),
+  'builtin:ingest:audio': async (url) => ({ kind: 'binary', suffix: suffixFromUrl(url, '.mp3') }),
+  'builtin:ingest:video': async (url) => ({ kind: 'binary', suffix: suffixFromUrl(url, '.mp4') }),
 }
 
-async function downloadBinary(url: string, directory: string, suffix: string, options: IngestOptions): Promise<string> {
-  const bytes = await safeFetch(url)
-  const outputPath = ensureUniquePath(directory, safeFilename(url, suffix))
+interface BinaryDownloadSeed {
+  bytes?: Uint8Array
+  sourceUrl?: string
+}
+
+async function downloadBinary(url: string, directory: string, suffix: string, options: IngestOptions, seed: BinaryDownloadSeed = {}): Promise<string> {
+  const fetched = seed.bytes
+    ? null
+    : await safeFetchWithMetadata(url)
+  const sourceUrl = seed.sourceUrl ?? fetched?.finalUrl ?? url
+  const resolvedSuffix = binarySuffixFromUrl(sourceUrl) ?? binarySuffixFromContentType(fetched?.contentType ?? '') ?? suffix
+  const bytes = seed.bytes ?? fetched?.bytes ?? new Uint8Array()
+  const outputPath = ensureUniquePath(directory, safeFilename(sourceUrl, resolvedSuffix))
   writeFileSync(outputPath, bytes)
 
   try {
     writeBinaryIngestSidecar(outputPath, {
-      source_url: url,
+      source_url: sourceUrl,
       captured_at: new Date().toISOString(),
       contributor: resolveContributor(options),
     })
@@ -120,7 +215,10 @@ export async function ingest(url: string, targetDir: string, options: IngestOpti
     registry: builtinCapabilityRegistry,
   })
   if (dispatched.kind === 'binary') {
-    return downloadBinary(url, directory, dispatched.suffix, options)
+    return downloadBinary(url, directory, dispatched.suffix, options, {
+      ...(dispatched.bytes ? { bytes: dispatched.bytes } : {}),
+      ...(dispatched.sourceUrl ? { sourceUrl: dispatched.sourceUrl } : {}),
+    })
   }
 
   const asset = dispatched.asset

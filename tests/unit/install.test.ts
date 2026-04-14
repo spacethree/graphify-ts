@@ -189,7 +189,7 @@ describe('install helpers', () => {
         expect(installedSkill).toContain('"schema_version":2')
         expect(installedSkill).toContain('"file_type":"code|document|paper|image|audio|video|rationale"')
         expect(installedSkill).toContain('"provenance":[{"capability_id":"')
-        expect(installedSkill).toContain('local audio/video currently land as deterministic file nodes only')
+        expect(installedSkill).toContain('local audio/video, plus direct audio/video URL ingests that download into the same hidden-sidecar path, currently land as deterministic file nodes only')
         expect(installedSkill).toContain('```bash')
         expect(installedSkill.length).toBeGreaterThan(1000)
         expect(installedSkill).not.toContain('[[[GRAPHIFY_CODE_BLOCK_START]]]')

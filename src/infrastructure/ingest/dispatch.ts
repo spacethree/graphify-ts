@@ -14,6 +14,8 @@ export type IngestDispatchResult =
   | {
       kind: 'binary'
       suffix: string
+      bytes?: Uint8Array
+      sourceUrl?: string
     }
 
 export type IngestHandler = (url: string, options: IngestOptions) => Promise<IngestDispatchResult>

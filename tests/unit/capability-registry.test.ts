@@ -25,6 +25,13 @@ describe('builtin capability registry', () => {
     expect(registry.resolveIngestorForUrlType('hackernews')?.id).toBe('builtin:ingest:hackernews')
   })
 
+  it('resolves direct media url types to binary ingest capabilities', () => {
+    const registry = createBuiltinCapabilityRegistry()
+
+    expect(registry.resolveIngestorForUrlType('audio')?.id).toBe('builtin:ingest:audio')
+    expect(registry.resolveIngestorForUrlType('video')?.id).toBe('builtin:ingest:video')
+  })
+
   it('rejects duplicate capability registration', () => {
     const registry = createCapabilityRegistry()
     const capability: CapabilityDefinition = {

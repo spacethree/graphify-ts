@@ -164,6 +164,8 @@ const BUILTIN_INGEST_CAPABILITIES = [
   { id: 'builtin:ingest:youtube', kind: 'ingest', urlType: 'youtube' },
   { id: 'builtin:ingest:pdf', kind: 'ingest', urlType: 'pdf' },
   { id: 'builtin:ingest:image', kind: 'ingest', urlType: 'image' },
+  { id: 'builtin:ingest:audio', kind: 'ingest', urlType: 'audio' },
+  { id: 'builtin:ingest:video', kind: 'ingest', urlType: 'video' },
   { id: 'builtin:ingest:webpage', kind: 'ingest', urlType: 'webpage' },
 ] satisfies readonly IngestCapabilityDefinition[]
 
