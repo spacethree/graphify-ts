@@ -62,6 +62,28 @@ describe('detectUrlType', () => {
     expect(detectUrlType('https://arxiv.org/abs/1706.03762')).toBe('arxiv')
     expect(detectUrlType('https://github.com/mohanagy/graphify-ts')).toBe('github')
     expect(detectUrlType('https://notgithub.com/mohanagy/graphify-ts')).toBe('webpage')
+    expect(detectUrlType('https://old.reddit.com/r/graphify/comments/abc123/structured_ingest_roadmap_update/?utm_source=share')).toBe('reddit')
+    expect(detectUrlType('https://www.reddit.com/r/graphify/comments/abc123/structured_ingest_roadmap_update/jkl456/?context=3')).toBe('reddit')
+    expect(detectUrlType('https://redd.it/abc123')).toBe('reddit')
+    expect(detectUrlType('https://www.reddit.com/comments/abc123?utm_source=share')).toBe('reddit')
+    expect(detectUrlType('https://notreddit.com/r/graphify/comments/abc123/structured_ingest_roadmap_update/')).toBe('webpage')
+    expect(detectUrlType('https://www.reddit.com/r/graphify/about')).toBe('webpage')
+    expect(detectUrlType('https://www.reddit.com/r/graphify/comments/abc123/.json')).toBe('webpage')
+    expect(detectUrlType('https://www.reddit.com/r/graphify/comments/abc123/.json/')).toBe('webpage')
+    expect(detectUrlType('https://www.reddit.com/r/graphify/comments/abc123/structured_ingest_roadmap_update/jkl456/.json')).toBe('webpage')
+    expect(detectUrlType('https://www.reddit.com/r/graphify/comments/abc123/structured_ingest_roadmap_update/jkl456/more')).toBe('webpage')
+    expect(detectUrlType('https://redd.it/abc123.json')).toBe('webpage')
+    expect(detectUrlType('https://www.reddit.com/comments/abc123/more')).toBe('webpage')
+    expect(detectUrlType('https://www.youtube.com/watch?v=dQw4w9WgXcQ')).toBe('youtube')
+    expect(detectUrlType('https://youtu.be/dQw4w9WgXcQ?si=graphify')).toBe('youtube')
+    expect(detectUrlType('https://www.youtube.com/shorts/dQw4w9WgXcQ?feature=share')).toBe('youtube')
+    expect(detectUrlType('https://www.youtube.com/embed/dQw4w9WgXcQ?start=30')).toBe('youtube')
+    expect(detectUrlType('https://notyoutube.com/watch?v=dQw4w9WgXcQ')).toBe('webpage')
+    expect(detectUrlType('https://www.youtube.com/playlist?list=PLgraphify')).toBe('webpage')
+    expect(detectUrlType('https://www.youtube.com/shorts/dQw4w9WgXcQ/clips')).toBe('webpage')
+    expect(detectUrlType('https://www.youtube.com/embed/dQw4w9WgXcQ/live_chat')).toBe('webpage')
+    expect(detectUrlType('https://www.youtube.com/shorts/short')).toBe('webpage')
+    expect(detectUrlType('https://www.youtube.com/watch?v=short')).toBe('webpage')
     expect(detectUrlType('https://example.com/file.pdf')).toBe('pdf')
     expect(detectUrlType('https://example.com/diagram.png')).toBe('image')
     expect(detectUrlType('https://example.com/post')).toBe('webpage')
@@ -259,6 +281,459 @@ describe('ingest', () => {
       expect(content).toContain('type: webpage')
       expect(content).toContain('source_url: "https://github.com/login"')
       expect(content).not.toContain('github_kind:')
+    })
+  })
+
+  test('saves Reddit thread URLs as structured thread markdown', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input) => {
+          const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+          expect(requestUrl).toBe(
+            'https://www.reddit.com/r/graphify/comments/abc123/structured_ingest_roadmap_update.json?limit=3&depth=1&raw_json=1',
+          )
+          return new Response(readIngestFixture('reddit-thread.json'), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })
+        }),
+      )
+
+      const output = await ingest(
+        'https://old.reddit.com/r/graphify/comments/abc123/structured_ingest_roadmap_update/?utm_source=share',
+        join(tempDir, 'raw'),
+        { contributor: 'graphify-ts' },
+      )
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: reddit_thread')
+      expect(content).toContain('source_url: "https://www.reddit.com/r/graphify/comments/abc123/structured_ingest_roadmap_update"')
+      expect(content).toContain('title: "Structured ingest roadmap update"')
+      expect(content).toContain('author: "graph_builder"')
+      expect(content).toContain('contributor: "graphify-ts"')
+      expect(content).toContain('reddit_subreddit: "graphify"')
+      expect(content).toContain('reddit_post_id: "abc123"')
+      expect(content).toContain('reddit_score: "128"')
+      expect(content).toContain('reddit_comment_count: "42"')
+      expect(content).toContain('reddit_capture_status: "json"')
+      expect(content).toContain('# Reddit Thread: Structured ingest roadmap update')
+      expect(content).toContain('## Post')
+      expect(content).toContain('Graphify-ts now captures richer structured inputs.')
+      expect(content).toContain('## Thread Highlights')
+      expect(content).toContain('### Comment by u/helper_bot')
+      expect(content).toContain('Nice direction. Capture fallback boundaries explicitly.')
+      expect(content).toContain('### Comment by u/schema_fan')
+      expect(content).toContain('The capability registry work is paying off.')
+      expect(content).toContain('## Context')
+      expect(content).toContain('- Platform: reddit')
+      expect(content).toContain('- Subreddit: r/graphify')
+      expect(content).toContain('- Post ID: abc123')
+      expect(content).toContain('- Score: 128')
+      expect(content).toContain('- Comment Count: 42')
+      expect(content).toContain('- Capture Status: json')
+      expect(content).toContain('## Links')
+      expect(content).toContain('[Open Thread](https://www.reddit.com/r/graphify/comments/abc123/structured_ingest_roadmap_update)')
+      expect(content).toContain('[Linked URL](https://github.com/mohanagy/graphify-ts)')
+      expect(content).not.toContain('provenance:')
+    })
+  })
+
+  test('saves Reddit short thread URLs as structured thread markdown', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input) => {
+          const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+          expect(requestUrl).toBe('https://www.reddit.com/comments/abc123.json?limit=3&depth=1&raw_json=1')
+          return new Response(readIngestFixture('reddit-thread.json'), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })
+        }),
+      )
+
+      const output = await ingest('https://redd.it/abc123', join(tempDir, 'raw'), { contributor: 'graphify-ts' })
+      const content = readFileSync(output, 'utf8')
+
+      expect(basename(output)).toBe('reddit_graphify_abc123.md')
+      expect(content).toContain('type: reddit_thread')
+      expect(content).toContain('source_url: "https://www.reddit.com/r/graphify/comments/abc123/structured_ingest_roadmap_update"')
+      expect(content).toContain('title: "Structured ingest roadmap update"')
+      expect(content).toContain('author: "graph_builder"')
+      expect(content).toContain('reddit_subreddit: "graphify"')
+      expect(content).toContain('reddit_post_id: "abc123"')
+      expect(content).toContain('reddit_capture_status: "json"')
+      expect(content).toContain('[Open Thread](https://www.reddit.com/r/graphify/comments/abc123/structured_ingest_roadmap_update)')
+      expect(content).toContain('[Linked URL](https://github.com/mohanagy/graphify-ts)')
+    })
+  })
+
+  test('saves Reddit comment permalink URLs as structured comment markdown', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input) => {
+          const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+          expect(requestUrl).toBe(
+            'https://www.reddit.com/r/graphify/comments/abc123/structured_ingest_roadmap_update/jkl456.json?limit=3&depth=1&raw_json=1',
+          )
+          return new Response(readIngestFixture('reddit-comment.json'), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })
+        }),
+      )
+
+      const output = await ingest(
+        'https://www.reddit.com/r/graphify/comments/abc123/structured_ingest_roadmap_update/jkl456/?context=3',
+        join(tempDir, 'raw'),
+        { contributor: 'graphify-ts' },
+      )
+      const content = readFileSync(output, 'utf8')
+
+      expect(basename(output)).toBe('reddit_graphify_abc123_jkl456.md')
+      expect(content).toContain('type: reddit_comment')
+      expect(content).toContain('source_url: "https://www.reddit.com/r/graphify/comments/abc123/structured_ingest_roadmap_update/jkl456"')
+      expect(content).toContain('title: "Comment on: Structured ingest roadmap update"')
+      expect(content).toContain('author: "helper_bot"')
+      expect(content).toContain('contributor: "graphify-ts"')
+      expect(content).toContain('reddit_subreddit: "graphify"')
+      expect(content).toContain('reddit_post_id: "abc123"')
+      expect(content).toContain('reddit_comment_id: "jkl456"')
+      expect(content).toContain('reddit_comment_score: "30"')
+      expect(content).toContain('reddit_capture_status: "json"')
+      expect(content).toContain('# Reddit Comment: Structured ingest roadmap update')
+      expect(content).toContain('## Comment')
+      expect(content).toContain('Nice direction. Capture fallback boundaries explicitly.')
+      expect(content).toContain('## Thread')
+      expect(content).toContain('Graphify-ts now captures richer structured inputs.')
+      expect(content).toContain('## Context')
+      expect(content).toContain('- Platform: reddit')
+      expect(content).toContain('- Subreddit: r/graphify')
+      expect(content).toContain('- Post ID: abc123')
+      expect(content).toContain('- Comment ID: jkl456')
+      expect(content).toContain('- Thread Author: graph_builder')
+      expect(content).toContain('- Comment Score: 30')
+      expect(content).toContain('- Thread Score: 128')
+      expect(content).toContain('- Comment Count: 42')
+      expect(content).toContain('- Capture Status: json')
+      expect(content).toContain('## Links')
+      expect(content).toContain('[Open Comment](https://www.reddit.com/r/graphify/comments/abc123/structured_ingest_roadmap_update/jkl456)')
+      expect(content).toContain('[Open Thread](https://www.reddit.com/r/graphify/comments/abc123/structured_ingest_roadmap_update)')
+      expect(content).toContain('[Linked URL](https://github.com/mohanagy/graphify-ts)')
+      expect(content).not.toContain('provenance:')
+    })
+  })
+
+  test('makes reddit thread fallback behavior explicit when thread JSON fetch fails', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response('rate limited', { status: 429, headers: { 'content-type': 'text/plain' } })),
+      )
+
+      const output = await ingest('https://www.reddit.com/r/graphify/comments/def456/social_thread_roadmap/?utm_source=share', join(tempDir, 'raw'), {
+        contributor: 'graphify-ts',
+      })
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: reddit_thread')
+      expect(content).toContain('source_url: "https://www.reddit.com/r/graphify/comments/def456/social_thread_roadmap"')
+      expect(content).toContain('title: "Reddit Thread: def456"')
+      expect(content).toContain('author: "unknown"')
+      expect(content).toContain('reddit_subreddit: "graphify"')
+      expect(content).toContain('reddit_post_id: "def456"')
+      expect(content).toContain('reddit_capture_status: "fallback"')
+      expect(content).toContain('## Post')
+      expect(content).toContain('Reddit thread metadata could not be fetched.')
+      expect(content).toContain('## Context')
+      expect(content).toContain('- Platform: reddit')
+      expect(content).toContain('- Subreddit: r/graphify')
+      expect(content).toContain('- Post ID: def456')
+      expect(content).toContain('- Capture Status: fallback')
+      expect(content).toContain('- Note: thread JSON unavailable; preserved canonical thread URL and derived Reddit metadata only.')
+      expect(content).toContain('## Links')
+      expect(content).toContain('[Open Thread](https://www.reddit.com/r/graphify/comments/def456/social_thread_roadmap)')
+      expect(content).not.toContain('provenance:')
+    })
+  })
+
+  test('makes reddit short thread fallback behavior explicit when thread JSON fetch fails', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response('rate limited', { status: 429, headers: { 'content-type': 'text/plain' } })),
+      )
+
+      const output = await ingest('https://www.reddit.com/comments/def456?utm_source=share', join(tempDir, 'raw'), {
+        contributor: 'graphify-ts',
+      })
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: reddit_thread')
+      expect(content).toContain('source_url: "https://www.reddit.com/comments/def456"')
+      expect(content).toContain('title: "Reddit Thread: def456"')
+      expect(content).toContain('author: "unknown"')
+      expect(content).toContain('reddit_post_id: "def456"')
+      expect(content).not.toContain('reddit_subreddit:')
+      expect(content).toContain('reddit_capture_status: "fallback"')
+      expect(content).toContain('## Post')
+      expect(content).toContain('Reddit thread metadata could not be fetched.')
+      expect(content).toContain('## Context')
+      expect(content).toContain('- Platform: reddit')
+      expect(content).not.toContain('- Subreddit: ')
+      expect(content).toContain('- Post ID: def456')
+      expect(content).toContain('- Capture Status: fallback')
+      expect(content).toContain('- Note: thread JSON unavailable; preserved canonical thread URL and derived Reddit metadata only.')
+      expect(content).toContain('## Links')
+      expect(content).toContain('[Open Thread](https://www.reddit.com/comments/def456)')
+      expect(content).not.toContain('provenance:')
+    })
+  })
+
+  test('makes reddit comment fallback behavior explicit when comment JSON fetch fails', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response('rate limited', { status: 429, headers: { 'content-type': 'text/plain' } })),
+      )
+
+      const output = await ingest('https://www.reddit.com/r/graphify/comments/def456/social_thread_roadmap/jkl456/?context=3', join(tempDir, 'raw'), {
+        contributor: 'graphify-ts',
+      })
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: reddit_comment')
+      expect(content).toContain('source_url: "https://www.reddit.com/r/graphify/comments/def456/social_thread_roadmap/jkl456"')
+      expect(content).toContain('title: "Reddit Comment: def456/jkl456"')
+      expect(content).toContain('author: "unknown"')
+      expect(content).toContain('reddit_subreddit: "graphify"')
+      expect(content).toContain('reddit_post_id: "def456"')
+      expect(content).toContain('reddit_comment_id: "jkl456"')
+      expect(content).toContain('reddit_capture_status: "fallback"')
+      expect(content).toContain('## Comment')
+      expect(content).toContain('Reddit comment metadata could not be fetched.')
+      expect(content).toContain('## Thread')
+      expect(content).toContain('Reddit thread metadata could not be fetched.')
+      expect(content).toContain('## Context')
+      expect(content).toContain('- Platform: reddit')
+      expect(content).toContain('- Subreddit: r/graphify')
+      expect(content).toContain('- Post ID: def456')
+      expect(content).toContain('- Comment ID: jkl456')
+      expect(content).toContain('- Capture Status: fallback')
+      expect(content).toContain('- Note: comment JSON unavailable; preserved canonical comment URL and derived Reddit metadata only.')
+      expect(content).toContain('## Links')
+      expect(content).toContain('[Open Comment](https://www.reddit.com/r/graphify/comments/def456/social_thread_roadmap/jkl456)')
+      expect(content).toContain('[Open Thread](https://www.reddit.com/r/graphify/comments/def456/social_thread_roadmap)')
+      expect(content).not.toContain('provenance:')
+    })
+  })
+
+  test('does not emit a fake linked url when reddit self-post JSON points back to the same thread', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () =>
+          new Response(
+            JSON.stringify([
+              {
+                kind: 'Listing',
+                data: {
+                  children: [
+                    {
+                      kind: 't3',
+                      data: {
+                        subreddit: 'graphify',
+                        author: 'thread_author',
+                        title: 'Self post example',
+                        selftext: 'This thread should not render a duplicate Reddit self-link.',
+                        score: 12,
+                        num_comments: 3,
+                        permalink: '/r/graphify/comments/ghi789/self_post_example/',
+                        url: 'https://old.reddit.com/r/graphify/comments/ghi789/self_post_example/',
+                      },
+                    },
+                  ],
+                },
+              },
+              {
+                kind: 'Listing',
+                data: {
+                  children: [],
+                },
+              },
+            ]),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+        ),
+      )
+
+      const output = await ingest('https://www.reddit.com/r/graphify/comments/ghi789/self_post_example/', join(tempDir, 'raw'))
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('[Open Thread](https://www.reddit.com/r/graphify/comments/ghi789/self_post_example)')
+      expect(content).not.toContain('[Linked URL](https://old.reddit.com/r/graphify/comments/ghi789/self_post_example/)')
+    })
+  })
+
+  test('saves YouTube video URLs as structured video markdown', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input) => {
+          const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+          expect(requestUrl).toBe(
+            'https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ&format=json',
+          )
+          return new Response(
+            JSON.stringify({
+              title: 'Graphify Demo Walkthrough',
+              author_name: 'Graphify Channel',
+              author_url: 'https://www.youtube.com/@graphify',
+              provider_name: 'YouTube',
+              thumbnail_url: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg',
+            }),
+            {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            },
+          )
+        }),
+      )
+
+      const output = await ingest('https://youtu.be/dQw4w9WgXcQ?si=graphify', join(tempDir, 'raw'), { contributor: 'graphify-ts' })
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: youtube_video')
+      expect(content).toContain('source_url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"')
+      expect(content).toContain('title: "Graphify Demo Walkthrough"')
+      expect(content).toContain('author: "Graphify Channel"')
+      expect(content).toContain('contributor: "graphify-ts"')
+      expect(content).toContain('video_platform: "youtube"')
+      expect(content).toContain('video_id: "dQw4w9WgXcQ"')
+      expect(content).toContain('video_provider: "YouTube"')
+      expect(content).toContain('video_capture_status: "oembed"')
+      expect(content).toContain('video_channel_url: "https://www.youtube.com/@graphify"')
+      expect(content).toContain('video_thumbnail_url: "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg"')
+      expect(content).toContain('video_embed_url: "https://www.youtube.com/embed/dQw4w9WgXcQ"')
+      expect(content).toContain('# YouTube Video: Graphify Demo Walkthrough')
+      expect(content).toContain('## Video')
+      expect(content).toContain('[Graphify Channel](https://www.youtube.com/@graphify)')
+      expect(content).toContain('## Context')
+      expect(content).toContain('- Platform: youtube')
+      expect(content).toContain('- Video ID: dQw4w9WgXcQ')
+      expect(content).toContain('- Capture Status: oembed')
+      expect(content).toContain('## Links')
+      expect(content).toContain('[Watch on YouTube](https://www.youtube.com/watch?v=dQw4w9WgXcQ)')
+      expect(content).toContain('[Embed Player](https://www.youtube.com/embed/dQw4w9WgXcQ)')
+      expect(content).toContain('[Thumbnail](https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg)')
+      expect(content).not.toContain('provenance:')
+    })
+  })
+
+  test('canonicalizes YouTube shorts and embed URLs to the same structured video asset', async () => {
+    await withTempDir(async (tempDir) => {
+      const requestUrls: string[] = []
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input) => {
+          const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+          requestUrls.push(requestUrl)
+          return new Response(
+            JSON.stringify({
+              title: 'Graphify Demo Walkthrough',
+              author_name: 'Graphify Channel',
+              author_url: 'https://www.youtube.com/@graphify',
+              provider_name: 'YouTube',
+              thumbnail_url: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg',
+            }),
+            {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            },
+          )
+        }),
+      )
+
+      const shortsOutput = await ingest('https://www.youtube.com/shorts/dQw4w9WgXcQ?feature=share', join(tempDir, 'raw'))
+      const embedOutput = await ingest('https://www.youtube.com/embed/dQw4w9WgXcQ?start=30', join(tempDir, 'raw'))
+      const content = readFileSync(embedOutput, 'utf8')
+
+      expect(requestUrls).toEqual([
+        'https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ&format=json',
+        'https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ&format=json',
+      ])
+      expect(basename(shortsOutput)).toBe('youtube_dQw4w9WgXcQ.md')
+      expect(basename(embedOutput)).toMatch(/^youtube_dQw4w9WgXcQ(?:_\d+)?\.md$/)
+      expect(content).toContain('type: youtube_video')
+      expect(content).toContain('source_url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"')
+      expect(content).toContain('video_id: "dQw4w9WgXcQ"')
+      expect(content).toContain('video_capture_status: "oembed"')
+      expect(content).toContain('[Watch on YouTube](https://www.youtube.com/watch?v=dQw4w9WgXcQ)')
+      expect(content).toContain('[Embed Player](https://www.youtube.com/embed/dQw4w9WgXcQ)')
+    })
+  })
+
+  test('makes youtube fallback behavior explicit when oEmbed fetch fails', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response('unavailable', { status: 503, headers: { 'content-type': 'text/plain' } })),
+      )
+
+      const output = await ingest('https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PLgraphify', join(tempDir, 'raw'), {
+        contributor: 'graphify-ts',
+      })
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: youtube_video')
+      expect(content).toContain('source_url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"')
+      expect(content).toContain('title: "YouTube Video: dQw4w9WgXcQ"')
+      expect(content).toContain('author: "unknown"')
+      expect(content).toContain('video_platform: "youtube"')
+      expect(content).toContain('video_id: "dQw4w9WgXcQ"')
+      expect(content).toContain('video_capture_status: "fallback"')
+      expect(content).toContain('video_embed_url: "https://www.youtube.com/embed/dQw4w9WgXcQ"')
+      expect(content).toContain('# YouTube Video: dQw4w9WgXcQ')
+      expect(content).toContain('## Video')
+      expect(content).toContain('Video metadata could not be fetched.')
+      expect(content).toContain('## Context')
+      expect(content).toContain('- Capture Status: fallback')
+      expect(content).toContain('- Note: oEmbed unavailable; preserved canonical video URL and derived video metadata only.')
+      expect(content).toContain('## Links')
+      expect(content).toContain('[Watch on YouTube](https://www.youtube.com/watch?v=dQw4w9WgXcQ)')
+      expect(content).toContain('[Embed Player](https://www.youtube.com/embed/dQw4w9WgXcQ)')
+      expect(content).not.toContain('provenance:')
+    })
+  })
+
+  test('uses stable per-video filenames for structured YouTube ingest', async () => {
+    await withTempDir(async (tempDir) => {
+      const responses = [
+        {
+          title: 'Graphify Demo Walkthrough',
+          author_name: 'Graphify Channel',
+          provider_name: 'YouTube',
+        },
+        {
+          title: 'Graphify Roadmap Update',
+          author_name: 'Graphify Channel',
+          provider_name: 'YouTube',
+        },
+      ]
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response(JSON.stringify(responses.shift()), { status: 200, headers: { 'content-type': 'application/json' } })),
+      )
+
+      const firstOutput = await ingest('https://youtu.be/dQw4w9WgXcQ', join(tempDir, 'raw'))
+      const secondOutput = await ingest('https://www.youtube.com/watch?v=9bZkp7q19f0', join(tempDir, 'raw'))
+
+      expect(basename(firstOutput)).toBe('youtube_dQw4w9WgXcQ.md')
+      expect(basename(secondOutput)).toBe('youtube_9bZkp7q19f0.md')
+      expect(firstOutput).not.toBe(secondOutput)
     })
   })
 

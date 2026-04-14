@@ -1,0 +1,51 @@
+[
+  {
+    "kind": "Listing",
+    "data": {
+      "children": [
+        {
+          "kind": "t3",
+          "data": {
+            "subreddit": "graphify",
+            "author": "graph_builder",
+            "title": "Structured ingest roadmap update",
+            "selftext": "Graphify-ts now captures richer structured inputs.\n\nThis thread tracks the next roadmap seam.",
+            "score": 128,
+            "num_comments": 42,
+            "permalink": "/r/graphify/comments/abc123/structured_ingest_roadmap_update/",
+            "url": "https://github.com/mohanagy/graphify-ts"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "Listing",
+    "data": {
+      "children": [
+        {
+          "kind": "t1",
+          "data": {
+            "author": "helper_bot",
+            "body": "Nice direction. Capture fallback boundaries explicitly.",
+            "score": 30
+          }
+        },
+        {
+          "kind": "t1",
+          "data": {
+            "author": "schema_fan",
+            "body": "The capability registry work is paying off.",
+            "score": 18
+          }
+        },
+        {
+          "kind": "more",
+          "data": {
+            "count": 40
+          }
+        }
+      ]
+    }
+  }
+]

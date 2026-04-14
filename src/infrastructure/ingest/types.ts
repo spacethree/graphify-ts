@@ -3,4 +3,4 @@ export interface IngestOptions {
   contributor?: string
 }
 
-export type UrlType = 'tweet' | 'arxiv' | 'github' | 'youtube' | 'pdf' | 'image' | 'webpage'
+export type UrlType = 'tweet' | 'reddit' | 'arxiv' | 'github' | 'youtube' | 'pdf' | 'image' | 'webpage'

@@ -1,5 +1,7 @@
 import type { UrlType } from './types.js'
+import { isRedditContentUrl } from '../ingest-reddit.js'
 import { isTweetPostUrl } from '../ingest-social.js'
+import { isYouTubeVideoUrl } from '../ingest-youtube.js'
 
 export function detectUrlType(url: string): UrlType {
   const hostname = new URL(url).hostname.toLowerCase()
@@ -7,13 +9,16 @@ export function detectUrlType(url: string): UrlType {
   if (isTweetPostUrl(url)) {
     return 'tweet'
   }
+  if (isRedditContentUrl(url)) {
+    return 'reddit'
+  }
   if (lower.includes('arxiv.org')) {
     return 'arxiv'
   }
   if (hostname === 'github.com' || hostname === 'www.github.com') {
     return 'github'
   }
-  if (lower.includes('youtube.com') || lower.includes('youtu.be')) {
+  if (isYouTubeVideoUrl(url)) {
     return 'youtube'
   }
 

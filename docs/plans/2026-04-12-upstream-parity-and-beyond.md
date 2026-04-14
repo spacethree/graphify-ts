@@ -114,7 +114,7 @@ Status docs, README claims, and command help must reflect what actually ships. R
 
 **Objective:** Turn semantic enrichment from mostly planned/scaffolded behavior into a real, optional runtime with cache, budget, and provider boundaries.
 
-**Progress update (2026-04-13):** The first structured-ingest slices are now shipped for GitHub URLs and generic article-style webpages: repository, issue, pull request, and discussion pages no longer fall back to generic webpage capture, and article-style pages can now land as deterministic markdown/frontmatter with canonical URL normalization plus author/description lift, section headings, inline markdown links, and outbound-link lists. Broader social/thread handling and YouTube/video metadata remain open.
+**Progress update (2026-04-14):** The first structured-ingest slices are now shipped for GitHub URLs, generic article-style webpages, single-post tweet/X URLs, exact Reddit thread-root URLs, exact Reddit short-thread URLs, exact Reddit comment-permalink URLs, and direct single-video YouTube URLs across exact `watch`, `youtu.be`, `shorts`, and `embed` routes: repository, issue, pull request, and discussion pages no longer fall back to generic webpage capture; article-style pages can now land as deterministic markdown/frontmatter with canonical URL normalization plus author/description lift, section headings, inline markdown links, and outbound-link lists; tweet/X posts now carry explicit metadata/fallback context; Reddit thread roots and short-thread aliases now carry canonical thread URLs, post text, top-comment highlights, and explicit JSON-fallback context; Reddit comment permalinks now carry canonical comment URLs, targeted comment text, parent-thread context, and explicit JSON-fallback context; and direct YouTube video URLs now carry canonical watch URLs, derived video IDs, oEmbed metadata when available, and explicit fallback context. Broader social/thread handling and deeper transcript/chapter-style media evidence remain open.
 
 **Primary outcomes:**
 - provider-neutral semantic extraction interface
@@ -242,16 +242,18 @@ Status docs, README claims, and command help must reflect what actually ships. R
 
 **Why now:** URL detection already exists, but some important source types still degrade to generic webpage capture.
 
-**Progress update (2026-04-14):** `src/infrastructure/ingest-github.ts`, `src/infrastructure/ingest-web.ts`, and `src/infrastructure/ingest-social.ts` now cover the first GitHub-specific slice, richer generic article-style webpage capture, and a first structured single-post tweet/X slice with canonicalized source URLs, derived handle/post metadata, explicit capture-status context, and deterministic oEmbed fallback behavior. The remaining gap in this workstream is broader social/thread-specific handling beyond single-post tweet/X capture plus dedicated YouTube/video metadata.
+**Progress update (2026-04-14):** `src/infrastructure/ingest-github.ts`, `src/infrastructure/ingest-web.ts`, `src/infrastructure/ingest-social.ts`, `src/infrastructure/ingest-reddit.ts`, and `src/infrastructure/ingest-youtube.ts` now cover the first GitHub-specific slice, richer generic article-style webpage capture, a first structured single-post tweet/X slice with canonicalized source URLs, derived handle/post metadata, explicit capture-status context, and deterministic oEmbed fallback behavior, a first structured Reddit thread/comment slice with canonical thread/comment URLs, targeted post/comment context, stable route-specific filenames, exact short-thread alias coverage, and explicit JSON fallback behavior, and a broader direct-route structured single-video YouTube slice with canonical watch URLs, derived video IDs, exact `watch`/`youtu.be`/`shorts`/`embed` route coverage, and explicit oEmbed fallback context. The remaining gap in this workstream is deeper social/thread handling beyond the now-supported first tweet/X and Reddit thread/comment routes, plus deeper YouTube/media evidence beyond URL-level video metadata.
 
 **Likely work areas:**
 - Modify: `src/infrastructure/ingest.ts`
-- Create: `src/infrastructure/ingest-web.ts`, `src/infrastructure/ingest-github.ts`, `src/infrastructure/ingest-social.ts`
+- Create: `src/infrastructure/ingest-web.ts`, `src/infrastructure/ingest-github.ts`, `src/infrastructure/ingest-social.ts`, `src/infrastructure/ingest-reddit.ts`, `src/infrastructure/ingest-youtube.ts`
 - Update tests: `tests/unit/ingest.test.ts`, new fixtures under `tests/fixtures/ingest/`
 
 **Acceptance criteria:**
 - GitHub URLs ingest structured repo/issue/PR/discussion metadata
 - social/tweet-like ingestion captures author, timestamp, text/thread context, and fallback behavior explicitly
+- Reddit thread, short-thread, and exact comment-permalink URLs ingest structured post/comment metadata plus fallback behavior explicitly
+- single-video YouTube ingestion captures canonical video URL, channel/title metadata, video ID, and fallback behavior explicitly across exact `watch`, `youtu.be`, `shorts`, and `embed` routes
 - webpages preserve canonical URL, title, author, section structure, and outbound references where available
 
 ### Workstream 5: Audio, video, and YouTube ingestion
