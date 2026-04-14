@@ -2,7 +2,7 @@ import type { UrlType } from './types.js'
 import { isHackerNewsItemUrl } from '../ingest-hackernews.js'
 import { isRedditContentUrl } from '../ingest-reddit.js'
 import { isTweetPostUrl } from '../ingest-social.js'
-import { isYouTubeVideoUrl } from '../ingest-youtube.js'
+import { isYouTubeContentUrl } from '../ingest-youtube.js'
 
 export function detectUrlType(url: string): UrlType {
   const hostname = new URL(url).hostname.toLowerCase()
@@ -22,7 +22,7 @@ export function detectUrlType(url: string): UrlType {
   if (hostname === 'github.com' || hostname === 'www.github.com') {
     return 'github'
   }
-  if (isYouTubeVideoUrl(url)) {
+  if (isYouTubeContentUrl(url)) {
     return 'youtube'
   }
 

@@ -87,11 +87,26 @@ describe('detectUrlType', () => {
     expect(detectUrlType('https://youtu.be/dQw4w9WgXcQ?si=graphify')).toBe('youtube')
     expect(detectUrlType('https://www.youtube.com/shorts/dQw4w9WgXcQ?feature=share')).toBe('youtube')
     expect(detectUrlType('https://www.youtube.com/embed/dQw4w9WgXcQ?start=30')).toBe('youtube')
+    expect(detectUrlType('https://www.youtube.com/live/dQw4w9WgXcQ?feature=share')).toBe('youtube')
+    expect(detectUrlType('https://www.youtube.com/playlist?list=PLgraphifyRoadmap123&feature=share')).toBe('youtube')
+    expect(detectUrlType('https://www.youtube.com/@graphify?feature=share')).toBe('youtube')
+    expect(detectUrlType('https://www.youtube.com/channel/UCgraphifyRoadmap1234567?feature=share')).toBe('youtube')
     expect(detectUrlType('https://notyoutube.com/watch?v=dQw4w9WgXcQ')).toBe('webpage')
-    expect(detectUrlType('https://www.youtube.com/playlist?list=PLgraphify')).toBe('webpage')
+    expect(detectUrlType('https://www.youtube.com/playlist')).toBe('webpage')
+    expect(detectUrlType('https://www.youtube.com/playlist?list=')).toBe('webpage')
+    expect(detectUrlType('https://www.youtube.com/playlist/?list=PLgraphifyRoadmap123')).toBe('webpage')
+    expect(detectUrlType('https://www.youtube.com/playlist/videos?list=PLgraphifyRoadmap123')).toBe('webpage')
+    expect(detectUrlType('https://www.youtube.com/@graphify/')).toBe('webpage')
+    expect(detectUrlType('https://www.youtube.com/@graphify/videos')).toBe('webpage')
+    expect(detectUrlType('https://www.youtube.com/@graphify/community')).toBe('webpage')
+    expect(detectUrlType('https://www.youtube.com/channel/UCgraphifyRoadmap1234567/')).toBe('webpage')
+    expect(detectUrlType('https://www.youtube.com/channel/UCgraphifyRoadmap1234567/videos')).toBe('webpage')
+    expect(detectUrlType('https://www.youtube.com/channel/not-a-channel-id')).toBe('webpage')
     expect(detectUrlType('https://www.youtube.com/shorts/dQw4w9WgXcQ/clips')).toBe('webpage')
     expect(detectUrlType('https://www.youtube.com/embed/dQw4w9WgXcQ/live_chat')).toBe('webpage')
+    expect(detectUrlType('https://www.youtube.com/live/dQw4w9WgXcQ/chat')).toBe('webpage')
     expect(detectUrlType('https://www.youtube.com/shorts/short')).toBe('webpage')
+    expect(detectUrlType('https://www.youtube.com/live/short')).toBe('webpage')
     expect(detectUrlType('https://www.youtube.com/watch?v=short')).toBe('webpage')
     expect(detectUrlType('https://example.com/file.pdf')).toBe('pdf')
     expect(detectUrlType('https://example.com/diagram.png')).toBe('image')
@@ -250,15 +265,80 @@ describe('ingest', () => {
     })
   })
 
-  test('falls back to generic webpage capture for unsupported GitHub page kinds', async () => {
+  test('saves GitHub commit URLs as structured commit markdown', async () => {
     await withTempDir(async (tempDir) => {
-      stubHtmlFetch('<html><head><title>Commit abc123</title></head><body><p>Generic commit page.</p></body></html>')
+      stubHtmlFetch(readIngestFixture('github-commit.html'))
 
-      const output = await ingest('https://github.com/mohanagy/graphify-ts/commit/abc123', join(tempDir, 'raw'))
+      const output = await ingest(
+        'https://github.com/mohanagy/graphify-ts/commit/abcdef1?diff=split',
+        join(tempDir, 'raw'),
+        { contributor: 'graphify-ts' },
+      )
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: github_commit')
+      expect(content).toContain('source_url: "https://github.com/mohanagy/graphify-ts/commit/abcdef1234567890abcdef1234567890abcdef12"')
+      expect(content).toContain('github_kind: "commit"')
+      expect(content).toContain('github_owner: "mohanagy"')
+      expect(content).toContain('github_repo: "graphify-ts"')
+      expect(content).toContain('github_commit_sha: "abcdef1234567890abcdef1234567890abcdef12"')
+      expect(content).toContain('author: "graphify-maintainer"')
+      expect(content).toContain('contributor: "graphify-ts"')
+      expect(content).toContain('# GitHub Commit abcdef1: feat: add GitHub commit ingest')
+      expect(content).toContain('## Message')
+      expect(content).toContain('Teach the ingest layer about exact GitHub commit routes.')
+      expect(content).toContain('Keep unsupported GitHub page kinds on webpage fallback.')
+      expect(content).not.toContain('provenance:')
+    })
+  })
+
+  test('falls back to generic webpage capture when fetched GitHub commit HTML does not confirm a commit page', async () => {
+    await withTempDir(async (tempDir) => {
+      stubHtmlFetch(
+        '<html><head><title>Commit abc1234</title><link rel="canonical" href="https://github.com/mohanagy/graphify-ts/commit/abc1234" /></head><body><p>Generic commit page.</p></body></html>',
+      )
+
+      const output = await ingest('https://github.com/mohanagy/graphify-ts/commit/abc1234', join(tempDir, 'raw'))
       const content = readFileSync(output, 'utf8')
 
       expect(content).toContain('type: webpage')
-      expect(content).toContain('Source: https://github.com/mohanagy/graphify-ts/commit/abc123')
+      expect(content).toContain('Source: https://github.com/mohanagy/graphify-ts/commit/abc1234')
+      expect(content).not.toContain('github_kind:')
+    })
+  })
+
+  test('falls back to generic webpage capture for GitHub commit subpages with extra path segments', async () => {
+    await withTempDir(async (tempDir) => {
+      stubHtmlFetch(
+        readIngestFixture('github-commit.html').replace(
+          'https://github.com/mohanagy/graphify-ts/commit/abcdef1234567890abcdef1234567890abcdef12',
+          'https://github.com/mohanagy/graphify-ts/commit/abcdef1234567890abcdef1234567890abcdef12/checks',
+        ),
+      )
+
+      const output = await ingest(
+        'https://github.com/mohanagy/graphify-ts/commit/abcdef1234567890abcdef1234567890abcdef12/checks',
+        join(tempDir, 'raw'),
+      )
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: webpage')
+      expect(content).toContain('Source: https://github.com/mohanagy/graphify-ts/commit/abcdef1234567890abcdef1234567890abcdef12/checks')
+      expect(content).not.toContain('github_kind:')
+    })
+  })
+
+  test('falls back to generic webpage capture for unsupported GitHub page kinds', async () => {
+    await withTempDir(async (tempDir) => {
+      stubHtmlFetch(
+        '<html><head><title>Compare changes</title><link rel="canonical" href="https://github.com/mohanagy/graphify-ts/compare/main...feature" /></head><body><main><p>Compare branches.</p></main></body></html>',
+      )
+
+      const output = await ingest('https://github.com/mohanagy/graphify-ts/compare/main...feature', join(tempDir, 'raw'))
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: webpage')
+      expect(content).toContain('Source: https://github.com/mohanagy/graphify-ts/compare/main...feature')
       expect(content).not.toContain('github_kind:')
     })
   })
@@ -798,7 +878,7 @@ describe('ingest', () => {
     })
   })
 
-  test('canonicalizes YouTube shorts and embed URLs to the same structured video asset', async () => {
+  test('canonicalizes YouTube shorts, live, and embed URLs to the same structured video asset', async () => {
     await withTempDir(async (tempDir) => {
       const requestUrls: string[] = []
       vi.stubGlobal(
@@ -823,14 +903,17 @@ describe('ingest', () => {
       )
 
       const shortsOutput = await ingest('https://www.youtube.com/shorts/dQw4w9WgXcQ?feature=share', join(tempDir, 'raw'))
+      const liveOutput = await ingest('https://www.youtube.com/live/dQw4w9WgXcQ?feature=share', join(tempDir, 'raw'))
       const embedOutput = await ingest('https://www.youtube.com/embed/dQw4w9WgXcQ?start=30', join(tempDir, 'raw'))
       const content = readFileSync(embedOutput, 'utf8')
 
       expect(requestUrls).toEqual([
         'https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ&format=json',
         'https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ&format=json',
+        'https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ&format=json',
       ])
       expect(basename(shortsOutput)).toBe('youtube_dQw4w9WgXcQ.md')
+      expect(basename(liveOutput)).toMatch(/^youtube_dQw4w9WgXcQ(?:_\d+)?\.md$/)
       expect(basename(embedOutput)).toMatch(/^youtube_dQw4w9WgXcQ(?:_\d+)?\.md$/)
       expect(content).toContain('type: youtube_video')
       expect(content).toContain('source_url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"')
@@ -838,6 +921,397 @@ describe('ingest', () => {
       expect(content).toContain('video_capture_status: "oembed"')
       expect(content).toContain('[Watch on YouTube](https://www.youtube.com/watch?v=dQw4w9WgXcQ)')
       expect(content).toContain('[Embed Player](https://www.youtube.com/embed/dQw4w9WgXcQ)')
+    })
+  })
+
+  test('saves YouTube playlist URLs as structured playlist markdown', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input) => {
+          const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+          expect(requestUrl).toBe('https://www.youtube.com/playlist?list=PLgraphifyRoadmap123')
+          return new Response(readIngestFixture('youtube-playlist.html'), {
+            status: 200,
+            headers: { 'content-type': 'text/html; charset=utf-8' },
+          })
+        }),
+      )
+
+      const output = await ingest('https://www.youtube.com/playlist?list=PLgraphifyRoadmap123&feature=share', join(tempDir, 'raw'), {
+        contributor: 'graphify-ts',
+      })
+      const content = readFileSync(output, 'utf8')
+
+      expect(basename(output)).toBe('youtube_playlist_PLgraphifyRoadmap123.md')
+      expect(content).toContain('type: youtube_playlist')
+      expect(content).toContain('source_url: "https://www.youtube.com/playlist?list=PLgraphifyRoadmap123"')
+      expect(content).toContain('title: "Graphify Roadmap Sessions"')
+      expect(content).toContain('author: "Graphify Channel"')
+      expect(content).toContain('description: "Deterministic roadmap demos and implementation updates for graphify-ts."')
+      expect(content).toContain('contributor: "graphify-ts"')
+      expect(content).toContain('youtube_platform: "youtube"')
+      expect(content).toContain('youtube_kind: "playlist"')
+      expect(content).toContain('youtube_playlist_id: "PLgraphifyRoadmap123"')
+      expect(content).toContain('youtube_capture_status: "html"')
+      expect(content).toContain('youtube_thumbnail_url: "https://i.ytimg.com/vi_webp/playlist/default.jpg"')
+      expect(content).toContain('# YouTube Playlist: Graphify Roadmap Sessions')
+      expect(content).toContain('## Playlist')
+      expect(content).toContain('Playlist by Graphify Channel.')
+      expect(content).toContain('Deterministic roadmap demos and implementation updates for graphify-ts.')
+      expect(content).toContain('## Context')
+      expect(content).toContain('- Platform: youtube')
+      expect(content).toContain('- Kind: playlist')
+      expect(content).toContain('- Playlist ID: PLgraphifyRoadmap123')
+      expect(content).toContain('- Capture Status: html')
+      expect(content).toContain('## Links')
+      expect(content).toContain('[Open Playlist](https://www.youtube.com/playlist?list=PLgraphifyRoadmap123)')
+      expect(content).toContain('[Thumbnail](https://i.ytimg.com/vi_webp/playlist/default.jpg)')
+      expect(content).not.toContain('feature=share')
+      expect(content).not.toContain('provenance:')
+    })
+  })
+
+  test('falls back to generic webpage capture when fetched YouTube playlist HTML does not confirm a playlist page', async () => {
+    await withTempDir(async (tempDir) => {
+      stubHtmlFetch(
+        '<html><head><title>Graphify Demo Walkthrough - YouTube</title><link rel="canonical" href="https://www.youtube.com/watch?v=dQw4w9WgXcQ" /></head><body><main><p>Video page.</p></main></body></html>',
+      )
+
+      const output = await ingest('https://www.youtube.com/playlist?list=PLgraphifyRoadmap123', join(tempDir, 'raw'))
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: webpage')
+      expect(content).toContain('source_url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"')
+      expect(content).not.toContain('type: youtube_playlist')
+      expect(content).not.toContain('youtube_kind:')
+    })
+  })
+
+  test('falls back to generic webpage capture when a non-playlist YouTube page echoes the requested playlist id', async () => {
+    await withTempDir(async (tempDir) => {
+      stubHtmlFetch(
+        '<html><head><title>Graphify Consent - YouTube</title><link rel="canonical" href="https://www.youtube.com/playlist?list=PLgraphifyRoadmap123" /></head><body><main><script>var ytInitialData = {"playlistId":"PLgraphifyRoadmap123"};</script><p>Consent page.</p></main></body></html>',
+      )
+
+      const output = await ingest('https://www.youtube.com/playlist?list=PLgraphifyRoadmap123', join(tempDir, 'raw'))
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: webpage')
+      expect(content).toContain('source_url: "https://www.youtube.com/playlist?list=PLgraphifyRoadmap123"')
+      expect(content).not.toContain('type: youtube_playlist')
+      expect(content).not.toContain('youtube_kind:')
+    })
+  })
+
+  test('falls back to generic webpage capture for YouTube playlist routes with a trailing slash', async () => {
+    await withTempDir(async (tempDir) => {
+      stubHtmlFetch(readIngestFixture('youtube-playlist.html'))
+
+      const output = await ingest('https://www.youtube.com/playlist/?list=PLgraphifyRoadmap123', join(tempDir, 'raw'))
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: webpage')
+      expect(content).toContain('source_url: "https://www.youtube.com/playlist?list=PLgraphifyRoadmap123"')
+      expect(content).not.toContain('type: youtube_playlist')
+      expect(content).not.toContain('youtube_kind:')
+    })
+  })
+
+  test('saves YouTube @handle channel URLs as structured channel markdown', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input) => {
+          const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+          expect(requestUrl).toBe('https://www.youtube.com/@graphify')
+          return new Response(readIngestFixture('youtube-channel.html'), {
+            status: 200,
+            headers: { 'content-type': 'text/html; charset=utf-8' },
+          })
+        }),
+      )
+
+      const output = await ingest('https://www.youtube.com/@graphify?feature=share', join(tempDir, 'raw'), {
+        contributor: 'graphify-ts',
+      })
+      const content = readFileSync(output, 'utf8')
+
+      expect(basename(output)).toBe('youtube_channel_graphify.md')
+      expect(content).toContain('type: youtube_channel')
+      expect(content).toContain('source_url: "https://www.youtube.com/@graphify"')
+      expect(content).toContain('title: "Graphify Channel"')
+      expect(content).toContain('author: "Graphify Channel"')
+      expect(content).toContain('description: "Deterministic roadmap demos, graph explainers, and structured ingest updates."')
+      expect(content).toContain('contributor: "graphify-ts"')
+      expect(content).toContain('youtube_platform: "youtube"')
+      expect(content).toContain('youtube_kind: "channel"')
+      expect(content).toContain('youtube_channel_handle: "graphify"')
+      expect(content).toContain('youtube_channel_id: "UCgraphifyRoadmap1234567"')
+      expect(content).toContain('youtube_capture_status: "html"')
+      expect(content).toContain('youtube_thumbnail_url: "https://yt3.googleusercontent.com/graphify-channel-photo=s176"')
+      expect(content).toContain('# YouTube Channel: Graphify Channel')
+      expect(content).toContain('## Channel')
+      expect(content).toContain('YouTube channel @graphify.')
+      expect(content).toContain('Deterministic roadmap demos, graph explainers, and structured ingest updates.')
+      expect(content).toContain('## Context')
+      expect(content).toContain('- Platform: youtube')
+      expect(content).toContain('- Kind: channel')
+      expect(content).toContain('- Handle: @graphify')
+      expect(content).toContain('- Channel ID: UCgraphifyRoadmap1234567')
+      expect(content).toContain('- Capture Status: html')
+      expect(content).toContain('## Links')
+      expect(content).toContain('[Open Channel](https://www.youtube.com/@graphify)')
+      expect(content).toContain('[Thumbnail](https://yt3.googleusercontent.com/graphify-channel-photo=s176)')
+      expect(content).not.toContain('feature=share')
+      expect(content).not.toContain('provenance:')
+    })
+  })
+
+  test('canonicalizes YouTube @handle channel urls case-insensitively before structured capture', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input) => {
+          const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+          expect(requestUrl).toBe('https://www.youtube.com/@graphify')
+          return new Response(readIngestFixture('youtube-channel.html'), {
+            status: 200,
+            headers: { 'content-type': 'text/html; charset=utf-8' },
+          })
+        }),
+      )
+
+      const output = await ingest('https://www.youtube.com/@Graphify?feature=share', join(tempDir, 'raw'))
+      const content = readFileSync(output, 'utf8')
+
+      expect(basename(output)).toBe('youtube_channel_graphify.md')
+      expect(content).toContain('type: youtube_channel')
+      expect(content).toContain('source_url: "https://www.youtube.com/@graphify"')
+      expect(content).not.toContain('@Graphify')
+    })
+  })
+
+  test('saves YouTube /channel/<id> URLs as structured channel markdown', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input) => {
+          const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+          expect(requestUrl).toBe('https://www.youtube.com/channel/UCgraphifyRoadmap1234567')
+          return new Response(readIngestFixture('youtube-channel.html'), {
+            status: 200,
+            headers: { 'content-type': 'text/html; charset=utf-8' },
+          })
+        }),
+      )
+
+      const output = await ingest('https://www.youtube.com/channel/UCgraphifyRoadmap1234567?feature=share', join(tempDir, 'raw'), {
+        contributor: 'graphify-ts',
+      })
+      const content = readFileSync(output, 'utf8')
+
+      expect(basename(output)).toBe('youtube_channel_graphify.md')
+      expect(content).toContain('type: youtube_channel')
+      expect(content).toContain('source_url: "https://www.youtube.com/@graphify"')
+      expect(content).toContain('title: "Graphify Channel"')
+      expect(content).toContain('author: "Graphify Channel"')
+      expect(content).toContain('description: "Deterministic roadmap demos, graph explainers, and structured ingest updates."')
+      expect(content).toContain('contributor: "graphify-ts"')
+      expect(content).toContain('youtube_platform: "youtube"')
+      expect(content).toContain('youtube_kind: "channel"')
+      expect(content).toContain('youtube_channel_handle: "graphify"')
+      expect(content).toContain('youtube_channel_id: "UCgraphifyRoadmap1234567"')
+      expect(content).toContain('youtube_capture_status: "html"')
+      expect(content).toContain('youtube_thumbnail_url: "https://yt3.googleusercontent.com/graphify-channel-photo=s176"')
+      expect(content).toContain('# YouTube Channel: Graphify Channel')
+      expect(content).toContain('## Channel')
+      expect(content).toContain('YouTube channel @graphify.')
+      expect(content).toContain('## Context')
+      expect(content).toContain('- Handle: @graphify')
+      expect(content).toContain('- Channel ID: UCgraphifyRoadmap1234567')
+      expect(content).toContain('- Capture Status: html')
+      expect(content).toContain('## Links')
+      expect(content).toContain('[Open Channel](https://www.youtube.com/@graphify)')
+      expect(content).not.toContain('feature=share')
+      expect(content).not.toContain('provenance:')
+    })
+  })
+
+  test('saves YouTube /channel/<id> URLs as structured channel markdown when the root page canonicalizes to @handle without exposing externalId', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input) => {
+          const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+          expect(requestUrl).toBe('https://www.youtube.com/channel/UCgraphifyRoadmap1234567')
+          return new Response(
+            '<html><head><title>Graphify Channel - YouTube</title><link rel="canonical" href="https://www.youtube.com/@graphify" /><meta property="og:url" content="https://www.youtube.com/@graphify" /><meta property="og:title" content="Graphify Channel" /><meta property="og:description" content="Deterministic roadmap demos, graph explainers, and structured ingest updates." /><meta property="og:image" content="https://yt3.googleusercontent.com/graphify-channel-photo=s176" /><meta name="author" content="Graphify Channel" /><script>var ytInitialData = {"header":{"c4TabbedHeaderRenderer":{"channelHandleText":{"simpleText":"@graphify"}}},"metadata":{"channelMetadataRenderer":{"title":"Graphify Channel","description":"Deterministic roadmap demos, graph explainers, and structured ingest updates.","vanityChannelUrl":"https://www.youtube.com/@graphify"}}};</script></head><body><main><h1>Graphify Channel</h1></main></body></html>',
+            {
+              status: 200,
+              headers: { 'content-type': 'text/html; charset=utf-8' },
+            },
+          )
+        }),
+      )
+
+      const output = await ingest('https://www.youtube.com/channel/UCgraphifyRoadmap1234567', join(tempDir, 'raw'))
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: youtube_channel')
+      expect(content).toContain('source_url: "https://www.youtube.com/@graphify"')
+      expect(content).toContain('youtube_channel_handle: "graphify"')
+      expect(content).toContain('youtube_channel_id: "UCgraphifyRoadmap1234567"')
+      expect(content).toContain('youtube_capture_status: "html"')
+      expect(content).not.toContain('type: webpage')
+    })
+  })
+
+  test('falls back to generic webpage capture when fetched YouTube @handle HTML does not confirm a channel page', async () => {
+    await withTempDir(async (tempDir) => {
+      stubHtmlFetch(
+        '<html><head><title>Graphify Consent - YouTube</title><link rel="canonical" href="https://www.youtube.com/@graphify" /></head><body><main><script>var ytInitialData = {"vanityChannelUrl":"https://www.youtube.com/@graphify"};</script><p>Consent page.</p></main></body></html>',
+      )
+
+      const output = await ingest('https://www.youtube.com/@graphify', join(tempDir, 'raw'))
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: webpage')
+      expect(content).toContain('source_url: "https://www.youtube.com/@graphify"')
+      expect(content).not.toContain('type: youtube_channel')
+      expect(content).not.toContain('youtube_kind:')
+    })
+  })
+
+  test('falls back to generic webpage capture when a root YouTube @handle request resolves to a nested channel tab', async () => {
+    await withTempDir(async (tempDir) => {
+      stubHtmlFetch(
+        '<html><head><title>Graphify Videos - YouTube</title><link rel="canonical" href="https://www.youtube.com/@graphify/videos" /><meta property="og:url" content="https://www.youtube.com/@graphify/videos" /><meta property="og:title" content="Graphify Videos" /><meta name="description" content="Channel videos tab." /></head><body><main><script>var ytInitialData = {"channelMetadataRenderer":{"title":"Graphify Channel","vanityChannelUrl":"https://www.youtube.com/@graphify","externalId":"UCgraphifyRoadmap1234567"},"header":{"c4TabbedHeaderRenderer":{"channelHandleText":{"simpleText":"@graphify"}}}};</script><p>Videos tab content.</p></main></body></html>',
+      )
+
+      const output = await ingest('https://www.youtube.com/@graphify', join(tempDir, 'raw'))
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: webpage')
+      expect(content).toContain('source_url: "https://www.youtube.com/@graphify/videos"')
+      expect(content).not.toContain('type: youtube_channel')
+      expect(content).not.toContain('youtube_kind:')
+    })
+  })
+
+  test('falls back to generic webpage capture when a root YouTube /channel/<id> request resolves to a nested channel tab', async () => {
+    await withTempDir(async (tempDir) => {
+      stubHtmlFetch(
+        '<html><head><title>Graphify Videos - YouTube</title><link rel="canonical" href="https://www.youtube.com/@graphify/videos" /><meta property="og:url" content="https://www.youtube.com/@graphify/videos" /><meta property="og:title" content="Graphify Videos" /><meta name="description" content="Channel videos tab." /></head><body><main><script>var ytInitialData = {"channelMetadataRenderer":{"title":"Graphify Channel","vanityChannelUrl":"https://www.youtube.com/@graphify","externalId":"UCgraphifyRoadmap1234567"},"header":{"c4TabbedHeaderRenderer":{"channelHandleText":{"simpleText":"@graphify"}}}};</script><p>Videos tab content.</p></main></body></html>',
+      )
+
+      const output = await ingest('https://www.youtube.com/channel/UCgraphifyRoadmap1234567', join(tempDir, 'raw'))
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: webpage')
+      expect(content).toContain('source_url: "https://www.youtube.com/@graphify/videos"')
+      expect(content).not.toContain('type: youtube_channel')
+      expect(content).not.toContain('youtube_kind:')
+    })
+  })
+
+  test('falls back to generic webpage capture for YouTube @handle routes with a trailing slash', async () => {
+    await withTempDir(async (tempDir) => {
+      stubHtmlFetch(readIngestFixture('youtube-channel.html'))
+
+      const output = await ingest('https://www.youtube.com/@graphify/', join(tempDir, 'raw'))
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: webpage')
+      expect(content).toContain('source_url: "https://www.youtube.com/@graphify"')
+      expect(content).not.toContain('type: youtube_channel')
+      expect(content).not.toContain('youtube_kind:')
+    })
+  })
+
+  test('falls back to generic webpage capture for YouTube /channel/<id> routes with a trailing slash', async () => {
+    await withTempDir(async (tempDir) => {
+      stubHtmlFetch(
+        '<html><head><title>Graphify Channel - YouTube</title><link rel="canonical" href="https://www.youtube.com/channel/UCgraphifyRoadmap1234567" /><meta property="og:url" content="https://www.youtube.com/channel/UCgraphifyRoadmap1234567" /></head><body><main><p>Channel page.</p></main></body></html>',
+      )
+
+      const output = await ingest('https://www.youtube.com/channel/UCgraphifyRoadmap1234567/', join(tempDir, 'raw'))
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: webpage')
+      expect(content).toContain('source_url: "https://www.youtube.com/channel/UCgraphifyRoadmap1234567"')
+      expect(content).not.toContain('type: youtube_channel')
+      expect(content).not.toContain('youtube_kind:')
+    })
+  })
+
+  test('makes youtube channel fallback behavior explicit when channel metadata fetch fails', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response('unavailable', { status: 503, headers: { 'content-type': 'text/plain' } })),
+      )
+
+      const output = await ingest('https://www.youtube.com/@graphify?feature=share', join(tempDir, 'raw'), {
+        contributor: 'graphify-ts',
+      })
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: youtube_channel')
+      expect(content).toContain('source_url: "https://www.youtube.com/@graphify"')
+      expect(content).toContain('title: "YouTube Channel: @graphify"')
+      expect(content).toContain('author: "@graphify"')
+      expect(content).toContain('youtube_platform: "youtube"')
+      expect(content).toContain('youtube_kind: "channel"')
+      expect(content).toContain('youtube_channel_handle: "graphify"')
+      expect(content).toContain('youtube_capture_status: "fallback"')
+      expect(content).toContain('# YouTube Channel: @graphify')
+      expect(content).toContain('## Channel')
+      expect(content).toContain('Channel metadata could not be fetched.')
+      expect(content).toContain('## Context')
+      expect(content).toContain('- Kind: channel')
+      expect(content).toContain('- Handle: @graphify')
+      expect(content).toContain('- Capture Status: fallback')
+      expect(content).toContain('- Note: channel metadata unavailable; preserved canonical channel URL and derived handle metadata only.')
+      expect(content).toContain('## Links')
+      expect(content).toContain('[Open Channel](https://www.youtube.com/@graphify)')
+      expect(content).not.toContain('feature=share')
+      expect(content).not.toContain('provenance:')
+    })
+  })
+
+  test('makes youtube channel-id fallback behavior explicit when channel metadata fetch fails', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response('unavailable', { status: 503, headers: { 'content-type': 'text/plain' } })),
+      )
+
+      const output = await ingest('https://www.youtube.com/channel/UCgraphifyRoadmap1234567?feature=share', join(tempDir, 'raw'), {
+        contributor: 'graphify-ts',
+      })
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: youtube_channel')
+      expect(content).toContain('source_url: "https://www.youtube.com/channel/UCgraphifyRoadmap1234567"')
+      expect(content).toContain('title: "YouTube Channel: UCgraphifyRoadmap1234567"')
+      expect(content).toContain('author: "unknown"')
+      expect(content).toContain('youtube_platform: "youtube"')
+      expect(content).toContain('youtube_kind: "channel"')
+      expect(content).not.toContain('youtube_channel_handle:')
+      expect(content).toContain('youtube_channel_id: "UCgraphifyRoadmap1234567"')
+      expect(content).toContain('youtube_capture_status: "fallback"')
+      expect(content).toContain('# YouTube Channel: UCgraphifyRoadmap1234567')
+      expect(content).toContain('## Channel')
+      expect(content).toContain('Channel metadata could not be fetched.')
+      expect(content).toContain('## Context')
+      expect(content).toContain('- Channel ID: UCgraphifyRoadmap1234567')
+      expect(content).toContain('- Capture Status: fallback')
+      expect(content).toContain('- Note: channel metadata unavailable; preserved canonical channel URL and derived channel-id metadata only.')
+      expect(content).toContain('## Links')
+      expect(content).toContain('[Open Channel](https://www.youtube.com/channel/UCgraphifyRoadmap1234567)')
+      expect(content).not.toContain('feature=share')
+      expect(content).not.toContain('provenance:')
     })
   })
 
@@ -870,6 +1344,65 @@ describe('ingest', () => {
       expect(content).toContain('## Links')
       expect(content).toContain('[Watch on YouTube](https://www.youtube.com/watch?v=dQw4w9WgXcQ)')
       expect(content).toContain('[Embed Player](https://www.youtube.com/embed/dQw4w9WgXcQ)')
+      expect(content).not.toContain('provenance:')
+    })
+  })
+
+  test('makes youtube playlist fallback behavior explicit when playlist metadata fetch fails', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response('unavailable', { status: 503, headers: { 'content-type': 'text/plain' } })),
+      )
+
+      const output = await ingest('https://www.youtube.com/playlist?list=PLgraphifyRoadmap123&feature=share', join(tempDir, 'raw'), {
+        contributor: 'graphify-ts',
+      })
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: youtube_playlist')
+      expect(content).toContain('source_url: "https://www.youtube.com/playlist?list=PLgraphifyRoadmap123"')
+      expect(content).toContain('title: "YouTube Playlist: PLgraphifyRoadmap123"')
+      expect(content).toContain('author: "unknown"')
+      expect(content).toContain('youtube_platform: "youtube"')
+      expect(content).toContain('youtube_kind: "playlist"')
+      expect(content).toContain('youtube_playlist_id: "PLgraphifyRoadmap123"')
+      expect(content).toContain('youtube_capture_status: "fallback"')
+      expect(content).toContain('# YouTube Playlist: PLgraphifyRoadmap123')
+      expect(content).toContain('## Playlist')
+      expect(content).toContain('Playlist metadata could not be fetched.')
+      expect(content).toContain('## Context')
+      expect(content).toContain('- Kind: playlist')
+      expect(content).toContain('- Capture Status: fallback')
+      expect(content).toContain('- Note: playlist metadata unavailable; preserved canonical playlist URL and derived playlist metadata only.')
+      expect(content).toContain('## Links')
+      expect(content).toContain('[Open Playlist](https://www.youtube.com/playlist?list=PLgraphifyRoadmap123)')
+      expect(content).not.toContain('feature=share')
+      expect(content).not.toContain('provenance:')
+    })
+  })
+
+  test('canonicalizes youtube live urls before fallback handling', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response('unavailable', { status: 503, headers: { 'content-type': 'text/plain' } })),
+      )
+
+      const output = await ingest('https://www.youtube.com/live/dQw4w9WgXcQ?feature=share', join(tempDir, 'raw'), {
+        contributor: 'graphify-ts',
+      })
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: youtube_video')
+      expect(content).toContain('source_url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"')
+      expect(content).toContain('title: "YouTube Video: dQw4w9WgXcQ"')
+      expect(content).toContain('video_platform: "youtube"')
+      expect(content).toContain('video_id: "dQw4w9WgXcQ"')
+      expect(content).toContain('video_capture_status: "fallback"')
+      expect(content).toContain('[Watch on YouTube](https://www.youtube.com/watch?v=dQw4w9WgXcQ)')
+      expect(content).toContain('[Embed Player](https://www.youtube.com/embed/dQw4w9WgXcQ)')
+      expect(content).not.toContain('/live/dQw4w9WgXcQ')
       expect(content).not.toContain('provenance:')
     })
   })

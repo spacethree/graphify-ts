@@ -3,13 +3,18 @@ import type { IngestOptions } from './ingest/types.js'
 import { safeFetchText } from '../shared/security.js'
 import { buildWebpageAsset, extractCanonicalUrl, extractMetaContent, extractTitle, findCanonicalUrl, resolveContributor, safeFilename, stripHtml, yamlString } from './ingest-web.js'
 
-type GitHubRouteKind = 'repository' | 'issue' | 'pull_request' | 'discussion'
+type GitHubRouteKind = 'repository' | 'issue' | 'pull_request' | 'discussion' | 'commit'
 
 interface GitHubRoute {
   owner: string
   repo: string
   kind: GitHubRouteKind
   number?: string
+  commitSha?: string
+}
+
+function isGitHubCommitSha(value: string): boolean {
+  return /^[0-9a-f]{7,40}$/i.test(value)
 }
 
 function parseGitHubRoute(url: string): GitHubRoute | null {
@@ -48,6 +53,9 @@ function parseGitHubRoute(url: string): GitHubRoute | null {
   }
   if (section === 'discussions' && /^\d+$/.test(number)) {
     return { owner, repo, kind: 'discussion', number }
+  }
+  if (section === 'commit' && segments.length === 4 && isGitHubCommitSha(number)) {
+    return { owner, repo, kind: 'commit', commitSha: number }
   }
 
   return null
@@ -125,6 +133,10 @@ function stripGitHubTitleSuffix(value: string): string {
   return value.replace(/\s+·\s+(Issue|Pull Request|Discussion)\s+#\d+\s+·\s+.+$/i, '').trim()
 }
 
+function stripGitHubCommitTitleSuffix(value: string): string {
+  return value.replace(/\s+·\s+[^·]+\/[^·]+\s+·\s+GitHub$/i, '').trim()
+}
+
 function extractGitHubTitle(html: string, fallback: string): string {
   const title =
     extractFirstMatch(html, [/<span[^>]*class="[^"]*\bjs-issue-title\b[^"]*"[^>]*>([\s\S]*?)<\/span>/i]) ||
@@ -160,6 +172,44 @@ function extractDiscussionCategory(html: string): string {
   return extractFirstMatch(html, [/<a[^>]*class="[^"]*\bdiscussion-category\b[^"]*"[^>]*>([\s\S]*?)<\/a>/i])
 }
 
+function extractCommitSpecificTitle(html: string): string {
+  return extractFirstMatch(html, [/<h1[^>]*class=["'][^"']*\bcommit-title\b[^"']*["'][^>]*>([\s\S]*?)<\/h1>/i])
+}
+
+function extractCommitTitle(html: string, fallback: string): string {
+  const title =
+    extractCommitSpecificTitle(html) ||
+    stripGitHubCommitTitleSuffix(extractMetaContent(html, 'property', 'og:title')) ||
+    stripGitHubCommitTitleSuffix(extractTitle(html, fallback))
+
+  return title || fallback
+}
+
+function extractCommitSpecificAuthor(html: string): string {
+  return extractFirstMatch(html, [/<a[^>]*class=["'][^"']*\bcommit-author\b[^"']*["'][^>]*>([\s\S]*?)<\/a>/i])
+}
+
+function extractCommitAuthor(html: string): string {
+  return extractCommitSpecificAuthor(html) || extractGitHubAuthor(html)
+}
+
+function extractCommitSha(html: string): string {
+  return extractFirstMatch(html, [/<clipboard-copy[^>]*value=["']([0-9a-f]{7,40})["'][^>]*>/i])
+}
+
+function extractCommitSpecificBody(html: string): string {
+  const nestedBody = extractBalancedElementInnerHtml(html, /<(div|pre)\b[^>]*class=["'][^"']*\bcommit-desc\b[^"']*["'][^>]*>/i)
+  if (nestedBody) {
+    return stripHtml(nestedBody)
+  }
+
+  return extractFirstMatch(html, [/<(?:div|pre)[^>]*class=["'][^"']*\bcommit-desc\b[^"']*["'][^>]*>([\s\S]*?)<\/(?:div|pre)>/i])
+}
+
+function extractCommitBody(html: string): string {
+  return extractCommitSpecificBody(html) || extractMetaContent(html, 'property', 'og:description')
+}
+
 function extractRepositoryDescription(html: string): string {
   return (
     extractFirstMatch(html, [/<p[^>]*id=["']repo-description["'][^>]*>([\s\S]*?)<\/p>/i]) ||
@@ -182,6 +232,28 @@ function confirmThreadRoute(html: string): boolean {
       extractGitHubAuthor(html) ||
       extractGitHubBody(html) ||
       extractGitHubState(html),
+  )
+}
+
+function commitShasMatch(expected: string, actual: string): boolean {
+  const normalizedExpected = expected.toLowerCase()
+  const normalizedActual = actual.toLowerCase()
+  return normalizedExpected === normalizedActual ||
+    normalizedExpected.startsWith(normalizedActual) ||
+    normalizedActual.startsWith(normalizedExpected)
+}
+
+function confirmCommitRoute(html: string, route: GitHubRoute): boolean {
+  const extractedCommitSha = extractCommitSha(html)
+  if (extractedCommitSha && route.commitSha && !commitShasMatch(route.commitSha, extractedCommitSha)) {
+    return false
+  }
+
+  return Boolean(
+    extractedCommitSha ||
+      extractCommitSpecificTitle(html) ||
+      extractCommitSpecificAuthor(html) ||
+      extractCommitSpecificBody(html),
   )
 }
 
@@ -223,6 +295,49 @@ function buildRepositoryAsset(url: string, html: string, route: GitHubRoute, opt
   }
 
   lines.push('', `Source: ${canonicalUrl}`, '')
+
+  return {
+    fileName: safeFilename(canonicalUrl, '.md'),
+    content: `${lines.join('\n')}\n`,
+  }
+}
+
+function buildCommitAsset(url: string, html: string, route: GitHubRoute, options: IngestOptions): IngestTextAsset {
+  const canonicalUrl = extractCanonicalUrl(html, url)
+  const repositoryFullName = `${route.owner}/${route.repo}`
+  const commitSha = extractCommitSha(html) || route.commitSha || ''
+  const shortSha = commitSha.slice(0, 7) || (route.commitSha ?? '').slice(0, 7) || 'unknown'
+  const title = extractCommitTitle(html, `Commit ${shortSha}`)
+  const author = extractCommitAuthor(html) || route.owner
+  const body = extractCommitBody(html) || 'No commit message captured.'
+  const capturedAt = new Date().toISOString()
+  const lines = [
+    '---',
+    `source_url: ${yamlString(canonicalUrl)}`,
+    'type: github_commit',
+    `title: ${yamlString(title)}`,
+    `author: ${yamlString(author)}`,
+    `captured_at: ${yamlString(capturedAt)}`,
+    `contributor: ${yamlString(resolveContributor(options))}`,
+    `github_kind: ${yamlString('commit')}`,
+    `github_owner: ${yamlString(route.owner)}`,
+    `github_repo: ${yamlString(route.repo)}`,
+    commitSha ? `github_commit_sha: ${yamlString(commitSha)}` : null,
+    '---',
+    '',
+    `# GitHub Commit ${shortSha}: ${title}`,
+    '',
+    `**Repository:** ${repositoryFullName}`,
+    `**Author:** ${author}`,
+    ...(commitSha ? [`**Commit SHA:** ${commitSha}`] : []),
+    '',
+    '## Message',
+    '',
+    body,
+    '',
+    `Source: ${canonicalUrl}`,
+    '',
+  ].filter((line): line is string => Boolean(line))
 
   return {
     fileName: safeFilename(canonicalUrl, '.md'),
@@ -322,6 +437,13 @@ export async function fetchGitHub(url: string, options: IngestOptions): Promise<
       return buildWebpageAsset(url, html, options)
     }
     return buildRepositoryAsset(canonicalUrl, html, route, options)
+  }
+
+  if (route.kind === 'commit') {
+    if (!confirmCommitRoute(html, route)) {
+      return buildWebpageAsset(url, html, options)
+    }
+    return buildCommitAsset(canonicalUrl, html, route, options)
   }
 
   if (!confirmThreadRoute(html)) {

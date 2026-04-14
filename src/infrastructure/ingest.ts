@@ -9,7 +9,7 @@ import { detectUrlType } from './ingest/url-type.js'
 import { fetchGitHub } from './ingest-github.js'
 import { fetchReddit } from './ingest-reddit.js'
 import { fetchTweet } from './ingest-social.js'
-import { fetchYouTubeVideo } from './ingest-youtube.js'
+import { fetchYouTubeAsset } from './ingest-youtube.js'
 import { fetchWebpage, resolveContributor, safeFilename, stripHtml, yamlString } from './ingest-web.js'
 import { writeBinaryIngestSidecar } from '../shared/binary-ingest-sidecar.js'
 import { safeFetch, safeFetchText, validateUrl } from '../shared/security.js'
@@ -84,7 +84,7 @@ const INGEST_HANDLERS: IngestHandlerMap = {
   'builtin:ingest:hackernews': async (url, options) => ({ kind: 'text', asset: await fetchHackerNews(url, options) }),
   'builtin:ingest:arxiv': async (url, options) => ({ kind: 'text', asset: await fetchArxiv(url, options) }),
   'builtin:ingest:github': async (url, options) => ({ kind: 'text', asset: await fetchGitHub(url, options) }),
-  'builtin:ingest:youtube': async (url, options) => ({ kind: 'text', asset: await fetchYouTubeVideo(url, options) }),
+  'builtin:ingest:youtube': async (url, options) => ({ kind: 'text', asset: await fetchYouTubeAsset(url, options) }),
   'builtin:ingest:webpage': async (url, options) => ({ kind: 'text', asset: await fetchWebpage(url, options) }),
   'builtin:ingest:pdf': async () => ({ kind: 'binary', suffix: '.pdf' }),
   'builtin:ingest:image': async (url) => ({ kind: 'binary', suffix: imageSuffixFromUrl(url) }),
