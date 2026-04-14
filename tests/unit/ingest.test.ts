@@ -55,8 +55,12 @@ describe('detectUrlType', () => {
     expect(detectUrlType('https://notx.com/user/status/1')).toBe('webpage')
     expect(detectUrlType('https://x.com/home')).toBe('webpage')
     expect(detectUrlType('https://twitter.com/explore')).toBe('webpage')
-    expect(detectUrlType('https://x.com/user/status/1/photo/1')).toBe('webpage')
+    expect(detectUrlType('https://x.com/user/status/1/photo/1')).toBe('tweet')
+    expect(detectUrlType('https://twitter.com/i/web/status/1/video/1')).toBe('tweet')
     expect(detectUrlType('https://twitter.com/i/web/status/1/analytics')).toBe('webpage')
+    expect(detectUrlType('https://x.com/user/status/1/photo/not-a-media-index')).toBe('webpage')
+    expect(detectUrlType('https://x.com/user/status/1/photo/0')).toBe('webpage')
+    expect(detectUrlType('https://twitter.com/i/web/status/1/video/00')).toBe('webpage')
     expect(detectUrlType('https://twitter.com/i/status/1')).toBe('webpage')
     expect(detectUrlType('https://x.com/user/status/not-a-post-id')).toBe('webpage')
     expect(detectUrlType('https://arxiv.org/abs/1706.03762')).toBe('arxiv')
@@ -74,6 +78,11 @@ describe('detectUrlType', () => {
     expect(detectUrlType('https://www.reddit.com/r/graphify/comments/abc123/structured_ingest_roadmap_update/jkl456/more')).toBe('webpage')
     expect(detectUrlType('https://redd.it/abc123.json')).toBe('webpage')
     expect(detectUrlType('https://www.reddit.com/comments/abc123/more')).toBe('webpage')
+    expect(detectUrlType('https://news.ycombinator.com/item?id=8863')).toBe('hackernews')
+    expect(detectUrlType('https://news.ycombinator.com/item?id=8863&utm_source=share')).toBe('hackernews')
+    expect(detectUrlType('https://notnews.ycombinator.com/item?id=8863')).toBe('webpage')
+    expect(detectUrlType('https://news.ycombinator.com/news?p=2')).toBe('webpage')
+    expect(detectUrlType('https://news.ycombinator.com/item?id=not-a-thread')).toBe('webpage')
     expect(detectUrlType('https://www.youtube.com/watch?v=dQw4w9WgXcQ')).toBe('youtube')
     expect(detectUrlType('https://youtu.be/dQw4w9WgXcQ?si=graphify')).toBe('youtube')
     expect(detectUrlType('https://www.youtube.com/shorts/dQw4w9WgXcQ?feature=share')).toBe('youtube')
@@ -577,6 +586,163 @@ describe('ingest', () => {
     })
   })
 
+  test('saves Hacker News item URLs as structured discussion markdown', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input) => {
+          const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+          if (requestUrl === 'https://hacker-news.firebaseio.com/v0/item/8863.json') {
+            return new Response(readIngestFixture('hackernews-story.json'), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            })
+          }
+          if (requestUrl === 'https://hacker-news.firebaseio.com/v0/item/2921983.json') {
+            return new Response(JSON.stringify({ id: 2921983, type: 'comment', by: 'pg', text: '<p>Love this.</p>' }), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            })
+          }
+          if (requestUrl === 'https://hacker-news.firebaseio.com/v0/item/2922097.json') {
+            return new Response(JSON.stringify({ id: 2922097, type: 'comment', by: 'sama', text: '<p>We use this every day.</p>' }), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            })
+          }
+          throw new Error(`Unexpected URL: ${requestUrl}`)
+        }),
+      )
+
+      const output = await ingest('https://news.ycombinator.com/item?id=8863&utm_source=share', join(tempDir, 'raw'), {
+        contributor: 'graphify-ts',
+      })
+      const content = readFileSync(output, 'utf8')
+
+      expect(basename(output)).toBe('hackernews_8863.md')
+      expect(content).toContain('type: hackernews_item')
+      expect(content).toContain('source_url: "https://news.ycombinator.com/item?id=8863"')
+      expect(content).toContain('title: "My YC app: Dropbox - Throw away your USB drive"')
+      expect(content).toContain('author: "dhouston"')
+      expect(content).toContain('contributor: "graphify-ts"')
+      expect(content).toContain('hackernews_item_id: "8863"')
+      expect(content).toContain('hackernews_score: "104"')
+      expect(content).toContain('hackernews_comment_count: "71"')
+      expect(content).toContain('hackernews_capture_status: "api"')
+      expect(content).toContain('# Hacker News Item: My YC app: Dropbox - Throw away your USB drive')
+      expect(content).toContain('## Item')
+      expect(content).toContain('The file syncing magic continues.')
+      expect(content).toContain('## Discussion Highlights')
+      expect(content).toContain('### Comment by pg')
+      expect(content).toContain('Love this.')
+      expect(content).toContain('### Comment by sama')
+      expect(content).toContain('We use this every day.')
+      expect(content).toContain('## Context')
+      expect(content).toContain('- Platform: hackernews')
+      expect(content).toContain('- Item ID: 8863')
+      expect(content).toContain('- Score: 104')
+      expect(content).toContain('- Comment Count: 71')
+      expect(content).toContain('- Capture Status: api')
+      expect(content).toContain('## Links')
+      expect(content).toContain('[Open Discussion](https://news.ycombinator.com/item?id=8863)')
+      expect(content).toContain('[Linked URL](http://www.getdropbox.com/u/2/screencast.html)')
+      expect(content).not.toContain('provenance:')
+    })
+  })
+
+  test('makes hackernews fallback behavior explicit when item metadata fetch fails', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response('unavailable', { status: 503, headers: { 'content-type': 'text/plain' } })),
+      )
+
+      const output = await ingest('https://news.ycombinator.com/item?id=12345', join(tempDir, 'raw'), {
+        contributor: 'graphify-ts',
+      })
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: hackernews_item')
+      expect(content).toContain('source_url: "https://news.ycombinator.com/item?id=12345"')
+      expect(content).toContain('title: "Hacker News Item: 12345"')
+      expect(content).toContain('author: "unknown"')
+      expect(content).toContain('hackernews_item_id: "12345"')
+      expect(content).toContain('hackernews_capture_status: "fallback"')
+      expect(content).toContain('## Item')
+      expect(content).toContain('Hacker News item metadata could not be fetched.')
+      expect(content).toContain('## Context')
+      expect(content).toContain('- Platform: hackernews')
+      expect(content).toContain('- Item ID: 12345')
+      expect(content).toContain('- Capture Status: fallback')
+      expect(content).toContain('- Note: Hacker News API unavailable; preserved canonical discussion URL and derived item metadata only.')
+      expect(content).toContain('## Links')
+      expect(content).toContain('[Open Discussion](https://news.ycombinator.com/item?id=12345)')
+      expect(content).not.toContain('provenance:')
+    })
+  })
+
+  test('collects the first three usable hackernews discussion highlights even when early child comments are empty', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input) => {
+          const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+          if (requestUrl === 'https://hacker-news.firebaseio.com/v0/item/777.json') {
+            return new Response(
+              JSON.stringify({
+                id: 777,
+                type: 'story',
+                by: 'dang',
+                title: 'Structured ingest notes',
+                text: '<p>Item body.</p>',
+                score: 55,
+                descendants: 4,
+                kids: [901, 902, 903, 904],
+              }),
+              { status: 200, headers: { 'content-type': 'application/json' } },
+            )
+          }
+          if (requestUrl === 'https://hacker-news.firebaseio.com/v0/item/901.json') {
+            return new Response(JSON.stringify({ id: 901, type: 'comment', by: 'empty', text: '<p> </p>' }), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            })
+          }
+          if (requestUrl === 'https://hacker-news.firebaseio.com/v0/item/902.json') {
+            return new Response(JSON.stringify({ id: 902, type: 'comment', by: 'alice', text: '<p>First usable.</p>' }), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            })
+          }
+          if (requestUrl === 'https://hacker-news.firebaseio.com/v0/item/903.json') {
+            return new Response(JSON.stringify({ id: 903, type: 'comment', by: 'bob', text: '<p>Second usable.</p>' }), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            })
+          }
+          if (requestUrl === 'https://hacker-news.firebaseio.com/v0/item/904.json') {
+            return new Response(JSON.stringify({ id: 904, type: 'comment', by: 'carol', text: '<p>Third usable.</p>' }), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            })
+          }
+          throw new Error(`Unexpected URL: ${requestUrl}`)
+        }),
+      )
+
+      const output = await ingest('https://news.ycombinator.com/item?id=777', join(tempDir, 'raw'))
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('### Comment by alice')
+      expect(content).toContain('First usable.')
+      expect(content).toContain('### Comment by bob')
+      expect(content).toContain('Second usable.')
+      expect(content).toContain('### Comment by carol')
+      expect(content).toContain('Third usable.')
+      expect(content).not.toContain('### Comment by empty')
+    })
+  })
+
   test('saves YouTube video URLs as structured video markdown', async () => {
     await withTempDir(async (tempDir) => {
       vi.stubGlobal(
@@ -775,6 +941,40 @@ describe('ingest', () => {
     })
   })
 
+  test('canonicalizes tweet media alias urls to the base structured post url', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input) => {
+          const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+          expect(requestUrl).toContain('publish.twitter.com/oembed?url=')
+          expect(decodeURIComponent(requestUrl)).toContain('https://twitter.com/graphify/status/4')
+          expect(decodeURIComponent(requestUrl)).not.toContain('/photo/1')
+          return new Response(JSON.stringify({ html: '<blockquote>Canonical media alias capture</blockquote>', author_name: 'Graphify Bot' }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })
+        }),
+      )
+
+      const output = await ingest('https://x.com/graphify/status/4/photo/1?utm_source=share', join(tempDir, 'raw'), {
+        contributor: 'graphify-ts',
+      })
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: tweet')
+      expect(content).toContain('source_url: "https://x.com/graphify/status/4"')
+      expect(content).toContain('title: "Tweet by @graphify"')
+      expect(content).toContain('author: "Graphify Bot"')
+      expect(content).toContain('social_platform: "x"')
+      expect(content).toContain('social_author_handle: "graphify"')
+      expect(content).toContain('social_post_id: "4"')
+      expect(content).toContain('Canonical media alias capture')
+      expect(content).not.toContain('/photo/1')
+      expect(content).not.toContain('provenance:')
+    })
+  })
+
   test('makes tweet fallback behavior explicit when oEmbed fetch fails', async () => {
     await withTempDir(async (tempDir) => {
       vi.stubGlobal(
@@ -797,6 +997,32 @@ describe('ingest', () => {
       expect(content).toContain('## Context')
       expect(content).toContain('- Capture Status: fallback')
       expect(content).toContain('- Note: oEmbed unavailable; preserved source URL and derived social metadata only.')
+      expect(content).not.toContain('provenance:')
+    })
+  })
+
+  test('canonicalizes handle-less tweet media aliases before fallback handling', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response('rate limited', { status: 429, headers: { 'content-type': 'text/plain' } })),
+      )
+
+      const output = await ingest('https://twitter.com/i/web/status/5/video/1?utm_source=share', join(tempDir, 'raw'), {
+        contributor: 'graphify-ts',
+      })
+      const content = readFileSync(output, 'utf8')
+
+      expect(content).toContain('type: tweet')
+      expect(content).toContain('source_url: "https://twitter.com/i/web/status/5"')
+      expect(content).toContain('title: "Tweet"')
+      expect(content).toContain('author: "unknown"')
+      expect(content).toContain('social_platform: "twitter"')
+      expect(content).toContain('social_post_id: "5"')
+      expect(content).toContain('social_capture_status: "fallback"')
+      expect(content).toContain('Tweet content could not be fetched.')
+      expect(content).toContain('- Note: oEmbed unavailable; preserved source URL and derived social metadata only.')
+      expect(content).not.toContain('/video/1')
       expect(content).not.toContain('provenance:')
     })
   })

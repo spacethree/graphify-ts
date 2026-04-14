@@ -19,6 +19,12 @@ describe('builtin capability registry', () => {
     expect(registry.resolveIngestorForUrlType('tweet')?.id).toBe('builtin:ingest:tweet')
   })
 
+  it('resolves hackernews url types to the hackernews ingest capability', () => {
+    const registry = createBuiltinCapabilityRegistry()
+
+    expect(registry.resolveIngestorForUrlType('hackernews')?.id).toBe('builtin:ingest:hackernews')
+  })
+
   it('rejects duplicate capability registration', () => {
     const registry = createCapabilityRegistry()
     const capability: CapabilityDefinition = {

@@ -36,12 +36,37 @@ function isTweetPostId(value: string): boolean {
   return /^\d+$/.test(value)
 }
 
+function isTweetMediaIndex(value: string): boolean {
+  return /^[1-9]\d*$/.test(value)
+}
+
 function parseTweetPath(pathname: string): TweetPathMetadata | null {
   const segments = pathname.split('/').filter(Boolean)
   if (segments.length === 3 && segments[0] !== 'i' && segments[1] === 'status' && isTweetPostId(segments[2] ?? '')) {
     return { handle: segments[0] ?? null, postId: segments[2] ?? '' }
   }
+  if (
+    segments.length === 5 &&
+    segments[0] !== 'i' &&
+    segments[1] === 'status' &&
+    isTweetPostId(segments[2] ?? '') &&
+    (segments[3] === 'photo' || segments[3] === 'video') &&
+    isTweetMediaIndex(segments[4] ?? '')
+  ) {
+    return { handle: segments[0] ?? null, postId: segments[2] ?? '' }
+  }
   if (segments.length === 4 && segments[0] === 'i' && segments[1] === 'web' && segments[2] === 'status' && isTweetPostId(segments[3] ?? '')) {
+    return { handle: null, postId: segments[3] ?? '' }
+  }
+  if (
+    segments.length === 6 &&
+    segments[0] === 'i' &&
+    segments[1] === 'web' &&
+    segments[2] === 'status' &&
+    isTweetPostId(segments[3] ?? '') &&
+    (segments[4] === 'photo' || segments[4] === 'video') &&
+    isTweetMediaIndex(segments[5] ?? '')
+  ) {
     return { handle: null, postId: segments[3] ?? '' }
   }
   return null
@@ -61,6 +86,11 @@ function parseTweetUrl(url: string): TweetUrlMetadata {
   const postId = pathMetadata?.postId ?? null
   parsed.search = ''
   parsed.hash = ''
+  if (postId && handle) {
+    parsed.pathname = `/${handle}/status/${postId}`
+  } else if (postId) {
+    parsed.pathname = `/i/web/status/${postId}`
+  }
   const sourceUrl = parsed.toString()
 
   const oembedTarget = new URL(sourceUrl)

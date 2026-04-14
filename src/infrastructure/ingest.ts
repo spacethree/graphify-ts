@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path'
 import { builtinCapabilityRegistry } from './capabilities.js'
 import { dispatchIngest, type IngestHandlerMap } from './ingest/dispatch.js'
 import type { IngestOptions, UrlType } from './ingest/types.js'
+import { fetchHackerNews } from './ingest-hackernews.js'
 import { detectUrlType } from './ingest/url-type.js'
 import { fetchGitHub } from './ingest-github.js'
 import { fetchReddit } from './ingest-reddit.js'
@@ -80,6 +81,7 @@ function imageSuffixFromUrl(url: string): string {
 const INGEST_HANDLERS: IngestHandlerMap = {
   'builtin:ingest:tweet': async (url, options) => ({ kind: 'text', asset: await fetchTweet(url, options) }),
   'builtin:ingest:reddit': async (url, options) => ({ kind: 'text', asset: await fetchReddit(url, options) }),
+  'builtin:ingest:hackernews': async (url, options) => ({ kind: 'text', asset: await fetchHackerNews(url, options) }),
   'builtin:ingest:arxiv': async (url, options) => ({ kind: 'text', asset: await fetchArxiv(url, options) }),
   'builtin:ingest:github': async (url, options) => ({ kind: 'text', asset: await fetchGitHub(url, options) }),
   'builtin:ingest:youtube': async (url, options) => ({ kind: 'text', asset: await fetchYouTubeVideo(url, options) }),

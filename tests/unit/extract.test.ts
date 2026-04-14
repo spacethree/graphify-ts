@@ -1718,6 +1718,11 @@ describe('extract', () => {
           sourceUrl: 'https://arxiv.org/abs/1706.03762',
           ingestCapabilityId: 'builtin:ingest:arxiv',
         },
+        {
+          fileName: 'hackernews-notes.md',
+          sourceUrl: 'https://news.ycombinator.com/item?id=8863',
+          ingestCapabilityId: 'builtin:ingest:hackernews',
+        },
       ] as const
 
       for (const testCase of cases) {

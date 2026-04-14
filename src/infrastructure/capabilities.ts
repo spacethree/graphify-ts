@@ -156,6 +156,7 @@ const BUILTIN_EXTRACT_CAPABILITIES = [
 const BUILTIN_INGEST_CAPABILITIES = [
   { id: 'builtin:ingest:tweet', kind: 'ingest', urlType: 'tweet' },
   { id: 'builtin:ingest:reddit', kind: 'ingest', urlType: 'reddit' },
+  { id: 'builtin:ingest:hackernews', kind: 'ingest', urlType: 'hackernews' },
   { id: 'builtin:ingest:arxiv', kind: 'ingest', urlType: 'arxiv' },
   { id: 'builtin:ingest:github', kind: 'ingest', urlType: 'github' },
   { id: 'builtin:ingest:youtube', kind: 'ingest', urlType: 'youtube' },

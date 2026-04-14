@@ -1,4 +1,5 @@
 import type { UrlType } from './types.js'
+import { isHackerNewsItemUrl } from '../ingest-hackernews.js'
 import { isRedditContentUrl } from '../ingest-reddit.js'
 import { isTweetPostUrl } from '../ingest-social.js'
 import { isYouTubeVideoUrl } from '../ingest-youtube.js'
@@ -11,6 +12,9 @@ export function detectUrlType(url: string): UrlType {
   }
   if (isRedditContentUrl(url)) {
     return 'reddit'
+  }
+  if (isHackerNewsItemUrl(url)) {
+    return 'hackernews'
   }
   if (lower.includes('arxiv.org')) {
     return 'arxiv'

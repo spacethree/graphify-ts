@@ -324,6 +324,77 @@ describe('normalizeExtractionData', () => {
     )
   })
 
+  it('projects flat hackernews ingest frontmatter into builtin hackernews provenance', () => {
+    const extraction = {
+      schema_version: 2 as const,
+      nodes: [
+        {
+          id: 'n_hn',
+          label: 'hn.md',
+          file_type: 'document' as const,
+          source_file: 'hn.md',
+          source_location: 'L1',
+          source_url: 'https://news.ycombinator.com/item?id=8863',
+          captured_at: '2026-04-14T12:00:00Z',
+          contributor: 'graphify-ts',
+          provenance: [{ capability_id: 'builtin:extract:markdown', stage: 'extract' }],
+        },
+        {
+          id: 'n_hn_heading',
+          label: 'Highlights',
+          file_type: 'document' as const,
+          source_file: 'hn.md',
+          source_location: 'L5',
+          provenance: [{ capability_id: 'builtin:extract:markdown', stage: 'extract' }],
+        },
+      ],
+      edges: [
+        {
+          source: 'n_hn',
+          target: 'n_hn_heading',
+          relation: 'contains',
+          confidence: 'EXTRACTED' as const,
+          source_file: 'hn.md',
+          source_location: 'L5',
+          provenance: [{ capability_id: 'builtin:extract:markdown', stage: 'extract' }],
+        },
+      ],
+    }
+
+    const normalized = normalizeExtractionData(extraction)
+
+    expect(normalized.nodes[0]).toEqual(
+      expect.objectContaining({
+        provenance: expect.arrayContaining([
+          expect.objectContaining({ capability_id: 'builtin:extract:markdown', stage: 'extract' }),
+          expect.objectContaining({
+            capability_id: 'builtin:ingest:hackernews',
+            stage: 'ingest',
+            source_url: 'https://news.ycombinator.com/item?id=8863',
+            captured_at: '2026-04-14T12:00:00Z',
+            contributor: 'graphify-ts',
+          }),
+        ]),
+      }),
+    )
+    expect(normalized.nodes[1]).toEqual(
+      expect.objectContaining({
+        provenance: expect.arrayContaining([
+          expect.objectContaining({ capability_id: 'builtin:extract:markdown', stage: 'extract' }),
+          expect.objectContaining({ capability_id: 'builtin:ingest:hackernews', stage: 'ingest' }),
+        ]),
+      }),
+    )
+    expect(normalized.edges[0]).toEqual(
+      expect.objectContaining({
+        provenance: expect.arrayContaining([
+          expect.objectContaining({ capability_id: 'builtin:extract:markdown', stage: 'extract' }),
+          expect.objectContaining({ capability_id: 'builtin:ingest:hackernews', stage: 'ingest' }),
+        ]),
+      }),
+    )
+  })
+
   it('does not duplicate explicit ingest provenance already emitted during raw extraction', () => {
     const extraction = {
       schema_version: 2 as const,
