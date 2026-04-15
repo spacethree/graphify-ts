@@ -7,6 +7,7 @@ export interface BinaryIngestSidecarMetadata {
   source_url: string
   captured_at: string
   contributor: string
+  ingest_url_type?: 'pdf' | 'image' | 'audio' | 'video'
 }
 
 export const BINARY_INGEST_SIDECAR_SUFFIX = '.graphify-ingest.json'
@@ -42,6 +43,9 @@ export function readBinaryIngestSidecar(assetPath: string): Partial<BinaryIngest
     }
     if (typeof parsed.contributor === 'string') {
       metadata.contributor = parsed.contributor
+    }
+    if (parsed.ingest_url_type === 'pdf' || parsed.ingest_url_type === 'image' || parsed.ingest_url_type === 'audio' || parsed.ingest_url_type === 'video') {
+      metadata.ingest_url_type = parsed.ingest_url_type
     }
 
     return Object.keys(metadata).length > 0 ? metadata : null

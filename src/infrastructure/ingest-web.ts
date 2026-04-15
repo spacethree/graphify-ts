@@ -159,7 +159,20 @@ export function findCanonicalUrl(html: string): string {
 }
 
 export function extractCanonicalUrl(html: string, fallback: string): string {
-  return findCanonicalUrl(html) || fallback
+  const rawCanonicalUrl = findCanonicalUrl(html)
+  if (!rawCanonicalUrl) {
+    return fallback
+  }
+
+  try {
+    const resolved = new URL(rawCanonicalUrl, fallback)
+    if (resolved.protocol !== 'http:' && resolved.protocol !== 'https:') {
+      return fallback
+    }
+    return resolved.toString()
+  } catch {
+    return fallback
+  }
 }
 
 export function extractTitle(html: string, fallback: string): string {

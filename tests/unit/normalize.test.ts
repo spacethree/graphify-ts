@@ -395,6 +395,82 @@ describe('normalizeExtractionData', () => {
     )
   })
 
+  it('prefers explicit webpage type for ingest provenance when source_url still looks like media', () => {
+    const extraction = {
+      schema_version: 2 as const,
+      nodes: [
+        {
+          id: 'n_page',
+          label: 'page.md',
+          file_type: 'document' as const,
+          type: 'webpage',
+          source_file: 'page.md',
+          source_location: 'L1',
+          source_url: 'https://cdn.example.com/assets/episode.mp3',
+          captured_at: '2026-04-14T23:00:00Z',
+          contributor: 'graphify-ts',
+          provenance: [{ capability_id: 'builtin:extract:markdown', stage: 'extract' }],
+        },
+      ],
+      edges: [],
+    }
+
+    const normalized = normalizeExtractionData(extraction)
+
+    expect(normalized.nodes[0]).toEqual(
+      expect.objectContaining({
+        provenance: expect.arrayContaining([
+          expect.objectContaining({ capability_id: 'builtin:extract:markdown', stage: 'extract' }),
+          expect.objectContaining({
+            capability_id: 'builtin:ingest:webpage',
+            stage: 'ingest',
+            source_url: 'https://cdn.example.com/assets/episode.mp3',
+            captured_at: '2026-04-14T23:00:00Z',
+            contributor: 'graphify-ts',
+          }),
+        ]),
+      }),
+    )
+  })
+
+  it('prefers explicit binary ingest_url_type when source_url lacks a binary suffix', () => {
+    const extraction = {
+      schema_version: 2 as const,
+      nodes: [
+        {
+          id: 'n_audio',
+          label: 'episode.mp3',
+          file_type: 'audio' as const,
+          source_file: 'episode.mp3',
+          source_location: 'L1',
+          source_url: 'https://example.com/download/audio',
+          ingest_url_type: 'audio',
+          captured_at: '2026-04-14T23:30:00Z',
+          contributor: 'graphify-ts',
+          provenance: [{ capability_id: 'builtin:extract:audio', stage: 'extract' }],
+        },
+      ],
+      edges: [],
+    }
+
+    const normalized = normalizeExtractionData(extraction)
+
+    expect(normalized.nodes[0]).toEqual(
+      expect.objectContaining({
+        provenance: expect.arrayContaining([
+          expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' }),
+          expect.objectContaining({
+            capability_id: 'builtin:ingest:audio',
+            stage: 'ingest',
+            source_url: 'https://example.com/download/audio',
+            captured_at: '2026-04-14T23:30:00Z',
+            contributor: 'graphify-ts',
+          }),
+        ]),
+      }),
+    )
+  })
+
   it('does not duplicate explicit ingest provenance already emitted during raw extraction', () => {
     const extraction = {
       schema_version: 2 as const,

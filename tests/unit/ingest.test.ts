@@ -2598,6 +2598,7 @@ describe('ingest', () => {
       expect(existsSync(sidecarPath)).toBe(true)
       expect(sidecar).toEqual(
         expect.objectContaining({
+          ingest_url_type: 'audio',
           source_url: 'https://example.com/download/audio',
           captured_at: expect.any(String),
           contributor: 'graphify-ts',
@@ -2645,6 +2646,161 @@ describe('ingest', () => {
           contributor: 'graphify-ts',
         }),
       )
+    })
+  })
+
+  test('preserves webpage ingest when a redirected final url looks like media but the response is still html', async () => {
+    await withTempDir(async (tempDir) => {
+      const requestUrls: string[] = []
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input) => {
+          const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+          requestUrls.push(requestUrl)
+          if (requestUrl === 'https://example.com/download/landing') {
+            return new Response(null, {
+              status: 302,
+              headers: { location: 'https://cdn.example.com/assets/episode.mp3' },
+            })
+          }
+
+          expect(requestUrl).toBe('https://cdn.example.com/assets/episode.mp3')
+          return new Response('<html><head><title>Episode landing page</title></head><body><main><h1>Episode landing page</h1></main></body></html>', {
+            status: 200,
+            headers: { 'content-type': 'text/html; charset=utf-8' },
+          })
+        }),
+      )
+
+      const output = await ingest('https://example.com/download/landing', join(tempDir, 'raw'), { contributor: 'graphify-ts' })
+      const content = readFileSync(output, 'utf8')
+
+      expect(requestUrls).toEqual(['https://example.com/download/landing', 'https://cdn.example.com/assets/episode.mp3'])
+      expect(output.endsWith('.md')).toBe(true)
+      expect(existsSync(binaryIngestSidecarPath(output))).toBe(false)
+      expect(content).toContain('type: webpage')
+      expect(content).toContain('Episode landing page')
+    })
+  })
+
+  test('preserves the handler-decided binary suffix when a binary response content type disagrees with the final url extension', async () => {
+    await withTempDir(async (tempDir) => {
+      const payload = Uint8Array.from([4, 3, 2, 1])
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input) => {
+          const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+          if (requestUrl === 'https://example.com/download/audio') {
+            return new Response(null, {
+              status: 302,
+              headers: { location: 'https://cdn.example.com/assets/episode.mp4' },
+            })
+          }
+
+          expect(requestUrl).toBe('https://cdn.example.com/assets/episode.mp4')
+          return new Response(payload, {
+            status: 200,
+            headers: { 'content-type': 'audio/mpeg' },
+          })
+        }),
+      )
+
+      const output = await ingest('https://example.com/download/audio', join(tempDir, 'raw'), { contributor: 'graphify-ts' })
+      const sidecarPath = binaryIngestSidecarPath(output)
+      const sidecar = JSON.parse(readFileSync(sidecarPath, 'utf8')) as Record<string, unknown>
+
+      expect(output.endsWith('.mp3')).toBe(true)
+      expect(readFileSync(output)).toEqual(Buffer.from(payload))
+      expect(sidecar).toEqual(
+        expect.objectContaining({
+          source_url: 'https://cdn.example.com/assets/episode.mp4',
+          contributor: 'graphify-ts',
+        }),
+      )
+    })
+  })
+
+  test('uses the final redirected html url as the webpage source and relative-link base when no canonical tag is present', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input) => {
+          const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+          if (requestUrl === 'https://example.com/short') {
+            return new Response(null, {
+              status: 302,
+              headers: { location: 'https://example.com/articles/episode' },
+            })
+          }
+
+          expect(requestUrl).toBe('https://example.com/articles/episode')
+          return new Response(
+            '<html><head><title>Episode Notes</title><meta name="description" content="Landing page after redirect." /></head><body><main><p>Read <a href="notes">notes</a>.</p></main></body></html>',
+            {
+              status: 200,
+              headers: { 'content-type': 'text/html; charset=utf-8' },
+            },
+          )
+        }),
+      )
+
+      const output = await ingest('https://example.com/short', join(tempDir, 'raw'), { contributor: 'graphify-ts' })
+      const content = readFileSync(output, 'utf8')
+
+      expect(output.endsWith('.md')).toBe(true)
+      expect(content).toContain('source_url: "https://example.com/articles/episode"')
+      expect(content).toContain('[notes](https://example.com/articles/notes)')
+    })
+  })
+
+  test('preserves webpage ingest when a direct media url returns html instead of binary bytes', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input) => {
+          const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+          expect(requestUrl).toBe('https://example.com/audio/episode.mp3')
+          return new Response('<html><head><title>Episode Page</title></head><body><main><h1>Episode Page</h1></main></body></html>', {
+            status: 200,
+            headers: { 'content-type': 'text/html; charset=utf-8' },
+          })
+        }),
+      )
+
+      const output = await ingest('https://example.com/audio/episode.mp3', join(tempDir, 'raw'), { contributor: 'graphify-ts' })
+      const content = readFileSync(output, 'utf8')
+
+      expect(output.endsWith('.md')).toBe(true)
+      expect(existsSync(binaryIngestSidecarPath(output))).toBe(false)
+      expect(content).toContain('type: webpage')
+      expect(content).toContain('Episode Page')
+    })
+  })
+
+  test('resolves relative canonical urls when a direct media url falls back to webpage ingest', async () => {
+    await withTempDir(async (tempDir) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input) => {
+          const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+          expect(requestUrl).toBe('https://example.com/audio/episode.mp3')
+          return new Response(
+            '<html><head><title>Episode Page</title><link rel="canonical" href="/episodes/landing" /></head><body><main><p>Read <a href="notes">notes</a>.</p></main></body></html>',
+            {
+              status: 200,
+              headers: { 'content-type': 'text/html; charset=utf-8' },
+            },
+          )
+        }),
+      )
+
+      const output = await ingest('https://example.com/audio/episode.mp3', join(tempDir, 'raw'), { contributor: 'graphify-ts' })
+      const content = readFileSync(output, 'utf8')
+
+      expect(output.endsWith('.md')).toBe(true)
+      expect(existsSync(binaryIngestSidecarPath(output))).toBe(false)
+      expect(content).toContain('source_url: "https://example.com/episodes/landing"')
+      expect(content).toContain('[notes](https://example.com/episodes/notes)')
     })
   })
 

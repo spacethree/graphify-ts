@@ -1,9 +1,15 @@
 import { builtinCapabilityRegistry } from '../../infrastructure/capabilities.js'
+import type { UrlType } from '../../infrastructure/ingest/types.js'
 import { detectUrlType } from '../../infrastructure/ingest/url-type.js'
 
 import { createBaselineProvenance, type ExtractionProvenance } from './types.js'
 
 export const INGEST_PROVENANCE_STAGE = 'ingest'
+const EXPLICIT_INGEST_URL_TYPES = new Set<UrlType>(['tweet', 'reddit', 'hackernews', 'arxiv', 'github', 'youtube', 'pdf', 'image', 'audio', 'video', 'webpage'])
+
+function isExplicitIngestUrlType(value: string): value is UrlType {
+  return EXPLICIT_INGEST_URL_TYPES.has(value as UrlType)
+}
 
 /**
  * Normalize a metadata string by trimming whitespace and rejecting non-string or empty values.
@@ -34,11 +40,20 @@ export function deriveIngestProvenanceFromRecord(record: Record<string, unknown>
     return null
   }
 
-  let urlType: ReturnType<typeof detectUrlType>
-  try {
-    urlType = detectUrlType(sourceUrl)
-  } catch {
-    return null
+  const explicitType = normalizeMetadataString(record.type)
+  const explicitIngestUrlType = normalizeMetadataString(record.ingest_url_type)
+
+  let urlType: UrlType = 'webpage'
+  if (explicitType === 'webpage') {
+    urlType = 'webpage'
+  } else if (explicitIngestUrlType && isExplicitIngestUrlType(explicitIngestUrlType)) {
+    urlType = explicitIngestUrlType
+  } else {
+    try {
+      urlType = detectUrlType(sourceUrl)
+    } catch {
+      return null
+    }
   }
 
   const capability = builtinCapabilityRegistry.resolveIngestorForUrlType(urlType) ?? builtinCapabilityRegistry.resolveIngestorForUrlType('webpage')

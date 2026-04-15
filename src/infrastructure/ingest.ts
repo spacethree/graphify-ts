@@ -140,9 +140,51 @@ function binarySuffixFromContentType(contentType: string): string | null {
   return null
 }
 
+function binaryUrlTypeFromSuffix(suffix: string): 'pdf' | 'image' | 'audio' | 'video' | null {
+  const normalized = suffix.toLowerCase()
+  if (normalized === '.pdf') {
+    return 'pdf'
+  }
+  if (IMAGE_EXTENSIONS.has(normalized)) {
+    return 'image'
+  }
+  if (AUDIO_EXTENSIONS.has(normalized)) {
+    return 'audio'
+  }
+  if (VIDEO_EXTENSIONS.has(normalized)) {
+    return 'video'
+  }
+  return null
+}
+
+function isHtmlResponseContentType(contentType: string): boolean {
+  return contentType === 'text/html' || contentType === 'application/xhtml+xml'
+}
+
+async function fetchDirectBinaryOrWebpage(url: string, options: IngestOptions, fallbackSuffix: string) {
+  const { response, finalUrl, contentType } = await safeFetchResponseWithMetadata(url)
+  if (isHtmlResponseContentType(contentType)) {
+    const bytes = await readResponseBytes(response, url, MAX_TEXT_BYTES)
+    const html = new TextDecoder('utf-8', { fatal: false }).decode(bytes)
+    return {
+      kind: 'text' as const,
+      asset: buildWebpageAsset(finalUrl, html, options),
+    }
+  }
+
+  const bytes = await readResponseBytes(response, url, MAX_FETCH_BYTES)
+  return {
+    kind: 'binary' as const,
+    suffix: binarySuffixFromContentType(contentType) ?? binarySuffixFromUrl(finalUrl) ?? fallbackSuffix,
+    bytes,
+    sourceUrl: finalUrl,
+  }
+}
+
 async function fetchBinaryAwareWebpage(url: string, options: IngestOptions) {
   const { response, finalUrl, contentType } = await safeFetchResponseWithMetadata(url)
-  const binarySuffix = binarySuffixFromUrl(finalUrl) ?? binarySuffixFromContentType(contentType)
+  const isHtmlResponse = isHtmlResponseContentType(contentType)
+  const binarySuffix = binarySuffixFromContentType(contentType) ?? (!isHtmlResponse ? binarySuffixFromUrl(finalUrl) : null)
   if (binarySuffix) {
     const bytes = await readResponseBytes(response, url, MAX_FETCH_BYTES)
     return {
@@ -157,7 +199,7 @@ async function fetchBinaryAwareWebpage(url: string, options: IngestOptions) {
   const html = new TextDecoder('utf-8', { fatal: false }).decode(bytes)
   return {
     kind: 'text' as const,
-    asset: buildWebpageAsset(url, html, options),
+    asset: buildWebpageAsset(finalUrl, html, options),
   }
 }
 
@@ -169,10 +211,10 @@ const INGEST_HANDLERS: IngestHandlerMap = {
   'builtin:ingest:github': async (url, options) => ({ kind: 'text', asset: await fetchGitHub(url, options) }),
   'builtin:ingest:youtube': async (url, options) => ({ kind: 'text', asset: await fetchYouTubeAsset(url, options) }),
   'builtin:ingest:webpage': async (url, options) => fetchBinaryAwareWebpage(url, options),
-  'builtin:ingest:pdf': async () => ({ kind: 'binary', suffix: '.pdf' }),
-  'builtin:ingest:image': async (url) => ({ kind: 'binary', suffix: suffixFromUrl(url, '.jpg') }),
-  'builtin:ingest:audio': async (url) => ({ kind: 'binary', suffix: suffixFromUrl(url, '.mp3') }),
-  'builtin:ingest:video': async (url) => ({ kind: 'binary', suffix: suffixFromUrl(url, '.mp4') }),
+  'builtin:ingest:pdf': async (url, options) => fetchDirectBinaryOrWebpage(url, options, '.pdf'),
+  'builtin:ingest:image': async (url, options) => fetchDirectBinaryOrWebpage(url, options, suffixFromUrl(url, '.jpg')),
+  'builtin:ingest:audio': async (url, options) => fetchDirectBinaryOrWebpage(url, options, suffixFromUrl(url, '.mp3')),
+  'builtin:ingest:video': async (url, options) => fetchDirectBinaryOrWebpage(url, options, suffixFromUrl(url, '.mp4')),
 }
 
 interface BinaryDownloadSeed {
@@ -185,7 +227,8 @@ async function downloadBinary(url: string, directory: string, suffix: string, op
     ? null
     : await safeFetchWithMetadata(url)
   const sourceUrl = seed.sourceUrl ?? fetched?.finalUrl ?? url
-  const resolvedSuffix = binarySuffixFromUrl(sourceUrl) ?? binarySuffixFromContentType(fetched?.contentType ?? '') ?? suffix
+  const resolvedSuffix = seed.bytes ? suffix : binarySuffixFromContentType(fetched?.contentType ?? '') ?? binarySuffixFromUrl(sourceUrl) ?? suffix
+  const ingestUrlType = binaryUrlTypeFromSuffix(resolvedSuffix)
   const bytes = seed.bytes ?? fetched?.bytes ?? new Uint8Array()
   const outputPath = ensureUniquePath(directory, safeFilename(sourceUrl, resolvedSuffix))
   writeFileSync(outputPath, bytes)
@@ -195,6 +238,7 @@ async function downloadBinary(url: string, directory: string, suffix: string, op
       source_url: sourceUrl,
       captured_at: new Date().toISOString(),
       contributor: resolveContributor(options),
+      ...(ingestUrlType ? { ingest_url_type: ingestUrlType } : {}),
     })
   } catch (error) {
     rmSync(outputPath, { force: true })
