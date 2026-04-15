@@ -35,6 +35,7 @@ function createBinaryMetadataAwareFileNode(filePath: string, fileType: NonCodeFi
     ...(contentType ? { content_type: contentType } : {}),
     ...extractBinaryDurationMetadata(filePath, extension, fileType, fileBytes),
     ...extractBinaryTrackMetadata(filePath, extension, fileType, fileBytes),
+    ...extractBinaryAudioMetadata(filePath, extension, fileType, fileBytes),
   }
 
   return sidecarMetadata
@@ -381,6 +382,70 @@ function trimTagText(value: string): string | null {
   return trimmed.length > 0 ? trimmed : null
 }
 
+function parseVorbisCommentBody(buffer: Buffer): Record<string, string> {
+  if (buffer.length < 8) {
+    return {}
+  }
+
+  let offset = 0
+  const vendorLength = buffer.readUInt32LE(offset)
+  offset += 4
+  if (offset + vendorLength > buffer.length) {
+    return {}
+  }
+  offset += vendorLength
+
+  if (offset + 4 > buffer.length) {
+    return {}
+  }
+
+  const commentCount = buffer.readUInt32LE(offset)
+  offset += 4
+
+  let title: string | null = null
+  let artist: string | null = null
+  let album: string | null = null
+  for (let index = 0; index < commentCount; index += 1) {
+    if (offset + 4 > buffer.length) {
+      return {}
+    }
+
+    const commentLength = buffer.readUInt32LE(offset)
+    offset += 4
+    if (offset + commentLength > buffer.length) {
+      return {}
+    }
+
+    const entry = buffer.toString('utf8', offset, offset + commentLength)
+    offset += commentLength
+
+    const separatorIndex = entry.indexOf('=')
+    if (separatorIndex <= 0) {
+      continue
+    }
+
+    const key = entry.slice(0, separatorIndex).trim().toUpperCase()
+    const value = trimTagText(entry.slice(separatorIndex + 1))
+    if (!value) {
+      continue
+    }
+
+    if (key === 'TITLE' && !title) {
+      title = value
+    } else if (key === 'ARTIST' && !artist) {
+      artist = value
+    } else if (key === 'ALBUM' && !album) {
+      album = value
+    }
+  }
+
+  return {
+    ...(title ? { audio_title: title } : {}),
+    ...(artist ? { audio_artist: artist } : {}),
+    ...(album ? { audio_album: album } : {}),
+  }
+}
+
 function decodeUtf16Buffer(buffer: Buffer, littleEndian: boolean): string | null {
   if (buffer.length === 0) {
     return ''
@@ -544,6 +609,293 @@ function extractMp3Id3TrackMetadata(filePath: string, fileBytes: number | undefi
   return Object.keys(metadata).length > 0 ? metadata : extractMp3Id3v1TrackMetadata(filePath, fileBytes)
 }
 
+interface OggPageHeader {
+  bitstreamSerialNumber: number
+  headerType: number
+  granulePosition: bigint
+  segmentTableOffset: number
+  pageSegments: number
+  payloadOffset: number
+  pageEnd: number
+}
+
+function extractFlacAudioMetadata(filePath: string, fileBytes: number | undefined): Record<string, string | number> {
+  if (!fileBytes || fileBytes < 8) {
+    return {}
+  }
+
+  const signature = readFileWindow(filePath, 0, 4)
+  if (!signature || signature.length < 4 || signature.toString('ascii', 0, 4) !== 'fLaC') {
+    return {}
+  }
+
+  let offset = 4
+  let sampleRate: number | null = null
+  let channelCount: number | null = null
+  let durationSeconds: number | null = null
+  let trackMetadata: Record<string, string> = {}
+  while (offset + 4 <= fileBytes) {
+    const blockHeader = readFileWindow(filePath, offset, 4)
+    if (!blockHeader || blockHeader.length < 4) {
+      break
+    }
+
+    const blockTypeWithFlags = blockHeader[0] ?? 0
+    const isLast = (blockTypeWithFlags & 0x80) !== 0
+    const blockType = blockTypeWithFlags & 0x7f
+    const blockLength = blockHeader.readUIntBE(1, 3)
+    const payloadOffset = offset + 4
+    const payloadEnd = payloadOffset + blockLength
+    if (payloadEnd > fileBytes) {
+      break
+    }
+
+    if (blockType === 0 && blockLength >= 34) {
+      const streamInfo = readFileWindow(filePath, payloadOffset, 34)
+      if (streamInfo && streamInfo.length >= 34) {
+        const packedHeader = streamInfo.readBigUInt64BE(10)
+        const parsedSampleRate = Number((packedHeader >> 44n) & 0x0f_ffffn)
+        const parsedChannelCount = Number(((packedHeader >> 41n) & 0x07n) + 1n)
+        const totalSamples = Number(packedHeader & 0x0f_ffff_ffffn)
+        sampleRate = parsedSampleRate > 0 ? parsedSampleRate : null
+        channelCount = parsedChannelCount > 0 ? parsedChannelCount : null
+        durationSeconds = sampleRate && totalSamples > 0 ? roundDurationSeconds(totalSamples / sampleRate) : null
+      }
+    } else if (blockType === 4) {
+      if (blockLength <= FLAC_METADATA_SCAN_BYTES) {
+        const vorbisComment = readFileWindow(filePath, payloadOffset, blockLength)
+        if (vorbisComment && vorbisComment.length >= blockLength) {
+          trackMetadata = parseVorbisCommentBody(vorbisComment)
+        }
+      }
+    }
+
+    offset = payloadEnd
+    if (isLast) {
+      break
+    }
+  }
+
+  return {
+    ...(durationSeconds !== null ? { media_duration_seconds: durationSeconds } : {}),
+    ...(sampleRate ? { audio_sample_rate_hz: sampleRate } : {}),
+    ...(channelCount ? { audio_channel_count: channelCount } : {}),
+    ...trackMetadata,
+  }
+}
+
+function readOggPageHeader(buffer: Buffer, offset: number, limit: number): OggPageHeader | null {
+  if (offset + 27 > limit || buffer.toString('ascii', offset, offset + 4) !== 'OggS' || buffer[offset + 4] !== 0) {
+    return null
+  }
+
+  const pageSegments = buffer[offset + 26] ?? 0
+  const segmentTableOffset = offset + 27
+  const payloadOffset = segmentTableOffset + pageSegments
+  if (payloadOffset > limit) {
+    return null
+  }
+
+  let payloadLength = 0
+  for (let index = 0; index < pageSegments; index += 1) {
+    payloadLength += buffer[segmentTableOffset + index] ?? 0
+  }
+
+  const pageEnd = payloadOffset + payloadLength
+  if (pageEnd > limit) {
+    return null
+  }
+
+  return {
+    bitstreamSerialNumber: buffer.readUInt32LE(offset + 14),
+    headerType: buffer[offset + 5] ?? 0,
+    granulePosition: buffer.readBigUInt64LE(offset + 6),
+    segmentTableOffset,
+    pageSegments,
+    payloadOffset,
+    pageEnd,
+  }
+}
+
+function readOggHeadPackets(buffer: Buffer, maxPackets: number, bitstreamSerialNumber: number): Buffer[] {
+  const packets: Buffer[] = []
+  let offset = 0
+  let currentPacketChunks: Buffer[] = []
+  while (offset + 27 <= buffer.length && packets.length < maxPackets) {
+    const page = readOggPageHeader(buffer, offset, buffer.length)
+    if (!page) {
+      break
+    }
+    if (page.bitstreamSerialNumber !== bitstreamSerialNumber) {
+      if (page.pageEnd <= offset) {
+        break
+      }
+      offset = page.pageEnd
+      continue
+    }
+    if ((page.headerType & 0x01) !== 0 && currentPacketChunks.length === 0) {
+      break
+    }
+
+    let payloadCursor = page.payloadOffset
+    for (let index = 0; index < page.pageSegments && packets.length < maxPackets; index += 1) {
+      const segmentLength = buffer[page.segmentTableOffset + index] ?? 0
+      const segmentEnd = payloadCursor + segmentLength
+      if (segmentEnd > page.pageEnd) {
+        return packets
+      }
+
+      currentPacketChunks.push(buffer.subarray(payloadCursor, segmentEnd))
+      payloadCursor = segmentEnd
+      if (segmentLength < 255) {
+        packets.push(Buffer.concat(currentPacketChunks))
+        currentPacketChunks = []
+      }
+    }
+
+    if (page.pageEnd <= offset) {
+      break
+    }
+    offset = page.pageEnd
+  }
+
+  return packets
+}
+
+function parseVorbisIdentificationPacket(packet: Buffer): { sampleRate: number; channelCount: number } | null {
+  if (packet.length < 30 || packet[0] !== 1 || packet.toString('ascii', 1, 7) !== 'vorbis') {
+    return null
+  }
+
+  const channelCount = packet[11] ?? 0
+  const sampleRate = packet.readUInt32LE(12)
+  if (channelCount <= 0 || sampleRate <= 0) {
+    return null
+  }
+
+  return { sampleRate, channelCount }
+}
+
+function parseOpusHeadPacket(packet: Buffer): { sampleRate: number; channelCount: number; preSkip: number } | null {
+  if (packet.length < 19 || packet.toString('ascii', 0, 8) !== 'OpusHead') {
+    return null
+  }
+
+  const channelCount = packet[9] ?? 0
+  const preSkip = packet.readUInt16LE(10)
+  if (channelCount <= 0) {
+    return null
+  }
+
+  return {
+    sampleRate: 48_000,
+    channelCount,
+    preSkip,
+  }
+}
+
+function parseVorbisCommentPacket(packet: Buffer): Record<string, string> {
+  if (packet.length < 8 || packet[0] !== 3 || packet.toString('ascii', 1, 7) !== 'vorbis' || packet[packet.length - 1] !== 1) {
+    return {}
+  }
+
+  return parseVorbisCommentBody(packet.subarray(7, packet.length - 1))
+}
+
+function parseOpusTagsPacket(packet: Buffer): Record<string, string> {
+  if (packet.length < 8 || packet.toString('ascii', 0, 8) !== 'OpusTags') {
+    return {}
+  }
+
+  return parseVorbisCommentBody(packet.subarray(8))
+}
+
+function findLastOggPageGranulePosition(filePath: string, fileBytes: number, bitstreamSerialNumber: number): bigint | null {
+  let windowEnd = fileBytes
+  while (windowEnd > 0) {
+    const windowStart = Math.max(0, windowEnd - OGG_TAIL_SCAN_BYTES)
+    const windowSize = windowEnd - windowStart
+    const buffer = readFileWindow(filePath, windowStart, windowSize)
+    if (!buffer || buffer.length < 27) {
+      return null
+    }
+
+    for (let offset = buffer.length - 27; offset >= 0; offset -= 1) {
+      if (buffer.toString('ascii', offset, offset + 4) !== 'OggS') {
+        continue
+      }
+
+      const page = readOggPageHeader(buffer, offset, buffer.length)
+      if (!page || page.bitstreamSerialNumber !== bitstreamSerialNumber || page.granulePosition === 0xffff_ffff_ffff_ffffn) {
+        continue
+      }
+
+      return page.granulePosition
+    }
+
+    if (windowStart === 0) {
+      break
+    }
+
+    windowEnd = Math.min(fileBytes, windowStart + OGG_PAGE_SCAN_OVERLAP_BYTES)
+  }
+
+  return null
+}
+
+function extractOggAudioMetadata(filePath: string, fileBytes: number | undefined): Record<string, string | number> {
+  if (!fileBytes || fileBytes < 27) {
+    return {}
+  }
+
+  const head = readFileWindow(filePath, 0, Math.min(fileBytes, OGG_METADATA_SCAN_BYTES))
+  if (!head || head.length < 27 || head.toString('ascii', 0, 4) !== 'OggS') {
+    return {}
+  }
+
+  const firstPage = readOggPageHeader(head, 0, head.length)
+  if (!firstPage) {
+    return {}
+  }
+
+  const packets = readOggHeadPackets(head, 2, firstPage.bitstreamSerialNumber)
+  const firstPacket = packets[0]
+  if (!firstPacket) {
+    return {}
+  }
+
+  const finalGranulePosition = findLastOggPageGranulePosition(filePath, fileBytes, firstPage.bitstreamSerialNumber)
+  const vorbisIdentification = parseVorbisIdentificationPacket(firstPacket)
+  if (vorbisIdentification) {
+    const { sampleRate, channelCount } = vorbisIdentification
+    const durationSeconds = finalGranulePosition !== null
+      ? roundDurationSeconds(Number(finalGranulePosition) / sampleRate)
+      : null
+    return {
+      ...(durationSeconds !== null ? { media_duration_seconds: durationSeconds } : {}),
+      audio_sample_rate_hz: sampleRate,
+      audio_channel_count: channelCount,
+      ...parseVorbisCommentPacket(packets[1] ?? Buffer.alloc(0)),
+    }
+  }
+
+  const opusHead = parseOpusHeadPacket(firstPacket)
+  if (!opusHead) {
+    return {}
+  }
+
+  const decodedSamples = finalGranulePosition !== null
+    ? Number(finalGranulePosition > BigInt(opusHead.preSkip) ? finalGranulePosition - BigInt(opusHead.preSkip) : 0n)
+    : null
+  const durationSeconds = decodedSamples !== null ? roundDurationSeconds(decodedSamples / 48_000) : null
+  return {
+    ...(durationSeconds !== null ? { media_duration_seconds: durationSeconds } : {}),
+    audio_sample_rate_hz: opusHead.sampleRate,
+    audio_channel_count: opusHead.channelCount,
+    ...parseOpusTagsPacket(packets[1] ?? Buffer.alloc(0)),
+  }
+}
+
 function extractBinaryTrackMetadata(
   filePath: string,
   extension: string,
@@ -552,6 +904,27 @@ function extractBinaryTrackMetadata(
 ): Record<string, string> {
   if (fileType === 'audio' && extension === '.mp3') {
     return extractMp3Id3TrackMetadata(filePath, fileBytes)
+  }
+
+  return {}
+}
+
+function extractBinaryAudioMetadata(
+  filePath: string,
+  extension: string,
+  fileType: NonCodeFileType,
+  fileBytes: number | undefined,
+): Record<string, string | number> {
+  if (fileType !== 'audio') {
+    return {}
+  }
+
+  if (extension === '.flac') {
+    return extractFlacAudioMetadata(filePath, fileBytes)
+  }
+
+  if (extension === '.ogg' || extension === '.opus') {
+    return extractOggAudioMetadata(filePath, fileBytes)
   }
 
   return {}
@@ -611,8 +984,12 @@ const PDF_COMMON_SECTION_LABELS = new Set([
 const DOCX_TEXT_PATTERN = /<w:t(?:\s[^>]*)?>([\s\S]{0,8192}?)<\/w:t>/g
 const XLSX_TEXT_PATTERN = /<(?:\w+:)?t(?:\s[^>]*)?>([\s\S]{0,8192}?)<\/(?:\w+:)?t>/g
 const BINARY_METADATA_HEADER_BYTES = 65_536
+const FLAC_METADATA_SCAN_BYTES = 262_144
 const MP3_ID3_SCAN_BYTES = 262_144
 const MP4_DURATION_SCAN_BYTES = 262_144
+const OGG_METADATA_SCAN_BYTES = 262_144
+const OGG_PAGE_SCAN_OVERLAP_BYTES = 65_536
+const OGG_TAIL_SCAN_BYTES = 262_144
 const BINARY_CONTENT_TYPES = new Map<string, string>([
   ['.pdf', 'application/pdf'],
   ['.gif', 'image/gif'],

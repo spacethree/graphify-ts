@@ -103,6 +103,183 @@ function createTestMp3Id3Buffer(metadata: { title: string; artist: string; album
   return Buffer.concat([header, frames, Buffer.from([0xff, 0xfb, 0x90, 0x64])])
 }
 
+function createVorbisCommentBody(metadata: { title: string; artist: string; album: string }): Buffer {
+  const vendor = Buffer.from('graphify-ts', 'utf8')
+  const vendorLength = Buffer.alloc(4)
+  vendorLength.writeUInt32LE(vendor.length, 0)
+  const comments = [
+    `TITLE=${metadata.title}`,
+    `ARTIST=${metadata.artist}`,
+    `ALBUM=${metadata.album}`,
+  ].map((entry) => {
+    const comment = Buffer.from(entry, 'utf8')
+    const length = Buffer.alloc(4)
+    length.writeUInt32LE(comment.length, 0)
+    return Buffer.concat([length, comment])
+  })
+  const commentCount = Buffer.alloc(4)
+  commentCount.writeUInt32LE(comments.length, 0)
+  return Buffer.concat([vendorLength, vendor, commentCount, ...comments])
+}
+
+function createFlacMetadataBlock(blockType: number, payload: Buffer, isLast: boolean): Buffer {
+  const header = Buffer.alloc(4)
+  header[0] = (isLast ? 0x80 : 0) | (blockType & 0x7f)
+  header.writeUIntBE(payload.length, 1, 3)
+  return Buffer.concat([header, payload])
+}
+
+function createFlacStreamInfo(durationSeconds: number, sampleRate: number = 48_000, channelCount: number = 2, bitsPerSample: number = 16): Buffer {
+  const streamInfo = Buffer.alloc(34)
+  const totalSamples = BigInt(Math.round(durationSeconds * sampleRate))
+  streamInfo.writeUInt16BE(4096, 0)
+  streamInfo.writeUInt16BE(4096, 2)
+  const packedHeader =
+    (BigInt(sampleRate & 0x0f_ffff) << 44n) |
+    (BigInt(channelCount - 1) << 41n) |
+    (BigInt(bitsPerSample - 1) << 36n) |
+    totalSamples
+  streamInfo.writeBigUInt64BE(packedHeader, 10)
+  return streamInfo
+}
+
+function createTestFlacBuffer(
+  metadata: { title: string; artist: string; album: string },
+  options: { durationSeconds?: number; sampleRate?: number; channelCount?: number } = {},
+): Buffer {
+  const durationSeconds = options.durationSeconds ?? 3.75
+  const sampleRate = options.sampleRate ?? 48_000
+  const channelCount = options.channelCount ?? 2
+  return Buffer.concat([
+    Buffer.from('fLaC', 'ascii'),
+    createFlacMetadataBlock(0, createFlacStreamInfo(durationSeconds, sampleRate, channelCount), false),
+    createFlacMetadataBlock(4, createVorbisCommentBody(metadata), true),
+    Buffer.from([0xff, 0xf8, 0x00, 0x00]),
+  ])
+}
+
+function createOggPage(
+  packet: Buffer,
+  options: { headerType?: number; granulePosition?: bigint; bitstreamSerialNumber?: number; sequenceNumber?: number } = {},
+): Buffer {
+  if (packet.length >= 255) {
+    throw new Error('Test helper only supports Ogg packets smaller than 255 bytes.')
+  }
+
+  const header = Buffer.alloc(28)
+  header.write('OggS', 0, 'ascii')
+  header[4] = 0
+  header[5] = options.headerType ?? 0
+  header.writeBigUInt64LE(options.granulePosition ?? 0n, 6)
+  header.writeUInt32LE(options.bitstreamSerialNumber ?? 1, 14)
+  header.writeUInt32LE(options.sequenceNumber ?? 0, 18)
+  header.writeUInt32LE(0, 22)
+  header[26] = 1
+  header[27] = packet.length
+  return Buffer.concat([header, packet])
+}
+
+function createVorbisIdentificationPacket(sampleRate: number, channelCount: number): Buffer {
+  const packet = Buffer.alloc(30)
+  packet[0] = 1
+  packet.write('vorbis', 1, 'ascii')
+  packet.writeUInt32LE(0, 7)
+  packet[11] = channelCount
+  packet.writeUInt32LE(sampleRate, 12)
+  packet.writeUInt32LE(0, 16)
+  packet.writeUInt32LE(0, 20)
+  packet.writeUInt32LE(0, 24)
+  packet[28] = 0x11
+  packet[29] = 1
+  return packet
+}
+
+function createVorbisCommentPacket(metadata: { title: string; artist: string; album: string }): Buffer {
+  return Buffer.concat([
+    Buffer.from([3]),
+    Buffer.from('vorbis', 'ascii'),
+    createVorbisCommentBody(metadata),
+    Buffer.from([1]),
+  ])
+}
+
+function createTestOggVorbisBuffer(
+  metadata: { title: string; artist: string; album: string },
+  options: { durationSeconds?: number; sampleRate?: number; channelCount?: number } = {},
+): Buffer {
+  const durationSeconds = options.durationSeconds ?? 2.5
+  const sampleRate = options.sampleRate ?? 44_100
+  const channelCount = options.channelCount ?? 2
+  const totalSamples = BigInt(Math.round(durationSeconds * sampleRate))
+  const serial = 17
+  return Buffer.concat([
+    createOggPage(createVorbisIdentificationPacket(sampleRate, channelCount), {
+      headerType: 0x02,
+      granulePosition: 0n,
+      bitstreamSerialNumber: serial,
+      sequenceNumber: 0,
+    }),
+    createOggPage(createVorbisCommentPacket(metadata), {
+      granulePosition: 0n,
+      bitstreamSerialNumber: serial,
+      sequenceNumber: 1,
+    }),
+    createOggPage(Buffer.from([0]), {
+      headerType: 0x04,
+      granulePosition: totalSamples,
+      bitstreamSerialNumber: serial,
+      sequenceNumber: 2,
+    }),
+  ])
+}
+
+function createOpusHeadPacket(channelCount: number, inputSampleRate: number = 48_000, preSkip: number = 312): Buffer {
+  const packet = Buffer.alloc(19)
+  packet.write('OpusHead', 0, 'ascii')
+  packet[8] = 1
+  packet[9] = channelCount
+  packet.writeUInt16LE(preSkip, 10)
+  packet.writeUInt32LE(inputSampleRate, 12)
+  packet.writeInt16LE(0, 16)
+  packet[18] = 0
+  return packet
+}
+
+function createOpusTagsPacket(metadata: { title: string; artist: string; album: string }): Buffer {
+  return Buffer.concat([Buffer.from('OpusTags', 'ascii'), createVorbisCommentBody(metadata)])
+}
+
+function createTestOggOpusBuffer(
+  metadata: { title: string; artist: string; album: string },
+  options: { durationSeconds?: number; channelCount?: number; inputSampleRate?: number; preSkip?: number } = {},
+): Buffer {
+  const durationSeconds = options.durationSeconds ?? 1.75
+  const channelCount = options.channelCount ?? 1
+  const inputSampleRate = options.inputSampleRate ?? 48_000
+  const preSkip = options.preSkip ?? 312
+  const serial = 23
+  const terminalGranulePosition = BigInt(Math.round(durationSeconds * 48_000) + preSkip)
+  return Buffer.concat([
+    createOggPage(createOpusHeadPacket(channelCount, inputSampleRate, preSkip), {
+      headerType: 0x02,
+      granulePosition: 0n,
+      bitstreamSerialNumber: serial,
+      sequenceNumber: 0,
+    }),
+    createOggPage(createOpusTagsPacket(metadata), {
+      granulePosition: 0n,
+      bitstreamSerialNumber: serial,
+      sequenceNumber: 1,
+    }),
+    createOggPage(Buffer.from([0]), {
+      headerType: 0x04,
+      granulePosition: terminalGranulePosition,
+      bitstreamSerialNumber: serial,
+      sequenceNumber: 2,
+    }),
+  ])
+}
+
 describe('generateGraph', () => {
   test('builds graph artifacts for a code corpus', () => {
     withTempDir((tempDir) => {
@@ -241,6 +418,75 @@ describe('generateGraph', () => {
             file_type: 'audio',
             label: 'episode.mp3',
             audio_title: 'Roadmap Review',
+            audio_artist: 'Graphify FM',
+            audio_album: 'Engineering Notes',
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with deterministic FLAC and Ogg-family metadata from saved assets', () => {
+    withTempDir((tempDir) => {
+      const flacBuffer = createTestFlacBuffer({
+        title: 'Roadmap Review',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      })
+      const oggBuffer = createTestOggVorbisBuffer({
+        title: 'Release Notes',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      })
+      const opusBuffer = createTestOggOpusBuffer({
+        title: 'Voice Memo',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      })
+      writeFileSync(
+        join(tempDir, 'README.md'),
+        '# Overview\nSee [Lossless](lossless.flac)\nSee [Ogg](release.ogg)\nSee [Opus](voice.opus)\n',
+        'utf8',
+      )
+      writeFileSync(join(tempDir, 'lossless.flac'), flacBuffer)
+      writeFileSync(join(tempDir, 'release.ogg'), oggBuffer)
+      writeFileSync(join(tempDir, 'voice.opus'), opusBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(4)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'audio',
+            label: 'lossless.flac',
+            media_duration_seconds: 3.75,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
+            audio_title: 'Roadmap Review',
+            audio_artist: 'Graphify FM',
+            audio_album: 'Engineering Notes',
+          }),
+          expect.objectContaining({
+            file_type: 'audio',
+            label: 'release.ogg',
+            media_duration_seconds: 2.5,
+            audio_sample_rate_hz: 44100,
+            audio_channel_count: 2,
+            audio_title: 'Release Notes',
+            audio_artist: 'Graphify FM',
+            audio_album: 'Engineering Notes',
+          }),
+          expect.objectContaining({
+            file_type: 'audio',
+            label: 'voice.opus',
+            media_duration_seconds: 1.75,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 1,
+            audio_title: 'Voice Memo',
             audio_artist: 'Graphify FM',
             audio_album: 'Engineering Notes',
           }),

@@ -220,6 +220,224 @@ describe('extract', () => {
     return Buffer.concat([header, frames, Buffer.from([0xff, 0xfb, 0x90, 0x64])])
   }
 
+  function createVorbisCommentBody(metadata: { title: string; artist: string; album: string }): Buffer {
+    const vendor = Buffer.from('graphify-ts', 'utf8')
+    const vendorLength = Buffer.alloc(4)
+    vendorLength.writeUInt32LE(vendor.length, 0)
+    const comments = [
+      `TITLE=${metadata.title}`,
+      `ARTIST=${metadata.artist}`,
+      `ALBUM=${metadata.album}`,
+    ].map((entry) => {
+      const comment = Buffer.from(entry, 'utf8')
+      const length = Buffer.alloc(4)
+      length.writeUInt32LE(comment.length, 0)
+      return Buffer.concat([length, comment])
+    })
+    const commentCount = Buffer.alloc(4)
+    commentCount.writeUInt32LE(comments.length, 0)
+    return Buffer.concat([vendorLength, vendor, commentCount, ...comments])
+  }
+
+  function createFlacMetadataBlock(blockType: number, payload: Buffer, isLast: boolean): Buffer {
+    const header = Buffer.alloc(4)
+    header[0] = (isLast ? 0x80 : 0) | (blockType & 0x7f)
+    header.writeUIntBE(payload.length, 1, 3)
+    return Buffer.concat([header, payload])
+  }
+
+  function createFlacStreamInfo(durationSeconds: number, sampleRate: number = 48_000, channelCount: number = 2, bitsPerSample: number = 16): Buffer {
+    const streamInfo = Buffer.alloc(34)
+    const totalSamples = BigInt(Math.round(durationSeconds * sampleRate))
+    streamInfo.writeUInt16BE(4096, 0)
+    streamInfo.writeUInt16BE(4096, 2)
+    const packedHeader =
+      (BigInt(sampleRate & 0x0f_ffff) << 44n) |
+      (BigInt(channelCount - 1) << 41n) |
+      (BigInt(bitsPerSample - 1) << 36n) |
+      totalSamples
+    streamInfo.writeBigUInt64BE(packedHeader, 10)
+    return streamInfo
+  }
+
+  function createTestFlacBuffer(
+    metadata: { title: string; artist: string; album: string },
+    options: {
+      durationSeconds?: number
+      sampleRate?: number
+      channelCount?: number
+      leadingPaddingBytes?: number
+      truncateCommentBlock?: boolean
+    } = {},
+  ): Buffer {
+    const durationSeconds = options.durationSeconds ?? 3.75
+    const sampleRate = options.sampleRate ?? 48_000
+    const channelCount = options.channelCount ?? 2
+    const streamInfoBlock = createFlacMetadataBlock(0, createFlacStreamInfo(durationSeconds, sampleRate, channelCount), false)
+    const leadingPaddingBlock = options.leadingPaddingBytes
+      ? createFlacMetadataBlock(1, Buffer.alloc(options.leadingPaddingBytes, 0), false)
+      : null
+    const commentBlock = createFlacMetadataBlock(4, createVorbisCommentBody(metadata), true)
+    const serializedCommentBlock = options.truncateCommentBlock
+      ? commentBlock.subarray(0, Math.min(commentBlock.length, 8))
+      : commentBlock
+    return Buffer.concat([
+      Buffer.from('fLaC', 'ascii'),
+      streamInfoBlock,
+      ...(leadingPaddingBlock ? [leadingPaddingBlock] : []),
+      serializedCommentBlock,
+      Buffer.from([0xff, 0xf8, 0x00, 0x00]),
+    ])
+  }
+
+  function createOggPage(
+    packet: Buffer,
+    options: { headerType?: number; granulePosition?: bigint; bitstreamSerialNumber?: number; sequenceNumber?: number } = {},
+  ): Buffer {
+    if (packet.length >= 255) {
+      throw new Error('Test helper only supports Ogg packets smaller than 255 bytes.')
+    }
+
+    const header = Buffer.alloc(28)
+    header.write('OggS', 0, 'ascii')
+    header[4] = 0
+    header[5] = options.headerType ?? 0
+    header.writeBigUInt64LE(options.granulePosition ?? 0n, 6)
+    header.writeUInt32LE(options.bitstreamSerialNumber ?? 1, 14)
+    header.writeUInt32LE(options.sequenceNumber ?? 0, 18)
+    header.writeUInt32LE(0, 22)
+    header[26] = 1
+    header[27] = packet.length
+    return Buffer.concat([header, packet])
+  }
+
+  function createVorbisIdentificationPacket(sampleRate: number, channelCount: number): Buffer {
+    const packet = Buffer.alloc(30)
+    packet[0] = 1
+    packet.write('vorbis', 1, 'ascii')
+    packet.writeUInt32LE(0, 7)
+    packet[11] = channelCount
+    packet.writeUInt32LE(sampleRate, 12)
+    packet.writeUInt32LE(0, 16)
+    packet.writeUInt32LE(0, 20)
+    packet.writeUInt32LE(0, 24)
+    packet[28] = 0x11
+    packet[29] = 1
+    return packet
+  }
+
+  function createVorbisCommentPacket(metadata: { title: string; artist: string; album: string }): Buffer {
+    return Buffer.concat([
+      Buffer.from([3]),
+      Buffer.from('vorbis', 'ascii'),
+      createVorbisCommentBody(metadata),
+      Buffer.from([1]),
+    ])
+  }
+
+  function createOggVorbisStreamPages(
+    metadata: { title: string; artist: string; album: string },
+    options: { durationSeconds?: number; sampleRate?: number; channelCount?: number; bitstreamSerialNumber?: number } = {},
+  ): Buffer[] {
+    const durationSeconds = options.durationSeconds ?? 2.5
+    const sampleRate = options.sampleRate ?? 44_100
+    const channelCount = options.channelCount ?? 2
+    const totalSamples = BigInt(Math.round(durationSeconds * sampleRate))
+    const serial = options.bitstreamSerialNumber ?? 17
+    return [
+      createOggPage(createVorbisIdentificationPacket(sampleRate, channelCount), {
+        headerType: 0x02,
+        granulePosition: 0n,
+        bitstreamSerialNumber: serial,
+        sequenceNumber: 0,
+      }),
+      createOggPage(createVorbisCommentPacket(metadata), {
+        granulePosition: 0n,
+        bitstreamSerialNumber: serial,
+        sequenceNumber: 1,
+      }),
+      createOggPage(Buffer.from([0]), {
+        headerType: 0x04,
+        granulePosition: totalSamples,
+        bitstreamSerialNumber: serial,
+        sequenceNumber: 2,
+      }),
+    ]
+  }
+
+  function createTestOggVorbisBuffer(
+    metadata: { title: string; artist: string; album: string },
+    options: { durationSeconds?: number; sampleRate?: number; channelCount?: number; bitstreamSerialNumber?: number } = {},
+  ): Buffer {
+    return Buffer.concat(createOggVorbisStreamPages(metadata, options))
+  }
+
+  function createOggFillerPages(totalBytes: number, bitstreamSerialNumber: number, startingSequenceNumber: number = 0): Buffer[] {
+    const pages: Buffer[] = []
+    let sequenceNumber = startingSequenceNumber
+    let producedBytes = 0
+    while (producedBytes < totalBytes) {
+      const isLastPage = producedBytes + 282 >= totalBytes
+      const page = createOggPage(Buffer.alloc(254, sequenceNumber % 251), {
+        headerType: sequenceNumber === startingSequenceNumber ? 0x02 : isLastPage ? 0x04 : 0,
+        granulePosition: 0n,
+        bitstreamSerialNumber,
+        sequenceNumber,
+      })
+      pages.push(page)
+      producedBytes += page.length
+      sequenceNumber += 1
+    }
+    return pages
+  }
+
+  function createOpusHeadPacket(channelCount: number, inputSampleRate: number = 48_000, preSkip: number = 312): Buffer {
+    const packet = Buffer.alloc(19)
+    packet.write('OpusHead', 0, 'ascii')
+    packet[8] = 1
+    packet[9] = channelCount
+    packet.writeUInt16LE(preSkip, 10)
+    packet.writeUInt32LE(inputSampleRate, 12)
+    packet.writeInt16LE(0, 16)
+    packet[18] = 0
+    return packet
+  }
+
+  function createOpusTagsPacket(metadata: { title: string; artist: string; album: string }): Buffer {
+    return Buffer.concat([Buffer.from('OpusTags', 'ascii'), createVorbisCommentBody(metadata)])
+  }
+
+  function createTestOggOpusBuffer(
+    metadata: { title: string; artist: string; album: string },
+    options: { durationSeconds?: number; channelCount?: number; inputSampleRate?: number; preSkip?: number } = {},
+  ): Buffer {
+    const durationSeconds = options.durationSeconds ?? 1.75
+    const channelCount = options.channelCount ?? 1
+    const inputSampleRate = options.inputSampleRate ?? 48_000
+    const preSkip = options.preSkip ?? 312
+    const serial = 23
+    const terminalGranulePosition = BigInt(Math.round(durationSeconds * 48_000) + preSkip)
+    return Buffer.concat([
+      createOggPage(createOpusHeadPacket(channelCount, inputSampleRate, preSkip), {
+        headerType: 0x02,
+        granulePosition: 0n,
+        bitstreamSerialNumber: serial,
+        sequenceNumber: 0,
+      }),
+      createOggPage(createOpusTagsPacket(metadata), {
+        granulePosition: 0n,
+        bitstreamSerialNumber: serial,
+        sequenceNumber: 1,
+      }),
+      createOggPage(Buffer.from([0]), {
+        headerType: 0x04,
+        granulePosition: terminalGranulePosition,
+        bitstreamSerialNumber: serial,
+        sequenceNumber: 2,
+      }),
+    ])
+  }
+
   function expectSourceEntriesToUseCapability(result: ReturnType<typeof extract>, sourceFile: string, capabilityId: string): void {
     const sourceNodes = result.nodes.filter((node) => node.source_file === sourceFile)
     const sourceEdges = result.edges.filter((edge) => edge.source_file === sourceFile)
@@ -2002,6 +2220,273 @@ describe('extract', () => {
         layer: 'base',
         provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
       })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts deterministic FLAC and Ogg-family metadata from saved audio assets', () => {
+    const root = createTempRoot()
+    try {
+      const flacPath = join(root, 'episode.flac')
+      const oggPath = join(root, 'episode.ogg')
+      const opusPath = join(root, 'episode.opus')
+      const flacBuffer = createTestFlacBuffer({
+        title: 'Roadmap Review',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      })
+      const oggBuffer = createTestOggVorbisBuffer({
+        title: 'Release Notes',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      })
+      const opusBuffer = createTestOggOpusBuffer({
+        title: 'Voice Memo',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      })
+      writeFileSync(flacPath, flacBuffer)
+      writeFileSync(oggPath, oggBuffer)
+      writeFileSync(opusPath, opusBuffer)
+
+      const result = extract([flacPath, oggPath, opusPath])
+      const flacNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'episode.flac')
+      const oggNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'episode.ogg')
+      const opusNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'episode.opus')
+
+      expect(flacNode).toMatchObject({
+        content_type: 'audio/flac',
+        file_bytes: flacBuffer.length,
+        media_duration_seconds: 3.75,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        audio_title: 'Roadmap Review',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+      expect(oggNode).toMatchObject({
+        content_type: 'audio/ogg',
+        file_bytes: oggBuffer.length,
+        media_duration_seconds: 2.5,
+        audio_sample_rate_hz: 44100,
+        audio_channel_count: 2,
+        audio_title: 'Release Notes',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+      expect(opusNode).toMatchObject({
+        content_type: 'audio/opus',
+        file_bytes: opusBuffer.length,
+        media_duration_seconds: 1.75,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 1,
+        audio_title: 'Voice Memo',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('uses the matching logical stream when deriving Ogg duration metadata', () => {
+    const root = createTempRoot()
+    try {
+      const oggPath = join(root, 'chained.ogg')
+      const oggBuffer = Buffer.concat([
+        createTestOggVorbisBuffer({
+          title: 'Release Notes',
+          artist: 'Graphify FM',
+          album: 'Engineering Notes',
+        }, { durationSeconds: 2.5, bitstreamSerialNumber: 17 }),
+        createTestOggVorbisBuffer({
+          title: 'Other Stream',
+          artist: 'Fallback FM',
+          album: 'Ignored Album',
+        }, { durationSeconds: 7.25, bitstreamSerialNumber: 29 }),
+      ])
+      writeFileSync(oggPath, oggBuffer)
+
+      const result = extract([oggPath])
+      const oggNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'chained.ogg')
+
+      expect(oggNode).toMatchObject({
+        content_type: 'audio/ogg',
+        media_duration_seconds: 2.5,
+        audio_sample_rate_hz: 44100,
+        audio_channel_count: 2,
+        audio_title: 'Release Notes',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts Ogg track metadata even when non-target stream pages are interleaved before the comment packet', () => {
+    const root = createTempRoot()
+    try {
+      const oggPath = join(root, 'interleaved.ogg')
+      const targetPages = createOggVorbisStreamPages({
+        title: 'Release Notes',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      }, { bitstreamSerialNumber: 17 })
+      const targetIdPage = targetPages[0]!
+      const targetCommentPage = targetPages[1]!
+      const targetTerminalPage = targetPages[2]!
+      const interleavedOtherPage = createOggPage(Buffer.alloc(48, 0), {
+        headerType: 0x02,
+        granulePosition: 0n,
+        bitstreamSerialNumber: 29,
+        sequenceNumber: 0,
+      })
+      const oggBuffer = Buffer.concat([
+        targetIdPage,
+        interleavedOtherPage,
+        targetCommentPage,
+        targetTerminalPage,
+      ])
+      writeFileSync(oggPath, oggBuffer)
+
+      const result = extract([oggPath])
+      const oggNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'interleaved.ogg')
+
+      expect(oggNode).toMatchObject({
+        content_type: 'audio/ogg',
+        media_duration_seconds: 2.5,
+        audio_sample_rate_hz: 44100,
+        audio_channel_count: 2,
+        audio_title: 'Release Notes',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('finds the target Ogg duration even when later streams push it outside the last scan window', () => {
+    const root = createTempRoot()
+    try {
+      const oggPath = join(root, 'far-tail.ogg')
+      const oggBuffer = Buffer.concat([
+        createTestOggVorbisBuffer({
+          title: 'Release Notes',
+          artist: 'Graphify FM',
+          album: 'Engineering Notes',
+        }, { durationSeconds: 2.5, bitstreamSerialNumber: 17 }),
+        ...createOggFillerPages(300_000, 29),
+      ])
+      writeFileSync(oggPath, oggBuffer)
+
+      const result = extract([oggPath])
+      const oggNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'far-tail.ogg')
+
+      expect(oggNode).toMatchObject({
+        content_type: 'audio/ogg',
+        media_duration_seconds: 2.5,
+        audio_sample_rate_hz: 44100,
+        audio_channel_count: 2,
+        audio_title: 'Release Notes',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('reports Opus audio_sample_rate_hz as the fixed decode rate', () => {
+    const root = createTempRoot()
+    try {
+      const opusPath = join(root, 'voice-16k.opus')
+      const opusBuffer = createTestOggOpusBuffer({
+        title: 'Voice Memo',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      }, { inputSampleRate: 16_000 })
+      writeFileSync(opusPath, opusBuffer)
+
+      const result = extract([opusPath])
+      const opusNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'voice-16k.opus')
+
+      expect(opusNode).toMatchObject({
+        content_type: 'audio/opus',
+        media_duration_seconds: 1.75,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 1,
+        audio_title: 'Voice Memo',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts FLAC track metadata even when a large metadata block appears before Vorbis comments', () => {
+    const root = createTempRoot()
+    try {
+      const flacPath = join(root, 'large-padding.flac')
+      const flacBuffer = createTestFlacBuffer({
+        title: 'Roadmap Review',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      }, { leadingPaddingBytes: 300_000 })
+      writeFileSync(flacPath, flacBuffer)
+
+      const result = extract([flacPath])
+      const flacNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'large-padding.flac')
+
+      expect(flacNode).toMatchObject({
+        content_type: 'audio/flac',
+        media_duration_seconds: 3.75,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        audio_title: 'Roadmap Review',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('omits FLAC track metadata when the Vorbis comment block is truncated', () => {
+    const root = createTempRoot()
+    try {
+      const flacPath = join(root, 'broken-comments.flac')
+      const flacBuffer = createTestFlacBuffer({
+        title: 'Roadmap Review',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      }, { truncateCommentBlock: true })
+      writeFileSync(flacPath, flacBuffer)
+
+      const result = extract([flacPath])
+      const flacNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'broken-comments.flac')
+
+      expect(flacNode).toMatchObject({
+        content_type: 'audio/flac',
+        file_bytes: flacBuffer.length,
+        media_duration_seconds: 3.75,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+      expect(flacNode?.audio_title).toBeUndefined()
+      expect(flacNode?.audio_artist).toBeUndefined()
+      expect(flacNode?.audio_album).toBeUndefined()
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -3961,6 +4446,48 @@ describe('extract', () => {
       expect(mp3Node).toMatchObject({
         content_type: 'audio/mpeg',
         file_bytes: mp3Buffer.length,
+        audio_title: 'Roadmap Review',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-flac-ogg-audio cache version', () => {
+    const root = createTempRoot()
+    try {
+      const flacPath = join(root, 'episode.flac')
+      const flacBuffer = createTestFlacBuffer({
+        title: 'Roadmap Review',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      })
+      writeFileSync(flacPath, flacBuffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(flacPath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 15,
+          nodes: [{ id: 'stale_audio', label: 'episode.flac', file_type: 'audio', source_file: flacPath }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([flacPath])
+      const flacNode = recovered.nodes.find((node) => node.file_type === 'audio' && node.label === 'episode.flac')
+
+      expect(flacNode).toMatchObject({
+        content_type: 'audio/flac',
+        file_bytes: flacBuffer.length,
+        media_duration_seconds: 3.75,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
         audio_title: 'Roadmap Review',
         audio_artist: 'Graphify FM',
         audio_album: 'Engineering Notes',
