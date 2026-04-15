@@ -1,5 +1,5 @@
 import { basename, dirname, extname, resolve } from 'node:path'
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from 'node:fs'
 
 import { strFromU8, unzipSync, type UnzipFileInfo } from 'fflate'
 
@@ -22,7 +22,539 @@ interface ProvenanceBearingRecord {
 
 function createBinaryMetadataAwareFileNode(filePath: string, fileType: NonCodeFileType): ExtractionNode {
   const sidecarMetadata = readBinaryIngestSidecar(filePath)
-  return sidecarMetadata ? { ...sidecarMetadata, ...createFileNode(filePath, fileType) } : createFileNode(filePath, fileType)
+  const extension = extname(filePath).toLowerCase()
+  const contentType = BINARY_CONTENT_TYPES.get(extension)
+  let fileBytes: number | undefined
+  try {
+    fileBytes = statSync(filePath).size
+  } catch {
+    fileBytes = undefined
+  }
+  const derivedMetadata = {
+    ...(Number.isFinite(fileBytes) ? { file_bytes: fileBytes } : {}),
+    ...(contentType ? { content_type: contentType } : {}),
+    ...extractBinaryDurationMetadata(filePath, extension, fileType, fileBytes),
+    ...extractBinaryTrackMetadata(filePath, extension, fileType, fileBytes),
+  }
+
+  return sidecarMetadata
+    ? { ...sidecarMetadata, ...derivedMetadata, ...createFileNode(filePath, fileType) }
+    : { ...derivedMetadata, ...createFileNode(filePath, fileType) }
+}
+
+function roundDurationSeconds(value: number): number {
+  return Math.round(value * 1_000) / 1_000
+}
+
+function readFileWindow(filePath: string, position: number, byteLength: number): Buffer | null {
+  if (byteLength <= 0) {
+    return null
+  }
+
+  let descriptor: number | null = null
+  try {
+    descriptor = openSync(filePath, 'r')
+    const buffer = Buffer.alloc(byteLength)
+    const bytesRead = readSync(descriptor, buffer, 0, byteLength, position)
+    return buffer.subarray(0, bytesRead)
+  } catch {
+    return null
+  } finally {
+    if (descriptor !== null) {
+      try {
+        closeSync(descriptor)
+      } catch {
+        // Ignore close failures for best-effort metadata reads.
+      }
+    }
+  }
+}
+
+function extractWavDurationMetadata(filePath: string, fileBytes: number | undefined): Record<string, number> {
+  if (!fileBytes || fileBytes < 44) {
+    return {}
+  }
+
+  const header = readFileWindow(filePath, 0, Math.min(fileBytes, BINARY_METADATA_HEADER_BYTES))
+  if (!header || header.length < 44 || header.toString('ascii', 0, 4) !== 'RIFF' || header.toString('ascii', 8, 12) !== 'WAVE') {
+    return {}
+  }
+
+  let sampleRate: number | null = null
+  let channelCount: number | null = null
+  let byteRate: number | null = null
+  let dataSize: number | null = null
+  let dataOffsetInFile: number | null = null
+  let offset = 12
+
+  while (offset + 8 <= header.length) {
+    const chunkSize = header.readUInt32LE(offset + 4)
+    const dataOffset = offset + 8
+    const chunkId = header.toString('ascii', offset, offset + 4)
+
+    if (chunkId === 'fmt ' && chunkSize >= 16 && dataOffset + 16 <= header.length) {
+      channelCount = header.readUInt16LE(dataOffset + 2)
+      sampleRate = header.readUInt32LE(dataOffset + 4)
+      byteRate = header.readUInt32LE(dataOffset + 8)
+    } else if (chunkId === 'data') {
+      dataSize = chunkSize
+      dataOffsetInFile = dataOffset
+    }
+
+    const nextOffset = dataOffset + chunkSize + (chunkSize % 2)
+    if (nextOffset <= offset) {
+      break
+    }
+    offset = nextOffset
+  }
+
+  const hasCompleteDataChunk =
+    byteRate &&
+    dataSize !== null &&
+    dataOffsetInFile !== null &&
+    byteRate > 0 &&
+    dataOffsetInFile + dataSize <= fileBytes
+  const durationSeconds = hasCompleteDataChunk && dataSize !== null && byteRate !== null
+    ? roundDurationSeconds(dataSize / byteRate)
+    : null
+
+  return {
+    ...(hasCompleteDataChunk && sampleRate ? { audio_sample_rate_hz: sampleRate } : {}),
+    ...(hasCompleteDataChunk && channelCount ? { audio_channel_count: channelCount } : {}),
+    ...(durationSeconds !== null ? { media_duration_seconds: durationSeconds } : {}),
+  }
+}
+
+interface Mp4BoxHeader {
+  startOffset: number
+  headerSize: number
+  type: string
+  bodyOffset: number
+  endOffset: number
+}
+
+function readMp4BoxHeader(buffer: Buffer, offset: number, limit: number): Mp4BoxHeader | null {
+  if (offset + 8 > limit) {
+    return null
+  }
+
+  let size = buffer.readUInt32BE(offset)
+  let headerBytes = 8
+  if (size === 1) {
+    if (offset + 16 > limit) {
+      return null
+    }
+
+    const largeSize = buffer.readBigUInt64BE(offset + 8)
+    if (largeSize > BigInt(Number.MAX_SAFE_INTEGER)) {
+      return null
+    }
+    size = Number(largeSize)
+    headerBytes = 16
+  } else if (size === 0) {
+    size = limit - offset
+  }
+
+  if (size < headerBytes || offset + size > limit) {
+    return null
+  }
+
+  return {
+    startOffset: offset,
+    headerSize: headerBytes,
+    type: buffer.toString('ascii', offset + 4, offset + 8),
+    bodyOffset: offset + headerBytes,
+    endOffset: offset + size,
+  }
+}
+
+function readMp4BoxHeaderFromFile(filePath: string, offset: number, fileBytes: number): Mp4BoxHeader | null {
+  const header = readFileWindow(filePath, offset, 16)
+  if (!header || header.length < 8) {
+    return null
+  }
+
+  let size = header.readUInt32BE(0)
+  let headerSize = 8
+  if (size === 1) {
+    if (header.length < 16) {
+      return null
+    }
+
+    const largeSize = header.readBigUInt64BE(8)
+    if (largeSize > BigInt(Number.MAX_SAFE_INTEGER)) {
+      return null
+    }
+    size = Number(largeSize)
+    headerSize = 16
+  } else if (size === 0) {
+    size = fileBytes - offset
+  }
+
+  if (size < headerSize || offset + size > fileBytes) {
+    return null
+  }
+
+  return {
+    startOffset: offset,
+    headerSize,
+    type: header.toString('ascii', 4, 8),
+    bodyOffset: offset + headerSize,
+    endOffset: offset + size,
+  }
+}
+
+function parseMvhdDurationSeconds(buffer: Buffer, box: Mp4BoxHeader): number | null {
+  if (box.bodyOffset + 4 > box.endOffset) {
+    return null
+  }
+
+  const version = buffer[box.bodyOffset]
+  if (version === 0) {
+    if (box.bodyOffset + 20 > box.endOffset) {
+      return null
+    }
+
+    const timescale = buffer.readUInt32BE(box.bodyOffset + 12)
+    const duration = buffer.readUInt32BE(box.bodyOffset + 16)
+    return timescale > 0 ? roundDurationSeconds(duration / timescale) : null
+  }
+
+  if (version === 1) {
+    if (box.bodyOffset + 32 > box.endOffset) {
+      return null
+    }
+
+    const timescale = buffer.readUInt32BE(box.bodyOffset + 20)
+    const duration = Number(buffer.readBigUInt64BE(box.bodyOffset + 24))
+    return timescale > 0 && Number.isFinite(duration) ? roundDurationSeconds(duration / timescale) : null
+  }
+
+  return null
+}
+
+function parseMoovDurationSeconds(buffer: Buffer, moovBox: Mp4BoxHeader): number | null {
+  let offset = moovBox.bodyOffset
+  while (offset + 8 <= moovBox.endOffset) {
+    const childBox = readMp4BoxHeader(buffer, offset, moovBox.endOffset)
+    if (!childBox) {
+      break
+    }
+
+    if (childBox.type === 'mvhd') {
+      return parseMvhdDurationSeconds(buffer, childBox)
+    }
+
+    offset = childBox.endOffset
+  }
+
+  return null
+}
+
+function hasMp4FileSignature(buffer: Buffer): boolean {
+  const box = readMp4BoxHeader(buffer, 0, buffer.length)
+  return box?.type === 'ftyp'
+}
+
+function parseMp4DurationFromHead(buffer: Buffer): number | null {
+  let offset = 0
+  while (offset + 8 <= buffer.length) {
+    const box = readMp4BoxHeader(buffer, offset, buffer.length)
+    if (!box) {
+      break
+    }
+
+    if (box.type === 'moov') {
+      return parseMoovDurationSeconds(buffer, box)
+    }
+
+    offset = box.endOffset
+  }
+
+  return null
+}
+
+function locateMp4MoovBox(filePath: string, fileBytes: number): Mp4BoxHeader | null {
+  let offset = 0
+  while (offset + 8 <= fileBytes) {
+    const box = readMp4BoxHeaderFromFile(filePath, offset, fileBytes)
+    if (!box) {
+      return null
+    }
+
+    if (offset === 0 && box.type !== 'ftyp') {
+      return null
+    }
+
+    if (box.type === 'moov') {
+      return box
+    }
+
+    if (box.endOffset <= offset) {
+      return null
+    }
+    offset = box.endOffset
+  }
+
+  return null
+}
+
+function extractMp4DurationMetadata(filePath: string, fileBytes: number | undefined): Record<string, number> {
+  if (!fileBytes || fileBytes < 24) {
+    return {}
+  }
+
+  const windowSize = Math.min(fileBytes, MP4_DURATION_SCAN_BYTES)
+  const head = readFileWindow(filePath, 0, windowSize)
+  if (!head || !hasMp4FileSignature(head)) {
+    return {}
+  }
+
+  const headDuration = parseMp4DurationFromHead(head)
+  if (headDuration !== null) {
+    return { media_duration_seconds: headDuration }
+  }
+
+  if (fileBytes > windowSize) {
+    const moovBox = locateMp4MoovBox(filePath, fileBytes)
+    if (moovBox) {
+      const moovWindowSize = Math.min(moovBox.endOffset - moovBox.startOffset, MP4_DURATION_SCAN_BYTES)
+      const moovBuffer = readFileWindow(filePath, moovBox.startOffset, moovWindowSize)
+      if (moovBuffer && moovBuffer.length > moovBox.headerSize) {
+        const moovDuration = parseMoovDurationSeconds(moovBuffer, {
+          startOffset: 0,
+          headerSize: moovBox.headerSize,
+          type: 'moov',
+          bodyOffset: moovBox.headerSize,
+          endOffset: moovBuffer.length,
+        })
+        if (moovDuration !== null) {
+          return { media_duration_seconds: moovDuration }
+        }
+      }
+    }
+  }
+
+  return {}
+}
+
+function extractBinaryDurationMetadata(
+  filePath: string,
+  extension: string,
+  fileType: NonCodeFileType,
+  fileBytes: number | undefined,
+): Record<string, number> {
+  if (fileType === 'audio' && extension === '.wav') {
+    return extractWavDurationMetadata(filePath, fileBytes)
+  }
+
+  if ((fileType === 'audio' || fileType === 'video') && MP4_FAMILY_EXTENSIONS.has(extension)) {
+    return extractMp4DurationMetadata(filePath, fileBytes)
+  }
+
+  return {}
+}
+
+function parseSynchsafeInteger(buffer: Buffer, offset: number): number | null {
+  if (offset + 4 > buffer.length) {
+    return null
+  }
+
+  const byte0 = buffer[offset] ?? 0
+  const byte1 = buffer[offset + 1] ?? 0
+  const byte2 = buffer[offset + 2] ?? 0
+  const byte3 = buffer[offset + 3] ?? 0
+  if ((byte0 & 0x80) !== 0 || (byte1 & 0x80) !== 0 || (byte2 & 0x80) !== 0 || (byte3 & 0x80) !== 0) {
+    return null
+  }
+
+  return (
+    (byte0 << 21) |
+    (byte1 << 14) |
+    (byte2 << 7) |
+    byte3
+  )
+}
+
+function trimTagText(value: string): string | null {
+  const trimmed = value.replace(/\u0000+/g, '').trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+function decodeUtf16Buffer(buffer: Buffer, littleEndian: boolean): string | null {
+  if (buffer.length === 0) {
+    return ''
+  }
+
+  if (buffer.length % 2 !== 0) {
+    return null
+  }
+
+  const content = Buffer.from(buffer)
+  if (!littleEndian) {
+    content.swap16()
+  }
+  return content.toString('utf16le')
+}
+
+function decodeId3TextFrame(payload: Buffer): string | null {
+  if (payload.length === 0) {
+    return null
+  }
+
+  const encoding = payload[0]
+  const content = payload.subarray(1)
+  if (content.length === 0) {
+    return null
+  }
+
+  switch (encoding) {
+    case 0:
+      return trimTagText(content.toString('latin1'))
+    case 1: {
+      if (content.length >= 2) {
+        if (content[0] === 0xff && content[1] === 0xfe) {
+          const decoded = decodeUtf16Buffer(content.subarray(2), true)
+          return decoded === null ? null : trimTagText(decoded)
+        }
+        if (content[0] === 0xfe && content[1] === 0xff) {
+          const decoded = decodeUtf16Buffer(content.subarray(2), false)
+          return decoded === null ? null : trimTagText(decoded)
+        }
+      }
+      const decoded = decodeUtf16Buffer(content, true)
+      return decoded === null ? null : trimTagText(decoded)
+    }
+    case 2: {
+      const decoded = decodeUtf16Buffer(content, false)
+      return decoded === null ? null : trimTagText(decoded)
+    }
+    case 3:
+      return trimTagText(content.toString('utf8'))
+    default:
+      return null
+  }
+}
+
+function extractMp3Id3v1TrackMetadata(filePath: string, fileBytes: number): Record<string, string> {
+  if (fileBytes < 128) {
+    return {}
+  }
+
+  const trailer = readFileWindow(filePath, fileBytes - 128, 128)
+  if (!trailer || trailer.length < 128 || trailer.toString('ascii', 0, 3) !== 'TAG') {
+    return {}
+  }
+
+  const title = trimTagText(trailer.toString('latin1', 3, 33))
+  const artist = trimTagText(trailer.toString('latin1', 33, 63))
+  const album = trimTagText(trailer.toString('latin1', 63, 93))
+
+  return {
+    ...(title ? { audio_title: title } : {}),
+    ...(artist ? { audio_artist: artist } : {}),
+    ...(album ? { audio_album: album } : {}),
+  }
+}
+
+function extractMp3Id3TrackMetadata(filePath: string, fileBytes: number | undefined): Record<string, string> {
+  if (!fileBytes || fileBytes < 10) {
+    return {}
+  }
+
+  const head = readFileWindow(filePath, 0, Math.min(fileBytes, MP3_ID3_SCAN_BYTES))
+  if (!head || head.length < 10) {
+    return {}
+  }
+
+  if (head.toString('ascii', 0, 3) !== 'ID3') {
+    return extractMp3Id3v1TrackMetadata(filePath, fileBytes)
+  }
+
+  const version = head[3]
+  if (version !== 3 && version !== 4) {
+    return extractMp3Id3v1TrackMetadata(filePath, fileBytes)
+  }
+
+  const tagSize = parseSynchsafeInteger(head, 6)
+  if (tagSize === null) {
+    return extractMp3Id3v1TrackMetadata(filePath, fileBytes)
+  }
+
+  const totalTagBytes = 10 + tagSize
+  if (totalTagBytes > fileBytes) {
+    return extractMp3Id3v1TrackMetadata(filePath, fileBytes)
+  }
+
+  const parseLimit = Math.min(totalTagBytes, head.length)
+
+  let offset = 10
+  const tagFlags = head[5] ?? 0
+  if ((tagFlags & 0x40) !== 0) {
+    const extendedHeaderSize =
+      version === 4
+        ? parseSynchsafeInteger(head, offset)
+        : offset + 4 <= parseLimit
+          ? head.readUInt32BE(offset)
+          : null
+    if (extendedHeaderSize === null) {
+      return extractMp3Id3v1TrackMetadata(filePath, fileBytes)
+    }
+
+    const extendedHeaderBytes = version === 4 ? extendedHeaderSize : 4 + extendedHeaderSize
+    const minimumExtendedHeaderBytes = version === 4 ? 6 : 10
+    if (extendedHeaderBytes < minimumExtendedHeaderBytes || offset + extendedHeaderBytes > parseLimit) {
+      return extractMp3Id3v1TrackMetadata(filePath, fileBytes)
+    }
+    offset += extendedHeaderBytes
+  }
+
+  let title: string | null = null
+  let artist: string | null = null
+  let album: string | null = null
+  while (offset + 10 <= parseLimit) {
+    const frameId = head.toString('ascii', offset, offset + 4)
+    if (/^\u0000{4}$/.test(frameId)) {
+      break
+    }
+
+    const frameSize = version === 4 ? parseSynchsafeInteger(head, offset + 4) : head.readUInt32BE(offset + 4)
+    if (frameSize === null || frameSize <= 0 || offset + 10 + frameSize > parseLimit) {
+      break
+    }
+
+    const payload = head.subarray(offset + 10, offset + 10 + frameSize)
+    if (frameId === 'TIT2') {
+      title = decodeId3TextFrame(payload)
+    } else if (frameId === 'TPE1') {
+      artist = decodeId3TextFrame(payload)
+    } else if (frameId === 'TALB') {
+      album = decodeId3TextFrame(payload)
+    }
+
+    offset += 10 + frameSize
+  }
+
+  const metadata = {
+    ...(title ? { audio_title: title } : {}),
+    ...(artist ? { audio_artist: artist } : {}),
+    ...(album ? { audio_album: album } : {}),
+  }
+
+  return Object.keys(metadata).length > 0 ? metadata : extractMp3Id3v1TrackMetadata(filePath, fileBytes)
+}
+
+function extractBinaryTrackMetadata(
+  filePath: string,
+  extension: string,
+  fileType: NonCodeFileType,
+  fileBytes: number | undefined,
+): Record<string, string> {
+  if (fileType === 'audio' && extension === '.mp3') {
+    return extractMp3Id3TrackMetadata(filePath, fileBytes)
+  }
+
+  return {}
 }
 
 function applyDerivedIngestProvenance<T extends ProvenanceBearingRecord>(records: readonly T[], derivedProvenance: ExtractionProvenance | null): T[] {
@@ -78,6 +610,32 @@ const PDF_COMMON_SECTION_LABELS = new Set([
 ])
 const DOCX_TEXT_PATTERN = /<w:t(?:\s[^>]*)?>([\s\S]{0,8192}?)<\/w:t>/g
 const XLSX_TEXT_PATTERN = /<(?:\w+:)?t(?:\s[^>]*)?>([\s\S]{0,8192}?)<\/(?:\w+:)?t>/g
+const BINARY_METADATA_HEADER_BYTES = 65_536
+const MP3_ID3_SCAN_BYTES = 262_144
+const MP4_DURATION_SCAN_BYTES = 262_144
+const BINARY_CONTENT_TYPES = new Map<string, string>([
+  ['.pdf', 'application/pdf'],
+  ['.gif', 'image/gif'],
+  ['.jpeg', 'image/jpeg'],
+  ['.jpg', 'image/jpeg'],
+  ['.png', 'image/png'],
+  ['.svg', 'image/svg+xml'],
+  ['.webp', 'image/webp'],
+  ['.aac', 'audio/aac'],
+  ['.flac', 'audio/flac'],
+  ['.m4a', 'audio/mp4'],
+  ['.mp3', 'audio/mpeg'],
+  ['.ogg', 'audio/ogg'],
+  ['.opus', 'audio/opus'],
+  ['.wav', 'audio/wav'],
+  ['.avi', 'video/x-msvideo'],
+  ['.m4v', 'video/x-m4v'],
+  ['.mkv', 'video/x-matroska'],
+  ['.mov', 'video/quicktime'],
+  ['.mp4', 'video/mp4'],
+  ['.webm', 'video/webm'],
+])
+const MP4_FAMILY_EXTENSIONS = new Set(['.m4a', '.m4v', '.mov', '.mp4'])
 const OOXML_TITLE_PATTERN = /<dc:title>([\s\S]*?)<\/dc:title>/i
 const OOXML_CREATOR_PATTERN = /<dc:creator>([\s\S]*?)<\/dc:creator>/i
 const OOXML_SUBJECT_PATTERN = /<dc:subject>([\s\S]*?)<\/dc:subject>/i

@@ -27,6 +27,82 @@ async function withTempDirAsync<T>(callback: (tempDir: string) => Promise<T>): P
   }
 }
 
+function createTestWavBuffer(durationSeconds: number, sampleRate: number = 4_000, channelCount: number = 2, bitsPerSample: number = 16): Buffer {
+  const byteRate = sampleRate * channelCount * (bitsPerSample / 8)
+  const blockAlign = channelCount * (bitsPerSample / 8)
+  const dataSize = Math.round(durationSeconds * byteRate)
+  const buffer = Buffer.alloc(44 + dataSize)
+  buffer.write('RIFF', 0, 'ascii')
+  buffer.writeUInt32LE(36 + dataSize, 4)
+  buffer.write('WAVE', 8, 'ascii')
+  buffer.write('fmt ', 12, 'ascii')
+  buffer.writeUInt32LE(16, 16)
+  buffer.writeUInt16LE(1, 20)
+  buffer.writeUInt16LE(channelCount, 22)
+  buffer.writeUInt32LE(sampleRate, 24)
+  buffer.writeUInt32LE(byteRate, 28)
+  buffer.writeUInt16LE(blockAlign, 32)
+  buffer.writeUInt16LE(bitsPerSample, 34)
+  buffer.write('data', 36, 'ascii')
+  buffer.writeUInt32LE(dataSize, 40)
+  return buffer
+}
+
+function createMp4Atom(type: string, payload: Buffer): Buffer {
+  const buffer = Buffer.alloc(8 + payload.length)
+  buffer.writeUInt32BE(buffer.length, 0)
+  buffer.write(type, 4, 'ascii')
+  payload.copy(buffer, 8)
+  return buffer
+}
+
+function createTestMp4Buffer(durationSeconds: number, timescale: number = 1_000): Buffer {
+  const mvhdPayload = Buffer.alloc(20)
+  mvhdPayload.writeUInt32BE(0, 0)
+  mvhdPayload.writeUInt32BE(0, 4)
+  mvhdPayload.writeUInt32BE(0, 8)
+  mvhdPayload.writeUInt32BE(timescale, 12)
+  mvhdPayload.writeUInt32BE(Math.round(durationSeconds * timescale), 16)
+
+  return Buffer.concat([
+    createMp4Atom('ftyp', Buffer.from('isom0000', 'ascii')),
+    createMp4Atom('moov', createMp4Atom('mvhd', mvhdPayload)),
+  ])
+}
+
+function encodeSynchsafeInteger(value: number): Buffer {
+  return Buffer.from([
+    (value >> 21) & 0x7f,
+    (value >> 14) & 0x7f,
+    (value >> 7) & 0x7f,
+    value & 0x7f,
+  ])
+}
+
+function createId3v23TextFrame(frameId: string, value: string): Buffer {
+  const text = Buffer.from(value, 'utf8')
+  const payload = Buffer.concat([Buffer.from([3]), text])
+  const frame = Buffer.alloc(10 + payload.length)
+  frame.write(frameId, 0, 'ascii')
+  frame.writeUInt32BE(payload.length, 4)
+  payload.copy(frame, 10)
+  return frame
+}
+
+function createTestMp3Id3Buffer(metadata: { title: string; artist: string; album: string }): Buffer {
+  const frames = Buffer.concat([
+    createId3v23TextFrame('TIT2', metadata.title),
+    createId3v23TextFrame('TPE1', metadata.artist),
+    createId3v23TextFrame('TALB', metadata.album),
+  ])
+  const header = Buffer.alloc(10)
+  header.write('ID3', 0, 'ascii')
+  header[3] = 3
+  header[4] = 0
+  encodeSynchsafeInteger(frames.length).copy(header, 6)
+  return Buffer.concat([header, frames, Buffer.from([0xff, 0xfb, 0x90, 0x64])])
+}
+
 describe('generateGraph', () => {
   test('builds graph artifacts for a code corpus', () => {
     withTempDir((tempDir) => {
@@ -91,8 +167,85 @@ describe('generateGraph', () => {
       expect(result.nonCodeFiles).toBe(3)
       expect(result.nodeCount).toBeGreaterThan(0)
       expect(graphData.nodes.some((node) => node.file_type === 'document')).toBe(true)
-      expect(graphData.nodes.some((node) => node.file_type === 'audio')).toBe(true)
-      expect(graphData.nodes.some((node) => node.file_type === 'video')).toBe(true)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'audio',
+            label: 'episode.mp3',
+            content_type: 'audio/mpeg',
+            file_bytes: 3,
+          }),
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'demo.mp4',
+            content_type: 'video/mp4',
+            file_bytes: 8,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with deterministic duration metadata for supported local media formats', () => {
+    withTempDir((tempDir) => {
+      const wavBuffer = createTestWavBuffer(1.5)
+      const mp4Buffer = createTestMp4Buffer(2.5)
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Tone](tone.wav)\nSee [Clip](clip.mp4)\n', 'utf8')
+      writeFileSync(join(tempDir, 'tone.wav'), wavBuffer)
+      writeFileSync(join(tempDir, 'clip.mp4'), mp4Buffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(3)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'audio',
+            label: 'tone.wav',
+            media_duration_seconds: 1.5,
+            audio_sample_rate_hz: 4000,
+            audio_channel_count: 2,
+          }),
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'clip.mp4',
+            media_duration_seconds: 2.5,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with deterministic MP3 track metadata from saved assets', () => {
+    withTempDir((tempDir) => {
+      const mp3Buffer = createTestMp3Id3Buffer({
+        title: 'Roadmap Review',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Episode](episode.mp3)\n', 'utf8')
+      writeFileSync(join(tempDir, 'episode.mp3'), mp3Buffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'audio',
+            label: 'episode.mp3',
+            audio_title: 'Roadmap Review',
+            audio_artist: 'Graphify FM',
+            audio_album: 'Engineering Notes',
+          }),
+        ]),
+      )
     })
   })
 

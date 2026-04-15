@@ -20,6 +20,206 @@ describe('extract', () => {
     return join(dirname(assetPath), `.${basename(assetPath)}.graphify-ingest.json`)
   }
 
+  function createTestWavBuffer(durationSeconds: number, sampleRate: number = 4_000, channelCount: number = 2, bitsPerSample: number = 16): Buffer {
+    const byteRate = sampleRate * channelCount * (bitsPerSample / 8)
+    const blockAlign = channelCount * (bitsPerSample / 8)
+    const dataSize = Math.round(durationSeconds * byteRate)
+    const buffer = Buffer.alloc(44 + dataSize)
+    buffer.write('RIFF', 0, 'ascii')
+    buffer.writeUInt32LE(36 + dataSize, 4)
+    buffer.write('WAVE', 8, 'ascii')
+    buffer.write('fmt ', 12, 'ascii')
+    buffer.writeUInt32LE(16, 16)
+    buffer.writeUInt16LE(1, 20)
+    buffer.writeUInt16LE(channelCount, 22)
+    buffer.writeUInt32LE(sampleRate, 24)
+    buffer.writeUInt32LE(byteRate, 28)
+    buffer.writeUInt16LE(blockAlign, 32)
+    buffer.writeUInt16LE(bitsPerSample, 34)
+    buffer.write('data', 36, 'ascii')
+    buffer.writeUInt32LE(dataSize, 40)
+    return buffer
+  }
+
+  function createMp4Atom(type: string, payload: Buffer): Buffer {
+    const buffer = Buffer.alloc(8 + payload.length)
+    buffer.writeUInt32BE(buffer.length, 0)
+    buffer.write(type, 4, 'ascii')
+    payload.copy(buffer, 8)
+    return buffer
+  }
+
+  function createTestMp4Buffer(durationSeconds: number, timescale: number = 1_000): Buffer {
+    const mvhdPayload = Buffer.alloc(20)
+    mvhdPayload.writeUInt32BE(0, 0)
+    mvhdPayload.writeUInt32BE(0, 4)
+    mvhdPayload.writeUInt32BE(0, 8)
+    mvhdPayload.writeUInt32BE(timescale, 12)
+    mvhdPayload.writeUInt32BE(Math.round(durationSeconds * timescale), 16)
+
+    return Buffer.concat([
+      createMp4Atom('ftyp', Buffer.from('isom0000', 'ascii')),
+      createMp4Atom('moov', createMp4Atom('mvhd', mvhdPayload)),
+    ])
+  }
+
+  function createFakeMvhdTaggedMp4Buffer(durationSeconds: number, timescale: number = 1_000): Buffer {
+    const fakeMvhd = Buffer.alloc(24)
+    fakeMvhd.write('mvhd', 0, 'ascii')
+    fakeMvhd.writeUInt32BE(0, 4)
+    fakeMvhd.writeUInt32BE(0, 8)
+    fakeMvhd.writeUInt32BE(0, 12)
+    fakeMvhd.writeUInt32BE(timescale, 16)
+    fakeMvhd.writeUInt32BE(Math.round(durationSeconds * timescale), 20)
+
+    return Buffer.concat([
+      createMp4Atom('ftyp', Buffer.from('isom0000', 'ascii')),
+      createMp4Atom('free', fakeMvhd),
+    ])
+  }
+
+  function createLargeFakeTailTaggedMp4Buffer(durationSeconds: number, totalBytes: number = 270_000, timescale: number = 1_000): Buffer {
+    const fakeMoov = createMp4Atom('moov', createMp4Atom('mvhd', (() => {
+      const mvhdPayload = Buffer.alloc(20)
+      mvhdPayload.writeUInt32BE(0, 0)
+      mvhdPayload.writeUInt32BE(0, 4)
+      mvhdPayload.writeUInt32BE(0, 8)
+      mvhdPayload.writeUInt32BE(timescale, 12)
+      mvhdPayload.writeUInt32BE(Math.round(durationSeconds * timescale), 16)
+      return mvhdPayload
+    })()))
+    const ftyp = createMp4Atom('ftyp', Buffer.from('isom0000', 'ascii'))
+    const mdatPayloadLength = totalBytes - ftyp.length - 8
+    const mdatPayload = Buffer.alloc(mdatPayloadLength, 0)
+    fakeMoov.copy(mdatPayload, Math.max(0, mdatPayload.length - fakeMoov.length))
+
+    return Buffer.concat([ftyp, createMp4Atom('mdat', mdatPayload)])
+  }
+
+  function createMalformedShortFmtWavBuffer(): Buffer {
+    const buffer = Buffer.alloc(44)
+    buffer.write('RIFF', 0, 'ascii')
+    buffer.writeUInt32LE(buffer.length - 8, 4)
+    buffer.write('WAVE', 8, 'ascii')
+    buffer.write('fmt ', 12, 'ascii')
+    buffer.writeUInt32LE(4, 16)
+    buffer.writeUInt32LE(0x00020000, 20)
+    buffer.write('data', 24, 'ascii')
+    buffer.writeUInt32LE(4, 28)
+    buffer.writeUInt32LE(8, 32)
+    return buffer
+  }
+
+  function encodeSynchsafeInteger(value: number): Buffer {
+    return Buffer.from([
+      (value >> 21) & 0x7f,
+      (value >> 14) & 0x7f,
+      (value >> 7) & 0x7f,
+      value & 0x7f,
+    ])
+  }
+
+  function createId3Frame(frameId: string, payload: Buffer, version: 3 | 4 = 3): Buffer {
+    const sizeBuffer = version === 4 ? encodeSynchsafeInteger(payload.length) : Buffer.alloc(4)
+    if (version !== 4) {
+      sizeBuffer.writeUInt32BE(payload.length, 0)
+    }
+
+    const frame = Buffer.alloc(10 + payload.length)
+    frame.write(frameId, 0, 'ascii')
+    sizeBuffer.copy(frame, 4)
+    payload.copy(frame, 10)
+    return frame
+  }
+
+  function createId3v23TextFrame(frameId: string, value: string): Buffer {
+    const text = Buffer.from(value, 'utf8')
+    const payload = Buffer.concat([Buffer.from([3]), text])
+    return createId3Frame(frameId, payload, 3)
+  }
+
+  function createId3v23Frame(frameId: string, payload: Buffer): Buffer {
+    return createId3Frame(frameId, payload, 3)
+  }
+
+  function createId3ExtendedHeader(version: 3 | 4): Buffer {
+    if (version === 3) {
+      const header = Buffer.alloc(10)
+      header.writeUInt32BE(6, 0)
+      header.writeUInt16BE(0, 4)
+      header.writeUInt32BE(0, 6)
+      return header
+    }
+
+    const header = Buffer.alloc(6)
+    encodeSynchsafeInteger(6).copy(header, 0)
+    header[4] = 1
+    header[5] = 0
+    return header
+  }
+
+  function createTestMp3Id3Buffer(
+    metadata: { title: string; artist: string; album: string },
+    options: { version?: 3 | 4; extendedHeader?: boolean } = {},
+  ): Buffer {
+    const version = options.version ?? 3
+    const frames = Buffer.concat([
+      createId3Frame('TIT2', Buffer.concat([Buffer.from([3]), Buffer.from(metadata.title, 'utf8')]), version),
+      createId3Frame('TPE1', Buffer.concat([Buffer.from([3]), Buffer.from(metadata.artist, 'utf8')]), version),
+      createId3Frame('TALB', Buffer.concat([Buffer.from([3]), Buffer.from(metadata.album, 'utf8')]), version),
+    ])
+    const extendedHeader = options.extendedHeader ? createId3ExtendedHeader(version) : Buffer.alloc(0)
+    const header = Buffer.alloc(10)
+    header.write('ID3', 0, 'ascii')
+    header[3] = version
+    header[4] = 0
+    header[5] = options.extendedHeader ? 0x40 : 0
+    encodeSynchsafeInteger(extendedHeader.length + frames.length).copy(header, 6)
+    return Buffer.concat([header, extendedHeader, frames, Buffer.from([0xff, 0xfb, 0x90, 0x64])])
+  }
+
+  function createMalformedUtf16Mp3Buffer(): Buffer {
+    const frames = Buffer.concat([
+      createId3v23Frame('TIT2', Buffer.from([2, 0xff])),
+    ])
+    const header = Buffer.alloc(10)
+    header.write('ID3', 0, 'ascii')
+    header[3] = 3
+    header[4] = 0
+    encodeSynchsafeInteger(frames.length).copy(header, 6)
+    return Buffer.concat([header, frames, Buffer.from([0xff, 0xfb, 0x90, 0x64])])
+  }
+
+  function createMalformedV24SynchsafeSizeMp3Buffer(metadata: { title: string; artist: string; album: string }): Buffer {
+    const frames = Buffer.concat([
+      createId3Frame('TIT2', Buffer.concat([Buffer.from([3]), Buffer.from(metadata.title, 'utf8')]), 4),
+      createId3Frame('TPE1', Buffer.concat([Buffer.from([3]), Buffer.from(metadata.artist, 'utf8')]), 4),
+      createId3Frame('TALB', Buffer.concat([Buffer.from([3]), Buffer.from(metadata.album, 'utf8')]), 4),
+    ])
+    const padding = Buffer.alloc(128)
+    const header = Buffer.alloc(10)
+    header.write('ID3', 0, 'ascii')
+    header[3] = 4
+    header[4] = 0
+    header[9] = 0x80 | frames.length
+    return Buffer.concat([header, frames, padding, Buffer.from([0xff, 0xfb, 0x90, 0x64])])
+  }
+
+  function createLargeMp3Id3Buffer(metadata: { title: string; artist: string; album: string }, trailingFrameBytes: number = 300_000): Buffer {
+    const frames = Buffer.concat([
+      createId3v23TextFrame('TIT2', metadata.title),
+      createId3v23TextFrame('TPE1', metadata.artist),
+      createId3v23TextFrame('TALB', metadata.album),
+      createId3v23Frame('APIC', Buffer.alloc(trailingFrameBytes, 0)),
+    ])
+    const header = Buffer.alloc(10)
+    header.write('ID3', 0, 'ascii')
+    header[3] = 3
+    header[4] = 0
+    encodeSynchsafeInteger(frames.length).copy(header, 6)
+    return Buffer.concat([header, frames, Buffer.from([0xff, 0xfb, 0x90, 0x64])])
+  }
+
   function expectSourceEntriesToUseCapability(result: ReturnType<typeof extract>, sourceFile: string, capabilityId: string): void {
     const sourceNodes = result.nodes.filter((node) => node.source_file === sourceFile)
     const sourceEdges = result.edges.filter((edge) => edge.source_file === sourceFile)
@@ -1482,7 +1682,8 @@ describe('extract', () => {
     const root = createTempRoot()
     try {
       const paperPath = join(root, 'paper.pdf')
-      writeFileSync(paperPath, '%PDF-1.4\n1 0 obj\n<< /Title (Graphify Paper) /Subject (Runtime Notes) >>\nstream\n(Abstract) Tj\nendstream\nendobj\n', 'latin1')
+      const pdfContent = '%PDF-1.4\n1 0 obj\n<< /Title (Graphify Paper) /Subject (Runtime Notes) >>\nstream\n(Abstract) Tj\nendstream\nendobj\n'
+      writeFileSync(paperPath, pdfContent, 'latin1')
       writeFileSync(
         binaryIngestSidecarPath(paperPath),
         JSON.stringify(
@@ -1508,6 +1709,8 @@ describe('extract', () => {
         source_url: 'https://example.com/paper.pdf',
         captured_at: '2026-04-13T04:00:00Z',
         contributor: 'graphify-ts',
+        content_type: 'application/pdf',
+        file_bytes: Buffer.byteLength(pdfContent, 'latin1'),
         layer: 'base',
         provenance: expect.arrayContaining([
           expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' }),
@@ -1587,6 +1790,8 @@ describe('extract', () => {
         source_url: 'https://example.com/podcast/episodes/1',
         captured_at: '2026-04-14T01:00:00Z',
         contributor: 'graphify-ts',
+        content_type: 'audio/mpeg',
+        file_bytes: 3,
         layer: 'base',
         provenance: expect.arrayContaining([
           expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' }),
@@ -1603,6 +1808,8 @@ describe('extract', () => {
         source_url: 'https://example.com/sessions/demo',
         captured_at: '2026-04-14T01:05:00Z',
         contributor: 'graphify-ts',
+        content_type: 'video/mp4',
+        file_bytes: 8,
         layer: 'base',
         provenance: expect.arrayContaining([
           expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' }),
@@ -1617,6 +1824,298 @@ describe('extract', () => {
       })
       expect(audioNode?.provenance).toHaveLength(2)
       expect(videoNode?.provenance).toHaveLength(2)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts deterministic duration metadata for wav and mp4 media assets', () => {
+    const root = createTempRoot()
+    try {
+      const wavPath = join(root, 'tone.wav')
+      const mp4Path = join(root, 'clip.mp4')
+      const wavBuffer = createTestWavBuffer(1.5)
+      const mp4Buffer = createTestMp4Buffer(2.5)
+      writeFileSync(wavPath, wavBuffer)
+      writeFileSync(mp4Path, mp4Buffer)
+
+      const result = extract([wavPath, mp4Path])
+      const wavNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'tone.wav')
+      const mp4Node = result.nodes.find((node) => node.file_type === 'video' && node.label === 'clip.mp4')
+
+      expect(wavNode).toMatchObject({
+        content_type: 'audio/wav',
+        file_bytes: wavBuffer.length,
+        media_duration_seconds: 1.5,
+        audio_sample_rate_hz: 4000,
+        audio_channel_count: 2,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+      expect(mp4Node).toMatchObject({
+        content_type: 'video/mp4',
+        file_bytes: mp4Buffer.length,
+        media_duration_seconds: 2.5,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts deterministic MP3 track metadata from ID3 tags', () => {
+    const root = createTempRoot()
+    try {
+      const mp3Path = join(root, 'episode.mp3')
+      const mp3Buffer = createTestMp3Id3Buffer({
+        title: 'Roadmap Review',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      })
+      writeFileSync(mp3Path, mp3Buffer)
+
+      const result = extract([mp3Path])
+      const mp3Node = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'episode.mp3')
+
+      expect(mp3Node).toMatchObject({
+        content_type: 'audio/mpeg',
+        file_bytes: mp3Buffer.length,
+        audio_title: 'Roadmap Review',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts MP3 track metadata from ID3 tags with v2.3 and v2.4 extended headers', () => {
+    const root = createTempRoot()
+    try {
+      const v23Path = join(root, 'episode-v23.mp3')
+      const v24Path = join(root, 'episode-v24.mp3')
+      writeFileSync(v23Path, createTestMp3Id3Buffer({
+        title: 'Roadmap Review',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      }, { version: 3, extendedHeader: true }))
+      writeFileSync(v24Path, createTestMp3Id3Buffer({
+        title: 'Roadmap Review',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      }, { version: 4, extendedHeader: true }))
+
+      const result = extract([v23Path, v24Path])
+      const v23Node = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'episode-v23.mp3')
+      const v24Node = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'episode-v24.mp3')
+
+      expect(v23Node).toMatchObject({
+        audio_title: 'Roadmap Review',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+      })
+      expect(v24Node).toMatchObject({
+        audio_title: 'Roadmap Review',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('omits MP3 tag metadata when a UTF-16 ID3 text frame is malformed', () => {
+    const root = createTempRoot()
+    try {
+      const mp3Path = join(root, 'broken-id3.mp3')
+      const mp3Buffer = createMalformedUtf16Mp3Buffer()
+      writeFileSync(mp3Path, mp3Buffer)
+
+      const result = extract([mp3Path])
+      const mp3Node = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'broken-id3.mp3')
+
+      expect(mp3Node).toMatchObject({
+        content_type: 'audio/mpeg',
+        file_bytes: mp3Buffer.length,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+      expect(mp3Node?.audio_title).toBeUndefined()
+      expect(mp3Node?.audio_artist).toBeUndefined()
+      expect(mp3Node?.audio_album).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('omits MP3 tag metadata when a v2.4 synchsafe size field is malformed', () => {
+    const root = createTempRoot()
+    try {
+      const mp3Path = join(root, 'broken-size-id3.mp3')
+      const mp3Buffer = createMalformedV24SynchsafeSizeMp3Buffer({
+        title: 'Roadmap Review',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      })
+      writeFileSync(mp3Path, mp3Buffer)
+
+      const result = extract([mp3Path])
+      const mp3Node = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'broken-size-id3.mp3')
+
+      expect(mp3Node).toMatchObject({
+        content_type: 'audio/mpeg',
+        file_bytes: mp3Buffer.length,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+      expect(mp3Node?.audio_title).toBeUndefined()
+      expect(mp3Node?.audio_artist).toBeUndefined()
+      expect(mp3Node?.audio_album).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts MP3 track metadata even when later ID3 frames make the overall tag large', () => {
+    const root = createTempRoot()
+    try {
+      const mp3Path = join(root, 'large-id3.mp3')
+      const mp3Buffer = createLargeMp3Id3Buffer({
+        title: 'Roadmap Review',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      })
+      writeFileSync(mp3Path, mp3Buffer)
+
+      const result = extract([mp3Path])
+      const mp3Node = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'large-id3.mp3')
+
+      expect(mp3Node).toMatchObject({
+        content_type: 'audio/mpeg',
+        file_bytes: mp3Buffer.length,
+        audio_title: 'Roadmap Review',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('omits wav duration metadata when the declared data chunk is truncated', () => {
+    const root = createTempRoot()
+    try {
+      const wavPath = join(root, 'truncated.wav')
+      const truncatedHeaderOnlyBuffer = createTestWavBuffer(3).subarray(0, 44)
+      writeFileSync(wavPath, truncatedHeaderOnlyBuffer)
+
+      const result = extract([wavPath])
+      const wavNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'truncated.wav')
+
+      expect(wavNode).toMatchObject({
+        content_type: 'audio/wav',
+        file_bytes: truncatedHeaderOnlyBuffer.length,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+      expect(wavNode?.media_duration_seconds).toBeUndefined()
+      expect(wavNode?.audio_sample_rate_hz).toBeUndefined()
+      expect(wavNode?.audio_channel_count).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('omits wav metadata when the fmt chunk is too short to describe the stream', () => {
+    const root = createTempRoot()
+    try {
+      const wavPath = join(root, 'short-fmt.wav')
+      const malformedBuffer = createMalformedShortFmtWavBuffer()
+      writeFileSync(wavPath, malformedBuffer)
+
+      const result = extract([wavPath])
+      const wavNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'short-fmt.wav')
+
+      expect(wavNode).toMatchObject({
+        content_type: 'audio/wav',
+        file_bytes: malformedBuffer.length,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+      expect(wavNode?.media_duration_seconds).toBeUndefined()
+      expect(wavNode?.audio_sample_rate_hz).toBeUndefined()
+      expect(wavNode?.audio_channel_count).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('omits mp4 duration metadata when mvhd-like bytes are not inside a real moov atom', () => {
+    const root = createTempRoot()
+    try {
+      const mp4Path = join(root, 'fake-duration.mp4')
+      const fakeMp4Buffer = createFakeMvhdTaggedMp4Buffer(9.25)
+      writeFileSync(mp4Path, fakeMp4Buffer)
+
+      const result = extract([mp4Path])
+      const mp4Node = result.nodes.find((node) => node.file_type === 'video' && node.label === 'fake-duration.mp4')
+
+      expect(mp4Node).toMatchObject({
+        content_type: 'video/mp4',
+        file_bytes: fakeMp4Buffer.length,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(mp4Node?.media_duration_seconds).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('omits mp4 duration metadata when fake moov bytes only appear inside mdat payload data', () => {
+    const root = createTempRoot()
+    try {
+      const mp4Path = join(root, 'tail-fake-duration.mp4')
+      const fakeMp4Buffer = createLargeFakeTailTaggedMp4Buffer(12.75)
+      writeFileSync(mp4Path, fakeMp4Buffer)
+
+      const result = extract([mp4Path])
+      const mp4Node = result.nodes.find((node) => node.file_type === 'video' && node.label === 'tail-fake-duration.mp4')
+
+      expect(mp4Node).toMatchObject({
+        content_type: 'video/mp4',
+        file_bytes: fakeMp4Buffer.length,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(mp4Node?.media_duration_seconds).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps binary extraction resilient when a detected media asset disappears before extraction', () => {
+    const root = createTempRoot()
+    try {
+      const audioPath = join(root, 'episode.mp3')
+      writeFileSync(audioPath, Buffer.from('ID3'))
+      rmSync(audioPath)
+
+      const result = extract([audioPath])
+      const audioNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'episode.mp3')
+
+      expect(audioNode).toMatchObject({
+        label: 'episode.mp3',
+        content_type: 'audio/mpeg',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+      expect(audioNode?.file_bytes).toBeUndefined()
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -3394,6 +3893,80 @@ describe('extract', () => {
       })
       expect(recovered.edges.every((edge) => edge.layer === 'base')).toBe(true)
       expect(recovered.edges.every((edge) => Array.isArray(edge.provenance) && edge.provenance.length > 0)).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-duration cache version', () => {
+    const root = createTempRoot()
+    try {
+      const wavPath = join(root, 'tone.wav')
+      const wavBuffer = createTestWavBuffer(1.5)
+      writeFileSync(wavPath, wavBuffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(wavPath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 13,
+          nodes: [{ id: 'stale_audio', label: 'tone.wav', file_type: 'audio', source_file: wavPath }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([wavPath])
+      const wavNode = recovered.nodes.find((node) => node.file_type === 'audio' && node.label === 'tone.wav')
+
+      expect(wavNode).toMatchObject({
+        content_type: 'audio/wav',
+        file_bytes: wavBuffer.length,
+        media_duration_seconds: 1.5,
+        audio_sample_rate_hz: 4000,
+        audio_channel_count: 2,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-audio-tag cache version', () => {
+    const root = createTempRoot()
+    try {
+      const mp3Path = join(root, 'episode.mp3')
+      const mp3Buffer = createTestMp3Id3Buffer({
+        title: 'Roadmap Review',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      })
+      writeFileSync(mp3Path, mp3Buffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(mp3Path)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 14,
+          nodes: [{ id: 'stale_audio', label: 'episode.mp3', file_type: 'audio', source_file: mp3Path }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([mp3Path])
+      const mp3Node = recovered.nodes.find((node) => node.file_type === 'audio' && node.label === 'episode.mp3')
+
+      expect(mp3Node).toMatchObject({
+        content_type: 'audio/mpeg',
+        file_bytes: mp3Buffer.length,
+        audio_title: 'Roadmap Review',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

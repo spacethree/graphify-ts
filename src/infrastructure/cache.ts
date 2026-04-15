@@ -55,7 +55,12 @@ export function loadCached(filePath: string, root: string = '.'): Record<string,
 }
 
 export function saveCached(filePath: string, result: Record<string, unknown>, root: string = '.'): void {
-  const hash = fileHash(filePath)
+  let hash: string
+  try {
+    hash = fileHash(filePath)
+  } catch {
+    return
+  }
   const directory = cacheDir(root)
   const entryPath = join(directory, `${hash}.json`)
   const tempPath = `${entryPath}.tmp`
