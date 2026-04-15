@@ -28,7 +28,7 @@ import { createTreeSitterWasmParser, treeSitterWasmError, type TreeSitterNode } 
 
 export { _makeId } from './extract/core.js'
 
-const EXTRACTOR_CACHE_VERSION = 16
+const EXTRACTOR_CACHE_VERSION = 18
 const PYTHON_KEYWORDS = new Set(['if', 'elif', 'else', 'for', 'while', 'return', 'class', 'def', 'lambda', 'with', 'print', 'sum'])
 const GENERIC_CODE_EXTENSIONS = new Set(['.go', '.rs', '.java', '.kt', '.kts', '.scala', '.cs', '.c', '.cc', '.cpp', '.cxx', '.h', '.hpp', '.swift', '.php', '.zig'])
 const GENERIC_CONTROL_KEYWORDS = new Set(['if', 'for', 'while', 'switch', 'catch', 'return', 'new', 'delete', 'throw', 'sizeof', 'case', 'do', 'else'])

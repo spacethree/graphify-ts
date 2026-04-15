@@ -63,6 +63,293 @@ describe('extract', () => {
     ])
   }
 
+  function createMp4AtomWithType(type: Buffer, payload: Buffer): Buffer {
+    const buffer = Buffer.alloc(8 + payload.length)
+    buffer.writeUInt32BE(buffer.length, 0)
+    type.copy(buffer, 4)
+    payload.copy(buffer, 8)
+    return buffer
+  }
+
+  function createMp4AudioSampleEntry(sampleRate: number, channelCount: number, sampleEntryType: string = 'mp4a'): Buffer {
+    const body = Buffer.alloc(28)
+    body.writeUInt16BE(1, 6)
+    body.writeUInt16BE(channelCount, 16)
+    body.writeUInt16BE(16, 18)
+    body.writeUInt32BE(sampleRate * 65_536, 24)
+    return createMp4Atom(sampleEntryType, body)
+  }
+
+  function createMp4VideoSampleEntry(width: number, height: number, sampleEntryType: string = 'avc1'): Buffer {
+    const body = Buffer.alloc(28)
+    body.writeUInt16BE(1, 6)
+    body.writeUInt16BE(width, 24)
+    body.writeUInt16BE(height, 26)
+    return createMp4Atom(sampleEntryType, body)
+  }
+
+  function createMp4StsdBox(entries: Buffer[]): Buffer {
+    const payload = Buffer.alloc(8)
+    payload.writeUInt32BE(0, 0)
+    payload.writeUInt32BE(entries.length, 4)
+    return createMp4Atom('stsd', Buffer.concat([payload, ...entries]))
+  }
+
+  function createMp4HandlerBox(handlerType: string): Buffer {
+    const payload = Buffer.alloc(12)
+    payload.write(handlerType, 8, 'ascii')
+    return createMp4Atom('hdlr', payload)
+  }
+
+  function createMp4TrackBox(handlerType: string, stsd: Buffer): Buffer {
+    return createMp4Atom(
+      'trak',
+      createMp4Atom(
+        'mdia',
+        Buffer.concat([
+          createMp4HandlerBox(handlerType),
+          createMp4Atom('minf', createMp4Atom('stbl', stsd)),
+        ]),
+      ),
+    )
+  }
+
+  function createMp4MetadataDataAtom(value: string): Buffer {
+    const payload = Buffer.concat([
+      Buffer.from([0, 0, 0, 1, 0, 0, 0, 0]),
+      Buffer.from(value, 'utf8'),
+    ])
+    return createMp4Atom('data', payload)
+  }
+
+  function createMp4MetadataItem(typeBytes: Buffer, value: string): Buffer {
+    return createMp4AtomWithType(typeBytes, createMp4MetadataDataAtom(value))
+  }
+
+  function createMalformedMp4MetadataItem(typeBytes: Buffer, value: string): Buffer {
+    const validItem = createMp4MetadataItem(typeBytes, value)
+    return validItem.subarray(0, Math.max(8, validItem.length - 3))
+  }
+
+  function createTestM4aBuffer(
+    metadata: { title: string; artist: string; album: string },
+    options: {
+      durationSeconds?: number
+      sampleRate?: number
+      channelCount?: number
+      truncateMetadata?: boolean
+    } = {},
+  ): Buffer {
+    const durationSeconds = options.durationSeconds ?? 2.5
+    const sampleRate = options.sampleRate ?? 48_000
+    const channelCount = options.channelCount ?? 2
+
+    const mvhdPayload = Buffer.alloc(20)
+    mvhdPayload.writeUInt32BE(0, 0)
+    mvhdPayload.writeUInt32BE(0, 4)
+    mvhdPayload.writeUInt32BE(0, 8)
+    mvhdPayload.writeUInt32BE(1_000, 12)
+    mvhdPayload.writeUInt32BE(Math.round(durationSeconds * 1_000), 16)
+
+    const stsd = createMp4StsdBox([createMp4AudioSampleEntry(sampleRate, channelCount)])
+    const trak = createMp4TrackBox('soun', stsd)
+
+    const metadataItems = options.truncateMetadata
+      ? [
+          createMalformedMp4MetadataItem(Buffer.from([0xa9, 0x6e, 0x61, 0x6d]), metadata.title),
+        ]
+      : [
+          createMp4MetadataItem(Buffer.from([0xa9, 0x6e, 0x61, 0x6d]), metadata.title),
+          createMp4MetadataItem(Buffer.from([0xa9, 0x41, 0x52, 0x54]), metadata.artist),
+          createMp4MetadataItem(Buffer.from([0xa9, 0x61, 0x6c, 0x62]), metadata.album),
+        ]
+    const ilst = createMp4Atom('ilst', Buffer.concat(metadataItems))
+    const meta = createMp4Atom('meta', Buffer.concat([Buffer.alloc(4), ilst]))
+    const udta = createMp4Atom('udta', meta)
+
+    return Buffer.concat([
+      createMp4Atom('ftyp', Buffer.from('M4A 0000', 'ascii')),
+      createMp4Atom('moov', Buffer.concat([createMp4Atom('mvhd', mvhdPayload), trak, udta])),
+    ])
+  }
+
+  function createTestVideoMp4Buffer(
+    options: {
+      durationSeconds?: number
+      width?: number
+      height?: number
+      audioTrackFirst?: boolean
+      truncateVideoSampleEntry?: boolean
+    } = {},
+  ): Buffer {
+    const durationSeconds = options.durationSeconds ?? 2.5
+    const width = options.width ?? 1920
+    const height = options.height ?? 1080
+    const audioTrackFirst = options.audioTrackFirst ?? true
+
+    const mvhdPayload = Buffer.alloc(20)
+    mvhdPayload.writeUInt32BE(0, 0)
+    mvhdPayload.writeUInt32BE(0, 4)
+    mvhdPayload.writeUInt32BE(0, 8)
+    mvhdPayload.writeUInt32BE(1_000, 12)
+    mvhdPayload.writeUInt32BE(Math.round(durationSeconds * 1_000), 16)
+
+    const audioStsd = createMp4StsdBox([createMp4AudioSampleEntry(48_000, 2)])
+    const videoEntry = options.truncateVideoSampleEntry
+      ? createMp4VideoSampleEntry(width, height).subarray(0, createMp4VideoSampleEntry(width, height).length - 3)
+      : createMp4VideoSampleEntry(width, height)
+    const videoStsd = createMp4StsdBox([videoEntry])
+    const audioTrak = createMp4TrackBox('soun', audioStsd)
+    const videoTrak = createMp4TrackBox('vide', videoStsd)
+
+    return Buffer.concat([
+      createMp4Atom('ftyp', Buffer.from('isom0000', 'ascii')),
+      createMp4Atom(
+        'moov',
+        Buffer.concat([
+          createMp4Atom('mvhd', mvhdPayload),
+          ...(audioTrackFirst ? [audioTrak, videoTrak] : [videoTrak, audioTrak]),
+        ]),
+      ),
+    ])
+  }
+
+  const EBML_HEADER_ID = [0x1a, 0x45, 0xdf, 0xa3]
+  const EBML_DOC_TYPE_ID = [0x42, 0x82]
+  const EBML_SEGMENT_ID = [0x18, 0x53, 0x80, 0x67]
+  const EBML_INFO_ID = [0x15, 0x49, 0xa9, 0x66]
+  const EBML_TIMECODE_SCALE_ID = [0x2a, 0xd7, 0xb1]
+  const EBML_DURATION_ID = [0x44, 0x89]
+  const EBML_TRACKS_ID = [0x16, 0x54, 0xae, 0x6b]
+  const EBML_TRACK_ENTRY_ID = [0xae]
+  const EBML_TRACK_TYPE_ID = [0x83]
+  const EBML_VIDEO_ID = [0xe0]
+  const EBML_PIXEL_WIDTH_ID = [0xb0]
+  const EBML_PIXEL_HEIGHT_ID = [0xba]
+
+  function encodeEbmlSize(value: number): Buffer {
+    for (let length = 1; length <= 8; length += 1) {
+      const maxValue = (2 ** (7 * length)) - 1
+      if (value < maxValue) {
+        const encoded = Buffer.alloc(length)
+        let remaining = value
+        for (let index = length - 1; index >= 1; index -= 1) {
+          encoded[index] = remaining & 0xff
+          remaining >>= 8
+        }
+        encoded[0] = (1 << (8 - length)) | remaining
+        return encoded
+      }
+    }
+
+    throw new Error(`Unsupported EBML size in test helper: ${value}`)
+  }
+
+  function encodeEbmlUnsigned(value: number): Buffer {
+    if (value === 0) {
+      return Buffer.from([0])
+    }
+
+    let remaining = value
+    const bytes: number[] = []
+    while (remaining > 0) {
+      bytes.unshift(remaining & 0xff)
+      remaining >>= 8
+    }
+    return Buffer.from(bytes)
+  }
+
+  function createEbmlElement(id: readonly number[], payload: Buffer): Buffer {
+    return Buffer.concat([Buffer.from(id), encodeEbmlSize(payload.length), payload])
+  }
+
+  function createEbmlUnsignedElement(id: readonly number[], value: number): Buffer {
+    return createEbmlElement(id, encodeEbmlUnsigned(value))
+  }
+
+  function createEbmlFloatElement(id: readonly number[], value: number): Buffer {
+    const payload = Buffer.alloc(8)
+    payload.writeDoubleBE(value, 0)
+    return createEbmlElement(id, payload)
+  }
+
+  function createTestMatroskaBuffer(
+    options: {
+      docType?: 'webm' | 'matroska'
+      durationSeconds?: number
+      width?: number
+      height?: number
+      audioTrackFirst?: boolean
+      malformedDuration?: boolean
+      timecodeScale?: number
+    } = {},
+  ): Buffer {
+    const docType = options.docType ?? 'webm'
+    const durationSeconds = options.durationSeconds ?? 4.25
+    const width = options.width ?? 1280
+    const height = options.height ?? 720
+    const audioTrackFirst = options.audioTrackFirst ?? true
+    const timecodeScale = options.timecodeScale ?? 1_000_000
+
+    const info = createEbmlElement(EBML_INFO_ID, Buffer.concat([
+      createEbmlUnsignedElement(EBML_TIMECODE_SCALE_ID, timecodeScale),
+      options.malformedDuration
+        ? createEbmlElement(EBML_DURATION_ID, Buffer.from([0x40, 0x94, 0x00]))
+        : createEbmlFloatElement(EBML_DURATION_ID, durationSeconds * 1_000),
+    ]))
+    const videoTrackEntry = createEbmlElement(EBML_TRACK_ENTRY_ID, Buffer.concat([
+      createEbmlUnsignedElement(EBML_TRACK_TYPE_ID, 1),
+      createEbmlElement(EBML_VIDEO_ID, Buffer.concat([
+        createEbmlUnsignedElement(EBML_PIXEL_WIDTH_ID, width),
+        createEbmlUnsignedElement(EBML_PIXEL_HEIGHT_ID, height),
+      ])),
+    ]))
+    const audioTrackEntry = createEbmlElement(EBML_TRACK_ENTRY_ID, createEbmlUnsignedElement(EBML_TRACK_TYPE_ID, 2))
+    const tracks = createEbmlElement(EBML_TRACKS_ID, Buffer.concat(
+      audioTrackFirst ? [audioTrackEntry, videoTrackEntry] : [videoTrackEntry, audioTrackEntry],
+    ))
+    const ebmlHeader = createEbmlElement(EBML_HEADER_ID, createEbmlElement(EBML_DOC_TYPE_ID, Buffer.from(docType, 'ascii')))
+    const segment = createEbmlElement(EBML_SEGMENT_ID, Buffer.concat([info, tracks]))
+    return Buffer.concat([ebmlHeader, segment])
+  }
+
+  const AAC_SAMPLE_RATES = [96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025, 8_000, 7_350]
+
+  function aacSampleRateIndex(sampleRate: number): number {
+    const index = AAC_SAMPLE_RATES.indexOf(sampleRate)
+    if (index < 0) {
+      throw new Error(`Unsupported AAC sample rate in test helper: ${sampleRate}`)
+    }
+    return index
+  }
+
+  function createAacAdtsFrame(sampleRate: number, channelCount: number, payloadLength: number = 8, rawBlocksPerFrame: number = 1): Buffer {
+    if (rawBlocksPerFrame < 1 || rawBlocksPerFrame > 4) {
+      throw new Error(`Unsupported raw block count in AAC test helper: ${rawBlocksPerFrame}`)
+    }
+    const frameLength = 7 + payloadLength
+    const sampleRateIndex = aacSampleRateIndex(sampleRate)
+    const frame = Buffer.alloc(frameLength, 0)
+    frame[0] = 0xff
+    frame[1] = 0xf1
+    frame[2] = (1 << 6) | (sampleRateIndex << 2) | ((channelCount >> 2) & 0x1)
+    frame[3] = ((channelCount & 0x3) << 6) | ((frameLength >> 11) & 0x3)
+    frame[4] = (frameLength >> 3) & 0xff
+    frame[5] = ((frameLength & 0x7) << 5) | 0x1f
+    frame[6] = 0xfc | ((rawBlocksPerFrame - 1) & 0x03)
+    return frame
+  }
+
+  function createTestAacBuffer(
+    frameCount: number = 75,
+    sampleRate: number = 48_000,
+    channelCount: number = 2,
+    payloadLength: number = 8,
+    rawBlocksPerFrame: number = 1,
+  ): Buffer {
+    return Buffer.concat(Array.from({ length: frameCount }, () => createAacAdtsFrame(sampleRate, channelCount, payloadLength, rawBlocksPerFrame)))
+  }
+
   function createFakeMvhdTaggedMp4Buffer(durationSeconds: number, timescale: number = 1_000): Buffer {
     const fakeMvhd = Buffer.alloc(24)
     fakeMvhd.write('mvhd', 0, 'ascii')
@@ -2296,6 +2583,251 @@ describe('extract', () => {
     }
   })
 
+  it('extracts deterministic AAC and M4A metadata from saved audio assets', () => {
+    const root = createTempRoot()
+    try {
+      const aacPath = join(root, 'tone.aac')
+      const m4aPath = join(root, 'episode.m4a')
+      const aacBuffer = createTestAacBuffer()
+      const m4aBuffer = createTestM4aBuffer({
+        title: 'Roadmap Review',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      })
+      writeFileSync(aacPath, aacBuffer)
+      writeFileSync(m4aPath, m4aBuffer)
+
+      const result = extract([aacPath, m4aPath])
+      const aacNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'tone.aac')
+      const m4aNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'episode.m4a')
+
+      expect(aacNode).toMatchObject({
+        content_type: 'audio/aac',
+        file_bytes: aacBuffer.length,
+        media_duration_seconds: 1.6,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+      expect(m4aNode).toMatchObject({
+        content_type: 'audio/mp4',
+        file_bytes: m4aBuffer.length,
+        media_duration_seconds: 2.5,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        audio_title: 'Roadmap Review',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('omits AAC duration metadata when the final ADTS frame is truncated', () => {
+    const root = createTempRoot()
+    try {
+      const aacPath = join(root, 'truncated.aac')
+      const aacBuffer = createTestAacBuffer().subarray(0, createTestAacBuffer().length - 3)
+      writeFileSync(aacPath, aacBuffer)
+
+      const result = extract([aacPath])
+      const aacNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'truncated.aac')
+
+      expect(aacNode).toMatchObject({
+        content_type: 'audio/aac',
+        file_bytes: aacBuffer.length,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+      expect(aacNode?.media_duration_seconds).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts AAC duration metadata using the ADTS raw block count', () => {
+    const root = createTempRoot()
+    try {
+      const aacPath = join(root, 'multiblock.aac')
+      const aacBuffer = createTestAacBuffer(20, 48_000, 2, 8, 3)
+      writeFileSync(aacPath, aacBuffer)
+
+      const result = extract([aacPath])
+      const aacNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'multiblock.aac')
+
+      expect(aacNode).toMatchObject({
+        content_type: 'audio/aac',
+        file_bytes: aacBuffer.length,
+        media_duration_seconds: 1.28,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('omits M4A track metadata when the ilst data box is truncated', () => {
+    const root = createTempRoot()
+    try {
+      const m4aPath = join(root, 'broken-tags.m4a')
+      const m4aBuffer = createTestM4aBuffer({
+        title: 'Roadmap Review',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      }, { truncateMetadata: true })
+      writeFileSync(m4aPath, m4aBuffer)
+
+      const result = extract([m4aPath])
+      const m4aNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'broken-tags.m4a')
+
+      expect(m4aNode).toMatchObject({
+        content_type: 'audio/mp4',
+        file_bytes: m4aBuffer.length,
+        media_duration_seconds: 2.5,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+      expect(m4aNode?.audio_title).toBeUndefined()
+      expect(m4aNode?.audio_artist).toBeUndefined()
+      expect(m4aNode?.audio_album).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts deterministic MP4-family and Matroska/WebM video metadata from saved assets', () => {
+    const root = createTempRoot()
+    try {
+      const mp4Path = join(root, 'clip.mp4')
+      const webmPath = join(root, 'session.webm')
+      const mkvPath = join(root, 'archive.mkv')
+      const mp4Buffer = createTestVideoMp4Buffer()
+      const webmBuffer = createTestMatroskaBuffer()
+      const mkvBuffer = createTestMatroskaBuffer({ docType: 'matroska', durationSeconds: 6.75, width: 854, height: 480 })
+      writeFileSync(mp4Path, mp4Buffer)
+      writeFileSync(webmPath, webmBuffer)
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mp4Path, webmPath, mkvPath])
+      const mp4Node = result.nodes.find((node) => node.file_type === 'video' && node.label === 'clip.mp4')
+      const webmNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'session.webm')
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'archive.mkv')
+
+      expect(mp4Node).toMatchObject({
+        content_type: 'video/mp4',
+        file_bytes: mp4Buffer.length,
+        media_duration_seconds: 2.5,
+        video_width_px: 1920,
+        video_height_px: 1080,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(webmNode).toMatchObject({
+        content_type: 'video/webm',
+        file_bytes: webmBuffer.length,
+        media_duration_seconds: 4.25,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 6.75,
+        video_width_px: 854,
+        video_height_px: 480,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('omits MP4-family video resolution metadata when the visual sample entry is truncated', () => {
+    const root = createTempRoot()
+    try {
+      const mp4Path = join(root, 'broken-video.mp4')
+      const mp4Buffer = createTestVideoMp4Buffer({ truncateVideoSampleEntry: true })
+      writeFileSync(mp4Path, mp4Buffer)
+
+      const result = extract([mp4Path])
+      const mp4Node = result.nodes.find((node) => node.file_type === 'video' && node.label === 'broken-video.mp4')
+
+      expect(mp4Node).toMatchObject({
+        content_type: 'video/mp4',
+        file_bytes: mp4Buffer.length,
+        media_duration_seconds: 2.5,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(mp4Node?.video_width_px).toBeUndefined()
+      expect(mp4Node?.video_height_px).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('omits Matroska/WebM duration metadata when the Duration element is malformed', () => {
+    const root = createTempRoot()
+    try {
+      const webmPath = join(root, 'broken-duration.webm')
+      const webmBuffer = createTestMatroskaBuffer({ malformedDuration: true })
+      writeFileSync(webmPath, webmBuffer)
+
+      const result = extract([webmPath])
+      const webmNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'broken-duration.webm')
+
+      expect(webmNode).toMatchObject({
+        content_type: 'video/webm',
+        file_bytes: webmBuffer.length,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(webmNode?.media_duration_seconds).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('omits Matroska/WebM duration metadata when the TimecodeScale element is zero', () => {
+    const root = createTempRoot()
+    try {
+      const webmPath = join(root, 'zero-scale.webm')
+      const webmBuffer = createTestMatroskaBuffer({ timecodeScale: 0 })
+      writeFileSync(webmPath, webmBuffer)
+
+      const result = extract([webmPath])
+      const webmNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'zero-scale.webm')
+
+      expect(webmNode).toMatchObject({
+        content_type: 'video/webm',
+        file_bytes: webmBuffer.length,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(webmNode?.media_duration_seconds).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('uses the matching logical stream when deriving Ogg duration metadata', () => {
     const root = createTempRoot()
     try {
@@ -4493,6 +5025,83 @@ describe('extract', () => {
         audio_album: 'Engineering Notes',
         layer: 'base',
         provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-aac-m4a cache version', () => {
+    const root = createTempRoot()
+    try {
+      const m4aPath = join(root, 'episode.m4a')
+      const m4aBuffer = createTestM4aBuffer({
+        title: 'Roadmap Review',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      })
+      writeFileSync(m4aPath, m4aBuffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(m4aPath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 16,
+          nodes: [{ id: 'stale_audio', label: 'episode.m4a', file_type: 'audio', source_file: m4aPath }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([m4aPath])
+      const m4aNode = recovered.nodes.find((node) => node.file_type === 'audio' && node.label === 'episode.m4a')
+
+      expect(m4aNode).toMatchObject({
+        content_type: 'audio/mp4',
+        file_bytes: m4aBuffer.length,
+        media_duration_seconds: 2.5,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        audio_title: 'Roadmap Review',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-video-container cache version', () => {
+    const root = createTempRoot()
+    try {
+      const webmPath = join(root, 'session.webm')
+      const webmBuffer = createTestMatroskaBuffer()
+      writeFileSync(webmPath, webmBuffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(webmPath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 17,
+          nodes: [{ id: 'stale_video', label: 'session.webm', file_type: 'video', source_file: webmPath }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([webmPath])
+      const webmNode = recovered.nodes.find((node) => node.file_type === 'video' && node.label === 'session.webm')
+
+      expect(webmNode).toMatchObject({
+        content_type: 'video/webm',
+        file_bytes: webmBuffer.length,
+        media_duration_seconds: 4.25,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
       })
     } finally {
       rmSync(root, { recursive: true, force: true })

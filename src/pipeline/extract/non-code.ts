@@ -36,6 +36,7 @@ function createBinaryMetadataAwareFileNode(filePath: string, fileType: NonCodeFi
     ...extractBinaryDurationMetadata(filePath, extension, fileType, fileBytes),
     ...extractBinaryTrackMetadata(filePath, extension, fileType, fileBytes),
     ...extractBinaryAudioMetadata(filePath, extension, fileType, fileBytes),
+    ...extractBinaryVideoMetadata(filePath, extension, fileType, fileBytes),
   }
 
   return sidecarMetadata
@@ -252,27 +253,28 @@ function parseMoovDurationSeconds(buffer: Buffer, moovBox: Mp4BoxHeader): number
   return null
 }
 
-function hasMp4FileSignature(buffer: Buffer): boolean {
-  const box = readMp4BoxHeader(buffer, 0, buffer.length)
-  return box?.type === 'ftyp'
-}
-
-function parseMp4DurationFromHead(buffer: Buffer): number | null {
-  let offset = 0
-  while (offset + 8 <= buffer.length) {
-    const box = readMp4BoxHeader(buffer, offset, buffer.length)
-    if (!box) {
-      break
+function findMp4ChildBox(buffer: Buffer, parentBox: Mp4BoxHeader, type: string, startOffset: number = parentBox.bodyOffset): Mp4BoxHeader | null {
+  let offset = startOffset
+  while (offset + 8 <= parentBox.endOffset) {
+    const childBox = readMp4BoxHeader(buffer, offset, parentBox.endOffset)
+    if (!childBox) {
+      return null
     }
-
-    if (box.type === 'moov') {
-      return parseMoovDurationSeconds(buffer, box)
+    if (childBox.type === type) {
+      return childBox
     }
-
-    offset = box.endOffset
+    if (childBox.endOffset <= offset) {
+      return null
+    }
+    offset = childBox.endOffset
   }
 
   return null
+}
+
+function hasMp4FileSignature(buffer: Buffer): boolean {
+  const box = readMp4BoxHeader(buffer, 0, buffer.length)
+  return box?.type === 'ftyp'
 }
 
 function locateMp4MoovBox(filePath: string, fileBytes: number): Mp4BoxHeader | null {
@@ -300,43 +302,267 @@ function locateMp4MoovBox(filePath: string, fileBytes: number): Mp4BoxHeader | n
   return null
 }
 
-function extractMp4DurationMetadata(filePath: string, fileBytes: number | undefined): Record<string, number> {
+function readMp4MoovBuffer(filePath: string, fileBytes: number | undefined): { buffer: Buffer; moovBox: Mp4BoxHeader } | null {
   if (!fileBytes || fileBytes < 24) {
-    return {}
+    return null
   }
 
   const windowSize = Math.min(fileBytes, MP4_DURATION_SCAN_BYTES)
   const head = readFileWindow(filePath, 0, windowSize)
   if (!head || !hasMp4FileSignature(head)) {
+    return null
+  }
+
+  let offset = 0
+  while (offset + 8 <= head.length) {
+    const box = readMp4BoxHeader(head, offset, head.length)
+    if (!box) {
+      break
+    }
+    if (box.type === 'moov') {
+      return { buffer: head, moovBox: box }
+    }
+    offset = box.endOffset
+  }
+
+  if (fileBytes <= windowSize) {
+    return null
+  }
+
+  const moovBox = locateMp4MoovBox(filePath, fileBytes)
+  if (!moovBox) {
+    return null
+  }
+
+  const moovWindowSize = Math.min(moovBox.endOffset - moovBox.startOffset, MP4_DURATION_SCAN_BYTES)
+  const moovBuffer = readFileWindow(filePath, moovBox.startOffset, moovWindowSize)
+  if (!moovBuffer || moovBuffer.length <= moovBox.headerSize) {
+    return null
+  }
+
+  return {
+    buffer: moovBuffer,
+    moovBox: {
+      startOffset: 0,
+      headerSize: moovBox.headerSize,
+      type: 'moov',
+      bodyOffset: moovBox.headerSize,
+      endOffset: moovBuffer.length,
+    },
+  }
+}
+
+function parseMp4AudioSampleEntry(buffer: Buffer, sampleEntryBox: Mp4BoxHeader): { sampleRate: number; channelCount: number } | null {
+  if (sampleEntryBox.bodyOffset + 28 > sampleEntryBox.endOffset) {
+    return null
+  }
+
+  const channelCount = buffer.readUInt16BE(sampleEntryBox.bodyOffset + 16)
+  const sampleRate = buffer.readUInt32BE(sampleEntryBox.bodyOffset + 24) >>> 16
+  if (channelCount <= 0 || channelCount > 16 || sampleRate < 1_000 || sampleRate > 384_000) {
+    return null
+  }
+
+  return { sampleRate, channelCount }
+}
+
+function parseMp4VisualSampleEntry(buffer: Buffer, sampleEntryBox: Mp4BoxHeader): { width: number; height: number } | null {
+  if (sampleEntryBox.bodyOffset + 28 > sampleEntryBox.endOffset) {
+    return null
+  }
+
+  const width = buffer.readUInt16BE(sampleEntryBox.bodyOffset + 24)
+  const height = buffer.readUInt16BE(sampleEntryBox.bodyOffset + 26)
+  if (width <= 0 || width > 32_768 || height <= 0 || height > 32_768) {
+    return null
+  }
+
+  return { width, height }
+}
+
+function parseMp4StsdVideoMetadata(buffer: Buffer, stsdBox: Mp4BoxHeader): Record<string, number> {
+  if (stsdBox.bodyOffset + 8 > stsdBox.endOffset) {
     return {}
   }
 
-  const headDuration = parseMp4DurationFromHead(head)
-  if (headDuration !== null) {
-    return { media_duration_seconds: headDuration }
-  }
+  let offset = stsdBox.bodyOffset + 8
+  const entryCount = buffer.readUInt32BE(stsdBox.bodyOffset + 4)
+  for (let index = 0; index < entryCount && offset + 8 <= stsdBox.endOffset; index += 1) {
+    const sampleEntry = readMp4BoxHeader(buffer, offset, stsdBox.endOffset)
+    if (!sampleEntry) {
+      break
+    }
 
-  if (fileBytes > windowSize) {
-    const moovBox = locateMp4MoovBox(filePath, fileBytes)
-    if (moovBox) {
-      const moovWindowSize = Math.min(moovBox.endOffset - moovBox.startOffset, MP4_DURATION_SCAN_BYTES)
-      const moovBuffer = readFileWindow(filePath, moovBox.startOffset, moovWindowSize)
-      if (moovBuffer && moovBuffer.length > moovBox.headerSize) {
-        const moovDuration = parseMoovDurationSeconds(moovBuffer, {
-          startOffset: 0,
-          headerSize: moovBox.headerSize,
-          type: 'moov',
-          bodyOffset: moovBox.headerSize,
-          endOffset: moovBuffer.length,
-        })
-        if (moovDuration !== null) {
-          return { media_duration_seconds: moovDuration }
-        }
+    const metadata = parseMp4VisualSampleEntry(buffer, sampleEntry)
+    if (metadata) {
+      return {
+        video_width_px: metadata.width,
+        video_height_px: metadata.height,
       }
     }
+
+    if (sampleEntry.endOffset <= offset) {
+      break
+    }
+    offset = sampleEntry.endOffset
   }
 
   return {}
+}
+
+function readMp4TrackHandlerType(buffer: Buffer, trakBox: Mp4BoxHeader): string | null {
+  const mdiaBox = findMp4ChildBox(buffer, trakBox, 'mdia')
+  const hdlrBox = mdiaBox ? findMp4ChildBox(buffer, mdiaBox, 'hdlr') : null
+  if (!hdlrBox || hdlrBox.bodyOffset + 12 > hdlrBox.endOffset) {
+    return null
+  }
+
+  return buffer.toString('ascii', hdlrBox.bodyOffset + 8, hdlrBox.bodyOffset + 12)
+}
+
+function parseMp4StsdAudioMetadata(buffer: Buffer, stsdBox: Mp4BoxHeader): Record<string, number> {
+  if (stsdBox.bodyOffset + 8 > stsdBox.endOffset) {
+    return {}
+  }
+
+  let offset = stsdBox.bodyOffset + 8
+  const entryCount = buffer.readUInt32BE(stsdBox.bodyOffset + 4)
+  for (let index = 0; index < entryCount && offset + 8 <= stsdBox.endOffset; index += 1) {
+    const sampleEntry = readMp4BoxHeader(buffer, offset, stsdBox.endOffset)
+    if (!sampleEntry) {
+      break
+    }
+
+    const metadata = parseMp4AudioSampleEntry(buffer, sampleEntry)
+    if (metadata) {
+      return {
+        audio_sample_rate_hz: metadata.sampleRate,
+        audio_channel_count: metadata.channelCount,
+      }
+    }
+
+    if (sampleEntry.endOffset <= offset) {
+      break
+    }
+    offset = sampleEntry.endOffset
+  }
+
+  return {}
+}
+
+function parseMp4TrakAudioMetadata(buffer: Buffer, trakBox: Mp4BoxHeader): Record<string, number> {
+  const mdiaBox = findMp4ChildBox(buffer, trakBox, 'mdia')
+  const minfBox = mdiaBox ? findMp4ChildBox(buffer, mdiaBox, 'minf') : null
+  const stblBox = minfBox ? findMp4ChildBox(buffer, minfBox, 'stbl') : null
+  const stsdBox = stblBox ? findMp4ChildBox(buffer, stblBox, 'stsd') : null
+  return stsdBox ? parseMp4StsdAudioMetadata(buffer, stsdBox) : {}
+}
+
+function parseMp4TrakVideoMetadata(buffer: Buffer, trakBox: Mp4BoxHeader): Record<string, number> {
+  const mdiaBox = findMp4ChildBox(buffer, trakBox, 'mdia')
+  const minfBox = mdiaBox ? findMp4ChildBox(buffer, mdiaBox, 'minf') : null
+  const stblBox = minfBox ? findMp4ChildBox(buffer, minfBox, 'stbl') : null
+  const stsdBox = stblBox ? findMp4ChildBox(buffer, stblBox, 'stsd') : null
+  return stsdBox ? parseMp4StsdVideoMetadata(buffer, stsdBox) : {}
+}
+
+function findMp4TrackBoxByHandlerType(buffer: Buffer, moovBox: Mp4BoxHeader, handlerType: string): Mp4BoxHeader | null {
+  let offset = moovBox.bodyOffset
+  while (offset + 8 <= moovBox.endOffset) {
+    const childBox = readMp4BoxHeader(buffer, offset, moovBox.endOffset)
+    if (!childBox) {
+      return null
+    }
+
+    if (childBox.type === 'trak' && readMp4TrackHandlerType(buffer, childBox) === handlerType) {
+      return childBox
+    }
+
+    if (childBox.endOffset <= offset) {
+      return null
+    }
+    offset = childBox.endOffset
+  }
+
+  return null
+}
+
+function parseMp4DataBoxText(buffer: Buffer, dataBox: Mp4BoxHeader): string | null {
+  if (dataBox.bodyOffset + 8 > dataBox.endOffset) {
+    return null
+  }
+
+  return trimTagText(buffer.toString('utf8', dataBox.bodyOffset + 8, dataBox.endOffset))
+}
+
+function parseMp4IlstTrackMetadata(buffer: Buffer, ilstBox: Mp4BoxHeader): Record<string, string> {
+  let title: string | null = null
+  let artist: string | null = null
+  let album: string | null = null
+  let offset = ilstBox.bodyOffset
+  while (offset + 8 <= ilstBox.endOffset) {
+    const itemBox = readMp4BoxHeader(buffer, offset, ilstBox.endOffset)
+    if (!itemBox) {
+      break
+    }
+
+    const itemType = buffer.subarray(itemBox.startOffset + 4, itemBox.startOffset + 8)
+    const dataBox = findMp4ChildBox(buffer, itemBox, 'data')
+    const text = dataBox ? parseMp4DataBoxText(buffer, dataBox) : null
+    if (text) {
+      if (!title && itemType.equals(MP4_TITLE_METADATA_BOX_TYPE)) {
+        title = text
+      } else if (!artist && itemType.equals(MP4_ARTIST_METADATA_BOX_TYPE)) {
+        artist = text
+      } else if (!album && itemType.equals(MP4_ALBUM_METADATA_BOX_TYPE)) {
+        album = text
+      }
+    }
+
+    if (itemBox.endOffset <= offset) {
+      break
+    }
+    offset = itemBox.endOffset
+  }
+
+  return {
+    ...(title ? { audio_title: title } : {}),
+    ...(artist ? { audio_artist: artist } : {}),
+    ...(album ? { audio_album: album } : {}),
+  }
+}
+
+function extractMp4AudioMetadata(filePath: string, fileBytes: number | undefined): Record<string, string | number> {
+  const moovData = readMp4MoovBuffer(filePath, fileBytes)
+  if (!moovData) {
+    return {}
+  }
+
+  const audioTrackBox = findMp4TrackBoxByHandlerType(moovData.buffer, moovData.moovBox, 'soun')
+  const audioStreamMetadata = audioTrackBox ? parseMp4TrakAudioMetadata(moovData.buffer, audioTrackBox) : {}
+  const udtaBox = findMp4ChildBox(moovData.buffer, moovData.moovBox, 'udta')
+  const metaBox = udtaBox ? findMp4ChildBox(moovData.buffer, udtaBox, 'meta') : null
+  const ilstBox = metaBox
+    ? findMp4ChildBox(moovData.buffer, metaBox, 'ilst', metaBox.bodyOffset + 4)
+    : null
+  const trackMetadata = ilstBox ? parseMp4IlstTrackMetadata(moovData.buffer, ilstBox) : {}
+  return { ...audioStreamMetadata, ...trackMetadata }
+}
+
+function extractMp4VideoMetadata(filePath: string, fileBytes: number | undefined): Record<string, number> {
+  const moovData = readMp4MoovBuffer(filePath, fileBytes)
+  if (!moovData) {
+    return {}
+  }
+
+  const videoTrackBox = findMp4TrackBoxByHandlerType(moovData.buffer, moovData.moovBox, 'vide')
+  return videoTrackBox ? parseMp4TrakVideoMetadata(moovData.buffer, videoTrackBox) : {}
+}
+
+function extractMp4DurationMetadata(filePath: string, fileBytes: number | undefined): Record<string, number> {
+  const moovData = readMp4MoovBuffer(filePath, fileBytes)
+  const duration = moovData ? parseMoovDurationSeconds(moovData.buffer, moovData.moovBox) : null
+  return duration !== null ? { media_duration_seconds: duration } : {}
 }
 
 function extractBinaryDurationMetadata(
@@ -619,6 +845,19 @@ interface OggPageHeader {
   pageEnd: number
 }
 
+interface AacAdtsHeader {
+  sampleRate: number
+  channelCount: number
+  frameLength: number
+  sampleCount: number
+}
+
+interface EbmlElementHeader {
+  id: number
+  bodyOffset: number
+  endOffset: number
+}
+
 function extractFlacAudioMetadata(filePath: string, fileBytes: number | undefined): Record<string, string | number> {
   if (!fileBytes || fileBytes < 8) {
     return {}
@@ -843,6 +1082,322 @@ function findLastOggPageGranulePosition(filePath: string, fileBytes: number, bit
   return null
 }
 
+function parseAacAdtsHeader(buffer: Buffer): AacAdtsHeader | null {
+  if (
+    buffer.length < 7 ||
+    buffer[0] !== 0xff ||
+    ((buffer[1] ?? 0) & 0xf0) !== 0xf0 ||
+    ((buffer[1] ?? 0) & 0x06) !== 0
+  ) {
+    return null
+  }
+
+  const sampleRateIndex = ((buffer[2] ?? 0) >> 2) & 0x0f
+  const sampleRate = AAC_SAMPLE_RATES[sampleRateIndex] ?? null
+  const channelCount = (((buffer[2] ?? 0) & 0x01) << 2) | (((buffer[3] ?? 0) >> 6) & 0x03)
+  const headerLength = ((buffer[1] ?? 0) & 0x01) === 0 ? 9 : 7
+  const frameLength = (((buffer[3] ?? 0) & 0x03) << 11) | ((buffer[4] ?? 0) << 3) | (((buffer[5] ?? 0) >> 5) & 0x07)
+  const rawBlocks = ((buffer[6] ?? 0) & 0x03) + 1
+  if (!sampleRate || channelCount <= 0 || channelCount > 16 || frameLength < headerLength) {
+    return null
+  }
+
+  return {
+    sampleRate,
+    channelCount,
+    frameLength,
+    sampleCount: AAC_SAMPLES_PER_RAW_BLOCK * rawBlocks,
+  }
+}
+
+function readEbmlVariableLength(buffer: Buffer, offset: number, limit: number): { length: number; markerMask: number } | null {
+  if (offset >= limit) {
+    return null
+  }
+
+  const firstByte = buffer[offset]
+  if (!firstByte) {
+    return null
+  }
+
+  for (let length = 1; length <= 8; length += 1) {
+    const markerMask = 1 << (8 - length)
+    if ((firstByte & markerMask) !== 0) {
+      return offset + length <= limit ? { length, markerMask } : null
+    }
+  }
+
+  return null
+}
+
+function parseEbmlElementId(buffer: Buffer, offset: number, limit: number): { id: number; length: number } | null {
+  const vint = readEbmlVariableLength(buffer, offset, limit)
+  if (!vint) {
+    return null
+  }
+
+  let id = 0
+  for (let index = 0; index < vint.length; index += 1) {
+    id = (id << 8) | (buffer[offset + index] ?? 0)
+  }
+
+  return { id, length: vint.length }
+}
+
+function parseEbmlElementSize(buffer: Buffer, offset: number, limit: number): { size: number | null; length: number } | null {
+  const vint = readEbmlVariableLength(buffer, offset, limit)
+  if (!vint) {
+    return null
+  }
+
+  let size = BigInt((buffer[offset] ?? 0) & (vint.markerMask - 1))
+  let isUnknownSize = size === BigInt(vint.markerMask - 1)
+  for (let index = 1; index < vint.length; index += 1) {
+    const byte = buffer[offset + index] ?? 0
+    size = (size << 8n) | BigInt(byte)
+    isUnknownSize = isUnknownSize && byte === 0xff
+  }
+
+  if (isUnknownSize) {
+    return { size: null, length: vint.length }
+  }
+  if (size > BigInt(Number.MAX_SAFE_INTEGER)) {
+    return null
+  }
+
+  return { size: Number(size), length: vint.length }
+}
+
+function readEbmlElementHeader(buffer: Buffer, offset: number, limit: number): EbmlElementHeader | null {
+  const id = parseEbmlElementId(buffer, offset, limit)
+  if (!id) {
+    return null
+  }
+
+  const size = parseEbmlElementSize(buffer, offset + id.length, limit)
+  if (!size) {
+    return null
+  }
+
+  const bodyOffset = offset + id.length + size.length
+  if (bodyOffset > limit) {
+    return null
+  }
+
+  return {
+    id: id.id,
+    bodyOffset,
+    endOffset: size.size === null ? limit : Math.min(limit, bodyOffset + size.size),
+  }
+}
+
+function findEbmlChildElement(
+  buffer: Buffer,
+  parentElement: EbmlElementHeader,
+  elementId: number,
+  startOffset: number = parentElement.bodyOffset,
+): EbmlElementHeader | null {
+  let offset = startOffset
+  while (offset < parentElement.endOffset) {
+    const childElement = readEbmlElementHeader(buffer, offset, parentElement.endOffset)
+    if (!childElement) {
+      return null
+    }
+    if (childElement.id === elementId) {
+      return childElement
+    }
+    if (childElement.endOffset <= offset) {
+      return null
+    }
+    offset = childElement.endOffset
+  }
+
+  return null
+}
+
+function readEbmlUnsignedValue(buffer: Buffer, element: EbmlElementHeader): number | null {
+  const byteLength = element.endOffset - element.bodyOffset
+  if (byteLength <= 0 || byteLength > 8) {
+    return null
+  }
+
+  let value = 0n
+  for (let index = element.bodyOffset; index < element.endOffset; index += 1) {
+    value = (value << 8n) | BigInt(buffer[index] ?? 0)
+  }
+
+  return value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : null
+}
+
+function readEbmlFloatValue(buffer: Buffer, element: EbmlElementHeader): number | null {
+  const byteLength = element.endOffset - element.bodyOffset
+  if (byteLength === 4) {
+    return buffer.readFloatBE(element.bodyOffset)
+  }
+  if (byteLength === 8) {
+    return buffer.readDoubleBE(element.bodyOffset)
+  }
+
+  return null
+}
+
+function findMatroskaSegmentElement(buffer: Buffer): EbmlElementHeader | null {
+  const ebmlHeader = readEbmlElementHeader(buffer, 0, buffer.length)
+  if (!ebmlHeader || ebmlHeader.id !== MATROSKA_EBML_HEADER_ID) {
+    return null
+  }
+
+  let offset = ebmlHeader.endOffset
+  while (offset < buffer.length) {
+    const element = readEbmlElementHeader(buffer, offset, buffer.length)
+    if (!element) {
+      return null
+    }
+    if (element.id === MATROSKA_SEGMENT_ID) {
+      return element
+    }
+    if (element.endOffset <= offset) {
+      return null
+    }
+    offset = element.endOffset
+  }
+
+  return null
+}
+
+function extractMatroskaVideoMetadata(filePath: string, fileBytes: number | undefined): Record<string, number> {
+  if (!fileBytes || fileBytes < 12) {
+    return {}
+  }
+
+  const head = readFileWindow(filePath, 0, Math.min(fileBytes, MATROSKA_METADATA_SCAN_BYTES))
+  if (!head || head.length < 12) {
+    return {}
+  }
+
+  const segment = findMatroskaSegmentElement(head)
+  if (!segment) {
+    return {}
+  }
+
+  const infoElement = findEbmlChildElement(head, segment, MATROSKA_INFO_ID)
+  const tracksElement = findEbmlChildElement(head, segment, MATROSKA_TRACKS_ID)
+  const timecodeScaleElement = infoElement ? findEbmlChildElement(head, infoElement, MATROSKA_TIMECODE_SCALE_ID) : null
+  const durationElement = infoElement ? findEbmlChildElement(head, infoElement, MATROSKA_DURATION_ID) : null
+  const timecodeScale = timecodeScaleElement ? readEbmlUnsignedValue(head, timecodeScaleElement) : MATROSKA_DEFAULT_TIMECODE_SCALE_NS
+  const rawDuration = durationElement ? readEbmlFloatValue(head, durationElement) : null
+  const durationSeconds =
+    timecodeScale !== null && timecodeScale > 0 && rawDuration !== null && Number.isFinite(rawDuration) && rawDuration >= 0
+      ? roundDurationSeconds((rawDuration * timecodeScale) / 1_000_000_000)
+      : null
+
+  let width: number | null = null
+  let height: number | null = null
+  if (tracksElement) {
+    let offset = tracksElement.bodyOffset
+    while (offset < tracksElement.endOffset) {
+      const trackEntry = readEbmlElementHeader(head, offset, tracksElement.endOffset)
+      if (!trackEntry) {
+        break
+      }
+
+      if (trackEntry.id === MATROSKA_TRACK_ENTRY_ID) {
+        const trackTypeElement = findEbmlChildElement(head, trackEntry, MATROSKA_TRACK_TYPE_ID)
+        const trackType = trackTypeElement ? readEbmlUnsignedValue(head, trackTypeElement) : null
+        if (trackType === 1) {
+          const videoElement = findEbmlChildElement(head, trackEntry, MATROSKA_VIDEO_ID)
+          const widthElement = videoElement ? findEbmlChildElement(head, videoElement, MATROSKA_PIXEL_WIDTH_ID) : null
+          const heightElement = videoElement ? findEbmlChildElement(head, videoElement, MATROSKA_PIXEL_HEIGHT_ID) : null
+          const parsedWidth = widthElement ? readEbmlUnsignedValue(head, widthElement) : null
+          const parsedHeight = heightElement ? readEbmlUnsignedValue(head, heightElement) : null
+          width = parsedWidth && parsedWidth > 0 && parsedWidth <= 32_768 ? parsedWidth : null
+          height = parsedHeight && parsedHeight > 0 && parsedHeight <= 32_768 ? parsedHeight : null
+          break
+        }
+      }
+
+      if (trackEntry.endOffset <= offset) {
+        break
+      }
+      offset = trackEntry.endOffset
+    }
+  }
+
+  return {
+    ...(durationSeconds !== null ? { media_duration_seconds: durationSeconds } : {}),
+    ...(width ? { video_width_px: width } : {}),
+    ...(height ? { video_height_px: height } : {}),
+  }
+}
+
+function extractAacAdtsMetadata(filePath: string, fileBytes: number | undefined): Record<string, number> {
+  if (!fileBytes || fileBytes < 7) {
+    return {}
+  }
+
+  let descriptor: number | null = null
+  try {
+    descriptor = openSync(filePath, 'r')
+    const headerBuffer = Buffer.alloc(9)
+    let offset = 0
+    let totalSamples = 0
+    let firstHeader: AacAdtsHeader | null = null
+    let completeFrameSequence = true
+    while (offset + 7 <= fileBytes) {
+      const bytesRead = readSync(descriptor, headerBuffer, 0, headerBuffer.length, offset)
+      if (bytesRead < 7) {
+        completeFrameSequence = false
+        break
+      }
+
+      const header = parseAacAdtsHeader(headerBuffer.subarray(0, bytesRead))
+      if (!header) {
+        completeFrameSequence = false
+        break
+      }
+
+      if (!firstHeader) {
+        firstHeader = header
+      } else if (header.sampleRate !== firstHeader.sampleRate || header.channelCount !== firstHeader.channelCount) {
+        completeFrameSequence = false
+        break
+      }
+
+      if (offset + header.frameLength > fileBytes) {
+        completeFrameSequence = false
+        break
+      }
+
+      totalSamples += header.sampleCount
+      offset += header.frameLength
+    }
+
+    if (!firstHeader) {
+      return {}
+    }
+
+    const durationSeconds =
+      completeFrameSequence && totalSamples > 0 && offset === fileBytes
+        ? roundDurationSeconds(totalSamples / firstHeader.sampleRate)
+        : null
+    return {
+      audio_sample_rate_hz: firstHeader.sampleRate,
+      audio_channel_count: firstHeader.channelCount,
+      ...(durationSeconds !== null ? { media_duration_seconds: durationSeconds } : {}),
+    }
+  } catch {
+    return {}
+  } finally {
+    if (descriptor !== null) {
+      try {
+        closeSync(descriptor)
+      } catch {
+        // Ignore close failures for best-effort metadata reads.
+      }
+    }
+  }
+}
+
 function extractOggAudioMetadata(filePath: string, fileBytes: number | undefined): Record<string, string | number> {
   if (!fileBytes || fileBytes < 27) {
     return {}
@@ -923,8 +1478,37 @@ function extractBinaryAudioMetadata(
     return extractFlacAudioMetadata(filePath, fileBytes)
   }
 
+  if (extension === '.aac') {
+    return extractAacAdtsMetadata(filePath, fileBytes)
+  }
+
+  if (MP4_FAMILY_EXTENSIONS.has(extension)) {
+    return extractMp4AudioMetadata(filePath, fileBytes)
+  }
+
   if (extension === '.ogg' || extension === '.opus') {
     return extractOggAudioMetadata(filePath, fileBytes)
+  }
+
+  return {}
+}
+
+function extractBinaryVideoMetadata(
+  filePath: string,
+  extension: string,
+  fileType: NonCodeFileType,
+  fileBytes: number | undefined,
+): Record<string, number> {
+  if (fileType !== 'video') {
+    return {}
+  }
+
+  if (MP4_FAMILY_EXTENSIONS.has(extension)) {
+    return extractMp4VideoMetadata(filePath, fileBytes)
+  }
+
+  if (MATROSKA_FAMILY_EXTENSIONS.has(extension)) {
+    return extractMatroskaVideoMetadata(filePath, fileBytes)
   }
 
   return {}
@@ -984,12 +1568,30 @@ const PDF_COMMON_SECTION_LABELS = new Set([
 const DOCX_TEXT_PATTERN = /<w:t(?:\s[^>]*)?>([\s\S]{0,8192}?)<\/w:t>/g
 const XLSX_TEXT_PATTERN = /<(?:\w+:)?t(?:\s[^>]*)?>([\s\S]{0,8192}?)<\/(?:\w+:)?t>/g
 const BINARY_METADATA_HEADER_BYTES = 65_536
+const AAC_SAMPLES_PER_RAW_BLOCK = 1_024
 const FLAC_METADATA_SCAN_BYTES = 262_144
+const MATROSKA_METADATA_SCAN_BYTES = 262_144
 const MP3_ID3_SCAN_BYTES = 262_144
 const MP4_DURATION_SCAN_BYTES = 262_144
 const OGG_METADATA_SCAN_BYTES = 262_144
 const OGG_PAGE_SCAN_OVERLAP_BYTES = 65_536
 const OGG_TAIL_SCAN_BYTES = 262_144
+const AAC_SAMPLE_RATES = [96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025, 8_000, 7_350]
+const MP4_TITLE_METADATA_BOX_TYPE = Buffer.from([0xa9, 0x6e, 0x61, 0x6d])
+const MP4_ARTIST_METADATA_BOX_TYPE = Buffer.from([0xa9, 0x41, 0x52, 0x54])
+const MP4_ALBUM_METADATA_BOX_TYPE = Buffer.from([0xa9, 0x61, 0x6c, 0x62])
+const MATROSKA_DEFAULT_TIMECODE_SCALE_NS = 1_000_000
+const MATROSKA_EBML_HEADER_ID = 0x1a45dfa3
+const MATROSKA_SEGMENT_ID = 0x18538067
+const MATROSKA_INFO_ID = 0x1549a966
+const MATROSKA_TIMECODE_SCALE_ID = 0x2ad7b1
+const MATROSKA_DURATION_ID = 0x4489
+const MATROSKA_TRACKS_ID = 0x1654ae6b
+const MATROSKA_TRACK_ENTRY_ID = 0xae
+const MATROSKA_TRACK_TYPE_ID = 0x83
+const MATROSKA_VIDEO_ID = 0xe0
+const MATROSKA_PIXEL_WIDTH_ID = 0xb0
+const MATROSKA_PIXEL_HEIGHT_ID = 0xba
 const BINARY_CONTENT_TYPES = new Map<string, string>([
   ['.pdf', 'application/pdf'],
   ['.gif', 'image/gif'],
@@ -1012,6 +1614,7 @@ const BINARY_CONTENT_TYPES = new Map<string, string>([
   ['.mp4', 'video/mp4'],
   ['.webm', 'video/webm'],
 ])
+const MATROSKA_FAMILY_EXTENSIONS = new Set(['.mkv', '.webm'])
 const MP4_FAMILY_EXTENSIONS = new Set(['.m4a', '.m4v', '.mov', '.mp4'])
 const OOXML_TITLE_PATTERN = /<dc:title>([\s\S]*?)<\/dc:title>/i
 const OOXML_CREATOR_PATTERN = /<dc:creator>([\s\S]*?)<\/dc:creator>/i
