@@ -1824,6 +1824,14 @@ function parseMatroskaInfoMetadata(buffer: Buffer, infoElement: EbmlElementHeade
     : null
 }
 
+function parseMatroskaBoundedInfoMetadata(buffer: Buffer, infoElement: EbmlElementHeader): number | null | undefined {
+  const parsedDuration = parseMatroskaInfoMetadata(buffer, infoElement)
+  if (parsedDuration !== null || isEbmlElementFullyBuffered(buffer, infoElement)) {
+    return parsedDuration
+  }
+  return undefined
+}
+
 function parseMatroskaTracksMetadata(
   buffer: Buffer,
   tracksElement: EbmlElementHeader,
@@ -1868,6 +1876,29 @@ function parseMatroskaTracksMetadata(
   }
 
   return { width, height, audioSampleRate, audioChannelCount }
+}
+
+function hasMatroskaTrackMetadata(metadata: {
+  width: number | null
+  height: number | null
+  audioSampleRate: number | null
+  audioChannelCount: number | null
+}): boolean {
+  return metadata.width !== null
+    || metadata.height !== null
+    || metadata.audioSampleRate !== null
+    || metadata.audioChannelCount !== null
+}
+
+function parseMatroskaBoundedTracksMetadata(
+  buffer: Buffer,
+  tracksElement: EbmlElementHeader,
+): { width: number | null, height: number | null, audioSampleRate: number | null, audioChannelCount: number | null } | undefined {
+  const metadata = parseMatroskaTracksMetadata(buffer, tracksElement)
+  if (hasMatroskaTrackMetadata(metadata) || isEbmlElementFullyBuffered(buffer, tracksElement)) {
+    return metadata
+  }
+  return undefined
 }
 
 function readMatroskaSeekTargetElement(
@@ -1943,15 +1974,15 @@ function extractMatroskaVideoMetadata(filePath: string, fileBytes: number | unde
   const seekHeadTargets = parseMatroskaSeekHeadTargets(head, segment)
   const topLevelTargets = parseMatroskaTopLevelTargets(filePath, fileBytes, segment)
   const directDurationSeconds = infoElement
-    ? parseMatroskaInfoMetadata(head, infoElement)
-    : null
+    ? parseMatroskaBoundedInfoMetadata(head, infoElement)
+    : undefined
   const durationSeconds = (() => {
     const infoCandidates = [
       ...(infoElement
         ? [{ position: Math.max(0, infoElement.startOffset - segment.bodyOffset), sourceRank: 0, duration: directDurationSeconds }]
         : []),
-      ...seekHeadTargets.infoPositions.map((position) => ({ position, sourceRank: 1, duration: null as number | null })),
-      ...topLevelTargets.infoPositions.map((position) => ({ position, sourceRank: 2, duration: null as number | null })),
+      ...seekHeadTargets.infoPositions.map((position) => ({ position, sourceRank: 1, duration: undefined as number | null | undefined })),
+      ...topLevelTargets.infoPositions.map((position) => ({ position, sourceRank: 2, duration: undefined as number | null | undefined })),
     ].sort((left, right) => left.position - right.position || left.sourceRank - right.sourceRank)
 
     let resolvedDuration: number | null = null
@@ -1961,9 +1992,10 @@ function extractMatroskaVideoMetadata(filePath: string, fileBytes: number | unde
         ? candidate.duration
         : (() => {
             const seekTarget = readMatroskaSeekTargetElement(filePath, fileBytes, segment, candidate.position, MATROSKA_INFO_ID)
-            return seekTarget
-              ? parseMatroskaInfoMetadata(seekTarget.buffer, seekTarget.element)
-              : undefined
+            if (!seekTarget) {
+              return undefined
+            }
+            return parseMatroskaBoundedInfoMetadata(seekTarget.buffer, seekTarget.element)
           })()
       if (candidateResult === undefined) {
         continue
@@ -1976,8 +2008,8 @@ function extractMatroskaVideoMetadata(filePath: string, fileBytes: number | unde
     return resolvedDuration
   })()
   const directTrackMetadata = tracksElement
-    ? parseMatroskaTracksMetadata(head, tracksElement)
-    : { width: null, height: null, audioSampleRate: null, audioChannelCount: null }
+    ? parseMatroskaBoundedTracksMetadata(head, tracksElement)
+    : undefined
   const trackMetadata = (() => {
     const trackCandidates = [
       ...(tracksElement
@@ -2007,10 +2039,10 @@ function extractMatroskaVideoMetadata(filePath: string, fileBytes: number | unde
         ? candidate.metadata
         : (() => {
             const seekTarget = readMatroskaSeekTargetElement(filePath, fileBytes, segment, candidate.position, MATROSKA_TRACKS_ID)
-            if (!seekTarget || !isEbmlElementFullyBuffered(seekTarget.buffer, seekTarget.element)) {
-              return null
+            if (!seekTarget) {
+              return undefined
             }
-            return parseMatroskaTracksMetadata(seekTarget.buffer, seekTarget.element)
+            return parseMatroskaBoundedTracksMetadata(seekTarget.buffer, seekTarget.element)
           })()
       if (!candidateMetadata) {
         continue
