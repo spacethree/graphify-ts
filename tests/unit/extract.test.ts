@@ -383,6 +383,7 @@ describe('extract', () => {
       splitSeekHeads?: boolean
       staleFirstInfoSeekHead?: boolean
       staleFirstTracksSeekHead?: boolean
+      invalidTrailingInfoSeekHead?: boolean
       staleFirstTracksMetadata?: {
         width: number
         height: number
@@ -407,6 +408,7 @@ describe('extract', () => {
     const splitSeekHeads = options.splitSeekHeads ?? false
     const staleFirstInfoSeekHead = options.staleFirstInfoSeekHead ?? false
     const staleFirstTracksSeekHead = options.staleFirstTracksSeekHead ?? false
+    const invalidTrailingInfoSeekHead = options.invalidTrailingInfoSeekHead ?? false
     const staleFirstTracksMetadata = options.staleFirstTracksMetadata
 
     const info = createEbmlElement(EBML_INFO_ID, Buffer.concat([
@@ -464,7 +466,13 @@ describe('extract', () => {
     const prefixedSegmentContent = prefixedSegmentBytes > 0
       ? [createEbmlElement(EBML_VOID_ID, Buffer.alloc(prefixedSegmentBytes))]
       : []
-    const seekHeadSpecs = useSeekHead
+    let seekHeadSpecs: Array<{
+      includeInfo: boolean
+      includeTracks: boolean
+      staleInfoTarget?: boolean
+      staleTracksTarget?: boolean
+      invalidInfoTarget?: boolean
+    }> = useSeekHead
       ? splitSeekHeads
         ? [{ includeInfo: true, includeTracks: false }, { includeInfo: false, includeTracks: true }]
         : staleFirstInfoSeekHead || staleFirstTracksSeekHead
@@ -482,6 +490,12 @@ describe('extract', () => {
             ]
           : [{ includeInfo: true, includeTracks: true }]
       : []
+    if (useSeekHead && invalidTrailingInfoSeekHead) {
+      seekHeadSpecs = [
+        ...seekHeadSpecs,
+        { includeInfo: true, includeTracks: false, invalidInfoTarget: true },
+      ]
+    }
     let seekHeads: Buffer[] = []
     if (useSeekHead) {
       seekHeads = seekHeadSpecs.map(() => createEbmlSeekHeadEntries([]))
@@ -492,10 +506,11 @@ describe('extract', () => {
         const staleTracksPosition = staleTracks ? seekHeadBytes + prefixedSegmentContentBytes + (staleInfo?.length ?? 0) : null
         const infoPosition = seekHeadBytes + prefixedSegmentContentBytes + (staleInfo?.length ?? 0) + (staleTracks?.length ?? 0)
         const tracksPosition = infoPosition + info.length
+        const invalidInfoPosition = infoPosition + tracks.length + 65_536
         const nextSeekHeads = seekHeadSpecs.map((spec) => createEbmlSeekHeadEntries([
           ...(spec.includeInfo ? [{
             targetId: EBML_INFO_ID,
-            position: spec.staleInfoTarget ? (staleInfoPosition ?? 0) : infoPosition,
+            position: spec.invalidInfoTarget ? invalidInfoPosition : spec.staleInfoTarget ? (staleInfoPosition ?? 0) : infoPosition,
           }] : []),
           ...(spec.includeTracks ? [{
             targetId: EBML_TRACKS_ID,
@@ -3356,6 +3371,34 @@ describe('extract', () => {
         media_duration_seconds: 4.25,
         audio_sample_rate_hz: 48000,
         audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps Matroska/WebM duration when a later SeekHead Info target is unreadable', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'seekhead-unreadable-info.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        useSeekHead: true,
+        invalidTrailingInfoSeekHead: true,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'seekhead-unreadable-info.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
         video_width_px: 1280,
         video_height_px: 720,
         layer: 'base',

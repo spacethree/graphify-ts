@@ -1951,15 +1951,20 @@ function extractMatroskaVideoMetadata(filePath: string, fileBytes: number | unde
     let resolvedDuration: number | null = null
     let resolvedDurationPosition: number | null = null
     for (const candidate of infoCandidates) {
-      const candidateDuration = candidate.sourceRank === 0
+      const candidateResult = candidate.sourceRank === 0
         ? candidate.duration
         : (() => {
             const seekTarget = readMatroskaSeekTargetElement(filePath, fileBytes, segment, candidate.position, MATROSKA_INFO_ID)
-            return seekTarget ? parseMatroskaInfoMetadata(seekTarget.buffer, seekTarget.element) : null
+            return seekTarget
+              ? parseMatroskaInfoMetadata(seekTarget.buffer, seekTarget.element)
+              : undefined
           })()
+      if (candidateResult === undefined) {
+        continue
+      }
       resolvedDuration = resolvedDurationPosition !== null && candidate.position === resolvedDurationPosition
-        ? candidateDuration ?? resolvedDuration
-        : candidateDuration
+        ? candidateResult ?? resolvedDuration
+        : candidateResult
       resolvedDurationPosition = candidate.position
     }
     return resolvedDuration
