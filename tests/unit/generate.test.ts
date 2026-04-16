@@ -357,12 +357,14 @@ function createTestMatroskaBuffer(
       timecodeScale?: number
     }
     prefixedSegmentBytes?: number
+    interstitialSegmentBytes?: number
     prefixedInfoBytes?: number
     prefixedTracksBytes?: number
     useSeekHead?: boolean
     splitSeekHeads?: boolean
     staleFirstInfoSeekHead?: boolean
     staleFirstTracksSeekHead?: boolean
+    finalTracksAudioOnly?: boolean
     staleFirstTracksMetadata?: {
       width: number
       height: number
@@ -381,12 +383,14 @@ function createTestMatroskaBuffer(
   const audioChannelCount = options.audioChannelCount ?? 2
   const staleFirstInfoMetadata = options.staleFirstInfoMetadata
   const prefixedSegmentBytes = options.prefixedSegmentBytes ?? 0
+  const interstitialSegmentBytes = options.interstitialSegmentBytes ?? 0
   const prefixedInfoBytes = options.prefixedInfoBytes ?? 0
   const prefixedTracksBytes = options.prefixedTracksBytes ?? 0
   const useSeekHead = options.useSeekHead ?? false
   const splitSeekHeads = options.splitSeekHeads ?? false
   const staleFirstInfoSeekHead = options.staleFirstInfoSeekHead ?? false
   const staleFirstTracksSeekHead = options.staleFirstTracksSeekHead ?? false
+  const finalTracksAudioOnly = options.finalTracksAudioOnly ?? false
   const staleFirstTracksMetadata = options.staleFirstTracksMetadata
 
   const info = createEbmlElement(EBML_INFO_ID, Buffer.concat([
@@ -420,7 +424,7 @@ function createTestMatroskaBuffer(
   ]))
   const tracks = createEbmlElement(EBML_TRACKS_ID, Buffer.concat([
     ...(prefixedTracksBytes > 0 ? [createEbmlElement(EBML_VOID_ID, Buffer.alloc(prefixedTracksBytes))] : []),
-    ...(audioTrackFirst ? [audioTrackEntry, videoTrackEntry] : [videoTrackEntry, audioTrackEntry]),
+    ...(finalTracksAudioOnly ? [audioTrackEntry] : audioTrackFirst ? [audioTrackEntry, videoTrackEntry] : [videoTrackEntry, audioTrackEntry]),
   ]))
   const staleTracks = staleFirstTracksMetadata
     ? createEbmlElement(EBML_TRACKS_ID, Buffer.concat([
@@ -470,7 +474,11 @@ function createTestMatroskaBuffer(
       const prefixedSegmentContentBytes = prefixedSegmentContent.reduce((total, element) => total + element.length, 0)
       const staleInfoPosition = staleInfo ? seekHeadBytes + prefixedSegmentContentBytes : null
       const staleTracksPosition = staleTracks ? seekHeadBytes + prefixedSegmentContentBytes + (staleInfo?.length ?? 0) : null
-      const infoPosition = seekHeadBytes + prefixedSegmentContentBytes + (staleInfo?.length ?? 0) + (staleTracks?.length ?? 0)
+      const infoPosition = seekHeadBytes
+        + prefixedSegmentContentBytes
+        + (staleInfo?.length ?? 0)
+        + (staleTracks?.length ?? 0)
+        + (interstitialSegmentBytes > 0 ? createEbmlElement(EBML_VOID_ID, Buffer.alloc(interstitialSegmentBytes)).length : 0)
       const tracksPosition = infoPosition + info.length
       const nextSeekHeads = seekHeadSpecs.map((spec) => createEbmlSeekHeadEntries([
         ...(spec.includeInfo ? [{
@@ -493,6 +501,7 @@ function createTestMatroskaBuffer(
     ...prefixedSegmentContent,
     ...(staleInfo ? [staleInfo] : []),
     ...(staleTracks ? [staleTracks] : []),
+    ...(interstitialSegmentBytes > 0 ? [createEbmlElement(EBML_VOID_ID, Buffer.alloc(interstitialSegmentBytes))] : []),
     info,
     tracks,
   ]))
@@ -1541,6 +1550,188 @@ describe('generateGraph', () => {
     })
   })
 
+  test('builds graph artifacts without stale Matroska/WebM audio-track metadata when a later top-level Tracks element is video-only without SeekHead help', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: false,
+        interstitialSegmentBytes: 600_000,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](top-level-tracks-clear-audio.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'top-level-tracks-clear-audio.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+      const mkvNode = graphData.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-tracks-clear-audio.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        label: 'top-level-tracks-clear-audio.mkv',
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        video_width_px: 1280,
+        video_height_px: 720,
+      })
+      expect(mkvNode).not.toHaveProperty('audio_sample_rate_hz')
+      expect(mkvNode).not.toHaveProperty('audio_channel_count')
+    })
+  })
+
+  test('builds graph artifacts without stale Matroska/WebM video-dimension metadata when a later top-level Tracks element is audio-only without SeekHead help', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        interstitialSegmentBytes: 600_000,
+        finalTracksAudioOnly: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](top-level-tracks-clear-video.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'top-level-tracks-clear-video.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+      const mkvNode = graphData.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-tracks-clear-video.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        label: 'top-level-tracks-clear-video.mkv',
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+      })
+      expect(mkvNode).not.toHaveProperty('video_width_px')
+      expect(mkvNode).not.toHaveProperty('video_height_px')
+    })
+  })
+
+  test('builds graph artifacts with preserved Matroska/WebM track metadata when a later authoritative Tracks element is unreadable', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        useSeekHead: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        prefixedTracksBytes: 1_100_000,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](seekhead-tracks-unreadable.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'seekhead-tracks-unreadable.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const mkvNode = (JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }).nodes.find((node) => node.file_type === 'video' && node.label === 'seekhead-tracks-unreadable.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        file_type: 'video',
+        label: 'seekhead-tracks-unreadable.mkv',
+        video_width_px: 5,
+        video_height_px: 2,
+        audio_sample_rate_hz: 8_000,
+        audio_channel_count: 1,
+      })
+    })
+  })
+
+  test('builds graph artifacts with preserved Matroska/WebM track metadata when a later top-level Tracks element is unreadable without SeekHead help', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        interstitialSegmentBytes: 600_000,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        prefixedTracksBytes: 1_100_000,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](top-level-tracks-unreadable.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'top-level-tracks-unreadable.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+      const mkvNode = graphData.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-tracks-unreadable.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        label: 'top-level-tracks-unreadable.mkv',
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        video_width_px: 5,
+        video_height_px: 2,
+        audio_sample_rate_hz: 8_000,
+        audio_channel_count: 1,
+      })
+    })
+  })
+
+  test('builds graph artifacts without stale Matroska/WebM duration metadata when a later top-level Info element omits duration without SeekHead help', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        interstitialSegmentBytes: 600_000,
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        malformedDuration: true,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](top-level-info-clear-duration.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'top-level-info-clear-duration.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+      const mkvNode = graphData.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-info-clear-duration.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        label: 'top-level-info-clear-duration.mkv',
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+      })
+      expect(mkvNode).not.toHaveProperty('media_duration_seconds')
+    })
+  })
+
   test('builds graph artifacts with Matroska/WebM track metadata via SeekHead when the Tracks element starts inside the head window but its payload is truncated', () => {
     withTempDir((tempDir) => {
       const mkvBuffer = createTestMatroskaBuffer({
@@ -1719,6 +1910,42 @@ describe('generateGraph', () => {
       })
       expect(mkvNode).not.toHaveProperty('audio_sample_rate_hz')
       expect(mkvNode).not.toHaveProperty('audio_channel_count')
+    })
+  })
+
+  test('builds graph artifacts without stale Matroska/WebM video-dimension metadata when a later authoritative Tracks element is audio-only', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        useSeekHead: true,
+        staleFirstTracksSeekHead: true,
+        finalTracksAudioOnly: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](seekhead-tracks-clear-video.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'seekhead-tracks-clear-video.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const mkvNode = (JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }).nodes.find((node) => node.file_type === 'video' && node.label === 'seekhead-tracks-clear-video.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        file_type: 'video',
+        label: 'seekhead-tracks-clear-video.mkv',
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+      })
+      expect(mkvNode).not.toHaveProperty('video_width_px')
+      expect(mkvNode).not.toHaveProperty('video_height_px')
     })
   })
 

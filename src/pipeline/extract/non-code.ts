@@ -1893,6 +1893,10 @@ function readMatroskaSeekTargetElement(
   return { buffer: window, element }
 }
 
+function isEbmlElementFullyBuffered(buffer: Buffer, element: EbmlElementHeader): boolean {
+  return element.endOffset <= buffer.length
+}
+
 function findMatroskaSegmentElement(buffer: Buffer): EbmlElementHeader | null {
   const ebmlHeader = readEbmlElementHeader(buffer, 0, buffer.length)
   if (!ebmlHeader || ebmlHeader.id !== MATROSKA_EBML_HEADER_ID) {
@@ -2001,7 +2005,10 @@ function extractMatroskaVideoMetadata(filePath: string, fileBytes: number | unde
         ? candidate.metadata
         : (() => {
             const seekTarget = readMatroskaSeekTargetElement(filePath, fileBytes, segment, candidate.position, MATROSKA_TRACKS_ID)
-            return seekTarget ? parseMatroskaTracksMetadata(seekTarget.buffer, seekTarget.element) : null
+            if (!seekTarget || !isEbmlElementFullyBuffered(seekTarget.buffer, seekTarget.element)) {
+              return null
+            }
+            return parseMatroskaTracksMetadata(seekTarget.buffer, seekTarget.element)
           })()
       if (!candidateMetadata) {
         continue
