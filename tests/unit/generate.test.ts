@@ -265,6 +265,10 @@ function createTestVideoMp4Buffer(
 const EBML_HEADER_ID = [0x1a, 0x45, 0xdf, 0xa3]
 const EBML_DOC_TYPE_ID = [0x42, 0x82]
 const EBML_SEGMENT_ID = [0x18, 0x53, 0x80, 0x67]
+const EBML_SEEK_HEAD_ID = [0x11, 0x4d, 0x9b, 0x74]
+const EBML_SEEK_ENTRY_ID = [0x4d, 0xbb]
+const EBML_SEEK_ID_ID = [0x53, 0xab]
+const EBML_SEEK_POSITION_ID = [0x53, 0xac]
 const EBML_INFO_ID = [0x15, 0x49, 0xa9, 0x66]
 const EBML_TIMECODE_SCALE_ID = [0x2a, 0xd7, 0xb1]
 const EBML_DURATION_ID = [0x44, 0x89]
@@ -273,6 +277,7 @@ const EBML_TRACK_ENTRY_ID = [0xae]
 const EBML_TRACK_TYPE_ID = [0x83]
 const EBML_VIDEO_ID = [0xe0]
 const EBML_AUDIO_ID = [0xe1]
+const EBML_VOID_ID = [0xec]
 const EBML_PIXEL_WIDTH_ID = [0xb0]
 const EBML_PIXEL_HEIGHT_ID = [0xba]
 const EBML_SAMPLING_FREQUENCY_ID = [0xb5]
@@ -324,6 +329,17 @@ function createEbmlFloatElement(id: readonly number[], value: number): Buffer {
   return createEbmlElement(id, payload)
 }
 
+function createEbmlSeekEntry(targetId: readonly number[], position: number): Buffer {
+  return createEbmlElement(EBML_SEEK_ENTRY_ID, Buffer.concat([
+    createEbmlElement(EBML_SEEK_ID_ID, Buffer.from(targetId)),
+    createEbmlUnsignedElement(EBML_SEEK_POSITION_ID, position),
+  ]))
+}
+
+function createEbmlSeekHeadEntries(entries: Array<{ targetId: readonly number[], position: number }>): Buffer {
+  return createEbmlElement(EBML_SEEK_HEAD_ID, Buffer.concat(entries.map((entry) => createEbmlSeekEntry(entry.targetId, entry.position))))
+}
+
 function createTestMatroskaBuffer(
   options: {
     docType?: 'webm' | 'matroska'
@@ -335,6 +351,23 @@ function createTestMatroskaBuffer(
     includeAudioTrackMetadata?: boolean
     audioSampleRate?: number
     audioChannelCount?: number
+    staleFirstInfoMetadata?: {
+      durationSeconds: number
+      timecodeScale?: number
+    }
+    prefixedSegmentBytes?: number
+    prefixedInfoBytes?: number
+    prefixedTracksBytes?: number
+    useSeekHead?: boolean
+    splitSeekHeads?: boolean
+    staleFirstInfoSeekHead?: boolean
+    staleFirstTracksSeekHead?: boolean
+    staleFirstTracksMetadata?: {
+      width: number
+      height: number
+      audioSampleRate: number
+      audioChannelCount: number
+    }
   } = {},
 ): Buffer {
   const docType = options.docType ?? 'webm'
@@ -345,11 +378,27 @@ function createTestMatroskaBuffer(
   const timecodeScale = options.timecodeScale ?? 1_000_000
   const audioSampleRate = options.audioSampleRate ?? 48_000
   const audioChannelCount = options.audioChannelCount ?? 2
+  const staleFirstInfoMetadata = options.staleFirstInfoMetadata
+  const prefixedSegmentBytes = options.prefixedSegmentBytes ?? 0
+  const prefixedInfoBytes = options.prefixedInfoBytes ?? 0
+  const prefixedTracksBytes = options.prefixedTracksBytes ?? 0
+  const useSeekHead = options.useSeekHead ?? false
+  const splitSeekHeads = options.splitSeekHeads ?? false
+  const staleFirstInfoSeekHead = options.staleFirstInfoSeekHead ?? false
+  const staleFirstTracksSeekHead = options.staleFirstTracksSeekHead ?? false
+  const staleFirstTracksMetadata = options.staleFirstTracksMetadata
 
   const info = createEbmlElement(EBML_INFO_ID, Buffer.concat([
+    ...(prefixedInfoBytes > 0 ? [createEbmlElement(EBML_VOID_ID, Buffer.alloc(prefixedInfoBytes))] : []),
     createEbmlUnsignedElement(EBML_TIMECODE_SCALE_ID, timecodeScale),
     createEbmlFloatElement(EBML_DURATION_ID, durationSeconds * 1_000),
   ]))
+  const staleInfo = staleFirstInfoMetadata
+    ? createEbmlElement(EBML_INFO_ID, Buffer.concat([
+        createEbmlUnsignedElement(EBML_TIMECODE_SCALE_ID, staleFirstInfoMetadata.timecodeScale ?? 1_000_000),
+        createEbmlFloatElement(EBML_DURATION_ID, staleFirstInfoMetadata.durationSeconds * 1_000),
+      ]))
+    : null
   const videoTrackEntry = createEbmlElement(EBML_TRACK_ENTRY_ID, Buffer.concat([
     createEbmlUnsignedElement(EBML_TRACK_TYPE_ID, 1),
     createEbmlElement(EBML_VIDEO_ID, Buffer.concat([
@@ -366,11 +415,84 @@ function createTestMatroskaBuffer(
         ]))]
       : []),
   ]))
-  const tracks = createEbmlElement(EBML_TRACKS_ID, Buffer.concat(
-    audioTrackFirst ? [audioTrackEntry, videoTrackEntry] : [videoTrackEntry, audioTrackEntry],
-  ))
+  const tracks = createEbmlElement(EBML_TRACKS_ID, Buffer.concat([
+    ...(prefixedTracksBytes > 0 ? [createEbmlElement(EBML_VOID_ID, Buffer.alloc(prefixedTracksBytes))] : []),
+    ...(audioTrackFirst ? [audioTrackEntry, videoTrackEntry] : [videoTrackEntry, audioTrackEntry]),
+  ]))
+  const staleTracks = staleFirstTracksMetadata
+    ? createEbmlElement(EBML_TRACKS_ID, Buffer.concat([
+        createEbmlElement(EBML_TRACK_ENTRY_ID, Buffer.concat([
+          createEbmlUnsignedElement(EBML_TRACK_TYPE_ID, 1),
+          createEbmlElement(EBML_VIDEO_ID, Buffer.concat([
+            createEbmlUnsignedElement(EBML_PIXEL_WIDTH_ID, staleFirstTracksMetadata.width),
+            createEbmlUnsignedElement(EBML_PIXEL_HEIGHT_ID, staleFirstTracksMetadata.height),
+          ])),
+        ])),
+        createEbmlElement(EBML_TRACK_ENTRY_ID, Buffer.concat([
+          createEbmlUnsignedElement(EBML_TRACK_TYPE_ID, 2),
+          createEbmlElement(EBML_AUDIO_ID, Buffer.concat([
+            createEbmlFloatElement(EBML_SAMPLING_FREQUENCY_ID, staleFirstTracksMetadata.audioSampleRate),
+            createEbmlUnsignedElement(EBML_CHANNELS_ID, staleFirstTracksMetadata.audioChannelCount),
+          ])),
+        ])),
+      ]))
+    : null
   const ebmlHeader = createEbmlElement(EBML_HEADER_ID, createEbmlElement(EBML_DOC_TYPE_ID, Buffer.from(docType, 'ascii')))
-  const segment = createEbmlElement(EBML_SEGMENT_ID, Buffer.concat([info, tracks]))
+  const prefixedSegmentContent = prefixedSegmentBytes > 0
+    ? [createEbmlElement(EBML_VOID_ID, Buffer.alloc(prefixedSegmentBytes))]
+    : []
+  const seekHeadSpecs = useSeekHead
+    ? splitSeekHeads
+      ? [{ includeInfo: true, includeTracks: false }, { includeInfo: false, includeTracks: true }]
+      : staleFirstInfoSeekHead || staleFirstTracksSeekHead
+        ? [
+            {
+              includeInfo: true,
+              includeTracks: true,
+              staleInfoTarget: staleFirstInfoSeekHead,
+              staleTracksTarget: staleFirstTracksSeekHead,
+            },
+            {
+              includeInfo: staleFirstInfoSeekHead,
+              includeTracks: staleFirstTracksSeekHead,
+            },
+          ]
+        : [{ includeInfo: true, includeTracks: true }]
+    : []
+  let seekHeads: Buffer[] = []
+  if (useSeekHead) {
+    seekHeads = seekHeadSpecs.map(() => createEbmlSeekHeadEntries([]))
+    for (let iteration = 0; iteration < 4; iteration += 1) {
+      const seekHeadBytes = seekHeads.reduce((total, seekHead) => total + seekHead.length, 0)
+      const prefixedSegmentContentBytes = prefixedSegmentContent.reduce((total, element) => total + element.length, 0)
+      const staleInfoPosition = staleInfo ? seekHeadBytes + prefixedSegmentContentBytes : null
+      const staleTracksPosition = staleTracks ? seekHeadBytes + prefixedSegmentContentBytes + (staleInfo?.length ?? 0) : null
+      const infoPosition = seekHeadBytes + prefixedSegmentContentBytes + (staleInfo?.length ?? 0) + (staleTracks?.length ?? 0)
+      const tracksPosition = infoPosition + info.length
+      const nextSeekHeads = seekHeadSpecs.map((spec) => createEbmlSeekHeadEntries([
+        ...(spec.includeInfo ? [{
+          targetId: EBML_INFO_ID,
+          position: spec.staleInfoTarget ? (staleInfoPosition ?? 0) : infoPosition,
+        }] : []),
+        ...(spec.includeTracks ? [{
+          targetId: EBML_TRACKS_ID,
+          position: spec.staleTracksTarget ? (staleTracksPosition ?? 0) : tracksPosition,
+        }] : []),
+      ]))
+      if (nextSeekHeads.length === seekHeads.length && nextSeekHeads.every((seekHead, index) => seekHead.equals(seekHeads[index] ?? Buffer.alloc(0)))) {
+        break
+      }
+      seekHeads = nextSeekHeads
+    }
+  }
+  const segment = createEbmlElement(EBML_SEGMENT_ID, Buffer.concat([
+    ...seekHeads,
+    ...prefixedSegmentContent,
+    ...(staleInfo ? [staleInfo] : []),
+    ...(staleTracks ? [staleTracks] : []),
+    info,
+    tracks,
+  ]))
   return Buffer.concat([ebmlHeader, segment])
 }
 
@@ -1305,6 +1427,219 @@ describe('generateGraph', () => {
           expect.objectContaining({
             file_type: 'video',
             label: 'session.webm',
+            media_duration_seconds: 4.25,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
+            video_width_px: 1280,
+            video_height_px: 720,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with Matroska/WebM metadata when a large prefixed segment element pushes Info and Tracks beyond the default head window', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        prefixedSegmentBytes: 300_000,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](archive.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'archive.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'archive.mkv',
+            media_duration_seconds: 4.25,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
+            video_width_px: 1280,
+            video_height_px: 720,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with Matroska/WebM metadata via SeekHead when Info and Tracks sit beyond the widened head window', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        prefixedSegmentBytes: 600_000,
+        useSeekHead: true,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](seekhead-windowed.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'seekhead-windowed.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'seekhead-windowed.mkv',
+            media_duration_seconds: 4.25,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
+            video_width_px: 1280,
+            video_height_px: 720,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with Matroska/WebM track metadata via SeekHead when the Tracks element starts inside the head window but its payload is truncated', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        prefixedTracksBytes: 600_000,
+        useSeekHead: true,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](seekhead-tracks-partial.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'seekhead-tracks-partial.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'seekhead-tracks-partial.mkv',
+            media_duration_seconds: 4.25,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
+            video_width_px: 1280,
+            video_height_px: 720,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with Matroska/WebM metadata when separate SeekHeads advertise Info and Tracks beyond the widened head window', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        prefixedSegmentBytes: 600_000,
+        useSeekHead: true,
+        splitSeekHeads: true,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](seekhead-split.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'seekhead-split.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'seekhead-split.mkv',
+            media_duration_seconds: 4.25,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
+            video_width_px: 1280,
+            video_height_px: 720,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with Matroska/WebM metadata when a later SeekHead overrides stale direct Tracks metadata', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        useSeekHead: true,
+        staleFirstTracksSeekHead: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](seekhead-corrective.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'seekhead-corrective.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'seekhead-corrective.mkv',
+            media_duration_seconds: 4.25,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
+            video_width_px: 1280,
+            video_height_px: 720,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with Matroska/WebM metadata when a later SeekHead overrides stale direct Info metadata', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        useSeekHead: true,
+        staleFirstInfoSeekHead: true,
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](seekhead-info-corrective.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'seekhead-info-corrective.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'seekhead-info-corrective.mkv',
             media_duration_seconds: 4.25,
             audio_sample_rate_hz: 48000,
             audio_channel_count: 2,

@@ -1272,6 +1272,7 @@ interface AacAdtsHeader {
 
 interface EbmlElementHeader {
   id: number
+  startOffset: number
   bodyOffset: number
   endOffset: number
 }
@@ -1631,6 +1632,7 @@ function readEbmlElementHeader(buffer: Buffer, offset: number, limit: number): E
 
   return {
     id: id.id,
+    startOffset: offset,
     bodyOffset,
     endOffset: size.size === null ? limit : Math.min(limit, bodyOffset + size.size),
   }
@@ -1686,6 +1688,57 @@ function readEbmlFloatValue(buffer: Buffer, element: EbmlElementHeader): number 
   return null
 }
 
+function parseMatroskaSeekHeadTargets(
+  buffer: Buffer,
+  segment: EbmlElementHeader,
+): { infoPositions: number[], tracksPositions: number[] } {
+  const infoPositions: number[] = []
+  const tracksPositions: number[] = []
+  let offset = segment.bodyOffset
+  while (offset < segment.endOffset) {
+    const childElement = readEbmlElementHeader(buffer, offset, segment.endOffset)
+    if (!childElement) {
+      break
+    }
+
+    if (childElement.id === MATROSKA_SEEK_HEAD_ID) {
+      let seekOffset = childElement.bodyOffset
+      while (seekOffset < childElement.endOffset) {
+        const seekEntry = readEbmlElementHeader(buffer, seekOffset, childElement.endOffset)
+        if (!seekEntry) {
+          break
+        }
+
+        if (seekEntry.id === MATROSKA_SEEK_ENTRY_ID) {
+          const seekIdElement = findEbmlChildElement(buffer, seekEntry, MATROSKA_SEEK_ID_ID)
+          const seekPositionElement = findEbmlChildElement(buffer, seekEntry, MATROSKA_SEEK_POSITION_ID)
+          const targetId = seekIdElement ? readEbmlUnsignedValue(buffer, seekIdElement) : null
+          const targetPosition = seekPositionElement ? readEbmlUnsignedValue(buffer, seekPositionElement) : null
+          if (targetPosition !== null && targetPosition >= 0) {
+            if (targetId === MATROSKA_INFO_ID && !infoPositions.includes(targetPosition)) {
+              infoPositions.push(targetPosition)
+            } else if (targetId === MATROSKA_TRACKS_ID && !tracksPositions.includes(targetPosition)) {
+              tracksPositions.push(targetPosition)
+            }
+          }
+        }
+
+        if (seekEntry.endOffset <= seekOffset) {
+          break
+        }
+        seekOffset = seekEntry.endOffset
+      }
+    }
+
+    if (childElement.endOffset <= offset) {
+      break
+    }
+    offset = childElement.endOffset
+  }
+
+  return { infoPositions, tracksPositions }
+}
+
 function parseMatroskaAudioTrackMetadata(
   buffer: Buffer,
   trackEntry: EbmlElementHeader,
@@ -1707,6 +1760,87 @@ function parseMatroskaAudioTrackMetadata(
         : null,
     channelCount: rawChannelCount && rawChannelCount > 0 && rawChannelCount <= 16 ? rawChannelCount : null,
   }
+}
+
+function parseMatroskaInfoMetadata(buffer: Buffer, infoElement: EbmlElementHeader): number | null {
+  const timecodeScaleElement = findEbmlChildElement(buffer, infoElement, MATROSKA_TIMECODE_SCALE_ID)
+  const durationElement = findEbmlChildElement(buffer, infoElement, MATROSKA_DURATION_ID)
+  const timecodeScale = timecodeScaleElement ? readEbmlUnsignedValue(buffer, timecodeScaleElement) : MATROSKA_DEFAULT_TIMECODE_SCALE_NS
+  const rawDuration = durationElement ? readEbmlFloatValue(buffer, durationElement) : null
+  return timecodeScale !== null && timecodeScale > 0 && rawDuration !== null && Number.isFinite(rawDuration) && rawDuration >= 0
+    ? roundDurationSeconds((rawDuration * timecodeScale) / 1_000_000_000)
+    : null
+}
+
+function parseMatroskaTracksMetadata(
+  buffer: Buffer,
+  tracksElement: EbmlElementHeader,
+): { width: number | null, height: number | null, audioSampleRate: number | null, audioChannelCount: number | null } {
+  let width: number | null = null
+  let height: number | null = null
+  let audioSampleRate: number | null = null
+  let audioChannelCount: number | null = null
+  let offset = tracksElement.bodyOffset
+  while (offset < tracksElement.endOffset) {
+    const trackEntry = readEbmlElementHeader(buffer, offset, tracksElement.endOffset)
+    if (!trackEntry) {
+      break
+    }
+
+    if (trackEntry.id === MATROSKA_TRACK_ENTRY_ID) {
+      const trackTypeElement = findEbmlChildElement(buffer, trackEntry, MATROSKA_TRACK_TYPE_ID)
+      const trackType = trackTypeElement ? readEbmlUnsignedValue(buffer, trackTypeElement) : null
+      if (trackType === 1) {
+        const videoElement = findEbmlChildElement(buffer, trackEntry, MATROSKA_VIDEO_ID)
+        const widthElement = videoElement ? findEbmlChildElement(buffer, videoElement, MATROSKA_PIXEL_WIDTH_ID) : null
+        const heightElement = videoElement ? findEbmlChildElement(buffer, videoElement, MATROSKA_PIXEL_HEIGHT_ID) : null
+        const parsedWidth = widthElement ? readEbmlUnsignedValue(buffer, widthElement) : null
+        const parsedHeight = heightElement ? readEbmlUnsignedValue(buffer, heightElement) : null
+        width = width ?? (parsedWidth && parsedWidth > 0 && parsedWidth <= 32_768 ? parsedWidth : null)
+        height = height ?? (parsedHeight && parsedHeight > 0 && parsedHeight <= 32_768 ? parsedHeight : null)
+      } else if (trackType === 2) {
+        const audioMetadata = parseMatroskaAudioTrackMetadata(buffer, trackEntry)
+        audioSampleRate = audioSampleRate ?? audioMetadata.sampleRate
+        audioChannelCount = audioChannelCount ?? audioMetadata.channelCount
+      }
+
+      if (width !== null && height !== null && audioSampleRate !== null && audioChannelCount !== null) {
+        break
+      }
+    }
+
+    if (trackEntry.endOffset <= offset) {
+      break
+    }
+    offset = trackEntry.endOffset
+  }
+
+  return { width, height, audioSampleRate, audioChannelCount }
+}
+
+function readMatroskaSeekTargetElement(
+  filePath: string,
+  fileBytes: number,
+  segment: EbmlElementHeader,
+  seekPosition: number,
+  expectedId: number,
+): { buffer: Buffer, element: EbmlElementHeader } | null {
+  const absoluteOffset = segment.bodyOffset + seekPosition
+  if (seekPosition < 0 || absoluteOffset < 0 || absoluteOffset >= fileBytes) {
+    return null
+  }
+
+  const window = readFileWindow(filePath, absoluteOffset, Math.min(fileBytes - absoluteOffset, MATROSKA_SEEK_TARGET_SCAN_BYTES))
+  if (!window) {
+    return null
+  }
+
+  const element = readEbmlElementHeader(window, 0, window.length)
+  if (!element || element.id !== expectedId) {
+    return null
+  }
+
+  return { buffer: window, element }
 }
 
 function findMatroskaSegmentElement(buffer: Buffer): EbmlElementHeader | null {
@@ -1750,62 +1884,79 @@ function extractMatroskaVideoMetadata(filePath: string, fileBytes: number | unde
 
   const infoElement = findEbmlChildElement(head, segment, MATROSKA_INFO_ID)
   const tracksElement = findEbmlChildElement(head, segment, MATROSKA_TRACKS_ID)
-  const timecodeScaleElement = infoElement ? findEbmlChildElement(head, infoElement, MATROSKA_TIMECODE_SCALE_ID) : null
-  const durationElement = infoElement ? findEbmlChildElement(head, infoElement, MATROSKA_DURATION_ID) : null
-  const timecodeScale = timecodeScaleElement ? readEbmlUnsignedValue(head, timecodeScaleElement) : MATROSKA_DEFAULT_TIMECODE_SCALE_NS
-  const rawDuration = durationElement ? readEbmlFloatValue(head, durationElement) : null
-  const durationSeconds =
-    timecodeScale !== null && timecodeScale > 0 && rawDuration !== null && Number.isFinite(rawDuration) && rawDuration >= 0
-      ? roundDurationSeconds((rawDuration * timecodeScale) / 1_000_000_000)
-      : null
+  const seekHeadTargets = parseMatroskaSeekHeadTargets(head, segment)
+  const directDurationSeconds = infoElement
+    ? parseMatroskaInfoMetadata(head, infoElement)
+    : null
+  const durationSeconds = (() => {
+    const infoCandidates = [
+      ...(infoElement
+        ? [{ position: Math.max(0, infoElement.startOffset - segment.bodyOffset), sourceRank: 0, duration: directDurationSeconds }]
+        : []),
+      ...seekHeadTargets.infoPositions.map((position) => ({ position, sourceRank: 1, duration: null as number | null })),
+    ].sort((left, right) => left.position - right.position || left.sourceRank - right.sourceRank)
 
-  let width: number | null = null
-  let height: number | null = null
-  let audioSampleRate: number | null = null
-  let audioChannelCount: number | null = null
-  if (tracksElement) {
-    let offset = tracksElement.bodyOffset
-    while (offset < tracksElement.endOffset) {
-      const trackEntry = readEbmlElementHeader(head, offset, tracksElement.endOffset)
-      if (!trackEntry) {
-        break
+    let resolvedDuration: number | null = null
+    for (const candidate of infoCandidates) {
+      const candidateDuration = candidate.sourceRank === 0
+        ? candidate.duration
+        : (() => {
+            const seekTarget = readMatroskaSeekTargetElement(filePath, fileBytes, segment, candidate.position, MATROSKA_INFO_ID)
+            return seekTarget ? parseMatroskaInfoMetadata(seekTarget.buffer, seekTarget.element) : null
+          })()
+      if (candidateDuration !== null) {
+        resolvedDuration = candidateDuration
       }
-
-      if (trackEntry.id === MATROSKA_TRACK_ENTRY_ID) {
-        const trackTypeElement = findEbmlChildElement(head, trackEntry, MATROSKA_TRACK_TYPE_ID)
-        const trackType = trackTypeElement ? readEbmlUnsignedValue(head, trackTypeElement) : null
-        if (trackType === 1) {
-          const videoElement = findEbmlChildElement(head, trackEntry, MATROSKA_VIDEO_ID)
-          const widthElement = videoElement ? findEbmlChildElement(head, videoElement, MATROSKA_PIXEL_WIDTH_ID) : null
-          const heightElement = videoElement ? findEbmlChildElement(head, videoElement, MATROSKA_PIXEL_HEIGHT_ID) : null
-          const parsedWidth = widthElement ? readEbmlUnsignedValue(head, widthElement) : null
-          const parsedHeight = heightElement ? readEbmlUnsignedValue(head, heightElement) : null
-          width = width ?? (parsedWidth && parsedWidth > 0 && parsedWidth <= 32_768 ? parsedWidth : null)
-          height = height ?? (parsedHeight && parsedHeight > 0 && parsedHeight <= 32_768 ? parsedHeight : null)
-        } else if (trackType === 2) {
-          const audioMetadata = parseMatroskaAudioTrackMetadata(head, trackEntry)
-          audioSampleRate = audioSampleRate ?? audioMetadata.sampleRate
-          audioChannelCount = audioChannelCount ?? audioMetadata.channelCount
-        }
-
-        if (width !== null && height !== null && audioSampleRate !== null && audioChannelCount !== null) {
-          break
-        }
-      }
-
-      if (trackEntry.endOffset <= offset) {
-        break
-      }
-      offset = trackEntry.endOffset
     }
-  }
+    return resolvedDuration
+  })()
+  const directTrackMetadata = tracksElement
+    ? parseMatroskaTracksMetadata(head, tracksElement)
+    : { width: null, height: null, audioSampleRate: null, audioChannelCount: null }
+  const trackMetadata = (() => {
+    const trackCandidates = [
+      ...(tracksElement
+        ? [{ position: Math.max(0, tracksElement.startOffset - segment.bodyOffset), sourceRank: 0, metadata: directTrackMetadata }]
+        : []),
+      ...seekHeadTargets.tracksPositions.map((position) => ({
+        position,
+        sourceRank: 1,
+        metadata: null as { width: number | null, height: number | null, audioSampleRate: number | null, audioChannelCount: number | null } | null,
+      })),
+    ].sort((left, right) => left.position - right.position || left.sourceRank - right.sourceRank)
+
+    let resolvedTrackMetadata: { width: number | null, height: number | null, audioSampleRate: number | null, audioChannelCount: number | null } = {
+      width: null,
+      height: null,
+      audioSampleRate: null,
+      audioChannelCount: null,
+    }
+    for (const candidate of trackCandidates) {
+      const candidateMetadata = candidate.sourceRank === 0
+        ? candidate.metadata
+        : (() => {
+            const seekTarget = readMatroskaSeekTargetElement(filePath, fileBytes, segment, candidate.position, MATROSKA_TRACKS_ID)
+            return seekTarget ? parseMatroskaTracksMetadata(seekTarget.buffer, seekTarget.element) : null
+          })()
+      if (!candidateMetadata) {
+        continue
+      }
+      resolvedTrackMetadata = {
+        width: candidateMetadata.width ?? resolvedTrackMetadata.width,
+        height: candidateMetadata.height ?? resolvedTrackMetadata.height,
+        audioSampleRate: candidateMetadata.audioSampleRate ?? resolvedTrackMetadata.audioSampleRate,
+        audioChannelCount: candidateMetadata.audioChannelCount ?? resolvedTrackMetadata.audioChannelCount,
+      }
+    }
+    return resolvedTrackMetadata
+  })()
 
   return {
     ...(durationSeconds !== null ? { media_duration_seconds: durationSeconds } : {}),
-    ...(width ? { video_width_px: width } : {}),
-    ...(height ? { video_height_px: height } : {}),
-    ...(audioSampleRate ? { audio_sample_rate_hz: audioSampleRate } : {}),
-    ...(audioChannelCount ? { audio_channel_count: audioChannelCount } : {}),
+    ...(trackMetadata.width ? { video_width_px: trackMetadata.width } : {}),
+    ...(trackMetadata.height ? { video_height_px: trackMetadata.height } : {}),
+    ...(trackMetadata.audioSampleRate ? { audio_sample_rate_hz: trackMetadata.audioSampleRate } : {}),
+    ...(trackMetadata.audioChannelCount ? { audio_channel_count: trackMetadata.audioChannelCount } : {}),
   }
 }
 
@@ -2053,7 +2204,8 @@ const AVI_METADATA_SCAN_BYTES = 262_144
 const BINARY_METADATA_HEADER_BYTES = 65_536
 const AAC_SAMPLES_PER_RAW_BLOCK = 1_024
 const FLAC_METADATA_SCAN_BYTES = 262_144
-const MATROSKA_METADATA_SCAN_BYTES = 262_144
+const MATROSKA_METADATA_SCAN_BYTES = 524_288
+const MATROSKA_SEEK_TARGET_SCAN_BYTES = 1_048_576
 const MP3_ID3_SCAN_BYTES = 262_144
 const MP4_DURATION_SCAN_BYTES = 262_144
 const OGG_METADATA_SCAN_BYTES = 524_288
@@ -2066,6 +2218,10 @@ const MP4_ALBUM_METADATA_BOX_TYPE = Buffer.from([0xa9, 0x61, 0x6c, 0x62])
 const MATROSKA_DEFAULT_TIMECODE_SCALE_NS = 1_000_000
 const MATROSKA_EBML_HEADER_ID = 0x1a45dfa3
 const MATROSKA_SEGMENT_ID = 0x18538067
+const MATROSKA_SEEK_HEAD_ID = 0x114d9b74
+const MATROSKA_SEEK_ENTRY_ID = 0x4dbb
+const MATROSKA_SEEK_ID_ID = 0x53ab
+const MATROSKA_SEEK_POSITION_ID = 0x53ac
 const MATROSKA_INFO_ID = 0x1549a966
 const MATROSKA_TIMECODE_SCALE_ID = 0x2ad7b1
 const MATROSKA_DURATION_ID = 0x4489
