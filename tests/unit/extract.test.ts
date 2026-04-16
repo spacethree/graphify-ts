@@ -397,6 +397,127 @@ describe('extract', () => {
     return buffer
   }
 
+  const AVI_TEST_FRAME_RATE = 20
+
+  function createRiffChunk(chunkId: string, payload: Buffer): Buffer {
+    const header = Buffer.alloc(8)
+    header.write(chunkId, 0, 'ascii')
+    header.writeUInt32LE(payload.length, 4)
+    const padding = payload.length % 2 === 1 ? Buffer.from([0]) : Buffer.alloc(0)
+    return Buffer.concat([header, payload, padding])
+  }
+
+  function createRiffList(listType: string, children: Buffer[]): Buffer {
+    return createRiffChunk('LIST', Buffer.concat([Buffer.from(listType, 'ascii'), ...children]))
+  }
+
+  function createRiffForm(formType: string, children: Buffer[]): Buffer {
+    const payload = Buffer.concat([Buffer.from(formType, 'ascii'), ...children])
+    const header = Buffer.alloc(8)
+    header.write('RIFF', 0, 'ascii')
+    header.writeUInt32LE(payload.length, 4)
+    return Buffer.concat([header, payload])
+  }
+
+  function createAviMainHeader(
+    durationSeconds: number,
+    width: number,
+    height: number,
+    options: { zeroDuration?: boolean | undefined; zeroDimensions?: boolean | undefined } = {},
+  ): Buffer {
+    const payload = Buffer.alloc(56)
+    payload.writeUInt32LE(options.zeroDuration ? 0 : Math.round(1_000_000 / AVI_TEST_FRAME_RATE), 0)
+    payload.writeUInt32LE(options.zeroDuration ? 0 : Math.round(durationSeconds * AVI_TEST_FRAME_RATE), 16)
+    payload.writeUInt32LE(2, 24)
+    payload.writeUInt32LE(options.zeroDimensions ? 0 : width, 32)
+    payload.writeUInt32LE(options.zeroDimensions ? 0 : height, 36)
+    return payload
+  }
+
+  function createAviStreamHeader(streamType: 'vids' | 'auds', durationSeconds: number): Buffer {
+    const payload = Buffer.alloc(56)
+    payload.write(streamType, 0, 'ascii')
+    payload.writeUInt32LE(1, 20)
+    if (streamType === 'vids') {
+      payload.write('DIB ', 4, 'ascii')
+      payload.writeUInt32LE(AVI_TEST_FRAME_RATE, 24)
+      payload.writeUInt32LE(Math.round(durationSeconds * AVI_TEST_FRAME_RATE), 32)
+      return payload
+    }
+
+    payload.writeUInt32LE(48_000, 24)
+    payload.writeUInt32LE(Math.round(durationSeconds * 48_000), 32)
+    return payload
+  }
+
+  function createAviBitmapInfoHeader(width: number, height: number): Buffer {
+    const payload = Buffer.alloc(40)
+    payload.writeUInt32LE(40, 0)
+    payload.writeInt32LE(width, 4)
+    payload.writeInt32LE(height, 8)
+    payload.writeUInt16LE(1, 12)
+    payload.writeUInt16LE(24, 14)
+    return payload
+  }
+
+  function createAviWaveFormat(): Buffer {
+    const payload = Buffer.alloc(16)
+    payload.writeUInt16LE(1, 0)
+    payload.writeUInt16LE(2, 2)
+    payload.writeUInt32LE(48_000, 4)
+    payload.writeUInt32LE(192_000, 8)
+    payload.writeUInt16LE(4, 12)
+    payload.writeUInt16LE(16, 14)
+    return payload
+  }
+
+  function createTestAviBuffer(
+    options: {
+      durationSeconds?: number
+      width?: number
+      height?: number
+      audioTrackFirst?: boolean
+      zeroMainHeaderDuration?: boolean
+      zeroMainHeaderDimensions?: boolean
+      truncateVideoFormat?: boolean
+      tailPaddingBytes?: number
+    } = {},
+  ): Buffer {
+    const durationSeconds = options.durationSeconds ?? 3.5
+    const width = options.width ?? 640
+    const height = options.height ?? 360
+    const audioTrackFirst = options.audioTrackFirst ?? true
+    const tailPaddingBytes = options.tailPaddingBytes ?? 0
+    const videoStreamList = createRiffList('strl', [
+      createRiffChunk('strh', createAviStreamHeader('vids', durationSeconds)),
+      createRiffChunk(
+        'strf',
+        options.truncateVideoFormat
+          ? createAviBitmapInfoHeader(width, height).subarray(0, 8)
+          : createAviBitmapInfoHeader(width, height),
+      ),
+    ])
+    const audioStreamList = createRiffList('strl', [
+      createRiffChunk('strh', createAviStreamHeader('auds', durationSeconds)),
+      createRiffChunk('strf', createAviWaveFormat()),
+    ])
+    const hdrl = createRiffList('hdrl', [
+      createRiffChunk(
+        'avih',
+        createAviMainHeader(durationSeconds, width, height, {
+          zeroDuration: options.zeroMainHeaderDuration,
+          zeroDimensions: options.zeroMainHeaderDimensions,
+        }),
+      ),
+      ...(audioTrackFirst ? [audioStreamList, videoStreamList] : [videoStreamList, audioStreamList]),
+    ])
+    return createRiffForm('AVI ', [
+      hdrl,
+      createRiffList('movi', []),
+      ...(tailPaddingBytes > 0 ? [createRiffChunk('JUNK', Buffer.alloc(tailPaddingBytes))] : []),
+    ])
+  }
+
   function encodeSynchsafeInteger(value: number): Buffer {
     return Buffer.from([
       (value >> 21) & 0x7f,
@@ -596,6 +717,15 @@ describe('extract', () => {
     header[26] = 1
     header[27] = packet.length
     return Buffer.concat([header, packet])
+  }
+
+  function createOggSkeletonBosPage(bitstreamSerialNumber: number = 7): Buffer {
+    return createOggPage(Buffer.from('fishead\0', 'binary'), {
+      headerType: 0x02,
+      granulePosition: 0n,
+      bitstreamSerialNumber,
+      sequenceNumber: 0,
+    })
   }
 
   function createVorbisIdentificationPacket(sampleRate: number, channelCount: number): Buffer {
@@ -2583,6 +2713,142 @@ describe('extract', () => {
     }
   })
 
+  it('extracts Ogg Vorbis metadata when a non-audio BOS stream appears before the target stream', () => {
+    const root = createTempRoot()
+    try {
+      const oggPath = join(root, 'prefixed.ogg')
+      const oggBuffer = Buffer.concat([
+        createOggSkeletonBosPage(),
+        ...createOggVorbisStreamPages({
+          title: 'Release Notes',
+          artist: 'Graphify FM',
+          album: 'Engineering Notes',
+        }),
+      ])
+      writeFileSync(oggPath, oggBuffer)
+
+      const result = extract([oggPath])
+      const oggNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'prefixed.ogg')
+
+      expect(oggNode).toMatchObject({
+        content_type: 'audio/ogg',
+        file_bytes: oggBuffer.length,
+        media_duration_seconds: 2.5,
+        audio_sample_rate_hz: 44100,
+        audio_channel_count: 2,
+        audio_title: 'Release Notes',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts Opus metadata when a non-audio BOS stream appears before the target stream', () => {
+    const root = createTempRoot()
+    try {
+      const opusPath = join(root, 'prefixed.opus')
+      const opusBuffer = Buffer.concat([
+        createOggSkeletonBosPage(),
+        createTestOggOpusBuffer({
+          title: 'Voice Memo',
+          artist: 'Graphify FM',
+          album: 'Engineering Notes',
+        }),
+      ])
+      writeFileSync(opusPath, opusBuffer)
+
+      const result = extract([opusPath])
+      const opusNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'prefixed.opus')
+
+      expect(opusNode).toMatchObject({
+        content_type: 'audio/opus',
+        file_bytes: opusBuffer.length,
+        media_duration_seconds: 1.75,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 1,
+        audio_title: 'Voice Memo',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts Ogg Vorbis metadata when a large prefixed non-audio stream pushes the target BOS page beyond the default head window', () => {
+    const root = createTempRoot()
+    try {
+      const oggPath = join(root, 'large-prefixed.ogg')
+      const oggBuffer = Buffer.concat([
+        ...createOggFillerPages(300_000, 29),
+        ...createOggVorbisStreamPages({
+          title: 'Release Notes',
+          artist: 'Graphify FM',
+          album: 'Engineering Notes',
+        }),
+      ])
+      writeFileSync(oggPath, oggBuffer)
+
+      const result = extract([oggPath])
+      const oggNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'large-prefixed.ogg')
+
+      expect(oggNode).toMatchObject({
+        content_type: 'audio/ogg',
+        file_bytes: oggBuffer.length,
+        media_duration_seconds: 2.5,
+        audio_sample_rate_hz: 44100,
+        audio_channel_count: 2,
+        audio_title: 'Release Notes',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts Opus metadata when a large prefixed non-audio stream pushes the target BOS page beyond the default head window', () => {
+    const root = createTempRoot()
+    try {
+      const opusPath = join(root, 'large-prefixed.opus')
+      const opusBuffer = Buffer.concat([
+        ...createOggFillerPages(300_000, 29),
+        createTestOggOpusBuffer({
+          title: 'Voice Memo',
+          artist: 'Graphify FM',
+          album: 'Engineering Notes',
+        }),
+      ])
+      writeFileSync(opusPath, opusBuffer)
+
+      const result = extract([opusPath])
+      const opusNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'large-prefixed.opus')
+
+      expect(opusNode).toMatchObject({
+        content_type: 'audio/opus',
+        file_bytes: opusBuffer.length,
+        media_duration_seconds: 1.75,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 1,
+        audio_title: 'Voice Memo',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('extracts deterministic AAC and M4A metadata from saved audio assets', () => {
     const root = createTempRoot()
     try {
@@ -2706,21 +2972,29 @@ describe('extract', () => {
     }
   })
 
-  it('extracts deterministic MP4-family and Matroska/WebM video metadata from saved assets', () => {
+  it('extracts deterministic MP4-family, AVI, and Matroska/WebM video metadata from saved assets, including large AVI files', () => {
     const root = createTempRoot()
     try {
       const mp4Path = join(root, 'clip.mp4')
+      const aviPath = join(root, 'recording.avi')
       const webmPath = join(root, 'session.webm')
       const mkvPath = join(root, 'archive.mkv')
       const mp4Buffer = createTestVideoMp4Buffer()
+      const aviBuffer = createTestAviBuffer({
+        zeroMainHeaderDuration: true,
+        zeroMainHeaderDimensions: true,
+        tailPaddingBytes: 300_000,
+      })
       const webmBuffer = createTestMatroskaBuffer()
       const mkvBuffer = createTestMatroskaBuffer({ docType: 'matroska', durationSeconds: 6.75, width: 854, height: 480 })
       writeFileSync(mp4Path, mp4Buffer)
+      writeFileSync(aviPath, aviBuffer)
       writeFileSync(webmPath, webmBuffer)
       writeFileSync(mkvPath, mkvBuffer)
 
-      const result = extract([mp4Path, webmPath, mkvPath])
+      const result = extract([mp4Path, aviPath, webmPath, mkvPath])
       const mp4Node = result.nodes.find((node) => node.file_type === 'video' && node.label === 'clip.mp4')
+      const aviNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'recording.avi')
       const webmNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'session.webm')
       const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'archive.mkv')
 
@@ -2728,8 +3002,19 @@ describe('extract', () => {
         content_type: 'video/mp4',
         file_bytes: mp4Buffer.length,
         media_duration_seconds: 2.5,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
         video_width_px: 1920,
         video_height_px: 1080,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(aviNode).toMatchObject({
+        content_type: 'video/x-msvideo',
+        file_bytes: aviBuffer.length,
+        media_duration_seconds: 3.5,
+        video_width_px: 640,
+        video_height_px: 360,
         layer: 'base',
         provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
       })
@@ -2751,6 +3036,56 @@ describe('extract', () => {
         layer: 'base',
         provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
       })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts embedded audio-track metadata from MP4-family video assets when the video track appears before the audio track', () => {
+    const root = createTempRoot()
+    try {
+      const movPath = join(root, 'clip.mov')
+      const movBuffer = createTestVideoMp4Buffer({ audioTrackFirst: false })
+      writeFileSync(movPath, movBuffer)
+
+      const result = extract([movPath])
+      const movNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'clip.mov')
+
+      expect(movNode).toMatchObject({
+        content_type: 'video/quicktime',
+        file_bytes: movBuffer.length,
+        media_duration_seconds: 2.5,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1920,
+        video_height_px: 1080,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('omits AVI resolution metadata when the video format chunk is truncated', () => {
+    const root = createTempRoot()
+    try {
+      const aviPath = join(root, 'broken-video.avi')
+      const aviBuffer = createTestAviBuffer({ zeroMainHeaderDimensions: true, truncateVideoFormat: true })
+      writeFileSync(aviPath, aviBuffer)
+
+      const result = extract([aviPath])
+      const aviNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'broken-video.avi')
+
+      expect(aviNode).toMatchObject({
+        content_type: 'video/x-msvideo',
+        file_bytes: aviBuffer.length,
+        media_duration_seconds: 3.5,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(aviNode?.video_width_px).toBeUndefined()
+      expect(aviNode?.video_height_px).toBeUndefined()
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -5100,6 +5435,168 @@ describe('extract', () => {
         media_duration_seconds: 4.25,
         video_width_px: 1280,
         video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-avi-video cache version', () => {
+    const root = createTempRoot()
+    try {
+      const aviPath = join(root, 'recording.avi')
+      const aviBuffer = createTestAviBuffer({ zeroMainHeaderDuration: true, zeroMainHeaderDimensions: true })
+      writeFileSync(aviPath, aviBuffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(aviPath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 18,
+          nodes: [{ id: 'stale_avi_video', label: 'recording.avi', file_type: 'video', source_file: aviPath }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([aviPath])
+      const aviNode = recovered.nodes.find((node) => node.file_type === 'video' && node.label === 'recording.avi')
+
+      expect(aviNode).toMatchObject({
+        content_type: 'video/x-msvideo',
+        file_bytes: aviBuffer.length,
+        media_duration_seconds: 3.5,
+        video_width_px: 640,
+        video_height_px: 360,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-ogg-bos cache version', () => {
+    const root = createTempRoot()
+    try {
+      const oggPath = join(root, 'prefixed.ogg')
+      const oggBuffer = Buffer.concat([
+        createOggSkeletonBosPage(),
+        ...createOggVorbisStreamPages({
+          title: 'Release Notes',
+          artist: 'Graphify FM',
+          album: 'Engineering Notes',
+        }),
+      ])
+      writeFileSync(oggPath, oggBuffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(oggPath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 19,
+          nodes: [{ id: 'stale_ogg_audio', label: 'prefixed.ogg', file_type: 'audio', source_file: oggPath }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([oggPath])
+      const oggNode = recovered.nodes.find((node) => node.file_type === 'audio' && node.label === 'prefixed.ogg')
+
+      expect(oggNode).toMatchObject({
+        content_type: 'audio/ogg',
+        file_bytes: oggBuffer.length,
+        media_duration_seconds: 2.5,
+        audio_sample_rate_hz: 44100,
+        audio_channel_count: 2,
+        audio_title: 'Release Notes',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-ogg-window cache version', () => {
+    const root = createTempRoot()
+    try {
+      const oggPath = join(root, 'large-prefixed.ogg')
+      const oggBuffer = Buffer.concat([
+        ...createOggFillerPages(300_000, 29),
+        ...createOggVorbisStreamPages({
+          title: 'Release Notes',
+          artist: 'Graphify FM',
+          album: 'Engineering Notes',
+        }),
+      ])
+      writeFileSync(oggPath, oggBuffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(oggPath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 20,
+          nodes: [{ id: 'stale_large_prefixed_ogg_audio', label: 'large-prefixed.ogg', file_type: 'audio', source_file: oggPath }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([oggPath])
+      const oggNode = recovered.nodes.find((node) => node.file_type === 'audio' && node.label === 'large-prefixed.ogg')
+
+      expect(oggNode).toMatchObject({
+        content_type: 'audio/ogg',
+        file_bytes: oggBuffer.length,
+        media_duration_seconds: 2.5,
+        audio_sample_rate_hz: 44100,
+        audio_channel_count: 2,
+        audio_title: 'Release Notes',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-mp4-video-audio cache version', () => {
+    const root = createTempRoot()
+    try {
+      const mp4Path = join(root, 'clip.mp4')
+      const mp4Buffer = createTestVideoMp4Buffer()
+      writeFileSync(mp4Path, mp4Buffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(mp4Path)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 21,
+          nodes: [{ id: 'stale_mp4_video', label: 'clip.mp4', file_type: 'video', source_file: mp4Path }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([mp4Path])
+      const mp4Node = recovered.nodes.find((node) => node.file_type === 'video' && node.label === 'clip.mp4')
+
+      expect(mp4Node).toMatchObject({
+        content_type: 'video/mp4',
+        file_bytes: mp4Buffer.length,
+        media_duration_seconds: 2.5,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1920,
+        video_height_px: 1080,
         layer: 'base',
         provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
       })

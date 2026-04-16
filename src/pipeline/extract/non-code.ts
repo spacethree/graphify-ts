@@ -127,6 +127,267 @@ function extractWavDurationMetadata(filePath: string, fileBytes: number | undefi
   }
 }
 
+interface RiffChunkHeader {
+  startOffset: number
+  id: string
+  bodyOffset: number
+  dataEndOffset: number
+  endOffset: number
+}
+
+interface AviMainHeaderMetadata {
+  durationSeconds: number | null
+  width: number | null
+  height: number | null
+}
+
+interface AviStreamHeaderMetadata {
+  streamType: string
+  durationSeconds: number | null
+}
+
+function readRiffChunkHeader(buffer: Buffer, offset: number, limit: number): RiffChunkHeader | null {
+  if (offset + 8 > limit) {
+    return null
+  }
+
+  const chunkSize = buffer.readUInt32LE(offset + 4)
+  const bodyOffset = offset + 8
+  const dataEndOffset = bodyOffset + chunkSize
+  if (dataEndOffset > limit) {
+    return null
+  }
+
+  const endOffset = dataEndOffset + (chunkSize % 2)
+  if (endOffset > limit) {
+    return null
+  }
+
+  return {
+    startOffset: offset,
+    id: buffer.toString('ascii', offset, offset + 4),
+    bodyOffset,
+    dataEndOffset,
+    endOffset,
+  }
+}
+
+function readRiffFormHeader(buffer: Buffer, fileBytes: number): RiffChunkHeader | null {
+  if (buffer.length < 8 || fileBytes < 8) {
+    return null
+  }
+
+  const chunkSize = buffer.readUInt32LE(4)
+  const bodyOffset = 8
+  const fullDataEndOffset = bodyOffset + chunkSize
+  if (fullDataEndOffset > fileBytes) {
+    return null
+  }
+
+  const fullEndOffset = fullDataEndOffset + (chunkSize % 2)
+  if (fullEndOffset > fileBytes) {
+    return null
+  }
+
+  return {
+    startOffset: 0,
+    id: buffer.toString('ascii', 0, 4),
+    bodyOffset,
+    dataEndOffset: Math.min(fullDataEndOffset, buffer.length),
+    endOffset: Math.min(fullEndOffset, buffer.length),
+  }
+}
+
+function readRiffListType(buffer: Buffer, chunk: RiffChunkHeader): string | null {
+  if ((chunk.id !== 'RIFF' && chunk.id !== 'LIST') || chunk.bodyOffset + 4 > chunk.dataEndOffset) {
+    return null
+  }
+
+  return buffer.toString('ascii', chunk.bodyOffset, chunk.bodyOffset + 4)
+}
+
+function findRiffListChunk(buffer: Buffer, parentChunk: RiffChunkHeader, listType: string): RiffChunkHeader | null {
+  if ((parentChunk.id !== 'RIFF' && parentChunk.id !== 'LIST') || parentChunk.bodyOffset + 4 > parentChunk.dataEndOffset) {
+    return null
+  }
+
+  let offset = parentChunk.bodyOffset + 4
+  while (offset + 8 <= parentChunk.dataEndOffset) {
+    const childChunk = readRiffChunkHeader(buffer, offset, parentChunk.dataEndOffset)
+    if (!childChunk) {
+      return null
+    }
+
+    if (childChunk.id === 'LIST' && readRiffListType(buffer, childChunk) === listType) {
+      return childChunk
+    }
+
+    if (childChunk.endOffset <= offset) {
+      return null
+    }
+    offset = childChunk.endOffset
+  }
+
+  return null
+}
+
+function parseAviMainHeader(buffer: Buffer, chunk: RiffChunkHeader): AviMainHeaderMetadata | null {
+  if (chunk.bodyOffset + 40 > chunk.dataEndOffset) {
+    return null
+  }
+
+  const microsecondsPerFrame = buffer.readUInt32LE(chunk.bodyOffset)
+  const totalFrames = buffer.readUInt32LE(chunk.bodyOffset + 16)
+  const width = buffer.readUInt32LE(chunk.bodyOffset + 32)
+  const height = buffer.readUInt32LE(chunk.bodyOffset + 36)
+  const durationSeconds =
+    microsecondsPerFrame > 0 && totalFrames > 0
+      ? roundDurationSeconds(Number(BigInt(microsecondsPerFrame) * BigInt(totalFrames)) / 1_000_000)
+      : null
+
+  return {
+    durationSeconds,
+    width: width > 0 && width <= 32_768 ? width : null,
+    height: height > 0 && height <= 32_768 ? height : null,
+  }
+}
+
+function parseAviStreamHeader(buffer: Buffer, chunk: RiffChunkHeader): AviStreamHeaderMetadata | null {
+  if (chunk.bodyOffset + 36 > chunk.dataEndOffset) {
+    return null
+  }
+
+  const streamType = buffer.toString('ascii', chunk.bodyOffset, chunk.bodyOffset + 4)
+  const scale = buffer.readUInt32LE(chunk.bodyOffset + 20)
+  const rate = buffer.readUInt32LE(chunk.bodyOffset + 24)
+  const length = buffer.readUInt32LE(chunk.bodyOffset + 32)
+  const durationSeconds =
+    scale > 0 && rate > 0 && length > 0
+      ? roundDurationSeconds(Number(BigInt(length) * BigInt(scale)) / rate)
+      : null
+
+  return { streamType, durationSeconds }
+}
+
+function parseAviBitmapInfoHeader(buffer: Buffer, chunk: RiffChunkHeader): { width: number; height: number } | null {
+  if (chunk.bodyOffset + 12 > chunk.dataEndOffset) {
+    return null
+  }
+
+  const width = buffer.readInt32LE(chunk.bodyOffset + 4)
+  const height = Math.abs(buffer.readInt32LE(chunk.bodyOffset + 8))
+  if (width <= 0 || width > 32_768 || height <= 0 || height > 32_768) {
+    return null
+  }
+
+  return { width, height }
+}
+
+function parseAviVideoStreamListMetadata(
+  buffer: Buffer,
+  streamListChunk: RiffChunkHeader,
+): { durationSeconds: number | null; width: number | null; height: number | null } | null {
+  if (readRiffListType(buffer, streamListChunk) !== 'strl' || streamListChunk.bodyOffset + 4 > streamListChunk.dataEndOffset) {
+    return null
+  }
+
+  let streamHeader: AviStreamHeaderMetadata | null = null
+  let formatChunk: RiffChunkHeader | null = null
+  let offset = streamListChunk.bodyOffset + 4
+  while (offset + 8 <= streamListChunk.dataEndOffset) {
+    const childChunk = readRiffChunkHeader(buffer, offset, streamListChunk.dataEndOffset)
+    if (!childChunk) {
+      break
+    }
+
+    if (childChunk.id === 'strh') {
+      streamHeader = parseAviStreamHeader(buffer, childChunk)
+    } else if (childChunk.id === 'strf' && !formatChunk) {
+      formatChunk = childChunk
+    }
+
+    if (childChunk.endOffset <= offset) {
+      break
+    }
+    offset = childChunk.endOffset
+  }
+
+  if (streamHeader?.streamType !== 'vids') {
+    return null
+  }
+
+  const videoFormat = formatChunk ? parseAviBitmapInfoHeader(buffer, formatChunk) : null
+  return {
+    durationSeconds: streamHeader.durationSeconds,
+    width: videoFormat?.width ?? null,
+    height: videoFormat?.height ?? null,
+  }
+}
+
+function extractAviVideoMetadata(filePath: string, fileBytes: number | undefined): Record<string, number> {
+  if (!fileBytes || fileBytes < 12) {
+    return {}
+  }
+
+  const head = readFileWindow(filePath, 0, Math.min(fileBytes, AVI_METADATA_SCAN_BYTES))
+  if (!head || head.length < 12) {
+    return {}
+  }
+
+  const riff = readRiffFormHeader(head, fileBytes)
+  if (!riff || riff.id !== 'RIFF' || readRiffListType(head, riff) !== 'AVI ') {
+    return {}
+  }
+
+  const headerList = findRiffListChunk(head, riff, 'hdrl')
+  if (!headerList) {
+    return {}
+  }
+
+  let mainHeader: AviMainHeaderMetadata | null = null
+  let durationSeconds: number | null = null
+  let width: number | null = null
+  let height: number | null = null
+  let offset = headerList.bodyOffset + 4
+  while (offset + 8 <= headerList.dataEndOffset) {
+    const childChunk = readRiffChunkHeader(head, offset, headerList.dataEndOffset)
+    if (!childChunk) {
+      break
+    }
+
+    if (childChunk.id === 'avih') {
+      mainHeader = parseAviMainHeader(head, childChunk)
+    } else if (childChunk.id === 'LIST' && readRiffListType(head, childChunk) === 'strl') {
+      const videoStreamMetadata = parseAviVideoStreamListMetadata(head, childChunk)
+      if (videoStreamMetadata) {
+        if (durationSeconds === null && videoStreamMetadata.durationSeconds !== null) {
+          durationSeconds = videoStreamMetadata.durationSeconds
+        }
+        if (width === null && videoStreamMetadata.width !== null) {
+          width = videoStreamMetadata.width
+        }
+        if (height === null && videoStreamMetadata.height !== null) {
+          height = videoStreamMetadata.height
+        }
+      }
+    }
+
+    if (childChunk.endOffset <= offset) {
+      break
+    }
+    offset = childChunk.endOffset
+  }
+
+  const resolvedDuration = durationSeconds ?? mainHeader?.durationSeconds ?? null
+  const resolvedWidth = width ?? mainHeader?.width ?? null
+  const resolvedHeight = height ?? mainHeader?.height ?? null
+  return {
+    ...(resolvedDuration !== null ? { media_duration_seconds: resolvedDuration } : {}),
+    ...(resolvedWidth ? { video_width_px: resolvedWidth } : {}),
+    ...(resolvedHeight ? { video_height_px: resolvedHeight } : {}),
+  }
+}
+
 interface Mp4BoxHeader {
   startOffset: number
   headerSize: number
@@ -556,7 +817,11 @@ function extractMp4VideoMetadata(filePath: string, fileBytes: number | undefined
   }
 
   const videoTrackBox = findMp4TrackBoxByHandlerType(moovData.buffer, moovData.moovBox, 'vide')
-  return videoTrackBox ? parseMp4TrakVideoMetadata(moovData.buffer, videoTrackBox) : {}
+  const audioTrackBox = findMp4TrackBoxByHandlerType(moovData.buffer, moovData.moovBox, 'soun')
+  return {
+    ...(videoTrackBox ? parseMp4TrakVideoMetadata(moovData.buffer, videoTrackBox) : {}),
+    ...(audioTrackBox ? parseMp4TrakAudioMetadata(moovData.buffer, audioTrackBox) : {}),
+  }
 }
 
 function extractMp4DurationMetadata(filePath: string, fileBytes: number | undefined): Record<string, number> {
@@ -1001,6 +1266,33 @@ function readOggHeadPackets(buffer: Buffer, maxPackets: number, bitstreamSerialN
   return packets
 }
 
+function findSupportedOggAudioHead(buffer: Buffer): { bitstreamSerialNumber: number; packets: Buffer[] } | null {
+  const visitedSerialNumbers = new Set<number>()
+  let offset = 0
+  while (offset + 27 <= buffer.length) {
+    const page = readOggPageHeader(buffer, offset, buffer.length)
+    if (!page) {
+      break
+    }
+
+    if ((page.headerType & 0x02) !== 0 && !visitedSerialNumbers.has(page.bitstreamSerialNumber)) {
+      visitedSerialNumbers.add(page.bitstreamSerialNumber)
+      const packets = readOggHeadPackets(buffer, 2, page.bitstreamSerialNumber)
+      const firstPacket = packets[0]
+      if (firstPacket && (parseVorbisIdentificationPacket(firstPacket) || parseOpusHeadPacket(firstPacket))) {
+        return { bitstreamSerialNumber: page.bitstreamSerialNumber, packets }
+      }
+    }
+
+    if (page.pageEnd <= offset) {
+      break
+    }
+    offset = page.pageEnd
+  }
+
+  return null
+}
+
 function parseVorbisIdentificationPacket(packet: Buffer): { sampleRate: number; channelCount: number } | null {
   if (packet.length < 30 || packet[0] !== 1 || packet.toString('ascii', 1, 7) !== 'vorbis') {
     return null
@@ -1408,18 +1700,17 @@ function extractOggAudioMetadata(filePath: string, fileBytes: number | undefined
     return {}
   }
 
-  const firstPage = readOggPageHeader(head, 0, head.length)
-  if (!firstPage) {
+  const audioHead = findSupportedOggAudioHead(head)
+  if (!audioHead) {
     return {}
   }
 
-  const packets = readOggHeadPackets(head, 2, firstPage.bitstreamSerialNumber)
-  const firstPacket = packets[0]
+  const firstPacket = audioHead.packets[0]
   if (!firstPacket) {
     return {}
   }
 
-  const finalGranulePosition = findLastOggPageGranulePosition(filePath, fileBytes, firstPage.bitstreamSerialNumber)
+  const finalGranulePosition = findLastOggPageGranulePosition(filePath, fileBytes, audioHead.bitstreamSerialNumber)
   const vorbisIdentification = parseVorbisIdentificationPacket(firstPacket)
   if (vorbisIdentification) {
     const { sampleRate, channelCount } = vorbisIdentification
@@ -1430,7 +1721,7 @@ function extractOggAudioMetadata(filePath: string, fileBytes: number | undefined
       ...(durationSeconds !== null ? { media_duration_seconds: durationSeconds } : {}),
       audio_sample_rate_hz: sampleRate,
       audio_channel_count: channelCount,
-      ...parseVorbisCommentPacket(packets[1] ?? Buffer.alloc(0)),
+      ...parseVorbisCommentPacket(audioHead.packets[1] ?? Buffer.alloc(0)),
     }
   }
 
@@ -1447,7 +1738,7 @@ function extractOggAudioMetadata(filePath: string, fileBytes: number | undefined
     ...(durationSeconds !== null ? { media_duration_seconds: durationSeconds } : {}),
     audio_sample_rate_hz: opusHead.sampleRate,
     audio_channel_count: opusHead.channelCount,
-    ...parseOpusTagsPacket(packets[1] ?? Buffer.alloc(0)),
+    ...parseOpusTagsPacket(audioHead.packets[1] ?? Buffer.alloc(0)),
   }
 }
 
@@ -1505,6 +1796,10 @@ function extractBinaryVideoMetadata(
 
   if (MP4_FAMILY_EXTENSIONS.has(extension)) {
     return extractMp4VideoMetadata(filePath, fileBytes)
+  }
+
+  if (extension === '.avi') {
+    return extractAviVideoMetadata(filePath, fileBytes)
   }
 
   if (MATROSKA_FAMILY_EXTENSIONS.has(extension)) {
@@ -1567,13 +1862,14 @@ const PDF_COMMON_SECTION_LABELS = new Set([
 ])
 const DOCX_TEXT_PATTERN = /<w:t(?:\s[^>]*)?>([\s\S]{0,8192}?)<\/w:t>/g
 const XLSX_TEXT_PATTERN = /<(?:\w+:)?t(?:\s[^>]*)?>([\s\S]{0,8192}?)<\/(?:\w+:)?t>/g
+const AVI_METADATA_SCAN_BYTES = 262_144
 const BINARY_METADATA_HEADER_BYTES = 65_536
 const AAC_SAMPLES_PER_RAW_BLOCK = 1_024
 const FLAC_METADATA_SCAN_BYTES = 262_144
 const MATROSKA_METADATA_SCAN_BYTES = 262_144
 const MP3_ID3_SCAN_BYTES = 262_144
 const MP4_DURATION_SCAN_BYTES = 262_144
-const OGG_METADATA_SCAN_BYTES = 262_144
+const OGG_METADATA_SCAN_BYTES = 524_288
 const OGG_PAGE_SCAN_OVERLAP_BYTES = 65_536
 const OGG_TAIL_SCAN_BYTES = 262_144
 const AAC_SAMPLE_RATES = [96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025, 8_000, 7_350]

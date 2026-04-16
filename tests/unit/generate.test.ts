@@ -297,6 +297,121 @@ function createTestMatroskaBuffer(
   return Buffer.concat([ebmlHeader, segment])
 }
 
+const AVI_TEST_FRAME_RATE = 20
+
+function createRiffChunk(chunkId: string, payload: Buffer): Buffer {
+  const header = Buffer.alloc(8)
+  header.write(chunkId, 0, 'ascii')
+  header.writeUInt32LE(payload.length, 4)
+  const padding = payload.length % 2 === 1 ? Buffer.from([0]) : Buffer.alloc(0)
+  return Buffer.concat([header, payload, padding])
+}
+
+function createRiffList(listType: string, children: Buffer[]): Buffer {
+  return createRiffChunk('LIST', Buffer.concat([Buffer.from(listType, 'ascii'), ...children]))
+}
+
+function createRiffForm(formType: string, children: Buffer[]): Buffer {
+  const payload = Buffer.concat([Buffer.from(formType, 'ascii'), ...children])
+  const header = Buffer.alloc(8)
+  header.write('RIFF', 0, 'ascii')
+  header.writeUInt32LE(payload.length, 4)
+  return Buffer.concat([header, payload])
+}
+
+function createAviMainHeader(
+  durationSeconds: number,
+  width: number,
+  height: number,
+  options: { zeroDuration?: boolean | undefined; zeroDimensions?: boolean | undefined } = {},
+): Buffer {
+  const payload = Buffer.alloc(56)
+  payload.writeUInt32LE(options.zeroDuration ? 0 : Math.round(1_000_000 / AVI_TEST_FRAME_RATE), 0)
+  payload.writeUInt32LE(options.zeroDuration ? 0 : Math.round(durationSeconds * AVI_TEST_FRAME_RATE), 16)
+  payload.writeUInt32LE(2, 24)
+  payload.writeUInt32LE(options.zeroDimensions ? 0 : width, 32)
+  payload.writeUInt32LE(options.zeroDimensions ? 0 : height, 36)
+  return payload
+}
+
+function createAviStreamHeader(streamType: 'vids' | 'auds', durationSeconds: number): Buffer {
+  const payload = Buffer.alloc(56)
+  payload.write(streamType, 0, 'ascii')
+  payload.writeUInt32LE(1, 20)
+  if (streamType === 'vids') {
+    payload.write('DIB ', 4, 'ascii')
+    payload.writeUInt32LE(AVI_TEST_FRAME_RATE, 24)
+    payload.writeUInt32LE(Math.round(durationSeconds * AVI_TEST_FRAME_RATE), 32)
+    return payload
+  }
+
+  payload.writeUInt32LE(48_000, 24)
+  payload.writeUInt32LE(Math.round(durationSeconds * 48_000), 32)
+  return payload
+}
+
+function createAviBitmapInfoHeader(width: number, height: number): Buffer {
+  const payload = Buffer.alloc(40)
+  payload.writeUInt32LE(40, 0)
+  payload.writeInt32LE(width, 4)
+  payload.writeInt32LE(height, 8)
+  payload.writeUInt16LE(1, 12)
+  payload.writeUInt16LE(24, 14)
+  return payload
+}
+
+function createAviWaveFormat(): Buffer {
+  const payload = Buffer.alloc(16)
+  payload.writeUInt16LE(1, 0)
+  payload.writeUInt16LE(2, 2)
+  payload.writeUInt32LE(48_000, 4)
+  payload.writeUInt32LE(192_000, 8)
+  payload.writeUInt16LE(4, 12)
+  payload.writeUInt16LE(16, 14)
+  return payload
+}
+
+function createTestAviBuffer(
+  options: {
+    durationSeconds?: number
+    width?: number
+    height?: number
+    audioTrackFirst?: boolean
+    zeroMainHeaderDuration?: boolean
+    zeroMainHeaderDimensions?: boolean
+    tailPaddingBytes?: number
+  } = {},
+): Buffer {
+  const durationSeconds = options.durationSeconds ?? 3.5
+  const width = options.width ?? 640
+  const height = options.height ?? 360
+  const audioTrackFirst = options.audioTrackFirst ?? true
+  const tailPaddingBytes = options.tailPaddingBytes ?? 0
+  const videoStreamList = createRiffList('strl', [
+    createRiffChunk('strh', createAviStreamHeader('vids', durationSeconds)),
+    createRiffChunk('strf', createAviBitmapInfoHeader(width, height)),
+  ])
+  const audioStreamList = createRiffList('strl', [
+    createRiffChunk('strh', createAviStreamHeader('auds', durationSeconds)),
+    createRiffChunk('strf', createAviWaveFormat()),
+  ])
+  const hdrl = createRiffList('hdrl', [
+    createRiffChunk(
+      'avih',
+      createAviMainHeader(durationSeconds, width, height, {
+        zeroDuration: options.zeroMainHeaderDuration,
+        zeroDimensions: options.zeroMainHeaderDimensions,
+      }),
+    ),
+    ...(audioTrackFirst ? [audioStreamList, videoStreamList] : [videoStreamList, audioStreamList]),
+  ])
+  return createRiffForm('AVI ', [
+    hdrl,
+    createRiffList('movi', []),
+    ...(tailPaddingBytes > 0 ? [createRiffChunk('JUNK', Buffer.alloc(tailPaddingBytes))] : []),
+  ])
+}
+
 const AAC_SAMPLE_RATES = [96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025, 8_000, 7_350]
 
 function aacSampleRateIndex(sampleRate: number): number {
@@ -443,6 +558,15 @@ function createOggPage(
   return Buffer.concat([header, packet])
 }
 
+function createOggSkeletonBosPage(bitstreamSerialNumber: number = 7): Buffer {
+  return createOggPage(Buffer.from('fishead\0', 'binary'), {
+    headerType: 0x02,
+    granulePosition: 0n,
+    bitstreamSerialNumber,
+    sequenceNumber: 0,
+  })
+}
+
 function createVorbisIdentificationPacket(sampleRate: number, channelCount: number): Buffer {
   const packet = Buffer.alloc(30)
   packet[0] = 1
@@ -495,6 +619,25 @@ function createTestOggVorbisBuffer(
       sequenceNumber: 2,
     }),
   ])
+}
+
+function createOggFillerPages(totalBytes: number, bitstreamSerialNumber: number, startingSequenceNumber: number = 0): Buffer[] {
+  const pages: Buffer[] = []
+  let sequenceNumber = startingSequenceNumber
+  let producedBytes = 0
+  while (producedBytes < totalBytes) {
+    const isLastPage = producedBytes + 282 >= totalBytes
+    const page = createOggPage(Buffer.alloc(254, sequenceNumber % 251), {
+      headerType: sequenceNumber === startingSequenceNumber ? 0x02 : isLastPage ? 0x04 : 0,
+      granulePosition: 0n,
+      bitstreamSerialNumber,
+      sequenceNumber,
+    })
+    pages.push(page)
+    producedBytes += page.length
+    sequenceNumber += 1
+  }
+  return pages
 }
 
 function createOpusHeadPacket(channelCount: number, inputSampleRate: number = 48_000, preSkip: number = 312): Buffer {
@@ -759,6 +902,124 @@ describe('generateGraph', () => {
     })
   })
 
+  test('builds graph artifacts with Ogg-family metadata when a non-audio BOS stream appears first', () => {
+    withTempDir((tempDir) => {
+      const oggBuffer = Buffer.concat([
+        createOggSkeletonBosPage(),
+        createTestOggVorbisBuffer({
+          title: 'Release Notes',
+          artist: 'Graphify FM',
+          album: 'Engineering Notes',
+        }),
+      ])
+      const opusBuffer = Buffer.concat([
+        createOggSkeletonBosPage(),
+        createTestOggOpusBuffer({
+          title: 'Voice Memo',
+          artist: 'Graphify FM',
+          album: 'Engineering Notes',
+        }),
+      ])
+      writeFileSync(
+        join(tempDir, 'README.md'),
+        '# Overview\nSee [Ogg](prefixed-vorbis.ogg)\nSee [Opus](prefixed-opus.opus)\n',
+        'utf8',
+      )
+      writeFileSync(join(tempDir, 'prefixed-vorbis.ogg'), oggBuffer)
+      writeFileSync(join(tempDir, 'prefixed-opus.opus'), opusBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(3)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'audio',
+            label: 'prefixed-vorbis.ogg',
+            media_duration_seconds: 2.5,
+            audio_sample_rate_hz: 44100,
+            audio_channel_count: 2,
+            audio_title: 'Release Notes',
+            audio_artist: 'Graphify FM',
+            audio_album: 'Engineering Notes',
+          }),
+          expect.objectContaining({
+            file_type: 'audio',
+            label: 'prefixed-opus.opus',
+            media_duration_seconds: 1.75,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 1,
+            audio_title: 'Voice Memo',
+            audio_artist: 'Graphify FM',
+            audio_album: 'Engineering Notes',
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with Ogg-family metadata when a large prefixed non-audio stream pushes the audio BOS pages beyond the default head window', () => {
+    withTempDir((tempDir) => {
+      const oggBuffer = Buffer.concat([
+        ...createOggFillerPages(300_000, 29),
+        createTestOggVorbisBuffer({
+          title: 'Release Notes',
+          artist: 'Graphify FM',
+          album: 'Engineering Notes',
+        }),
+      ])
+      const opusBuffer = Buffer.concat([
+        ...createOggFillerPages(300_000, 31),
+        createTestOggOpusBuffer({
+          title: 'Voice Memo',
+          artist: 'Graphify FM',
+          album: 'Engineering Notes',
+        }),
+      ])
+      writeFileSync(
+        join(tempDir, 'README.md'),
+        '# Overview\nSee [Ogg](large-prefixed-vorbis.ogg)\nSee [Opus](large-prefixed-opus.opus)\n',
+        'utf8',
+      )
+      writeFileSync(join(tempDir, 'large-prefixed-vorbis.ogg'), oggBuffer)
+      writeFileSync(join(tempDir, 'large-prefixed-opus.opus'), opusBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(3)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'audio',
+            label: 'large-prefixed-vorbis.ogg',
+            media_duration_seconds: 2.5,
+            audio_sample_rate_hz: 44100,
+            audio_channel_count: 2,
+            audio_title: 'Release Notes',
+            audio_artist: 'Graphify FM',
+            audio_album: 'Engineering Notes',
+          }),
+          expect.objectContaining({
+            file_type: 'audio',
+            label: 'large-prefixed-opus.opus',
+            media_duration_seconds: 1.75,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 1,
+            audio_title: 'Voice Memo',
+            audio_artist: 'Graphify FM',
+            audio_album: 'Engineering Notes',
+          }),
+        ]),
+      )
+    })
+  })
+
   test('builds graph artifacts with deterministic AAC and M4A metadata from saved assets', () => {
     withTempDir((tempDir) => {
       const aacBuffer = createTestAacBuffer()
@@ -831,17 +1092,23 @@ describe('generateGraph', () => {
     })
   })
 
-  test('builds graph artifacts with deterministic direct-video container metadata from saved assets', () => {
+  test('builds graph artifacts with deterministic direct-video container metadata from saved assets, including large AVI files', () => {
     withTempDir((tempDir) => {
       const mp4Buffer = createTestVideoMp4Buffer()
+      const aviBuffer = createTestAviBuffer({
+        zeroMainHeaderDuration: true,
+        zeroMainHeaderDimensions: true,
+        tailPaddingBytes: 300_000,
+      })
       const webmBuffer = createTestMatroskaBuffer()
       const mkvBuffer = createTestMatroskaBuffer({ docType: 'matroska', durationSeconds: 6.75, width: 854, height: 480 })
       writeFileSync(
         join(tempDir, 'README.md'),
-        '# Overview\nSee [Clip](clip.mp4)\nSee [Session](session.webm)\nSee [Archive](archive.mkv)\n',
+        '# Overview\nSee [Clip](clip.mp4)\nSee [Recording](recording.avi)\nSee [Session](session.webm)\nSee [Archive](archive.mkv)\n',
         'utf8',
       )
       writeFileSync(join(tempDir, 'clip.mp4'), mp4Buffer)
+      writeFileSync(join(tempDir, 'recording.avi'), aviBuffer)
       writeFileSync(join(tempDir, 'session.webm'), webmBuffer)
       writeFileSync(join(tempDir, 'archive.mkv'), mkvBuffer)
 
@@ -850,15 +1117,24 @@ describe('generateGraph', () => {
         nodes: Array<Record<string, unknown>>
       }
 
-      expect(result.nonCodeFiles).toBe(4)
+      expect(result.nonCodeFiles).toBe(5)
       expect(graphData.nodes).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             file_type: 'video',
             label: 'clip.mp4',
             media_duration_seconds: 2.5,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
             video_width_px: 1920,
             video_height_px: 1080,
+          }),
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'recording.avi',
+            media_duration_seconds: 3.5,
+            video_width_px: 640,
+            video_height_px: 360,
           }),
           expect.objectContaining({
             file_type: 'video',
@@ -873,6 +1149,34 @@ describe('generateGraph', () => {
             media_duration_seconds: 6.75,
             video_width_px: 854,
             video_height_px: 480,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with embedded audio-track metadata for MP4-family video assets when the video track appears first', () => {
+    withTempDir((tempDir) => {
+      const movBuffer = createTestVideoMp4Buffer({ audioTrackFirst: false })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Clip](clip.mov)\n', 'utf8')
+      writeFileSync(join(tempDir, 'clip.mov'), movBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'clip.mov',
+            media_duration_seconds: 2.5,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
+            video_width_px: 1920,
+            video_height_px: 1080,
           }),
         ]),
       )
