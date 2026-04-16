@@ -1988,6 +1988,35 @@ describe('generateGraph', () => {
     })
   })
 
+  test('builds graph artifacts without stale Matroska/WebM duration from a direct Info prefix without SeekHead when the remaining Info payload is trailing padding beyond the head window', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        malformedDuration: true,
+        trailingInfoBytes: 1_100_000,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](direct-info-trailing-padding-clear-duration.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'direct-info-trailing-padding-clear-duration.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+      const mkvNode = graphData.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-info-trailing-padding-clear-duration.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        label: 'direct-info-trailing-padding-clear-duration.mkv',
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+      })
+      expect(mkvNode).not.toHaveProperty('media_duration_seconds')
+    })
+  })
+
   test('builds graph artifacts with corrected Matroska/WebM track metadata without SeekHead when the later direct Tracks element starts inside the head window but its payload is truncated', () => {
     withTempDir((tempDir) => {
       const mkvBuffer = createTestMatroskaBuffer({

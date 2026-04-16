@@ -1829,6 +1829,13 @@ function parseMatroskaBoundedInfoMetadata(buffer: Buffer, infoElement: EbmlEleme
   if (parsedDuration !== null || isEbmlElementFullyBuffered(buffer, infoElement)) {
     return parsedDuration
   }
+  const durationElement = findEbmlChildElement(buffer, infoElement, MATROSKA_DURATION_ID)
+  if (durationElement && isEbmlElementFullyBuffered(buffer, durationElement)) {
+    const timecodeScaleElement = findEbmlChildElement(buffer, infoElement, MATROSKA_TIMECODE_SCALE_ID)
+    if (!timecodeScaleElement || isEbmlElementFullyBuffered(buffer, timecodeScaleElement)) {
+      return null
+    }
+  }
   return undefined
 }
 
