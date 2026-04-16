@@ -1275,6 +1275,7 @@ interface EbmlElementHeader {
   startOffset: number
   bodyOffset: number
   endOffset: number
+  actualEndOffset: number
 }
 
 function extractFlacAudioMetadata(filePath: string, fileBytes: number | undefined): Record<string, string | number> {
@@ -1635,6 +1636,7 @@ function readEbmlElementHeader(buffer: Buffer, offset: number, limit: number): E
     startOffset: offset,
     bodyOffset,
     endOffset: size.size === null ? limit : Math.min(limit, bodyOffset + size.size),
+    actualEndOffset: size.size === null ? limit : bodyOffset + size.size,
   }
 }
 
@@ -1894,7 +1896,7 @@ function readMatroskaSeekTargetElement(
 }
 
 function isEbmlElementFullyBuffered(buffer: Buffer, element: EbmlElementHeader): boolean {
-  return element.endOffset <= buffer.length
+  return element.actualEndOffset <= buffer.length
 }
 
 function findMatroskaSegmentElement(buffer: Buffer): EbmlElementHeader | null {

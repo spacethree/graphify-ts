@@ -1766,6 +1766,141 @@ describe('generateGraph', () => {
     })
   })
 
+  test('builds graph artifacts with Matroska/WebM duration without SeekHead when the direct Info element starts inside the head window but its payload is truncated', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        prefixedInfoBytes: 600_000,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](direct-info-partial.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'direct-info-partial.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'direct-info-partial.mkv',
+            media_duration_seconds: 4.25,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with Matroska/WebM track metadata without SeekHead when the direct Tracks element starts inside the head window but its payload is truncated', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        prefixedTracksBytes: 600_000,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](direct-tracks-partial.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'direct-tracks-partial.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'direct-tracks-partial.mkv',
+            media_duration_seconds: 4.25,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
+            video_width_px: 1280,
+            video_height_px: 720,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with corrected Matroska/WebM duration metadata without SeekHead when the later direct Info element starts inside the head window but its payload is truncated', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        prefixedInfoBytes: 600_000,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](direct-info-corrective.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'direct-info-corrective.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'direct-info-corrective.mkv',
+            media_duration_seconds: 4.25,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
+            video_width_px: 1280,
+            video_height_px: 720,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with corrected Matroska/WebM track metadata without SeekHead when the later direct Tracks element starts inside the head window but its payload is truncated', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        prefixedTracksBytes: 600_000,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](direct-tracks-corrective.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'direct-tracks-corrective.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'direct-tracks-corrective.mkv',
+            media_duration_seconds: 4.25,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
+            video_width_px: 1280,
+            video_height_px: 720,
+          }),
+        ]),
+      )
+    })
+  })
+
   test('builds graph artifacts with Matroska/WebM metadata when separate SeekHeads advertise Info and Tracks beyond the widened head window', () => {
     withTempDir((tempDir) => {
       const mkvBuffer = createTestMatroskaBuffer({
