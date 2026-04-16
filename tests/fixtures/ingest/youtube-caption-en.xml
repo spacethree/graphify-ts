@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<transcript>
+  <text start="0.0" dur="3.5">Hello &amp; welcome.</text>
+  <text start="15.5" dur="4.0">Route-aware ingest&#39;s next step.</text>
+  <text start="32.0" dur="5.0">Transcript line<br />with cue evidence.</text>
+</transcript>

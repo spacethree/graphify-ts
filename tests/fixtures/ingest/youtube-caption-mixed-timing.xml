@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<transcript>
+  <text start="0.0" dur="4.0">Timed intro.</text>
+  <text start="8.0">Start-only cue.</text>
+  <text start="12.0" dur="4.0oops">Invalid-duration cue.</text>
+  <text start="18.0oops" dur="2.0">Invalid-start cue.</text>
+</transcript>

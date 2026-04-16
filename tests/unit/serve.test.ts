@@ -186,12 +186,42 @@ describe('loadGraph', () => {
       const graphPath = join(outDir, 'graph.json')
       mkdirSync(outDir, { recursive: true })
       const graphData = {
+        schema_version: 2,
         nodes: [
-          { id: 'n1', label: 'extract', community: 0, source_file: 'extract.py', file_type: 'code' },
+          {
+            id: 'n1',
+            label: 'extract',
+            community: 0,
+            source_file: 'extract.py',
+            file_type: 'code',
+            layer: 'semantic',
+            provenance: [{ capability_id: 'test:load-graph', stage: 'seed' }],
+          },
           { id: 'n2', label: 'cluster', community: 0, source_file: 'cluster.py', file_type: 'code' },
         ],
-        links: [{ source: 'n1', target: 'n2', relation: 'calls', confidence: 'EXTRACTED', source_file: 'extract.py' }],
-        hyperedges: [],
+        links: [
+          {
+            source: 'n1',
+            target: 'n2',
+            relation: 'calls',
+            confidence: 'EXTRACTED',
+            source_file: 'extract.py',
+            layer: 'semantic',
+            provenance: [{ capability_id: 'test:load-graph-edge', stage: 'seed' }],
+          },
+        ],
+        hyperedges: [
+          {
+            id: 'h1',
+            label: 'bundle',
+            nodes: ['n1', 'n2'],
+            relation: 'bundles',
+            confidence: 'INFERRED',
+            source_file: 'extract.py',
+            layer: 'semantic',
+            provenance: [{ capability_id: 'test:load-graph-hyperedge', stage: 'seed' }],
+          },
+        ],
       }
       writeFileSync(graphPath, `${JSON.stringify(graphData)}\n`, 'utf8')
 
@@ -199,6 +229,24 @@ describe('loadGraph', () => {
       expect(graph.numberOfNodes()).toBe(2)
       expect(graph.numberOfEdges()).toBe(1)
       expect(graph.isDirected()).toBe(false)
+      expect(graph.graph.schema_version).toBe(2)
+      expect(graph.nodeAttributes('n1')).toMatchObject({
+        layer: 'semantic',
+        provenance: [expect.objectContaining({ capability_id: 'test:load-graph' })],
+      })
+      expect(graph.edgeAttributes('n1', 'n2')).toMatchObject({
+        layer: 'semantic',
+        provenance: [expect.objectContaining({ capability_id: 'test:load-graph-edge' })],
+      })
+      expect(Array.isArray(graph.graph.hyperedges) ? graph.graph.hyperedges : []).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: 'h1',
+            layer: 'semantic',
+            provenance: [expect.objectContaining({ capability_id: 'test:load-graph-hyperedge' })],
+          }),
+        ]),
+      )
       expect(graph.neighbors('n1')).toEqual(['n2'])
       expect(graph.neighbors('n2')).toEqual(['n1'])
     })

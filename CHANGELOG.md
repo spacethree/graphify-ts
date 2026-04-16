@@ -2,6 +2,12 @@
 
 All notable changes to the TypeScript package will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- Deterministic bibliography `source_url` lifting for numbered Markdown/PDF/DOCX reference entries when plain external URLs are present without DOI/arXiv metadata
+
 ## [0.1.5] - 2026-04-12
 
 ### Added

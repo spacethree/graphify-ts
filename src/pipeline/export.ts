@@ -334,6 +334,7 @@ export function toJson(
 ): void {
   const nodeCommunity = _nodeCommunityMap(communities)
   const data = {
+    schema_version: graph.graph.schema_version === 2 ? 2 : 1,
     directed: graph.isDirected(),
     nodes: graph.nodeEntries().map(([id, attributes]) => ({
       id,

@@ -1,25 +1,27 @@
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
-import { safeFetch, safeFetchText, validateUrl } from '../shared/security.js'
+import { builtinCapabilityRegistry } from './capabilities.js'
+import { dispatchIngest, type IngestHandlerMap } from './ingest/dispatch.js'
+import type { IngestOptions, UrlType } from './ingest/types.js'
+import { fetchHackerNews } from './ingest-hackernews.js'
+import { detectUrlType } from './ingest/url-type.js'
+import { fetchGitHub } from './ingest-github.js'
+import { fetchReddit } from './ingest-reddit.js'
+import { fetchTweet } from './ingest-social.js'
+import { fetchYouTubeAsset } from './ingest-youtube.js'
+import { buildWebpageAsset, fetchWebpage, resolveContributor, safeFilename, stripHtml, yamlString } from './ingest-web.js'
+import { AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS } from '../pipeline/detect.js'
+import { writeBinaryIngestSidecar } from '../shared/binary-ingest-sidecar.js'
+import { MAX_FETCH_BYTES, MAX_TEXT_BYTES, readResponseBytes, safeFetchResponseWithMetadata, safeFetchText, safeFetchWithMetadata, validateUrl } from '../shared/security.js'
 
 export interface SaveQueryOptions {
   queryType?: string
   sourceNodes?: string[]
 }
-
-export interface IngestOptions {
-  author?: string
-  contributor?: string
-}
-
-export type UrlType = 'tweet' | 'arxiv' | 'github' | 'youtube' | 'pdf' | 'image' | 'webpage'
-const MAX_EXTRACTED_TEXT_LENGTH = 12_000
+export type { IngestOptions, UrlType } from './ingest/types.js'
+export { detectUrlType } from './ingest/url-type.js'
 const MAX_SOURCE_NODES = 10
-
-function yamlString(value: string): string {
-  return JSON.stringify(value.replace(/[\r\n]+/g, ' '))
-}
 
 function timestampSlug(date: Date): string {
   const parts = [date.getUTCFullYear().toString().padStart(4, '0'), (date.getUTCMonth() + 1).toString().padStart(2, '0'), date.getUTCDate().toString().padStart(2, '0')]
@@ -37,17 +39,6 @@ function questionSlug(question: string): string {
   )
 }
 
-function safeFilename(url: string, suffix: string): string {
-  const parsed = new URL(url)
-  const base = `${parsed.hostname}${parsed.pathname}`
-    .replace(/[^\w-]/g, '_')
-    .replace(/_+/g, '_')
-    .replace(/^_+|_+$/g, '')
-    .slice(0, 80)
-
-  return `${base || 'resource'}${suffix}`
-}
-
 function ensureUniquePath(directory: string, fileName: string): string {
   let candidate = join(directory, fileName)
   let counter = 1
@@ -59,74 +50,6 @@ function ensureUniquePath(directory: string, fileName: string): string {
     counter += 1
   }
   return candidate
-}
-
-function stripHtml(value: string): string {
-  return value
-    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
-function extractTextContent(html: string): string {
-  return stripHtml(html).slice(0, MAX_EXTRACTED_TEXT_LENGTH)
-}
-
-function extractTitle(html: string, fallback: string): string {
-  const match = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)
-  return match ? stripHtml(match[1] ?? fallback) : fallback
-}
-
-export function detectUrlType(url: string): UrlType {
-  const lower = url.toLowerCase()
-  if (lower.includes('twitter.com') || lower.includes('x.com')) {
-    return 'tweet'
-  }
-  if (lower.includes('arxiv.org')) {
-    return 'arxiv'
-  }
-  if (lower.includes('github.com')) {
-    return 'github'
-  }
-  if (lower.includes('youtube.com') || lower.includes('youtu.be')) {
-    return 'youtube'
-  }
-
-  const pathname = new URL(url).pathname.toLowerCase()
-  if (pathname.endsWith('.pdf')) {
-    return 'pdf'
-  }
-  if (['.png', '.jpg', '.jpeg', '.webp', '.gif'].some((extension) => pathname.endsWith(extension))) {
-    return 'image'
-  }
-  return 'webpage'
-}
-
-async function fetchTweet(url: string, options: IngestOptions): Promise<{ content: string; fileName: string }> {
-  const parsed = new URL(url)
-  if (parsed.hostname === 'x.com') {
-    parsed.hostname = 'twitter.com'
-  }
-  const normalizedUrl = parsed.toString()
-  const oembedUrl = `https://publish.twitter.com/oembed?url=${encodeURIComponent(normalizedUrl)}&omit_script=true`
-  let tweetText = `Tweet at ${url} (could not fetch content)`
-  let tweetAuthor = 'unknown'
-
-  try {
-    const parsed = JSON.parse(await safeFetchText(oembedUrl)) as { html?: string; author_name?: string }
-    tweetText = stripHtml(parsed.html ?? tweetText)
-    tweetAuthor = parsed.author_name ?? tweetAuthor
-  } catch {
-    // Fall back to a URL stub if oEmbed fails.
-  }
-
-  const capturedAt = new Date().toISOString()
-  return {
-    fileName: safeFilename(url, '.md'),
-    content: `---\nsource_url: ${yamlString(url)}\ntype: tweet\nauthor: ${yamlString(tweetAuthor)}\ncaptured_at: ${yamlString(capturedAt)}\ncontributor: ${yamlString(options.contributor ?? options.author ?? 'unknown')}\n---\n\n# Tweet by @${tweetAuthor}\n\n${tweetText}\n\nSource: ${url}\n`,
-  }
 }
 
 async function fetchArxiv(url: string, options: IngestOptions): Promise<{ content: string; fileName: string }> {
@@ -147,24 +70,182 @@ async function fetchArxiv(url: string, options: IngestOptions): Promise<{ conten
 
   return {
     fileName: `arxiv_${arxivId.replace('.', '_')}.md`,
-    content: `---\nsource_url: ${yamlString(url)}\narxiv_id: ${yamlString(arxivId)}\ntype: paper\ntitle: ${yamlString(title)}\npaper_authors: ${yamlString(authors)}\ncaptured_at: ${yamlString(capturedAt)}\ncontributor: ${yamlString(options.contributor ?? options.author ?? 'unknown')}\n---\n\n# ${title}\n\n**Authors:** ${authors}\n**arXiv:** ${arxivId}\n\n## Abstract\n\n${abstract}\n\nSource: ${url}\n`,
+    content: `---\nsource_url: ${yamlString(url)}\narxiv_id: ${yamlString(arxivId)}\ntype: paper\ntitle: ${yamlString(title)}\npaper_authors: ${yamlString(authors)}\ncaptured_at: ${yamlString(capturedAt)}\ncontributor: ${yamlString(resolveContributor(options))}\n---\n\n# ${title}\n\n**Authors:** ${authors}\n**arXiv:** ${arxivId}\n\n## Abstract\n\n${abstract}\n\nSource: ${url}\n`,
   }
 }
 
-async function fetchWebpage(url: string, options: IngestOptions): Promise<{ content: string; fileName: string }> {
-  const html = await safeFetchText(url)
-  const title = extractTitle(html, url)
-  const capturedAt = new Date().toISOString()
+function suffixFromUrl(url: string, fallback: string): string {
+  const pathname = new URL(url).pathname
+  return pathname.includes('.') ? pathname.slice(pathname.lastIndexOf('.')) : fallback
+}
+
+function binarySuffixFromUrl(url: string): string | null {
+  const pathname = new URL(url).pathname.toLowerCase()
+  const suffix = pathname.includes('.') ? pathname.slice(pathname.lastIndexOf('.')) : ''
+  if (!suffix) {
+    return null
+  }
+  if (suffix === '.pdf' || IMAGE_EXTENSIONS.has(suffix) || AUDIO_EXTENSIONS.has(suffix) || VIDEO_EXTENSIONS.has(suffix)) {
+    return suffix
+  }
+  return null
+}
+
+function binarySuffixFromContentType(contentType: string): string | null {
+  const normalized = contentType.trim().toLowerCase()
+  if (!normalized) {
+    return null
+  }
+  if (normalized === 'application/pdf') {
+    return '.pdf'
+  }
+
+  const exact = new Map<string, string>([
+    ['image/gif', '.gif'],
+    ['image/jpeg', '.jpg'],
+    ['image/jpg', '.jpg'],
+    ['image/png', '.png'],
+    ['image/svg+xml', '.svg'],
+    ['image/webp', '.webp'],
+    ['audio/aac', '.aac'],
+    ['audio/flac', '.flac'],
+    ['audio/mp4', '.m4a'],
+    ['audio/mpeg', '.mp3'],
+    ['audio/ogg', '.ogg'],
+    ['audio/opus', '.opus'],
+    ['audio/wav', '.wav'],
+    ['audio/wave', '.wav'],
+    ['audio/x-m4a', '.m4a'],
+    ['audio/x-wav', '.wav'],
+    ['video/mp4', '.mp4'],
+    ['video/quicktime', '.mov'],
+    ['video/webm', '.webm'],
+    ['video/x-m4v', '.m4v'],
+    ['video/x-matroska', '.mkv'],
+    ['video/x-msvideo', '.avi'],
+  ])
+  const mapped = exact.get(normalized)
+  if (mapped) {
+    return mapped
+  }
+  if (normalized.startsWith('image/')) {
+    return '.jpg'
+  }
+  if (normalized.startsWith('audio/')) {
+    return '.mp3'
+  }
+  if (normalized.startsWith('video/')) {
+    return '.mp4'
+  }
+  return null
+}
+
+function binaryUrlTypeFromSuffix(suffix: string): 'pdf' | 'image' | 'audio' | 'video' | null {
+  const normalized = suffix.toLowerCase()
+  if (normalized === '.pdf') {
+    return 'pdf'
+  }
+  if (IMAGE_EXTENSIONS.has(normalized)) {
+    return 'image'
+  }
+  if (AUDIO_EXTENSIONS.has(normalized)) {
+    return 'audio'
+  }
+  if (VIDEO_EXTENSIONS.has(normalized)) {
+    return 'video'
+  }
+  return null
+}
+
+function isHtmlResponseContentType(contentType: string): boolean {
+  return contentType === 'text/html' || contentType === 'application/xhtml+xml'
+}
+
+async function fetchDirectBinaryOrWebpage(url: string, options: IngestOptions, fallbackSuffix: string) {
+  const { response, finalUrl, contentType } = await safeFetchResponseWithMetadata(url)
+  if (isHtmlResponseContentType(contentType)) {
+    const bytes = await readResponseBytes(response, url, MAX_TEXT_BYTES)
+    const html = new TextDecoder('utf-8', { fatal: false }).decode(bytes)
+    return {
+      kind: 'text' as const,
+      asset: buildWebpageAsset(finalUrl, html, options),
+    }
+  }
+
+  const bytes = await readResponseBytes(response, url, MAX_FETCH_BYTES)
   return {
-    fileName: safeFilename(url, '.md'),
-    content: `---\nsource_url: ${yamlString(url)}\ntype: webpage\ntitle: ${yamlString(title)}\ncaptured_at: ${yamlString(capturedAt)}\ncontributor: ${yamlString(options.contributor ?? options.author ?? 'unknown')}\n---\n\n# ${title}\n\nSource: ${url}\n\n---\n\n${extractTextContent(html)}\n`,
+    kind: 'binary' as const,
+    suffix: binarySuffixFromContentType(contentType) ?? binarySuffixFromUrl(finalUrl) ?? fallbackSuffix,
+    bytes,
+    sourceUrl: finalUrl,
   }
 }
 
-async function downloadBinary(url: string, directory: string, suffix: string): Promise<string> {
-  const bytes = await safeFetch(url)
-  const outputPath = ensureUniquePath(directory, safeFilename(url, suffix))
+async function fetchBinaryAwareWebpage(url: string, options: IngestOptions) {
+  const { response, finalUrl, contentType } = await safeFetchResponseWithMetadata(url)
+  const isHtmlResponse = isHtmlResponseContentType(contentType)
+  const binarySuffix = binarySuffixFromContentType(contentType) ?? (!isHtmlResponse ? binarySuffixFromUrl(finalUrl) : null)
+  if (binarySuffix) {
+    const bytes = await readResponseBytes(response, url, MAX_FETCH_BYTES)
+    return {
+      kind: 'binary' as const,
+      suffix: binarySuffix,
+      bytes,
+      sourceUrl: finalUrl,
+    }
+  }
+
+  const bytes = await readResponseBytes(response, url, MAX_TEXT_BYTES)
+  const html = new TextDecoder('utf-8', { fatal: false }).decode(bytes)
+  return {
+    kind: 'text' as const,
+    asset: buildWebpageAsset(finalUrl, html, options),
+  }
+}
+
+const INGEST_HANDLERS: IngestHandlerMap = {
+  'builtin:ingest:tweet': async (url, options) => ({ kind: 'text', asset: await fetchTweet(url, options) }),
+  'builtin:ingest:reddit': async (url, options) => ({ kind: 'text', asset: await fetchReddit(url, options) }),
+  'builtin:ingest:hackernews': async (url, options) => ({ kind: 'text', asset: await fetchHackerNews(url, options) }),
+  'builtin:ingest:arxiv': async (url, options) => ({ kind: 'text', asset: await fetchArxiv(url, options) }),
+  'builtin:ingest:github': async (url, options) => ({ kind: 'text', asset: await fetchGitHub(url, options) }),
+  'builtin:ingest:youtube': async (url, options) => ({ kind: 'text', asset: await fetchYouTubeAsset(url, options) }),
+  'builtin:ingest:webpage': async (url, options) => fetchBinaryAwareWebpage(url, options),
+  'builtin:ingest:pdf': async (url, options) => fetchDirectBinaryOrWebpage(url, options, '.pdf'),
+  'builtin:ingest:image': async (url, options) => fetchDirectBinaryOrWebpage(url, options, suffixFromUrl(url, '.jpg')),
+  'builtin:ingest:audio': async (url, options) => fetchDirectBinaryOrWebpage(url, options, suffixFromUrl(url, '.mp3')),
+  'builtin:ingest:video': async (url, options) => fetchDirectBinaryOrWebpage(url, options, suffixFromUrl(url, '.mp4')),
+}
+
+interface BinaryDownloadSeed {
+  bytes?: Uint8Array
+  sourceUrl?: string
+}
+
+async function downloadBinary(url: string, directory: string, suffix: string, options: IngestOptions, seed: BinaryDownloadSeed = {}): Promise<string> {
+  const fetched = seed.bytes
+    ? null
+    : await safeFetchWithMetadata(url)
+  const sourceUrl = seed.sourceUrl ?? fetched?.finalUrl ?? url
+  const resolvedSuffix = seed.bytes ? suffix : binarySuffixFromContentType(fetched?.contentType ?? '') ?? binarySuffixFromUrl(sourceUrl) ?? suffix
+  const ingestUrlType = binaryUrlTypeFromSuffix(resolvedSuffix)
+  const bytes = seed.bytes ?? fetched?.bytes ?? new Uint8Array()
+  const outputPath = ensureUniquePath(directory, safeFilename(sourceUrl, resolvedSuffix))
   writeFileSync(outputPath, bytes)
+
+  try {
+    writeBinaryIngestSidecar(outputPath, {
+      source_url: sourceUrl,
+      captured_at: new Date().toISOString(),
+      contributor: resolveContributor(options),
+      ...(ingestUrlType ? { ingest_url_type: ingestUrlType } : {}),
+    })
+  } catch (error) {
+    rmSync(outputPath, { force: true })
+    const message = error instanceof Error ? error.message : String(error)
+    throw new Error(`Failed to persist binary ingest metadata for '${url}': ${message}`)
+  }
+
   return outputPath
 }
 
@@ -174,16 +255,17 @@ export async function ingest(url: string, targetDir: string, options: IngestOpti
   mkdirSync(directory, { recursive: true })
 
   const urlType = detectUrlType(url)
-  if (urlType === 'pdf') {
-    return downloadBinary(url, directory, '.pdf')
-  }
-  if (urlType === 'image') {
-    const pathname = new URL(url).pathname
-    const suffix = pathname.includes('.') ? pathname.slice(pathname.lastIndexOf('.')) : '.jpg'
-    return downloadBinary(url, directory, suffix)
+  const dispatched = await dispatchIngest(urlType, url, options, INGEST_HANDLERS, {
+    registry: builtinCapabilityRegistry,
+  })
+  if (dispatched.kind === 'binary') {
+    return downloadBinary(url, directory, dispatched.suffix, options, {
+      ...(dispatched.bytes ? { bytes: dispatched.bytes } : {}),
+      ...(dispatched.sourceUrl ? { sourceUrl: dispatched.sourceUrl } : {}),
+    })
   }
 
-  const asset = urlType === 'tweet' ? await fetchTweet(url, options) : urlType === 'arxiv' ? await fetchArxiv(url, options) : await fetchWebpage(url, options)
+  const asset = dispatched.asset
   const outputPath = ensureUniquePath(directory, asset.fileName)
   writeFileSync(outputPath, asset.content, 'utf8')
   return outputPath

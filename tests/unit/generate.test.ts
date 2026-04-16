@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -7,6 +7,7 @@ import { describe, expect, test, vi } from 'vitest'
 
 import { generateGraph } from '../../src/infrastructure/generate.js'
 import { loadGraph } from '../../src/runtime/serve.js'
+import { binaryIngestSidecarPath } from '../../src/shared/binary-ingest-sidecar.js'
 
 function withTempDir<T>(callback: (tempDir: string) => T): T {
   const tempDir = mkdtempSync(join(tmpdir(), 'graphify-ts-generate-'))
@@ -24,6 +25,877 @@ async function withTempDirAsync<T>(callback: (tempDir: string) => Promise<T>): P
   } finally {
     rmSync(tempDir, { recursive: true, force: true })
   }
+}
+
+function createTestWavBuffer(durationSeconds: number, sampleRate: number = 4_000, channelCount: number = 2, bitsPerSample: number = 16): Buffer {
+  const byteRate = sampleRate * channelCount * (bitsPerSample / 8)
+  const blockAlign = channelCount * (bitsPerSample / 8)
+  const dataSize = Math.round(durationSeconds * byteRate)
+  const buffer = Buffer.alloc(44 + dataSize)
+  buffer.write('RIFF', 0, 'ascii')
+  buffer.writeUInt32LE(36 + dataSize, 4)
+  buffer.write('WAVE', 8, 'ascii')
+  buffer.write('fmt ', 12, 'ascii')
+  buffer.writeUInt32LE(16, 16)
+  buffer.writeUInt16LE(1, 20)
+  buffer.writeUInt16LE(channelCount, 22)
+  buffer.writeUInt32LE(sampleRate, 24)
+  buffer.writeUInt32LE(byteRate, 28)
+  buffer.writeUInt16LE(blockAlign, 32)
+  buffer.writeUInt16LE(bitsPerSample, 34)
+  buffer.write('data', 36, 'ascii')
+  buffer.writeUInt32LE(dataSize, 40)
+  return buffer
+}
+
+function createMp4Atom(type: string, payload: Buffer): Buffer {
+  const buffer = Buffer.alloc(8 + payload.length)
+  buffer.writeUInt32BE(buffer.length, 0)
+  buffer.write(type, 4, 'ascii')
+  payload.copy(buffer, 8)
+  return buffer
+}
+
+function createTestMp4Buffer(durationSeconds: number, timescale: number = 1_000): Buffer {
+  const mvhdPayload = Buffer.alloc(20)
+  mvhdPayload.writeUInt32BE(0, 0)
+  mvhdPayload.writeUInt32BE(0, 4)
+  mvhdPayload.writeUInt32BE(0, 8)
+  mvhdPayload.writeUInt32BE(timescale, 12)
+  mvhdPayload.writeUInt32BE(Math.round(durationSeconds * timescale), 16)
+
+  return Buffer.concat([
+    createMp4Atom('ftyp', Buffer.from('isom0000', 'ascii')),
+    createMp4Atom('moov', createMp4Atom('mvhd', mvhdPayload)),
+  ])
+}
+
+function createMp4AtomWithType(type: Buffer, payload: Buffer): Buffer {
+  const buffer = Buffer.alloc(8 + payload.length)
+  buffer.writeUInt32BE(buffer.length, 0)
+  type.copy(buffer, 4)
+  payload.copy(buffer, 8)
+  return buffer
+}
+
+function createMp4AudioSampleEntry(sampleRate: number, channelCount: number, sampleEntryType: string = 'mp4a'): Buffer {
+  const body = Buffer.alloc(28)
+  body.writeUInt16BE(1, 6)
+  body.writeUInt16BE(channelCount, 16)
+  body.writeUInt16BE(16, 18)
+  body.writeUInt32BE(sampleRate * 65_536, 24)
+  return createMp4Atom(sampleEntryType, body)
+}
+
+function createMp4VideoSampleEntry(width: number, height: number, sampleEntryType: string = 'avc1'): Buffer {
+  const body = Buffer.alloc(28)
+  body.writeUInt16BE(1, 6)
+  body.writeUInt16BE(width, 24)
+  body.writeUInt16BE(height, 26)
+  return createMp4Atom(sampleEntryType, body)
+}
+
+function createMp4StsdBox(entries: Buffer[]): Buffer {
+  const payload = Buffer.alloc(8)
+  payload.writeUInt32BE(0, 0)
+  payload.writeUInt32BE(entries.length, 4)
+  return createMp4Atom('stsd', Buffer.concat([payload, ...entries]))
+}
+
+function createMp4HandlerBox(handlerType: string): Buffer {
+  const payload = Buffer.alloc(12)
+  payload.write(handlerType, 8, 'ascii')
+  return createMp4Atom('hdlr', payload)
+}
+
+function createMp4TrackHeaderBox(width: number, height: number): Buffer {
+  const payload = Buffer.alloc(84)
+  payload.writeUInt32BE(0x00000007, 0)
+  payload.writeUInt32BE(1, 12)
+  payload.writeUInt32BE(0, 20)
+  payload.writeUInt16BE(0, 32)
+  payload.writeUInt16BE(0, 34)
+  payload.writeUInt16BE(0x0100, 36)
+  payload.writeUInt32BE(0x00010000, 40)
+  payload.writeUInt32BE(0, 44)
+  payload.writeUInt32BE(0, 48)
+  payload.writeUInt32BE(0, 52)
+  payload.writeUInt32BE(0x00010000, 56)
+  payload.writeUInt32BE(0, 60)
+  payload.writeUInt32BE(0, 64)
+  payload.writeUInt32BE(0, 68)
+  payload.writeUInt32BE(0x40000000, 72)
+  payload.writeUInt32BE(width * 65_536, 76)
+  payload.writeUInt32BE(height * 65_536, 80)
+  return createMp4Atom('tkhd', payload)
+}
+
+function createMp4MediaHeaderBox(durationSeconds: number, timescale: number = 1_000): Buffer {
+  const payload = Buffer.alloc(24)
+  payload.writeUInt32BE(0, 0)
+  payload.writeUInt32BE(0, 4)
+  payload.writeUInt32BE(0, 8)
+  payload.writeUInt32BE(timescale, 12)
+  payload.writeUInt32BE(Math.round(durationSeconds * timescale), 16)
+  payload.writeUInt16BE(0, 20)
+  payload.writeUInt16BE(0, 22)
+  return createMp4Atom('mdhd', payload)
+}
+
+function createMp4TrackBox(
+  handlerType: string,
+  stsd: Buffer,
+  options: {
+    tkhd?: Buffer | null
+    mdhd?: Buffer | null
+  } = {},
+): Buffer {
+  return createMp4Atom(
+    'trak',
+    Buffer.concat([
+      ...(options.tkhd ? [options.tkhd] : []),
+      createMp4Atom(
+        'mdia',
+        Buffer.concat([
+          ...(options.mdhd ? [options.mdhd] : []),
+          createMp4HandlerBox(handlerType),
+          createMp4Atom('minf', createMp4Atom('stbl', stsd)),
+        ]),
+      ),
+    ]),
+  )
+}
+
+function createMp4MetadataDataAtom(value: string): Buffer {
+  const payload = Buffer.concat([
+    Buffer.from([0, 0, 0, 1, 0, 0, 0, 0]),
+    Buffer.from(value, 'utf8'),
+  ])
+  return createMp4Atom('data', payload)
+}
+
+function createMp4MetadataItem(typeBytes: Buffer, value: string): Buffer {
+  return createMp4AtomWithType(typeBytes, createMp4MetadataDataAtom(value))
+}
+
+function createTestM4aBuffer(
+  metadata: { title: string; artist: string; album: string },
+  options: { durationSeconds?: number; sampleRate?: number; channelCount?: number } = {},
+): Buffer {
+  const durationSeconds = options.durationSeconds ?? 2.5
+  const sampleRate = options.sampleRate ?? 48_000
+  const channelCount = options.channelCount ?? 2
+
+  const mvhdPayload = Buffer.alloc(20)
+  mvhdPayload.writeUInt32BE(0, 0)
+  mvhdPayload.writeUInt32BE(0, 4)
+  mvhdPayload.writeUInt32BE(0, 8)
+  mvhdPayload.writeUInt32BE(1_000, 12)
+  mvhdPayload.writeUInt32BE(Math.round(durationSeconds * 1_000), 16)
+
+  const stsd = createMp4StsdBox([createMp4AudioSampleEntry(sampleRate, channelCount)])
+  const trak = createMp4TrackBox('soun', stsd)
+  const ilst = createMp4Atom('ilst', Buffer.concat([
+    createMp4MetadataItem(Buffer.from([0xa9, 0x6e, 0x61, 0x6d]), metadata.title),
+    createMp4MetadataItem(Buffer.from([0xa9, 0x41, 0x52, 0x54]), metadata.artist),
+    createMp4MetadataItem(Buffer.from([0xa9, 0x61, 0x6c, 0x62]), metadata.album),
+  ]))
+  const meta = createMp4Atom('meta', Buffer.concat([Buffer.alloc(4), ilst]))
+  const udta = createMp4Atom('udta', meta)
+
+  return Buffer.concat([
+    createMp4Atom('ftyp', Buffer.from('M4A 0000', 'ascii')),
+    createMp4Atom('moov', Buffer.concat([createMp4Atom('mvhd', mvhdPayload), trak, udta])),
+  ])
+}
+
+function createTestVideoMp4Buffer(
+  options: {
+    durationSeconds?: number
+    width?: number
+    height?: number
+    audioTrackFirst?: boolean
+    truncateVideoSampleEntry?: boolean
+    includeVideoTkhdDimensions?: boolean
+    omitMovieHeaderDuration?: boolean
+    includeTrackMdhdDuration?: boolean
+  } = {},
+): Buffer {
+  const durationSeconds = options.durationSeconds ?? 2.5
+  const width = options.width ?? 1920
+  const height = options.height ?? 1080
+  const audioTrackFirst = options.audioTrackFirst ?? true
+
+  const mvhdPayload = Buffer.alloc(20)
+  mvhdPayload.writeUInt32BE(0, 0)
+  mvhdPayload.writeUInt32BE(0, 4)
+  mvhdPayload.writeUInt32BE(0, 8)
+  mvhdPayload.writeUInt32BE(1_000, 12)
+  mvhdPayload.writeUInt32BE(Math.round(durationSeconds * 1_000), 16)
+
+  const audioStsd = createMp4StsdBox([createMp4AudioSampleEntry(48_000, 2)])
+  const videoEntry = options.truncateVideoSampleEntry
+    ? createMp4VideoSampleEntry(width, height).subarray(0, createMp4VideoSampleEntry(width, height).length - 3)
+    : createMp4VideoSampleEntry(width, height)
+  const videoStsd = createMp4StsdBox([videoEntry])
+  const audioTrak = createMp4TrackBox('soun', audioStsd, {
+    mdhd: options.includeTrackMdhdDuration ? createMp4MediaHeaderBox(durationSeconds) : null,
+  })
+  const videoTrak = createMp4TrackBox(
+    'vide',
+    videoStsd,
+    {
+      tkhd: options.includeVideoTkhdDimensions ? createMp4TrackHeaderBox(width, height) : null,
+      mdhd: options.includeTrackMdhdDuration ? createMp4MediaHeaderBox(durationSeconds) : null,
+    },
+  )
+
+  return Buffer.concat([
+    createMp4Atom('ftyp', Buffer.from('isom0000', 'ascii')),
+    createMp4Atom(
+      'moov',
+      Buffer.concat([
+        ...(options.omitMovieHeaderDuration ? [] : [createMp4Atom('mvhd', mvhdPayload)]),
+        ...(audioTrackFirst ? [audioTrak, videoTrak] : [videoTrak, audioTrak]),
+      ]),
+    ),
+  ])
+}
+
+const EBML_HEADER_ID = [0x1a, 0x45, 0xdf, 0xa3]
+const EBML_DOC_TYPE_ID = [0x42, 0x82]
+const EBML_SEGMENT_ID = [0x18, 0x53, 0x80, 0x67]
+const EBML_SEEK_HEAD_ID = [0x11, 0x4d, 0x9b, 0x74]
+const EBML_SEEK_ENTRY_ID = [0x4d, 0xbb]
+const EBML_SEEK_ID_ID = [0x53, 0xab]
+const EBML_SEEK_POSITION_ID = [0x53, 0xac]
+const EBML_INFO_ID = [0x15, 0x49, 0xa9, 0x66]
+const EBML_TIMECODE_SCALE_ID = [0x2a, 0xd7, 0xb1]
+const EBML_DURATION_ID = [0x44, 0x89]
+const EBML_TRACKS_ID = [0x16, 0x54, 0xae, 0x6b]
+const EBML_TRACK_ENTRY_ID = [0xae]
+const EBML_TRACK_TYPE_ID = [0x83]
+const EBML_VIDEO_ID = [0xe0]
+const EBML_AUDIO_ID = [0xe1]
+const EBML_VOID_ID = [0xec]
+const EBML_PIXEL_WIDTH_ID = [0xb0]
+const EBML_PIXEL_HEIGHT_ID = [0xba]
+const EBML_SAMPLING_FREQUENCY_ID = [0xb5]
+const EBML_CHANNELS_ID = [0x9f]
+
+function encodeEbmlSize(value: number): Buffer {
+  for (let length = 1; length <= 8; length += 1) {
+    const maxValue = (2 ** (7 * length)) - 1
+    if (value < maxValue) {
+      const encoded = Buffer.alloc(length)
+      let remaining = value
+      for (let index = length - 1; index >= 1; index -= 1) {
+        encoded[index] = remaining & 0xff
+        remaining >>= 8
+      }
+      encoded[0] = (1 << (8 - length)) | remaining
+      return encoded
+    }
+  }
+
+  throw new Error(`Unsupported EBML size in test helper: ${value}`)
+}
+
+function encodeEbmlUnsigned(value: number): Buffer {
+  if (value === 0) {
+    return Buffer.from([0])
+  }
+
+  let remaining = value
+  const bytes: number[] = []
+  while (remaining > 0) {
+    bytes.unshift(remaining & 0xff)
+    remaining >>= 8
+  }
+  return Buffer.from(bytes)
+}
+
+function createEbmlElement(id: readonly number[], payload: Buffer): Buffer {
+  return Buffer.concat([Buffer.from(id), encodeEbmlSize(payload.length), payload])
+}
+
+function createEbmlUnsignedElement(id: readonly number[], value: number): Buffer {
+  return createEbmlElement(id, encodeEbmlUnsigned(value))
+}
+
+function createEbmlFloatElement(id: readonly number[], value: number): Buffer {
+  const payload = Buffer.alloc(8)
+  payload.writeDoubleBE(value, 0)
+  return createEbmlElement(id, payload)
+}
+
+function createEbmlSeekEntry(targetId: readonly number[], position: number): Buffer {
+  return createEbmlElement(EBML_SEEK_ENTRY_ID, Buffer.concat([
+    createEbmlElement(EBML_SEEK_ID_ID, Buffer.from(targetId)),
+    createEbmlUnsignedElement(EBML_SEEK_POSITION_ID, position),
+  ]))
+}
+
+function createEbmlSeekHeadEntries(entries: Array<{ targetId: readonly number[], position: number }>): Buffer {
+  return createEbmlElement(EBML_SEEK_HEAD_ID, Buffer.concat(entries.map((entry) => createEbmlSeekEntry(entry.targetId, entry.position))))
+}
+
+function createTestMatroskaBuffer(
+  options: {
+    docType?: 'webm' | 'matroska'
+    durationSeconds?: number
+    width?: number
+    height?: number
+    audioTrackFirst?: boolean
+    malformedDuration?: boolean
+    timecodeScale?: number
+    includeAudioTrackMetadata?: boolean
+    audioSampleRate?: number
+    audioChannelCount?: number
+    staleFirstInfoMetadata?: {
+      durationSeconds: number
+      timecodeScale?: number
+    }
+    prefixedSegmentBytes?: number
+    interstitialSegmentBytes?: number
+    prefixedInfoBytes?: number
+    prefixedTracksBytes?: number
+    useSeekHead?: boolean
+    splitSeekHeads?: boolean
+    staleFirstInfoSeekHead?: boolean
+    staleFirstTracksSeekHead?: boolean
+    finalTracksAudioOnly?: boolean
+    staleFirstTracksMetadata?: {
+      width: number
+      height: number
+      audioSampleRate: number
+      audioChannelCount: number
+    }
+  } = {},
+): Buffer {
+  const docType = options.docType ?? 'webm'
+  const durationSeconds = options.durationSeconds ?? 4.25
+  const width = options.width ?? 1280
+  const height = options.height ?? 720
+  const audioTrackFirst = options.audioTrackFirst ?? true
+  const timecodeScale = options.timecodeScale ?? 1_000_000
+  const audioSampleRate = options.audioSampleRate ?? 48_000
+  const audioChannelCount = options.audioChannelCount ?? 2
+  const staleFirstInfoMetadata = options.staleFirstInfoMetadata
+  const prefixedSegmentBytes = options.prefixedSegmentBytes ?? 0
+  const interstitialSegmentBytes = options.interstitialSegmentBytes ?? 0
+  const prefixedInfoBytes = options.prefixedInfoBytes ?? 0
+  const prefixedTracksBytes = options.prefixedTracksBytes ?? 0
+  const useSeekHead = options.useSeekHead ?? false
+  const splitSeekHeads = options.splitSeekHeads ?? false
+  const staleFirstInfoSeekHead = options.staleFirstInfoSeekHead ?? false
+  const staleFirstTracksSeekHead = options.staleFirstTracksSeekHead ?? false
+  const finalTracksAudioOnly = options.finalTracksAudioOnly ?? false
+  const staleFirstTracksMetadata = options.staleFirstTracksMetadata
+
+  const info = createEbmlElement(EBML_INFO_ID, Buffer.concat([
+    ...(prefixedInfoBytes > 0 ? [createEbmlElement(EBML_VOID_ID, Buffer.alloc(prefixedInfoBytes))] : []),
+    createEbmlUnsignedElement(EBML_TIMECODE_SCALE_ID, timecodeScale),
+    options.malformedDuration
+      ? createEbmlElement(EBML_DURATION_ID, Buffer.from([0x40, 0x94, 0x00]))
+      : createEbmlFloatElement(EBML_DURATION_ID, durationSeconds * 1_000),
+  ]))
+  const staleInfo = staleFirstInfoMetadata
+    ? createEbmlElement(EBML_INFO_ID, Buffer.concat([
+        createEbmlUnsignedElement(EBML_TIMECODE_SCALE_ID, staleFirstInfoMetadata.timecodeScale ?? 1_000_000),
+        createEbmlFloatElement(EBML_DURATION_ID, staleFirstInfoMetadata.durationSeconds * 1_000),
+      ]))
+    : null
+  const videoTrackEntry = createEbmlElement(EBML_TRACK_ENTRY_ID, Buffer.concat([
+    createEbmlUnsignedElement(EBML_TRACK_TYPE_ID, 1),
+    createEbmlElement(EBML_VIDEO_ID, Buffer.concat([
+      createEbmlUnsignedElement(EBML_PIXEL_WIDTH_ID, width),
+      createEbmlUnsignedElement(EBML_PIXEL_HEIGHT_ID, height),
+    ])),
+  ]))
+  const audioTrackEntry = createEbmlElement(EBML_TRACK_ENTRY_ID, Buffer.concat([
+    createEbmlUnsignedElement(EBML_TRACK_TYPE_ID, 2),
+    ...(options.includeAudioTrackMetadata
+      ? [createEbmlElement(EBML_AUDIO_ID, Buffer.concat([
+          createEbmlFloatElement(EBML_SAMPLING_FREQUENCY_ID, audioSampleRate),
+          createEbmlUnsignedElement(EBML_CHANNELS_ID, audioChannelCount),
+        ]))]
+      : []),
+  ]))
+  const tracks = createEbmlElement(EBML_TRACKS_ID, Buffer.concat([
+    ...(prefixedTracksBytes > 0 ? [createEbmlElement(EBML_VOID_ID, Buffer.alloc(prefixedTracksBytes))] : []),
+    ...(finalTracksAudioOnly ? [audioTrackEntry] : audioTrackFirst ? [audioTrackEntry, videoTrackEntry] : [videoTrackEntry, audioTrackEntry]),
+  ]))
+  const staleTracks = staleFirstTracksMetadata
+    ? createEbmlElement(EBML_TRACKS_ID, Buffer.concat([
+        createEbmlElement(EBML_TRACK_ENTRY_ID, Buffer.concat([
+          createEbmlUnsignedElement(EBML_TRACK_TYPE_ID, 1),
+          createEbmlElement(EBML_VIDEO_ID, Buffer.concat([
+            createEbmlUnsignedElement(EBML_PIXEL_WIDTH_ID, staleFirstTracksMetadata.width),
+            createEbmlUnsignedElement(EBML_PIXEL_HEIGHT_ID, staleFirstTracksMetadata.height),
+          ])),
+        ])),
+        createEbmlElement(EBML_TRACK_ENTRY_ID, Buffer.concat([
+          createEbmlUnsignedElement(EBML_TRACK_TYPE_ID, 2),
+          createEbmlElement(EBML_AUDIO_ID, Buffer.concat([
+            createEbmlFloatElement(EBML_SAMPLING_FREQUENCY_ID, staleFirstTracksMetadata.audioSampleRate),
+            createEbmlUnsignedElement(EBML_CHANNELS_ID, staleFirstTracksMetadata.audioChannelCount),
+          ])),
+        ])),
+      ]))
+    : null
+  const ebmlHeader = createEbmlElement(EBML_HEADER_ID, createEbmlElement(EBML_DOC_TYPE_ID, Buffer.from(docType, 'ascii')))
+  const prefixedSegmentContent = prefixedSegmentBytes > 0
+    ? [createEbmlElement(EBML_VOID_ID, Buffer.alloc(prefixedSegmentBytes))]
+    : []
+  const seekHeadSpecs = useSeekHead
+    ? splitSeekHeads
+      ? [{ includeInfo: true, includeTracks: false }, { includeInfo: false, includeTracks: true }]
+      : staleFirstInfoSeekHead || staleFirstTracksSeekHead
+        ? [
+            {
+              includeInfo: true,
+              includeTracks: true,
+              staleInfoTarget: staleFirstInfoSeekHead,
+              staleTracksTarget: staleFirstTracksSeekHead,
+            },
+            {
+              includeInfo: staleFirstInfoSeekHead,
+              includeTracks: staleFirstTracksSeekHead,
+            },
+          ]
+        : [{ includeInfo: true, includeTracks: true }]
+    : []
+  let seekHeads: Buffer[] = []
+  if (useSeekHead) {
+    seekHeads = seekHeadSpecs.map(() => createEbmlSeekHeadEntries([]))
+    for (let iteration = 0; iteration < 4; iteration += 1) {
+      const seekHeadBytes = seekHeads.reduce((total, seekHead) => total + seekHead.length, 0)
+      const prefixedSegmentContentBytes = prefixedSegmentContent.reduce((total, element) => total + element.length, 0)
+      const staleInfoPosition = staleInfo ? seekHeadBytes + prefixedSegmentContentBytes : null
+      const staleTracksPosition = staleTracks ? seekHeadBytes + prefixedSegmentContentBytes + (staleInfo?.length ?? 0) : null
+      const infoPosition = seekHeadBytes
+        + prefixedSegmentContentBytes
+        + (staleInfo?.length ?? 0)
+        + (staleTracks?.length ?? 0)
+        + (interstitialSegmentBytes > 0 ? createEbmlElement(EBML_VOID_ID, Buffer.alloc(interstitialSegmentBytes)).length : 0)
+      const tracksPosition = infoPosition + info.length
+      const nextSeekHeads = seekHeadSpecs.map((spec) => createEbmlSeekHeadEntries([
+        ...(spec.includeInfo ? [{
+          targetId: EBML_INFO_ID,
+          position: spec.staleInfoTarget ? (staleInfoPosition ?? 0) : infoPosition,
+        }] : []),
+        ...(spec.includeTracks ? [{
+          targetId: EBML_TRACKS_ID,
+          position: spec.staleTracksTarget ? (staleTracksPosition ?? 0) : tracksPosition,
+        }] : []),
+      ]))
+      if (nextSeekHeads.length === seekHeads.length && nextSeekHeads.every((seekHead, index) => seekHead.equals(seekHeads[index] ?? Buffer.alloc(0)))) {
+        break
+      }
+      seekHeads = nextSeekHeads
+    }
+  }
+  const segment = createEbmlElement(EBML_SEGMENT_ID, Buffer.concat([
+    ...seekHeads,
+    ...prefixedSegmentContent,
+    ...(staleInfo ? [staleInfo] : []),
+    ...(staleTracks ? [staleTracks] : []),
+    ...(interstitialSegmentBytes > 0 ? [createEbmlElement(EBML_VOID_ID, Buffer.alloc(interstitialSegmentBytes))] : []),
+    info,
+    tracks,
+  ]))
+  return Buffer.concat([ebmlHeader, segment])
+}
+
+const AVI_TEST_FRAME_RATE = 20
+
+function createRiffChunk(chunkId: string, payload: Buffer): Buffer {
+  const header = Buffer.alloc(8)
+  header.write(chunkId, 0, 'ascii')
+  header.writeUInt32LE(payload.length, 4)
+  const padding = payload.length % 2 === 1 ? Buffer.from([0]) : Buffer.alloc(0)
+  return Buffer.concat([header, payload, padding])
+}
+
+function createRiffList(listType: string, children: Buffer[]): Buffer {
+  return createRiffChunk('LIST', Buffer.concat([Buffer.from(listType, 'ascii'), ...children]))
+}
+
+function createRiffForm(formType: string, children: Buffer[]): Buffer {
+  const payload = Buffer.concat([Buffer.from(formType, 'ascii'), ...children])
+  const header = Buffer.alloc(8)
+  header.write('RIFF', 0, 'ascii')
+  header.writeUInt32LE(payload.length, 4)
+  return Buffer.concat([header, payload])
+}
+
+function createAviMainHeader(
+  durationSeconds: number,
+  width: number,
+  height: number,
+  options: { zeroDuration?: boolean | undefined; zeroDimensions?: boolean | undefined } = {},
+): Buffer {
+  const payload = Buffer.alloc(56)
+  payload.writeUInt32LE(options.zeroDuration ? 0 : Math.round(1_000_000 / AVI_TEST_FRAME_RATE), 0)
+  payload.writeUInt32LE(options.zeroDuration ? 0 : Math.round(durationSeconds * AVI_TEST_FRAME_RATE), 16)
+  payload.writeUInt32LE(2, 24)
+  payload.writeUInt32LE(options.zeroDimensions ? 0 : width, 32)
+  payload.writeUInt32LE(options.zeroDimensions ? 0 : height, 36)
+  return payload
+}
+
+function createAviStreamHeader(streamType: 'vids' | 'auds', durationSeconds: number): Buffer {
+  const payload = Buffer.alloc(56)
+  payload.write(streamType, 0, 'ascii')
+  payload.writeUInt32LE(1, 20)
+  if (streamType === 'vids') {
+    payload.write('DIB ', 4, 'ascii')
+    payload.writeUInt32LE(AVI_TEST_FRAME_RATE, 24)
+    payload.writeUInt32LE(Math.round(durationSeconds * AVI_TEST_FRAME_RATE), 32)
+    return payload
+  }
+
+  payload.writeUInt32LE(48_000, 24)
+  payload.writeUInt32LE(Math.round(durationSeconds * 48_000), 32)
+  return payload
+}
+
+function createAviBitmapInfoHeader(width: number, height: number): Buffer {
+  const payload = Buffer.alloc(40)
+  payload.writeUInt32LE(40, 0)
+  payload.writeInt32LE(width, 4)
+  payload.writeInt32LE(height, 8)
+  payload.writeUInt16LE(1, 12)
+  payload.writeUInt16LE(24, 14)
+  return payload
+}
+
+function createAviWaveFormat(): Buffer {
+  const payload = Buffer.alloc(16)
+  payload.writeUInt16LE(1, 0)
+  payload.writeUInt16LE(2, 2)
+  payload.writeUInt32LE(48_000, 4)
+  payload.writeUInt32LE(192_000, 8)
+  payload.writeUInt16LE(4, 12)
+  payload.writeUInt16LE(16, 14)
+  return payload
+}
+
+function createTestAviBuffer(
+  options: {
+    durationSeconds?: number
+    width?: number
+    height?: number
+    audioTrackFirst?: boolean
+    zeroMainHeaderDuration?: boolean
+    zeroMainHeaderDimensions?: boolean
+    tailPaddingBytes?: number
+  } = {},
+): Buffer {
+  const durationSeconds = options.durationSeconds ?? 3.5
+  const width = options.width ?? 640
+  const height = options.height ?? 360
+  const audioTrackFirst = options.audioTrackFirst ?? true
+  const tailPaddingBytes = options.tailPaddingBytes ?? 0
+  const videoStreamList = createRiffList('strl', [
+    createRiffChunk('strh', createAviStreamHeader('vids', durationSeconds)),
+    createRiffChunk('strf', createAviBitmapInfoHeader(width, height)),
+  ])
+  const audioStreamList = createRiffList('strl', [
+    createRiffChunk('strh', createAviStreamHeader('auds', durationSeconds)),
+    createRiffChunk('strf', createAviWaveFormat()),
+  ])
+  const hdrl = createRiffList('hdrl', [
+    createRiffChunk(
+      'avih',
+      createAviMainHeader(durationSeconds, width, height, {
+        zeroDuration: options.zeroMainHeaderDuration,
+        zeroDimensions: options.zeroMainHeaderDimensions,
+      }),
+    ),
+    ...(audioTrackFirst ? [audioStreamList, videoStreamList] : [videoStreamList, audioStreamList]),
+  ])
+  return createRiffForm('AVI ', [
+    hdrl,
+    createRiffList('movi', []),
+    ...(tailPaddingBytes > 0 ? [createRiffChunk('JUNK', Buffer.alloc(tailPaddingBytes))] : []),
+  ])
+}
+
+const AAC_SAMPLE_RATES = [96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025, 8_000, 7_350]
+
+function aacSampleRateIndex(sampleRate: number): number {
+  const index = AAC_SAMPLE_RATES.indexOf(sampleRate)
+  if (index < 0) {
+    throw new Error(`Unsupported AAC sample rate in test helper: ${sampleRate}`)
+  }
+  return index
+}
+
+function createAacAdtsFrame(sampleRate: number, channelCount: number, payloadLength: number = 8, rawBlocksPerFrame: number = 1): Buffer {
+  if (rawBlocksPerFrame < 1 || rawBlocksPerFrame > 4) {
+    throw new Error(`Unsupported raw block count in AAC test helper: ${rawBlocksPerFrame}`)
+  }
+  const frameLength = 7 + payloadLength
+  const sampleRateIndex = aacSampleRateIndex(sampleRate)
+  const frame = Buffer.alloc(frameLength, 0)
+  frame[0] = 0xff
+  frame[1] = 0xf1
+  frame[2] = (1 << 6) | (sampleRateIndex << 2) | ((channelCount >> 2) & 0x1)
+  frame[3] = ((channelCount & 0x3) << 6) | ((frameLength >> 11) & 0x3)
+  frame[4] = (frameLength >> 3) & 0xff
+  frame[5] = ((frameLength & 0x7) << 5) | 0x1f
+  frame[6] = 0xfc | ((rawBlocksPerFrame - 1) & 0x03)
+  return frame
+}
+
+function createTestAacBuffer(
+  frameCount: number = 75,
+  sampleRate: number = 48_000,
+  channelCount: number = 2,
+  payloadLength: number = 8,
+  rawBlocksPerFrame: number = 1,
+): Buffer {
+  return Buffer.concat(Array.from({ length: frameCount }, () => createAacAdtsFrame(sampleRate, channelCount, payloadLength, rawBlocksPerFrame)))
+}
+
+function encodeSynchsafeInteger(value: number): Buffer {
+  return Buffer.from([
+    (value >> 21) & 0x7f,
+    (value >> 14) & 0x7f,
+    (value >> 7) & 0x7f,
+    value & 0x7f,
+  ])
+}
+
+function createId3v23TextFrame(frameId: string, value: string): Buffer {
+  const text = Buffer.from(value, 'utf8')
+  const payload = Buffer.concat([Buffer.from([3]), text])
+  const frame = Buffer.alloc(10 + payload.length)
+  frame.write(frameId, 0, 'ascii')
+  frame.writeUInt32BE(payload.length, 4)
+  payload.copy(frame, 10)
+  return frame
+}
+
+function createTestMp3Id3Buffer(metadata: { title: string; artist: string; album: string }): Buffer {
+  const frames = Buffer.concat([
+    createId3v23TextFrame('TIT2', metadata.title),
+    createId3v23TextFrame('TPE1', metadata.artist),
+    createId3v23TextFrame('TALB', metadata.album),
+  ])
+  const header = Buffer.alloc(10)
+  header.write('ID3', 0, 'ascii')
+  header[3] = 3
+  header[4] = 0
+  encodeSynchsafeInteger(frames.length).copy(header, 6)
+  return Buffer.concat([header, frames, Buffer.from([0xff, 0xfb, 0x90, 0x64])])
+}
+
+function createVorbisCommentBody(metadata: { title: string; artist: string; album: string }): Buffer {
+  const vendor = Buffer.from('graphify-ts', 'utf8')
+  const vendorLength = Buffer.alloc(4)
+  vendorLength.writeUInt32LE(vendor.length, 0)
+  const comments = [
+    `TITLE=${metadata.title}`,
+    `ARTIST=${metadata.artist}`,
+    `ALBUM=${metadata.album}`,
+  ].map((entry) => {
+    const comment = Buffer.from(entry, 'utf8')
+    const length = Buffer.alloc(4)
+    length.writeUInt32LE(comment.length, 0)
+    return Buffer.concat([length, comment])
+  })
+  const commentCount = Buffer.alloc(4)
+  commentCount.writeUInt32LE(comments.length, 0)
+  return Buffer.concat([vendorLength, vendor, commentCount, ...comments])
+}
+
+function createFlacMetadataBlock(blockType: number, payload: Buffer, isLast: boolean): Buffer {
+  const header = Buffer.alloc(4)
+  header[0] = (isLast ? 0x80 : 0) | (blockType & 0x7f)
+  header.writeUIntBE(payload.length, 1, 3)
+  return Buffer.concat([header, payload])
+}
+
+function createFlacStreamInfo(durationSeconds: number, sampleRate: number = 48_000, channelCount: number = 2, bitsPerSample: number = 16): Buffer {
+  const streamInfo = Buffer.alloc(34)
+  const totalSamples = BigInt(Math.round(durationSeconds * sampleRate))
+  streamInfo.writeUInt16BE(4096, 0)
+  streamInfo.writeUInt16BE(4096, 2)
+  const packedHeader =
+    (BigInt(sampleRate & 0x0f_ffff) << 44n) |
+    (BigInt(channelCount - 1) << 41n) |
+    (BigInt(bitsPerSample - 1) << 36n) |
+    totalSamples
+  streamInfo.writeBigUInt64BE(packedHeader, 10)
+  return streamInfo
+}
+
+function createTestFlacBuffer(
+  metadata: { title: string; artist: string; album: string },
+  options: { durationSeconds?: number; sampleRate?: number; channelCount?: number } = {},
+): Buffer {
+  const durationSeconds = options.durationSeconds ?? 3.75
+  const sampleRate = options.sampleRate ?? 48_000
+  const channelCount = options.channelCount ?? 2
+  return Buffer.concat([
+    Buffer.from('fLaC', 'ascii'),
+    createFlacMetadataBlock(0, createFlacStreamInfo(durationSeconds, sampleRate, channelCount), false),
+    createFlacMetadataBlock(4, createVorbisCommentBody(metadata), true),
+    Buffer.from([0xff, 0xf8, 0x00, 0x00]),
+  ])
+}
+
+function createOggPage(
+  packet: Buffer,
+  options: { headerType?: number; granulePosition?: bigint; bitstreamSerialNumber?: number; sequenceNumber?: number } = {},
+): Buffer {
+  if (packet.length >= 255) {
+    throw new Error('Test helper only supports Ogg packets smaller than 255 bytes.')
+  }
+
+  const header = Buffer.alloc(28)
+  header.write('OggS', 0, 'ascii')
+  header[4] = 0
+  header[5] = options.headerType ?? 0
+  header.writeBigUInt64LE(options.granulePosition ?? 0n, 6)
+  header.writeUInt32LE(options.bitstreamSerialNumber ?? 1, 14)
+  header.writeUInt32LE(options.sequenceNumber ?? 0, 18)
+  header.writeUInt32LE(0, 22)
+  header[26] = 1
+  header[27] = packet.length
+  return Buffer.concat([header, packet])
+}
+
+function createOggSkeletonBosPage(bitstreamSerialNumber: number = 7): Buffer {
+  return createOggPage(Buffer.from('fishead\0', 'binary'), {
+    headerType: 0x02,
+    granulePosition: 0n,
+    bitstreamSerialNumber,
+    sequenceNumber: 0,
+  })
+}
+
+function createVorbisIdentificationPacket(sampleRate: number, channelCount: number): Buffer {
+  const packet = Buffer.alloc(30)
+  packet[0] = 1
+  packet.write('vorbis', 1, 'ascii')
+  packet.writeUInt32LE(0, 7)
+  packet[11] = channelCount
+  packet.writeUInt32LE(sampleRate, 12)
+  packet.writeUInt32LE(0, 16)
+  packet.writeUInt32LE(0, 20)
+  packet.writeUInt32LE(0, 24)
+  packet[28] = 0x11
+  packet[29] = 1
+  return packet
+}
+
+function createVorbisCommentPacket(metadata: { title: string; artist: string; album: string }): Buffer {
+  return Buffer.concat([
+    Buffer.from([3]),
+    Buffer.from('vorbis', 'ascii'),
+    createVorbisCommentBody(metadata),
+    Buffer.from([1]),
+  ])
+}
+
+function createTestOggVorbisBuffer(
+  metadata: { title: string; artist: string; album: string },
+  options: { durationSeconds?: number; sampleRate?: number; channelCount?: number } = {},
+): Buffer {
+  const durationSeconds = options.durationSeconds ?? 2.5
+  const sampleRate = options.sampleRate ?? 44_100
+  const channelCount = options.channelCount ?? 2
+  const totalSamples = BigInt(Math.round(durationSeconds * sampleRate))
+  const serial = 17
+  return Buffer.concat([
+    createOggPage(createVorbisIdentificationPacket(sampleRate, channelCount), {
+      headerType: 0x02,
+      granulePosition: 0n,
+      bitstreamSerialNumber: serial,
+      sequenceNumber: 0,
+    }),
+    createOggPage(createVorbisCommentPacket(metadata), {
+      granulePosition: 0n,
+      bitstreamSerialNumber: serial,
+      sequenceNumber: 1,
+    }),
+    createOggPage(Buffer.from([0]), {
+      headerType: 0x04,
+      granulePosition: totalSamples,
+      bitstreamSerialNumber: serial,
+      sequenceNumber: 2,
+    }),
+  ])
+}
+
+function createOggFillerPages(totalBytes: number, bitstreamSerialNumber: number, startingSequenceNumber: number = 0): Buffer[] {
+  const pages: Buffer[] = []
+  let sequenceNumber = startingSequenceNumber
+  let producedBytes = 0
+  while (producedBytes < totalBytes) {
+    const isLastPage = producedBytes + 282 >= totalBytes
+    const page = createOggPage(Buffer.alloc(254, sequenceNumber % 251), {
+      headerType: sequenceNumber === startingSequenceNumber ? 0x02 : isLastPage ? 0x04 : 0,
+      granulePosition: 0n,
+      bitstreamSerialNumber,
+      sequenceNumber,
+    })
+    pages.push(page)
+    producedBytes += page.length
+    sequenceNumber += 1
+  }
+  return pages
+}
+
+function createOpusHeadPacket(channelCount: number, inputSampleRate: number = 48_000, preSkip: number = 312): Buffer {
+  const packet = Buffer.alloc(19)
+  packet.write('OpusHead', 0, 'ascii')
+  packet[8] = 1
+  packet[9] = channelCount
+  packet.writeUInt16LE(preSkip, 10)
+  packet.writeUInt32LE(inputSampleRate, 12)
+  packet.writeInt16LE(0, 16)
+  packet[18] = 0
+  return packet
+}
+
+function createOpusTagsPacket(metadata: { title: string; artist: string; album: string }): Buffer {
+  return Buffer.concat([Buffer.from('OpusTags', 'ascii'), createVorbisCommentBody(metadata)])
+}
+
+function createTestOggOpusBuffer(
+  metadata: { title: string; artist: string; album: string },
+  options: { durationSeconds?: number; channelCount?: number; inputSampleRate?: number; preSkip?: number } = {},
+): Buffer {
+  const durationSeconds = options.durationSeconds ?? 1.75
+  const channelCount = options.channelCount ?? 1
+  const inputSampleRate = options.inputSampleRate ?? 48_000
+  const preSkip = options.preSkip ?? 312
+  const serial = 23
+  const terminalGranulePosition = BigInt(Math.round(durationSeconds * 48_000) + preSkip)
+  return Buffer.concat([
+    createOggPage(createOpusHeadPacket(channelCount, inputSampleRate, preSkip), {
+      headerType: 0x02,
+      granulePosition: 0n,
+      bitstreamSerialNumber: serial,
+      sequenceNumber: 0,
+    }),
+    createOggPage(createOpusTagsPacket(metadata), {
+      granulePosition: 0n,
+      bitstreamSerialNumber: serial,
+      sequenceNumber: 1,
+    }),
+    createOggPage(Buffer.from([0]), {
+      headerType: 0x04,
+      granulePosition: terminalGranulePosition,
+      bitstreamSerialNumber: serial,
+      sequenceNumber: 2,
+    }),
+  ])
 }
 
 describe('generateGraph', () => {
@@ -72,6 +944,1260 @@ describe('generateGraph', () => {
       expect(result.notes.join('\n')).not.toContain('semantic extraction')
       expect(graphData.nodes.some((node) => node.file_type === 'document')).toBe(true)
       expect(graphData.nodes.some((node) => node.file_type === 'image')).toBe(true)
+    })
+  })
+
+  test('builds graph artifacts for a docs-and-local-media corpus without code', () => {
+    withTempDir((tempDir) => {
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Episode](episode.mp3)\nSee [Demo](demo.mp4)\n', 'utf8')
+      writeFileSync(join(tempDir, 'episode.mp3'), Buffer.from('ID3'))
+      writeFileSync(join(tempDir, 'demo.mp4'), Buffer.from([0, 0, 0, 24, 102, 116, 121, 112]))
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.codeFiles).toBe(0)
+      expect(result.nonCodeFiles).toBe(3)
+      expect(result.nodeCount).toBeGreaterThan(0)
+      expect(graphData.nodes.some((node) => node.file_type === 'document')).toBe(true)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'audio',
+            label: 'episode.mp3',
+            content_type: 'audio/mpeg',
+            file_bytes: 3,
+          }),
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'demo.mp4',
+            content_type: 'video/mp4',
+            file_bytes: 8,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with deterministic duration metadata for supported local media formats', () => {
+    withTempDir((tempDir) => {
+      const wavBuffer = createTestWavBuffer(1.5)
+      const mp4Buffer = createTestMp4Buffer(2.5)
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Tone](tone.wav)\nSee [Clip](clip.mp4)\n', 'utf8')
+      writeFileSync(join(tempDir, 'tone.wav'), wavBuffer)
+      writeFileSync(join(tempDir, 'clip.mp4'), mp4Buffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(3)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'audio',
+            label: 'tone.wav',
+            media_duration_seconds: 1.5,
+            audio_sample_rate_hz: 4000,
+            audio_channel_count: 2,
+          }),
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'clip.mp4',
+            media_duration_seconds: 2.5,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with deterministic MP3 track metadata from saved assets', () => {
+    withTempDir((tempDir) => {
+      const mp3Buffer = createTestMp3Id3Buffer({
+        title: 'Roadmap Review',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Episode](episode.mp3)\n', 'utf8')
+      writeFileSync(join(tempDir, 'episode.mp3'), mp3Buffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'audio',
+            label: 'episode.mp3',
+            audio_title: 'Roadmap Review',
+            audio_artist: 'Graphify FM',
+            audio_album: 'Engineering Notes',
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with deterministic FLAC and Ogg-family metadata from saved assets', () => {
+    withTempDir((tempDir) => {
+      const flacBuffer = createTestFlacBuffer({
+        title: 'Roadmap Review',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      })
+      const oggBuffer = createTestOggVorbisBuffer({
+        title: 'Release Notes',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      })
+      const opusBuffer = createTestOggOpusBuffer({
+        title: 'Voice Memo',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      })
+      writeFileSync(
+        join(tempDir, 'README.md'),
+        '# Overview\nSee [Lossless](lossless.flac)\nSee [Ogg](release.ogg)\nSee [Opus](voice.opus)\n',
+        'utf8',
+      )
+      writeFileSync(join(tempDir, 'lossless.flac'), flacBuffer)
+      writeFileSync(join(tempDir, 'release.ogg'), oggBuffer)
+      writeFileSync(join(tempDir, 'voice.opus'), opusBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(4)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'audio',
+            label: 'lossless.flac',
+            media_duration_seconds: 3.75,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
+            audio_title: 'Roadmap Review',
+            audio_artist: 'Graphify FM',
+            audio_album: 'Engineering Notes',
+          }),
+          expect.objectContaining({
+            file_type: 'audio',
+            label: 'release.ogg',
+            media_duration_seconds: 2.5,
+            audio_sample_rate_hz: 44100,
+            audio_channel_count: 2,
+            audio_title: 'Release Notes',
+            audio_artist: 'Graphify FM',
+            audio_album: 'Engineering Notes',
+          }),
+          expect.objectContaining({
+            file_type: 'audio',
+            label: 'voice.opus',
+            media_duration_seconds: 1.75,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 1,
+            audio_title: 'Voice Memo',
+            audio_artist: 'Graphify FM',
+            audio_album: 'Engineering Notes',
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with Ogg-family metadata when a non-audio BOS stream appears first', () => {
+    withTempDir((tempDir) => {
+      const oggBuffer = Buffer.concat([
+        createOggSkeletonBosPage(),
+        createTestOggVorbisBuffer({
+          title: 'Release Notes',
+          artist: 'Graphify FM',
+          album: 'Engineering Notes',
+        }),
+      ])
+      const opusBuffer = Buffer.concat([
+        createOggSkeletonBosPage(),
+        createTestOggOpusBuffer({
+          title: 'Voice Memo',
+          artist: 'Graphify FM',
+          album: 'Engineering Notes',
+        }),
+      ])
+      writeFileSync(
+        join(tempDir, 'README.md'),
+        '# Overview\nSee [Ogg](prefixed-vorbis.ogg)\nSee [Opus](prefixed-opus.opus)\n',
+        'utf8',
+      )
+      writeFileSync(join(tempDir, 'prefixed-vorbis.ogg'), oggBuffer)
+      writeFileSync(join(tempDir, 'prefixed-opus.opus'), opusBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(3)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'audio',
+            label: 'prefixed-vorbis.ogg',
+            media_duration_seconds: 2.5,
+            audio_sample_rate_hz: 44100,
+            audio_channel_count: 2,
+            audio_title: 'Release Notes',
+            audio_artist: 'Graphify FM',
+            audio_album: 'Engineering Notes',
+          }),
+          expect.objectContaining({
+            file_type: 'audio',
+            label: 'prefixed-opus.opus',
+            media_duration_seconds: 1.75,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 1,
+            audio_title: 'Voice Memo',
+            audio_artist: 'Graphify FM',
+            audio_album: 'Engineering Notes',
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with Ogg-family metadata when a large prefixed non-audio stream pushes the audio BOS pages beyond the default head window', () => {
+    withTempDir((tempDir) => {
+      const oggBuffer = Buffer.concat([
+        ...createOggFillerPages(300_000, 29),
+        createTestOggVorbisBuffer({
+          title: 'Release Notes',
+          artist: 'Graphify FM',
+          album: 'Engineering Notes',
+        }),
+      ])
+      const opusBuffer = Buffer.concat([
+        ...createOggFillerPages(300_000, 31),
+        createTestOggOpusBuffer({
+          title: 'Voice Memo',
+          artist: 'Graphify FM',
+          album: 'Engineering Notes',
+        }),
+      ])
+      writeFileSync(
+        join(tempDir, 'README.md'),
+        '# Overview\nSee [Ogg](large-prefixed-vorbis.ogg)\nSee [Opus](large-prefixed-opus.opus)\n',
+        'utf8',
+      )
+      writeFileSync(join(tempDir, 'large-prefixed-vorbis.ogg'), oggBuffer)
+      writeFileSync(join(tempDir, 'large-prefixed-opus.opus'), opusBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(3)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'audio',
+            label: 'large-prefixed-vorbis.ogg',
+            media_duration_seconds: 2.5,
+            audio_sample_rate_hz: 44100,
+            audio_channel_count: 2,
+            audio_title: 'Release Notes',
+            audio_artist: 'Graphify FM',
+            audio_album: 'Engineering Notes',
+          }),
+          expect.objectContaining({
+            file_type: 'audio',
+            label: 'large-prefixed-opus.opus',
+            media_duration_seconds: 1.75,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 1,
+            audio_title: 'Voice Memo',
+            audio_artist: 'Graphify FM',
+            audio_album: 'Engineering Notes',
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with deterministic AAC and M4A metadata from saved assets', () => {
+    withTempDir((tempDir) => {
+      const aacBuffer = createTestAacBuffer()
+      const m4aBuffer = createTestM4aBuffer({
+        title: 'Roadmap Review',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      })
+      writeFileSync(
+        join(tempDir, 'README.md'),
+        '# Overview\nSee [Tone](tone.aac)\nSee [Episode](episode.m4a)\n',
+        'utf8',
+      )
+      writeFileSync(join(tempDir, 'tone.aac'), aacBuffer)
+      writeFileSync(join(tempDir, 'episode.m4a'), m4aBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(3)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'audio',
+            label: 'tone.aac',
+            media_duration_seconds: 1.6,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
+          }),
+          expect.objectContaining({
+            file_type: 'audio',
+            label: 'episode.m4a',
+            media_duration_seconds: 2.5,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
+            audio_title: 'Roadmap Review',
+            audio_artist: 'Graphify FM',
+            audio_album: 'Engineering Notes',
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with AAC duration based on the ADTS raw block count', () => {
+    withTempDir((tempDir) => {
+      const aacBuffer = createTestAacBuffer(20, 48_000, 2, 8, 3)
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Tone](multiblock.aac)\n', 'utf8')
+      writeFileSync(join(tempDir, 'multiblock.aac'), aacBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'audio',
+            label: 'multiblock.aac',
+            media_duration_seconds: 1.28,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with deterministic direct-video container metadata from saved assets, including large AVI files', () => {
+    withTempDir((tempDir) => {
+      const mp4Buffer = createTestVideoMp4Buffer()
+      const aviBuffer = createTestAviBuffer({
+        zeroMainHeaderDuration: true,
+        zeroMainHeaderDimensions: true,
+        tailPaddingBytes: 300_000,
+      })
+      const webmBuffer = createTestMatroskaBuffer()
+      const mkvBuffer = createTestMatroskaBuffer({ docType: 'matroska', durationSeconds: 6.75, width: 854, height: 480 })
+      writeFileSync(
+        join(tempDir, 'README.md'),
+        '# Overview\nSee [Clip](clip.mp4)\nSee [Recording](recording.avi)\nSee [Session](session.webm)\nSee [Archive](archive.mkv)\n',
+        'utf8',
+      )
+      writeFileSync(join(tempDir, 'clip.mp4'), mp4Buffer)
+      writeFileSync(join(tempDir, 'recording.avi'), aviBuffer)
+      writeFileSync(join(tempDir, 'session.webm'), webmBuffer)
+      writeFileSync(join(tempDir, 'archive.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(5)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'clip.mp4',
+            media_duration_seconds: 2.5,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
+            video_width_px: 1920,
+            video_height_px: 1080,
+          }),
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'recording.avi',
+            media_duration_seconds: 3.5,
+            video_width_px: 640,
+            video_height_px: 360,
+          }),
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'session.webm',
+            media_duration_seconds: 4.25,
+            video_width_px: 1280,
+            video_height_px: 720,
+          }),
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'archive.mkv',
+            media_duration_seconds: 6.75,
+            video_width_px: 854,
+            video_height_px: 480,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with embedded audio-track metadata for MP4-family video assets when the video track appears first', () => {
+    withTempDir((tempDir) => {
+      const movBuffer = createTestVideoMp4Buffer({ audioTrackFirst: false })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Clip](clip.mov)\n', 'utf8')
+      writeFileSync(join(tempDir, 'clip.mov'), movBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'clip.mov',
+            media_duration_seconds: 2.5,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
+            video_width_px: 1920,
+            video_height_px: 1080,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with embedded audio-track metadata for AVI video assets when the video stream appears first', () => {
+    withTempDir((tempDir) => {
+      const aviBuffer = createTestAviBuffer({ audioTrackFirst: false })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Clip](clip.avi)\n', 'utf8')
+      writeFileSync(join(tempDir, 'clip.avi'), aviBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'clip.avi',
+            media_duration_seconds: 3.5,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
+            video_width_px: 640,
+            video_height_px: 360,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with embedded audio-track metadata for Matroska/WebM video assets when the video track appears first', () => {
+    withTempDir((tempDir) => {
+      const webmBuffer = createTestMatroskaBuffer({ audioTrackFirst: false, includeAudioTrackMetadata: true })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Session](session.webm)\n', 'utf8')
+      writeFileSync(join(tempDir, 'session.webm'), webmBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'session.webm',
+            media_duration_seconds: 4.25,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
+            video_width_px: 1280,
+            video_height_px: 720,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with Matroska/WebM metadata when a large prefixed segment element pushes Info and Tracks beyond the default head window', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        prefixedSegmentBytes: 300_000,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](archive.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'archive.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'archive.mkv',
+            media_duration_seconds: 4.25,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
+            video_width_px: 1280,
+            video_height_px: 720,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with Matroska/WebM metadata via SeekHead when Info and Tracks sit beyond the widened head window', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        prefixedSegmentBytes: 600_000,
+        useSeekHead: true,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](seekhead-windowed.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'seekhead-windowed.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'seekhead-windowed.mkv',
+            media_duration_seconds: 4.25,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
+            video_width_px: 1280,
+            video_height_px: 720,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with Matroska/WebM metadata when later top-level Info and Tracks sit beyond the widened head window without SeekHead help', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        prefixedSegmentBytes: 600_000,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](top-level-windowed.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'top-level-windowed.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'top-level-windowed.mkv',
+            media_duration_seconds: 4.25,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
+            video_width_px: 1280,
+            video_height_px: 720,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts without stale Matroska/WebM audio-track metadata when a later top-level Tracks element is video-only without SeekHead help', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: false,
+        interstitialSegmentBytes: 600_000,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](top-level-tracks-clear-audio.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'top-level-tracks-clear-audio.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+      const mkvNode = graphData.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-tracks-clear-audio.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        label: 'top-level-tracks-clear-audio.mkv',
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        video_width_px: 1280,
+        video_height_px: 720,
+      })
+      expect(mkvNode).not.toHaveProperty('audio_sample_rate_hz')
+      expect(mkvNode).not.toHaveProperty('audio_channel_count')
+    })
+  })
+
+  test('builds graph artifacts without stale Matroska/WebM video-dimension metadata when a later top-level Tracks element is audio-only without SeekHead help', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        interstitialSegmentBytes: 600_000,
+        finalTracksAudioOnly: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](top-level-tracks-clear-video.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'top-level-tracks-clear-video.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+      const mkvNode = graphData.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-tracks-clear-video.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        label: 'top-level-tracks-clear-video.mkv',
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+      })
+      expect(mkvNode).not.toHaveProperty('video_width_px')
+      expect(mkvNode).not.toHaveProperty('video_height_px')
+    })
+  })
+
+  test('builds graph artifacts with preserved Matroska/WebM track metadata when a later authoritative Tracks element is unreadable', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        useSeekHead: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        prefixedTracksBytes: 1_100_000,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](seekhead-tracks-unreadable.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'seekhead-tracks-unreadable.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const mkvNode = (JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }).nodes.find((node) => node.file_type === 'video' && node.label === 'seekhead-tracks-unreadable.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        file_type: 'video',
+        label: 'seekhead-tracks-unreadable.mkv',
+        video_width_px: 5,
+        video_height_px: 2,
+        audio_sample_rate_hz: 8_000,
+        audio_channel_count: 1,
+      })
+    })
+  })
+
+  test('builds graph artifacts with preserved Matroska/WebM track metadata when a later top-level Tracks element is unreadable without SeekHead help', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        interstitialSegmentBytes: 600_000,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        prefixedTracksBytes: 1_100_000,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](top-level-tracks-unreadable.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'top-level-tracks-unreadable.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+      const mkvNode = graphData.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-tracks-unreadable.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        label: 'top-level-tracks-unreadable.mkv',
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        video_width_px: 5,
+        video_height_px: 2,
+        audio_sample_rate_hz: 8_000,
+        audio_channel_count: 1,
+      })
+    })
+  })
+
+  test('builds graph artifacts without stale Matroska/WebM duration metadata when a later top-level Info element omits duration without SeekHead help', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        interstitialSegmentBytes: 600_000,
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        malformedDuration: true,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](top-level-info-clear-duration.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'top-level-info-clear-duration.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+      const mkvNode = graphData.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-info-clear-duration.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        label: 'top-level-info-clear-duration.mkv',
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+      })
+      expect(mkvNode).not.toHaveProperty('media_duration_seconds')
+    })
+  })
+
+  test('builds graph artifacts with Matroska/WebM track metadata via SeekHead when the Tracks element starts inside the head window but its payload is truncated', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        prefixedTracksBytes: 600_000,
+        useSeekHead: true,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](seekhead-tracks-partial.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'seekhead-tracks-partial.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'seekhead-tracks-partial.mkv',
+            media_duration_seconds: 4.25,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
+            video_width_px: 1280,
+            video_height_px: 720,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with Matroska/WebM duration without SeekHead when the direct Info element starts inside the head window but its payload is truncated', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        prefixedInfoBytes: 600_000,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](direct-info-partial.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'direct-info-partial.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'direct-info-partial.mkv',
+            media_duration_seconds: 4.25,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with Matroska/WebM track metadata without SeekHead when the direct Tracks element starts inside the head window but its payload is truncated', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        prefixedTracksBytes: 600_000,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](direct-tracks-partial.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'direct-tracks-partial.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'direct-tracks-partial.mkv',
+            media_duration_seconds: 4.25,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
+            video_width_px: 1280,
+            video_height_px: 720,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with corrected Matroska/WebM duration metadata without SeekHead when the later direct Info element starts inside the head window but its payload is truncated', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        prefixedInfoBytes: 600_000,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](direct-info-corrective.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'direct-info-corrective.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'direct-info-corrective.mkv',
+            media_duration_seconds: 4.25,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
+            video_width_px: 1280,
+            video_height_px: 720,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with corrected Matroska/WebM track metadata without SeekHead when the later direct Tracks element starts inside the head window but its payload is truncated', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        prefixedTracksBytes: 600_000,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](direct-tracks-corrective.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'direct-tracks-corrective.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'direct-tracks-corrective.mkv',
+            media_duration_seconds: 4.25,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
+            video_width_px: 1280,
+            video_height_px: 720,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with Matroska/WebM metadata when separate SeekHeads advertise Info and Tracks beyond the widened head window', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        prefixedSegmentBytes: 600_000,
+        useSeekHead: true,
+        splitSeekHeads: true,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](seekhead-split.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'seekhead-split.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'seekhead-split.mkv',
+            media_duration_seconds: 4.25,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
+            video_width_px: 1280,
+            video_height_px: 720,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with Matroska/WebM metadata when a later SeekHead overrides stale direct Tracks metadata', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        useSeekHead: true,
+        staleFirstTracksSeekHead: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](seekhead-corrective.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'seekhead-corrective.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'seekhead-corrective.mkv',
+            media_duration_seconds: 4.25,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
+            video_width_px: 1280,
+            video_height_px: 720,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with Matroska/WebM metadata when a later SeekHead overrides stale direct Info metadata', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        useSeekHead: true,
+        staleFirstInfoSeekHead: true,
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](seekhead-info-corrective.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'seekhead-info-corrective.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'seekhead-info-corrective.mkv',
+            media_duration_seconds: 4.25,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
+            video_width_px: 1280,
+            video_height_px: 720,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts without stale Matroska/WebM audio-track metadata when a later authoritative Tracks element is video-only', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: false,
+        useSeekHead: true,
+        staleFirstTracksSeekHead: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](seekhead-tracks-clear-audio.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'seekhead-tracks-clear-audio.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const mkvNode = (JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }).nodes.find((node) => node.file_type === 'video' && node.label === 'seekhead-tracks-clear-audio.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        file_type: 'video',
+        label: 'seekhead-tracks-clear-audio.mkv',
+        video_width_px: 1280,
+        video_height_px: 720,
+      })
+      expect(mkvNode).not.toHaveProperty('audio_sample_rate_hz')
+      expect(mkvNode).not.toHaveProperty('audio_channel_count')
+    })
+  })
+
+  test('builds graph artifacts without stale Matroska/WebM video-dimension metadata when a later authoritative Tracks element is audio-only', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        useSeekHead: true,
+        staleFirstTracksSeekHead: true,
+        finalTracksAudioOnly: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](seekhead-tracks-clear-video.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'seekhead-tracks-clear-video.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const mkvNode = (JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }).nodes.find((node) => node.file_type === 'video' && node.label === 'seekhead-tracks-clear-video.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        file_type: 'video',
+        label: 'seekhead-tracks-clear-video.mkv',
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+      })
+      expect(mkvNode).not.toHaveProperty('video_width_px')
+      expect(mkvNode).not.toHaveProperty('video_height_px')
+    })
+  })
+
+  test('builds graph artifacts without stale Matroska/WebM duration metadata when a later authoritative Info element omits duration', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        useSeekHead: true,
+        staleFirstInfoSeekHead: true,
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        malformedDuration: true,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](seekhead-info-clear-duration.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'seekhead-info-clear-duration.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const mkvNode = (JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }).nodes.find((node) => node.file_type === 'video' && node.label === 'seekhead-info-clear-duration.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        file_type: 'video',
+        label: 'seekhead-info-clear-duration.mkv',
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+      })
+      expect(mkvNode).not.toHaveProperty('media_duration_seconds')
+    })
+  })
+
+  test('builds graph artifacts with tkhd dimension fallback for MP4-family video assets when the visual sample entry is truncated', () => {
+    withTempDir((tempDir) => {
+      const mp4Buffer = createTestVideoMp4Buffer({ truncateVideoSampleEntry: true, includeVideoTkhdDimensions: true })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Clip](tkhd-fallback.mp4)\n', 'utf8')
+      writeFileSync(join(tempDir, 'tkhd-fallback.mp4'), mp4Buffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'tkhd-fallback.mp4',
+            media_duration_seconds: 2.5,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
+            video_width_px: 1920,
+            video_height_px: 1080,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with mdhd duration fallback for MP4-family video assets when mvhd is absent', () => {
+    withTempDir((tempDir) => {
+      const mp4Buffer = createTestVideoMp4Buffer({ omitMovieHeaderDuration: true, includeTrackMdhdDuration: true })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Clip](mdhd-fallback.mp4)\n', 'utf8')
+      writeFileSync(join(tempDir, 'mdhd-fallback.mp4'), mp4Buffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'mdhd-fallback.mp4',
+            media_duration_seconds: 2.5,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
+            video_width_px: 1920,
+            video_height_px: 1080,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts without Matroska/WebM duration when TimecodeScale is zero', () => {
+    withTempDir((tempDir) => {
+      const webmBuffer = createTestMatroskaBuffer({ timecodeScale: 0 })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Session](zero-scale.webm)\n', 'utf8')
+      writeFileSync(join(tempDir, 'zero-scale.webm'), webmBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'zero-scale.webm',
+            video_width_px: 1280,
+            video_height_px: 720,
+          }),
+        ]),
+      )
+      const videoNode = graphData.nodes.find((node) => node.file_type === 'video' && node.label === 'zero-scale.webm')
+      expect(videoNode?.media_duration_seconds).toBeUndefined()
     })
   })
 
@@ -144,6 +2270,163 @@ describe('generateGraph', () => {
       expect(result.changedFiles).toBeGreaterThan(0)
       expect(result.deletedFiles).toBe(0)
       expect(existsSync(join(tempDir, 'graphify-out', 'manifest.json'))).toBe(true)
+    })
+  })
+
+  test('treats local media sidecar-only changes as incremental updates', async () => {
+    await withTempDirAsync(async (tempDir) => {
+      const audioPath = join(tempDir, 'episode.mp3')
+      const sidecarPath = binaryIngestSidecarPath(audioPath)
+      writeFileSync(audioPath, Buffer.from('ID3'))
+      writeFileSync(
+        sidecarPath,
+        JSON.stringify(
+          {
+            source_url: 'https://example.com/podcast/episodes/1',
+            captured_at: '2026-04-14T02:00:00Z',
+            contributor: 'graphify-ts',
+          },
+          null,
+          2,
+        ),
+        'utf8',
+      )
+
+      const initial = generateGraph(tempDir, { noHtml: true })
+      const initialGraphData = JSON.parse(readFileSync(initial.graphPath, 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(initialGraphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'audio',
+            source_url: 'https://example.com/podcast/episodes/1',
+          }),
+        ]),
+      )
+
+      await delay(10)
+      writeFileSync(
+        sidecarPath,
+        JSON.stringify(
+          {
+            source_url: 'https://example.com/podcast/episodes/2',
+            captured_at: '2026-04-14T02:05:00Z',
+            contributor: 'graphify-ts',
+          },
+          null,
+          2,
+        ),
+        'utf8',
+      )
+
+      const updated = generateGraph(tempDir, { update: true, noHtml: true })
+      const updatedGraphData = JSON.parse(readFileSync(updated.graphPath, 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(updated.changedFiles).toBeGreaterThan(0)
+      expect(updatedGraphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'audio',
+            source_url: 'https://example.com/podcast/episodes/2',
+            captured_at: '2026-04-14T02:05:00Z',
+          }),
+        ]),
+      )
+    })
+  })
+
+  test.runIf(process.platform !== 'win32')('preserves symlink-following local media files during incremental updates', async () => {
+    await withTempDirAsync(async (tempDir) => {
+      const mediaDir = join(tempDir, 'media')
+      const targetPath = join(mediaDir, 'episode.mp3')
+      const linkPath = join(tempDir, 'episode-link.mp3')
+      mkdirSync(mediaDir, { recursive: true })
+      writeFileSync(targetPath, Buffer.from('ID3'))
+      symlinkSync(targetPath, linkPath)
+
+      const initial = generateGraph(tempDir, { followSymlinks: true, noHtml: true })
+      const initialGraphData = JSON.parse(readFileSync(initial.graphPath, 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(initialGraphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'audio',
+            label: 'episode-link.mp3',
+            source_file: linkPath,
+          }),
+        ]),
+      )
+
+      const updated = generateGraph(tempDir, { update: true, followSymlinks: true, noHtml: true })
+      const updatedGraphData = JSON.parse(readFileSync(updated.graphPath, 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(updated.deletedFiles).toBe(0)
+      expect(updatedGraphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'audio',
+            label: 'episode-link.mp3',
+            source_file: linkPath,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('preserves schema version during incremental updates', async () => {
+    await withTempDirAsync(async (tempDir) => {
+      const sourcePath = join(tempDir, 'main.py')
+      const helperPath = join(tempDir, 'helper.py')
+      writeFileSync(sourcePath, 'def greet():\n    return helper()\n', 'utf8')
+      writeFileSync(helperPath, 'def helper():\n    return 1\n', 'utf8')
+
+      const initial = generateGraph(tempDir, { noHtml: true })
+      const graphData = JSON.parse(readFileSync(initial.graphPath, 'utf8')) as {
+        schema_version?: number
+        nodes: Array<Record<string, unknown>>
+        links: Array<Record<string, unknown>>
+        hyperedges?: Array<Record<string, unknown>>
+      }
+
+      graphData.schema_version = 2
+      graphData.nodes = graphData.nodes.map((node) =>
+        node.label === 'helper()'
+          ? {
+              ...node,
+              layer: 'semantic',
+              provenance: [{ capability_id: 'test:seed-helper', stage: 'seed' }],
+            }
+          : node,
+      )
+      writeFileSync(initial.graphPath, `${JSON.stringify(graphData, null, 2)}\n`, 'utf8')
+
+      await delay(10)
+      writeFileSync(sourcePath, 'def greet():\n    return helper()\n\ndef other():\n    return greet()\n', 'utf8')
+
+      const updated = generateGraph(tempDir, { update: true, noHtml: true })
+      const updatedGraphData = JSON.parse(readFileSync(updated.graphPath, 'utf8')) as {
+        schema_version?: number
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(updatedGraphData.schema_version).toBe(2)
+      expect(updatedGraphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            label: 'helper()',
+            layer: 'semantic',
+            provenance: [expect.objectContaining({ capability_id: 'test:seed-helper' })],
+          }),
+        ]),
+      )
     })
   })
 

@@ -33,47 +33,47 @@ const PLATFORM_KIND_BY_INSTALL_PLATFORM: Record<SkillInstallPlatform, PlatformKi
 const FRONTMATTER: Record<PlatformKind, string> = {
   default: `---
 name: ${SKILL_NAME}
-description: any input (code, docs, papers, images) → knowledge graph → clustered communities → HTML + JSON + audit report
+description: any input (code, docs, papers, images, media) → knowledge graph → clustered communities → HTML + JSON + audit report
 trigger: ${SKILL_COMMAND}
 ---`,
   codex: `---
 name: ${SKILL_NAME}
-description: any input (code, docs, papers, images) → knowledge graph → clustered communities → HTML + JSON + audit report
+description: any input (code, docs, papers, images, media) → knowledge graph → clustered communities → HTML + JSON + audit report
 trigger: ${SKILL_COMMAND}
 ---`,
   gemini: `---
 name: ${SKILL_NAME}
-description: any input (code, docs, papers, images) → knowledge graph → clustered communities → HTML + JSON + audit report
+description: any input (code, docs, papers, images, media) → knowledge graph → clustered communities → HTML + JSON + audit report
 trigger: ${SKILL_COMMAND}
 ---`,
   aider: `---
 name: ${SKILL_NAME}
-description: any input (code, docs, papers, images) → knowledge graph → clustered communities → HTML + JSON + audit report
+description: any input (code, docs, papers, images, media) → knowledge graph → clustered communities → HTML + JSON + audit report
 trigger: ${SKILL_COMMAND}
 ---`,
   opencode: `---
 name: ${SKILL_NAME}
-description: any input (code, docs, papers, images) → knowledge graph → clustered communities → HTML + JSON + audit report
+description: any input (code, docs, papers, images, media) → knowledge graph → clustered communities → HTML + JSON + audit report
 trigger: ${SKILL_COMMAND}
 ---`,
   claw: `---
 name: ${SKILL_NAME}
-description: any input (code, docs, papers, images) → knowledge graph → clustered communities → HTML + JSON + audit report
+description: any input (code, docs, papers, images, media) → knowledge graph → clustered communities → HTML + JSON + audit report
 trigger: ${SKILL_COMMAND}
 ---`,
   droid: `---
 name: ${SKILL_NAME}
-description: any input (code, docs, papers, images) → knowledge graph → clustered communities → HTML + JSON + audit report
+description: any input (code, docs, papers, images, media) → knowledge graph → clustered communities → HTML + JSON + audit report
 trigger: ${SKILL_COMMAND}
 ---`,
   trae: `---
 name: ${SKILL_NAME}
-description: any input (code, docs, papers, images) → knowledge graph → clustered communities → HTML + JSON + audit report
+description: any input (code, docs, papers, images, media) → knowledge graph → clustered communities → HTML + JSON + audit report
 trigger: ${SKILL_COMMAND}
 ---`,
   windows: `---
 name: ${SKILL_NAME}
-description: any input (code, docs, papers, images) → knowledge graph → clustered communities → HTML + JSON + audit report
+description: any input (code, docs, papers, images, media) → knowledge graph → clustered communities → HTML + JSON + audit report
 trigger: ${SKILL_COMMAND}
 ---`,
 }
@@ -123,6 +123,8 @@ Use it for:
 - a reading list (papers + tweets + notes)
 - a research corpus
 - a personal /raw folder that keeps growing
+
+Current media scope: local audio/video, plus direct audio/video URL ingests that download into the same hidden-sidecar path, currently land as deterministic file nodes only. There is no transcription or segment extraction yet.
 
 ## What You Must Do When Invoked
 
@@ -191,7 +193,7 @@ Never fall back to Python.
 Do not print the JSON directly; present a concise summary instead:
 
 - Corpus: X files · ~Y words
-- code/docs/papers/images counts
+- code/docs/papers/images/audio/video counts
 
 If ${CODE_SPAN_START}total_files${CODE_SPAN_END} is 0, stop.
 If the corpus is very large, warn and ask which subfolder to run on.
@@ -281,7 +283,7 @@ Required extraction rules:
 
 Worker output schema:
 ${CODE_BLOCK_START}json
-{"nodes":[{"id":"filestem_entityname","label":"Human Readable Name","file_type":"code|document|paper|image","source_file":"relative/path","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null}],"edges":[{"source":"node_id","target":"node_id","relation":"calls|implements|references|cites|conceptually_related_to|shares_data_with|semantically_similar_to|rationale_for","confidence":"EXTRACTED|INFERRED|AMBIGUOUS","confidence_score":1.0,"source_file":"relative/path","source_location":null,"weight":1.0}],"hyperedges":[{"id":"snake_case_id","label":"Human Readable Label","nodes":["node_id1","node_id2","node_id3"],"relation":"participate_in|implement|form","confidence":"EXTRACTED|INFERRED","confidence_score":0.75,"source_file":"relative/path"}],"input_tokens":0,"output_tokens":0}
+{"schema_version":2,"nodes":[{"id":"filestem_entityname","label":"Human Readable Name","file_type":"code|document|paper|image|audio|video|rationale","source_file":"relative/path","source_location":"L1","layer":"base|semantic|media","provenance":[{"capability_id":"builtin:extract:markdown","stage":"extract","source_file":"relative/path","source_location":"L1"}],"source_url":null,"captured_at":null,"author":null,"contributor":null}],"edges":[{"source":"node_id","target":"node_id","relation":"calls|implements|references|cites|conceptually_related_to|shares_data_with|semantically_similar_to|rationale_for","confidence":"EXTRACTED|INFERRED|AMBIGUOUS","confidence_score":1.0,"source_file":"relative/path","source_location":"L1","layer":"base|semantic|media","provenance":[{"capability_id":"builtin:extract:markdown","stage":"extract","source_file":"relative/path","source_location":"L1"}],"weight":1.0}],"hyperedges":[{"id":"snake_case_id","label":"Human Readable Label","nodes":["node_id1","node_id2","node_id3"],"relation":"participate_in|implement|form","confidence":"EXTRACTED|INFERRED","confidence_score":0.75,"source_file":"relative/path","layer":"base|semantic|media","provenance":[{"capability_id":"builtin:extract:markdown","stage":"extract","source_file":"relative/path","source_location":"L1"}]}],"input_tokens":0,"output_tokens":0}
 ${CODE_BLOCK_END}
 `
 }
@@ -349,7 +351,7 @@ function subcommandSection(kind: PlatformKind): string {
 - ${CODE_SPAN_START}${SKILL_COMMAND} add${CODE_SPAN_END} — fetch a URL into ${CODE_SPAN_START}./raw${CODE_SPAN_END} and then run ${CODE_SPAN_START}--update${CODE_SPAN_END}.
 - ${CODE_SPAN_START}${SKILL_COMMAND} --update${CODE_SPAN_END} — incremental re-extraction; skip semantic work when all changed files are code.
 - ${CODE_SPAN_START}${SKILL_COMMAND} --cluster-only${CODE_SPAN_END} — re-cluster an existing graph.
-- ${CODE_SPAN_START}${SKILL_COMMAND} --watch${CODE_SPAN_END} — supported code, docs, papers, images, and office documents trigger automatic rebuilds; manual refresh is only needed for unsupported future formats.
+- ${CODE_SPAN_START}${SKILL_COMMAND} --watch${CODE_SPAN_END} — supported code, docs, papers, images, local audio/video, and office documents trigger automatic rebuilds; manual refresh is only needed for unsupported future formats.
 - ${CODE_SPAN_START}graphify-ts hook install|uninstall|status${CODE_SPAN_END} — manage git hooks for rebuild reminders.
 - ${CODE_SPAN_START}graphify-ts claude install${CODE_SPAN_END} or the platform-specific installer — write always-on instructions to ${localConfigTarget}.
 `

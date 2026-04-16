@@ -6,7 +6,7 @@
 [![Vitest 3.2](https://img.shields.io/badge/tests-Vitest%203.2-6e9f18)](https://vitest.dev/)
 [![MCP stdio + HTTP](https://img.shields.io/badge/runtime-MCP%20stdio%20%2B%20HTTP-7c3aed)](#how-graphify-helps-claude-code-and-other-ai-platforms)
 [![Local first](https://img.shields.io/badge/local--first-no%20cloud%20required-0f766e)](#how-graphify-helps)
-[![Code docs papers images](https://img.shields.io/badge/corpus-code%20%2B%20docs%20%2B%20papers%20%2B%20images-9a3412)](#what-you-get)
+[![Code docs papers images media](https://img.shields.io/badge/corpus-code%20%2B%20docs%20%2B%20papers%20%2B%20images%20%2B%20media-9a3412)](#what-you-get)
 [![HTML JSON Neo4j](https://img.shields.io/badge/outputs-HTML%20%2B%20JSON%20%2B%20Neo4j-f59e0b)](#what-you-get)
 [![No Python runtime](https://img.shields.io/badge/runtime-no%20Python%20required-111827)](#best-fit-today)
 [![license MIT](https://img.shields.io/badge/license-MIT-16a34a)](./LICENSE)
@@ -16,6 +16,12 @@
 `graphify-ts` is the Node/TypeScript implementation of that workflow. It lets you generate graph artifacts locally, inspect them in HTML, query them from the CLI, serve them to tools, and use them to give AI platforms like Claude Code a much better map of your repository — all without requiring a Python runtime.
 
 The npm package name is `@mohammednagy/graphify-ts`, and the installed command is `graphify-ts`.
+
+## Credit to the original graphify
+
+`graphify-ts` gives full credit to the original [`graphify`](https://github.com/safishamsi/graphify) project by [Safi Shamsi](https://github.com/safishamsi). That project established the core idea and workflow of turning code, docs, and mixed project folders into a queryable knowledge graph for humans and AI coding assistants.
+
+This repository is a Node/TypeScript implementation of that vision, adapted for a Node-native CLI and local graph workflows. If you want the original Python-based project and its broader multimodal feature set, start with `graphify`.
 
 ## What is graphify?
 
@@ -249,7 +255,7 @@ If you want the interactive UI for the same smoke test, rerun without `--no-html
 | Command | What it does |
 |---|---|
 | `generate [path]` | Build graph artifacts for a folder |
-| `watch [path]` | Build once, then watch supported code, docs, papers, images, and office-document changes |
+| `watch [path]` | Build once, then watch supported code, docs, papers, images, local audio/video, and office-document changes |
 | `serve [graph.json]` | Serve graph artifacts over HTTP or stdio |
 | `query "<question>"` | Traverse `graph.json` for a question, with optional ranking and query filters |
 | `diff <baseline-graph.json>` | Compare two graph snapshots and summarize new/removed nodes and edges |
@@ -297,11 +303,14 @@ Additional coverage exists for:
 - Python, Go, Java, and Ruby via portable WASM tree-sitter
 - several additional languages via lighter structural extraction
 - deterministic document, paper, image, and office-document handling, including DOCX/XLSX metadata lifting plus richer PDF citation metadata
+- first local audio/video file-node support across common media extensions, plus direct PDF/image/audio/video or webpage-shaped binary asset URLs that resolve into the same hidden-sidecar path, with deterministic extension-derived `content_type`, saved-asset `file_bytes`, lightweight duration metadata for WAV plus common MP4-family assets with recognizable top-level container headers and bounded `mdhd` fallback when `mvhd` is absent, deterministic MP4-family video `video_width_px` / `video_height_px` metadata plus embedded audio-track `audio_sample_rate_hz` / `audio_channel_count` from bounded `moov` parsing, including `tkhd` width/height fallback when the visual sample entry is missing or truncated, deterministic AVI `media_duration_seconds` / `video_width_px` / `video_height_px` metadata plus embedded audio-track `audio_sample_rate_hz` / `audio_channel_count` from bounded RIFF parsing, deterministic Matroska/WebM `media_duration_seconds` / `video_width_px` / `video_height_px` plus embedded audio-track `audio_sample_rate_hz` / `audio_channel_count` metadata from a bounded 512 KiB EBML head scan plus a small bounded set of `SeekHead` rereads and a bounded later top-level segment scan, including recovery when large prefixed segment content pushes `Info` or `Tracks` beyond the widened head window, truncates those elements near the boundary, lacks useful `SeekHead` help, or uses split/corrective `SeekHead` hints, including the no-`SeekHead` case where the first direct `Info` or `Tracks` header is visible in the head window but must be reread from disk to finish parsing and can still replace stale earlier duration or track metadata, where later readable `Info` or `Tracks` targets discovered through either `SeekHead` rereads or the later top-level scan can clear stale duration, audio, or video-dimension metadata while later unreadable `Info` targets preserve earlier valid duration and later unreadable `Tracks` targets preserve earlier valid dimension/audio-track metadata, common MP3 ID3 `audio_title` / `audio_artist` / `audio_album` metadata lift, deterministic AAC ADTS `media_duration_seconds` / `audio_sample_rate_hz` / `audio_channel_count` metadata, richer M4A MP4-container `audio_sample_rate_hz` / `audio_channel_count` / `audio_title` / `audio_artist` / `audio_album` metadata lift, deterministic FLAC/Ogg Vorbis/Opus `media_duration_seconds` / `audio_sample_rate_hz` / `audio_channel_count` / `audio_title` / `audio_artist` / `audio_album` metadata lift, including Ogg-family audio-stream selection when a leading non-audio BOS stream appears first within a bounded 512 KiB head window, graph/report categorization, and watch/update coverage but no transcription yet
+- additive schema-v2 validation for `schema_version`, layered graph metadata (`base`, `semantic`, `media`), provenance records, immutable legacy-payload normalization during graph build, explicit `graph.json` / reload / `generate --update` schema-version preservation, helper-created raw extraction output that now emits explicit base-layer/provenance metadata, normalization-time projection of flat ingest frontmatter into structured ingest provenance, and registry-driven extraction/ingest dispatch via a builtin capability registry that can disambiguate shared extensions such as markdown document vs paper inputs, emit structured GitHub repo/issue/PR/discussion captures plus exact `/commit/<sha>` commit captures, turn article-style webpages into richer canonicalized markdown with author/description lift, section headings, and outbound-link lists, emit structured single-post tweet/X captures across exact base-post plus `/photo/<n>` and `/video/<n>` media-alias routes with derived handle/post metadata plus explicit capture-status context, emit structured Reddit thread captures across exact thread-root and short-thread aliases plus exact comment-permalink captures with post/comment context and explicit JSON-fallback behavior, emit structured Hacker News item captures across exact `news.ycombinator.com/item?id=` routes with discussion highlights and explicit API-fallback behavior, and emit structured YouTube captures across exact single-video `watch`, `youtu.be`, `shorts`, and `embed` routes, exact `live` routes, exact `/playlist?list=<id>` routes, and exact root channel routes across `@handle`, `/channel/<id>`, and `/c/<slug>` with canonical watch/playlist/channel URLs, derived IDs, handles, or custom-channel slugs, optional watch-page publish/duration metadata, optional transcript-availability plus caption-language hints when canonical watch HTML exposes caption tracks, optional timestamped transcript cue context from one prioritized confirmed caption track with manual-over-ASR preference in the primary language plus fallback across remaining confirmed tracks, start-end ranges when timedtext exposes cue durations and start-only fallback otherwise, optional chapter context when canonical watch HTML exposes it, and explicit oEmbed/HTML fallback context
 - lightweight HTTP and stdio/MCP-style serving
 
 For the detailed implementation status, limitations, and roadmap material that used to live in this README, see:
 
 - [`docs/plans/current-status.md`](docs/plans/current-status.md)
+- [`docs/plans/2026-04-12-upstream-parity-and-beyond.md`](docs/plans/2026-04-12-upstream-parity-and-beyond.md)
 
 ## Contributing
 

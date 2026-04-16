@@ -1,6 +1,6 @@
 import { existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 
 import { strToU8, zipSync } from 'fflate'
 
@@ -14,6 +14,1101 @@ const FIXTURES_DIR = join(process.cwd(), 'tests', 'fixtures')
 describe('extract', () => {
   function createTempRoot(): string {
     return mkdtempSync(join(tmpdir(), 'graphify-ts-extract-'))
+  }
+
+  function binaryIngestSidecarPath(assetPath: string): string {
+    return join(dirname(assetPath), `.${basename(assetPath)}.graphify-ingest.json`)
+  }
+
+  function createTestWavBuffer(durationSeconds: number, sampleRate: number = 4_000, channelCount: number = 2, bitsPerSample: number = 16): Buffer {
+    const byteRate = sampleRate * channelCount * (bitsPerSample / 8)
+    const blockAlign = channelCount * (bitsPerSample / 8)
+    const dataSize = Math.round(durationSeconds * byteRate)
+    const buffer = Buffer.alloc(44 + dataSize)
+    buffer.write('RIFF', 0, 'ascii')
+    buffer.writeUInt32LE(36 + dataSize, 4)
+    buffer.write('WAVE', 8, 'ascii')
+    buffer.write('fmt ', 12, 'ascii')
+    buffer.writeUInt32LE(16, 16)
+    buffer.writeUInt16LE(1, 20)
+    buffer.writeUInt16LE(channelCount, 22)
+    buffer.writeUInt32LE(sampleRate, 24)
+    buffer.writeUInt32LE(byteRate, 28)
+    buffer.writeUInt16LE(blockAlign, 32)
+    buffer.writeUInt16LE(bitsPerSample, 34)
+    buffer.write('data', 36, 'ascii')
+    buffer.writeUInt32LE(dataSize, 40)
+    return buffer
+  }
+
+  function createMp4Atom(type: string, payload: Buffer): Buffer {
+    const buffer = Buffer.alloc(8 + payload.length)
+    buffer.writeUInt32BE(buffer.length, 0)
+    buffer.write(type, 4, 'ascii')
+    payload.copy(buffer, 8)
+    return buffer
+  }
+
+  function createTestMp4Buffer(durationSeconds: number, timescale: number = 1_000): Buffer {
+    const mvhdPayload = Buffer.alloc(20)
+    mvhdPayload.writeUInt32BE(0, 0)
+    mvhdPayload.writeUInt32BE(0, 4)
+    mvhdPayload.writeUInt32BE(0, 8)
+    mvhdPayload.writeUInt32BE(timescale, 12)
+    mvhdPayload.writeUInt32BE(Math.round(durationSeconds * timescale), 16)
+
+    return Buffer.concat([
+      createMp4Atom('ftyp', Buffer.from('isom0000', 'ascii')),
+      createMp4Atom('moov', createMp4Atom('mvhd', mvhdPayload)),
+    ])
+  }
+
+  function createMp4AtomWithType(type: Buffer, payload: Buffer): Buffer {
+    const buffer = Buffer.alloc(8 + payload.length)
+    buffer.writeUInt32BE(buffer.length, 0)
+    type.copy(buffer, 4)
+    payload.copy(buffer, 8)
+    return buffer
+  }
+
+  function createMp4AudioSampleEntry(sampleRate: number, channelCount: number, sampleEntryType: string = 'mp4a'): Buffer {
+    const body = Buffer.alloc(28)
+    body.writeUInt16BE(1, 6)
+    body.writeUInt16BE(channelCount, 16)
+    body.writeUInt16BE(16, 18)
+    body.writeUInt32BE(sampleRate * 65_536, 24)
+    return createMp4Atom(sampleEntryType, body)
+  }
+
+  function createMp4VideoSampleEntry(width: number, height: number, sampleEntryType: string = 'avc1'): Buffer {
+    const body = Buffer.alloc(28)
+    body.writeUInt16BE(1, 6)
+    body.writeUInt16BE(width, 24)
+    body.writeUInt16BE(height, 26)
+    return createMp4Atom(sampleEntryType, body)
+  }
+
+  function createMp4StsdBox(entries: Buffer[]): Buffer {
+    const payload = Buffer.alloc(8)
+    payload.writeUInt32BE(0, 0)
+    payload.writeUInt32BE(entries.length, 4)
+    return createMp4Atom('stsd', Buffer.concat([payload, ...entries]))
+  }
+
+  function createMp4HandlerBox(handlerType: string): Buffer {
+    const payload = Buffer.alloc(12)
+    payload.write(handlerType, 8, 'ascii')
+    return createMp4Atom('hdlr', payload)
+  }
+
+  function createMp4TrackHeaderBox(width: number, height: number): Buffer {
+    const payload = Buffer.alloc(84)
+    payload.writeUInt32BE(0x00000007, 0)
+    payload.writeUInt32BE(1, 12)
+    payload.writeUInt32BE(0, 20)
+    payload.writeUInt16BE(0, 32)
+    payload.writeUInt16BE(0, 34)
+    payload.writeUInt16BE(0x0100, 36)
+    payload.writeUInt32BE(0x00010000, 40)
+    payload.writeUInt32BE(0, 44)
+    payload.writeUInt32BE(0, 48)
+    payload.writeUInt32BE(0, 52)
+    payload.writeUInt32BE(0x00010000, 56)
+    payload.writeUInt32BE(0, 60)
+    payload.writeUInt32BE(0, 64)
+    payload.writeUInt32BE(0, 68)
+    payload.writeUInt32BE(0x40000000, 72)
+    payload.writeUInt32BE(width * 65_536, 76)
+    payload.writeUInt32BE(height * 65_536, 80)
+    return createMp4Atom('tkhd', payload)
+  }
+
+  function createMp4MediaHeaderBox(durationSeconds: number, timescale: number = 1_000): Buffer {
+    const payload = Buffer.alloc(24)
+    payload.writeUInt32BE(0, 0)
+    payload.writeUInt32BE(0, 4)
+    payload.writeUInt32BE(0, 8)
+    payload.writeUInt32BE(timescale, 12)
+    payload.writeUInt32BE(Math.round(durationSeconds * timescale), 16)
+    payload.writeUInt16BE(0, 20)
+    payload.writeUInt16BE(0, 22)
+    return createMp4Atom('mdhd', payload)
+  }
+
+  function createMp4TrackBox(
+    handlerType: string,
+    stsd: Buffer,
+    options: {
+      tkhd?: Buffer | null
+      mdhd?: Buffer | null
+    } = {},
+  ): Buffer {
+    return createMp4Atom(
+      'trak',
+      Buffer.concat([
+        ...(options.tkhd ? [options.tkhd] : []),
+        createMp4Atom(
+          'mdia',
+          Buffer.concat([
+            ...(options.mdhd ? [options.mdhd] : []),
+            createMp4HandlerBox(handlerType),
+            createMp4Atom('minf', createMp4Atom('stbl', stsd)),
+          ]),
+        ),
+      ]),
+    )
+  }
+
+  function createMp4MetadataDataAtom(value: string): Buffer {
+    const payload = Buffer.concat([
+      Buffer.from([0, 0, 0, 1, 0, 0, 0, 0]),
+      Buffer.from(value, 'utf8'),
+    ])
+    return createMp4Atom('data', payload)
+  }
+
+  function createMp4MetadataItem(typeBytes: Buffer, value: string): Buffer {
+    return createMp4AtomWithType(typeBytes, createMp4MetadataDataAtom(value))
+  }
+
+  function createMalformedMp4MetadataItem(typeBytes: Buffer, value: string): Buffer {
+    const validItem = createMp4MetadataItem(typeBytes, value)
+    return validItem.subarray(0, Math.max(8, validItem.length - 3))
+  }
+
+  function createTestM4aBuffer(
+    metadata: { title: string; artist: string; album: string },
+    options: {
+      durationSeconds?: number
+      sampleRate?: number
+      channelCount?: number
+      truncateMetadata?: boolean
+      omitMovieHeaderDuration?: boolean
+      includeTrackMdhdDuration?: boolean
+    } = {},
+  ): Buffer {
+    const durationSeconds = options.durationSeconds ?? 2.5
+    const sampleRate = options.sampleRate ?? 48_000
+    const channelCount = options.channelCount ?? 2
+
+    const mvhdPayload = Buffer.alloc(20)
+    mvhdPayload.writeUInt32BE(0, 0)
+    mvhdPayload.writeUInt32BE(0, 4)
+    mvhdPayload.writeUInt32BE(0, 8)
+    mvhdPayload.writeUInt32BE(1_000, 12)
+    mvhdPayload.writeUInt32BE(Math.round(durationSeconds * 1_000), 16)
+
+    const stsd = createMp4StsdBox([createMp4AudioSampleEntry(sampleRate, channelCount)])
+    const trak = createMp4TrackBox('soun', stsd, {
+      mdhd: options.includeTrackMdhdDuration ? createMp4MediaHeaderBox(durationSeconds) : null,
+    })
+
+    const metadataItems = options.truncateMetadata
+      ? [
+          createMalformedMp4MetadataItem(Buffer.from([0xa9, 0x6e, 0x61, 0x6d]), metadata.title),
+        ]
+      : [
+          createMp4MetadataItem(Buffer.from([0xa9, 0x6e, 0x61, 0x6d]), metadata.title),
+          createMp4MetadataItem(Buffer.from([0xa9, 0x41, 0x52, 0x54]), metadata.artist),
+          createMp4MetadataItem(Buffer.from([0xa9, 0x61, 0x6c, 0x62]), metadata.album),
+        ]
+    const ilst = createMp4Atom('ilst', Buffer.concat(metadataItems))
+    const meta = createMp4Atom('meta', Buffer.concat([Buffer.alloc(4), ilst]))
+    const udta = createMp4Atom('udta', meta)
+
+    return Buffer.concat([
+      createMp4Atom('ftyp', Buffer.from('M4A 0000', 'ascii')),
+      createMp4Atom(
+        'moov',
+        Buffer.concat([
+          ...(options.omitMovieHeaderDuration ? [] : [createMp4Atom('mvhd', mvhdPayload)]),
+          trak,
+          udta,
+        ]),
+      ),
+    ])
+  }
+
+  function createTestVideoMp4Buffer(
+    options: {
+      durationSeconds?: number
+      width?: number
+      height?: number
+      audioTrackFirst?: boolean
+      truncateVideoSampleEntry?: boolean
+      includeVideoTkhdDimensions?: boolean
+      omitMovieHeaderDuration?: boolean
+      includeTrackMdhdDuration?: boolean
+    } = {},
+  ): Buffer {
+    const durationSeconds = options.durationSeconds ?? 2.5
+    const width = options.width ?? 1920
+    const height = options.height ?? 1080
+    const audioTrackFirst = options.audioTrackFirst ?? true
+
+    const mvhdPayload = Buffer.alloc(20)
+    mvhdPayload.writeUInt32BE(0, 0)
+    mvhdPayload.writeUInt32BE(0, 4)
+    mvhdPayload.writeUInt32BE(0, 8)
+    mvhdPayload.writeUInt32BE(1_000, 12)
+    mvhdPayload.writeUInt32BE(Math.round(durationSeconds * 1_000), 16)
+
+    const audioStsd = createMp4StsdBox([createMp4AudioSampleEntry(48_000, 2)])
+    const videoEntry = options.truncateVideoSampleEntry
+      ? createMp4VideoSampleEntry(width, height).subarray(0, createMp4VideoSampleEntry(width, height).length - 3)
+      : createMp4VideoSampleEntry(width, height)
+    const videoStsd = createMp4StsdBox([videoEntry])
+    const audioTrak = createMp4TrackBox('soun', audioStsd, {
+      mdhd: options.includeTrackMdhdDuration ? createMp4MediaHeaderBox(durationSeconds) : null,
+    })
+    const videoTrak = createMp4TrackBox(
+      'vide',
+      videoStsd,
+      {
+        tkhd: options.includeVideoTkhdDimensions ? createMp4TrackHeaderBox(width, height) : null,
+        mdhd: options.includeTrackMdhdDuration ? createMp4MediaHeaderBox(durationSeconds) : null,
+      },
+    )
+
+    return Buffer.concat([
+      createMp4Atom('ftyp', Buffer.from('isom0000', 'ascii')),
+      createMp4Atom(
+        'moov',
+        Buffer.concat([
+          ...(options.omitMovieHeaderDuration ? [] : [createMp4Atom('mvhd', mvhdPayload)]),
+          ...(audioTrackFirst ? [audioTrak, videoTrak] : [videoTrak, audioTrak]),
+        ]),
+      ),
+    ])
+  }
+
+  const EBML_HEADER_ID = [0x1a, 0x45, 0xdf, 0xa3]
+  const EBML_DOC_TYPE_ID = [0x42, 0x82]
+  const EBML_SEGMENT_ID = [0x18, 0x53, 0x80, 0x67]
+  const EBML_SEEK_HEAD_ID = [0x11, 0x4d, 0x9b, 0x74]
+  const EBML_SEEK_ENTRY_ID = [0x4d, 0xbb]
+  const EBML_SEEK_ID_ID = [0x53, 0xab]
+  const EBML_SEEK_POSITION_ID = [0x53, 0xac]
+  const EBML_INFO_ID = [0x15, 0x49, 0xa9, 0x66]
+  const EBML_TIMECODE_SCALE_ID = [0x2a, 0xd7, 0xb1]
+  const EBML_DURATION_ID = [0x44, 0x89]
+  const EBML_TRACKS_ID = [0x16, 0x54, 0xae, 0x6b]
+  const EBML_TRACK_ENTRY_ID = [0xae]
+  const EBML_TRACK_TYPE_ID = [0x83]
+  const EBML_VIDEO_ID = [0xe0]
+  const EBML_AUDIO_ID = [0xe1]
+  const EBML_VOID_ID = [0xec]
+  const EBML_PIXEL_WIDTH_ID = [0xb0]
+  const EBML_PIXEL_HEIGHT_ID = [0xba]
+  const EBML_SAMPLING_FREQUENCY_ID = [0xb5]
+  const EBML_CHANNELS_ID = [0x9f]
+
+  function encodeEbmlSize(value: number): Buffer {
+    for (let length = 1; length <= 8; length += 1) {
+      const maxValue = (2 ** (7 * length)) - 1
+      if (value < maxValue) {
+        const encoded = Buffer.alloc(length)
+        let remaining = value
+        for (let index = length - 1; index >= 1; index -= 1) {
+          encoded[index] = remaining & 0xff
+          remaining >>= 8
+        }
+        encoded[0] = (1 << (8 - length)) | remaining
+        return encoded
+      }
+    }
+
+    throw new Error(`Unsupported EBML size in test helper: ${value}`)
+  }
+
+  function encodeEbmlUnsigned(value: number): Buffer {
+    if (value === 0) {
+      return Buffer.from([0])
+    }
+
+    let remaining = value
+    const bytes: number[] = []
+    while (remaining > 0) {
+      bytes.unshift(remaining & 0xff)
+      remaining >>= 8
+    }
+    return Buffer.from(bytes)
+  }
+
+  function createEbmlElement(id: readonly number[], payload: Buffer): Buffer {
+    return Buffer.concat([Buffer.from(id), encodeEbmlSize(payload.length), payload])
+  }
+
+  function createEbmlUnsignedElement(id: readonly number[], value: number): Buffer {
+    return createEbmlElement(id, encodeEbmlUnsigned(value))
+  }
+
+  function createEbmlFloatElement(id: readonly number[], value: number): Buffer {
+    const payload = Buffer.alloc(8)
+    payload.writeDoubleBE(value, 0)
+    return createEbmlElement(id, payload)
+  }
+
+  function createEbmlSeekEntry(targetId: readonly number[], position: number): Buffer {
+    return createEbmlElement(EBML_SEEK_ENTRY_ID, Buffer.concat([
+      createEbmlElement(EBML_SEEK_ID_ID, Buffer.from(targetId)),
+      createEbmlUnsignedElement(EBML_SEEK_POSITION_ID, position),
+    ]))
+  }
+
+  function createEbmlSeekHeadEntries(entries: Array<{ targetId: readonly number[], position: number }>): Buffer {
+    return createEbmlElement(EBML_SEEK_HEAD_ID, Buffer.concat(entries.map((entry) => createEbmlSeekEntry(entry.targetId, entry.position))))
+  }
+
+  function createTestMatroskaBuffer(
+    options: {
+      docType?: 'webm' | 'matroska'
+      durationSeconds?: number
+      width?: number
+      height?: number
+      audioTrackFirst?: boolean
+      malformedDuration?: boolean
+      timecodeScale?: number
+      includeAudioTrackMetadata?: boolean
+      audioSampleRate?: number
+      audioChannelCount?: number
+      staleFirstInfoMetadata?: {
+        durationSeconds: number
+        timecodeScale?: number
+      }
+      prefixedSegmentBytes?: number
+      interstitialSegmentBytes?: number
+      prefixedInfoBytes?: number
+      prefixedTracksBytes?: number
+      useSeekHead?: boolean
+      splitSeekHeads?: boolean
+      staleFirstInfoSeekHead?: boolean
+      staleFirstTracksSeekHead?: boolean
+      invalidTrailingInfoSeekHead?: boolean
+      finalTracksAudioOnly?: boolean
+      staleFirstTracksMetadata?: {
+        width: number
+        height: number
+        audioSampleRate: number
+        audioChannelCount: number
+      }
+    } = {},
+  ): Buffer {
+    const docType = options.docType ?? 'webm'
+    const durationSeconds = options.durationSeconds ?? 4.25
+    const width = options.width ?? 1280
+    const height = options.height ?? 720
+    const audioTrackFirst = options.audioTrackFirst ?? true
+    const timecodeScale = options.timecodeScale ?? 1_000_000
+    const audioSampleRate = options.audioSampleRate ?? 48_000
+    const audioChannelCount = options.audioChannelCount ?? 2
+    const staleFirstInfoMetadata = options.staleFirstInfoMetadata
+    const prefixedSegmentBytes = options.prefixedSegmentBytes ?? 0
+    const interstitialSegmentBytes = options.interstitialSegmentBytes ?? 0
+    const prefixedInfoBytes = options.prefixedInfoBytes ?? 0
+    const prefixedTracksBytes = options.prefixedTracksBytes ?? 0
+    const useSeekHead = options.useSeekHead ?? false
+    const splitSeekHeads = options.splitSeekHeads ?? false
+    const staleFirstInfoSeekHead = options.staleFirstInfoSeekHead ?? false
+    const staleFirstTracksSeekHead = options.staleFirstTracksSeekHead ?? false
+    const invalidTrailingInfoSeekHead = options.invalidTrailingInfoSeekHead ?? false
+    const finalTracksAudioOnly = options.finalTracksAudioOnly ?? false
+    const staleFirstTracksMetadata = options.staleFirstTracksMetadata
+
+    const info = createEbmlElement(EBML_INFO_ID, Buffer.concat([
+      ...(prefixedInfoBytes > 0 ? [createEbmlElement(EBML_VOID_ID, Buffer.alloc(prefixedInfoBytes))] : []),
+      createEbmlUnsignedElement(EBML_TIMECODE_SCALE_ID, timecodeScale),
+      options.malformedDuration
+        ? createEbmlElement(EBML_DURATION_ID, Buffer.from([0x40, 0x94, 0x00]))
+        : createEbmlFloatElement(EBML_DURATION_ID, durationSeconds * 1_000),
+    ]))
+    const staleInfo = staleFirstInfoMetadata
+      ? createEbmlElement(EBML_INFO_ID, Buffer.concat([
+          createEbmlUnsignedElement(EBML_TIMECODE_SCALE_ID, staleFirstInfoMetadata.timecodeScale ?? 1_000_000),
+          createEbmlFloatElement(EBML_DURATION_ID, staleFirstInfoMetadata.durationSeconds * 1_000),
+        ]))
+      : null
+    const videoTrackEntry = createEbmlElement(EBML_TRACK_ENTRY_ID, Buffer.concat([
+      createEbmlUnsignedElement(EBML_TRACK_TYPE_ID, 1),
+      createEbmlElement(EBML_VIDEO_ID, Buffer.concat([
+        createEbmlUnsignedElement(EBML_PIXEL_WIDTH_ID, width),
+        createEbmlUnsignedElement(EBML_PIXEL_HEIGHT_ID, height),
+      ])),
+    ]))
+    const audioTrackEntry = createEbmlElement(EBML_TRACK_ENTRY_ID, Buffer.concat([
+      createEbmlUnsignedElement(EBML_TRACK_TYPE_ID, 2),
+      ...(options.includeAudioTrackMetadata
+        ? [createEbmlElement(EBML_AUDIO_ID, Buffer.concat([
+            createEbmlFloatElement(EBML_SAMPLING_FREQUENCY_ID, audioSampleRate),
+            createEbmlUnsignedElement(EBML_CHANNELS_ID, audioChannelCount),
+          ]))]
+        : []),
+    ]))
+    const tracks = createEbmlElement(EBML_TRACKS_ID, Buffer.concat([
+      ...(prefixedTracksBytes > 0 ? [createEbmlElement(EBML_VOID_ID, Buffer.alloc(prefixedTracksBytes))] : []),
+      ...(finalTracksAudioOnly ? [audioTrackEntry] : audioTrackFirst ? [audioTrackEntry, videoTrackEntry] : [videoTrackEntry, audioTrackEntry]),
+    ]))
+    const staleTracks = staleFirstTracksMetadata
+      ? createEbmlElement(EBML_TRACKS_ID, Buffer.concat([
+          createEbmlElement(EBML_TRACK_ENTRY_ID, Buffer.concat([
+            createEbmlUnsignedElement(EBML_TRACK_TYPE_ID, 1),
+            createEbmlElement(EBML_VIDEO_ID, Buffer.concat([
+              createEbmlUnsignedElement(EBML_PIXEL_WIDTH_ID, staleFirstTracksMetadata.width),
+              createEbmlUnsignedElement(EBML_PIXEL_HEIGHT_ID, staleFirstTracksMetadata.height),
+            ])),
+          ])),
+          createEbmlElement(EBML_TRACK_ENTRY_ID, Buffer.concat([
+            createEbmlUnsignedElement(EBML_TRACK_TYPE_ID, 2),
+            createEbmlElement(EBML_AUDIO_ID, Buffer.concat([
+              createEbmlFloatElement(EBML_SAMPLING_FREQUENCY_ID, staleFirstTracksMetadata.audioSampleRate),
+              createEbmlUnsignedElement(EBML_CHANNELS_ID, staleFirstTracksMetadata.audioChannelCount),
+            ])),
+          ])),
+        ]))
+      : null
+    const ebmlHeader = createEbmlElement(EBML_HEADER_ID, createEbmlElement(EBML_DOC_TYPE_ID, Buffer.from(docType, 'ascii')))
+    const prefixedSegmentContent = prefixedSegmentBytes > 0
+      ? [createEbmlElement(EBML_VOID_ID, Buffer.alloc(prefixedSegmentBytes))]
+      : []
+    let seekHeadSpecs: Array<{
+      includeInfo: boolean
+      includeTracks: boolean
+      staleInfoTarget?: boolean
+      staleTracksTarget?: boolean
+      invalidInfoTarget?: boolean
+    }> = useSeekHead
+      ? splitSeekHeads
+        ? [{ includeInfo: true, includeTracks: false }, { includeInfo: false, includeTracks: true }]
+        : staleFirstInfoSeekHead || staleFirstTracksSeekHead
+          ? [
+              {
+                includeInfo: true,
+                includeTracks: true,
+                staleInfoTarget: staleFirstInfoSeekHead,
+                staleTracksTarget: staleFirstTracksSeekHead,
+              },
+              {
+                includeInfo: staleFirstInfoSeekHead,
+                includeTracks: staleFirstTracksSeekHead,
+              },
+            ]
+          : [{ includeInfo: true, includeTracks: true }]
+      : []
+    if (useSeekHead && invalidTrailingInfoSeekHead) {
+      seekHeadSpecs = [
+        ...seekHeadSpecs,
+        { includeInfo: true, includeTracks: false, invalidInfoTarget: true },
+      ]
+    }
+    let seekHeads: Buffer[] = []
+    if (useSeekHead) {
+      seekHeads = seekHeadSpecs.map(() => createEbmlSeekHeadEntries([]))
+      for (let iteration = 0; iteration < 4; iteration += 1) {
+        const seekHeadBytes = seekHeads.reduce((total, seekHead) => total + seekHead.length, 0)
+        const prefixedSegmentContentBytes = prefixedSegmentContent.reduce((total, element) => total + element.length, 0)
+        const staleInfoPosition = staleInfo ? seekHeadBytes + prefixedSegmentContentBytes : null
+        const staleTracksPosition = staleTracks ? seekHeadBytes + prefixedSegmentContentBytes + (staleInfo?.length ?? 0) : null
+        const infoPosition = seekHeadBytes
+          + prefixedSegmentContentBytes
+          + (staleInfo?.length ?? 0)
+          + (staleTracks?.length ?? 0)
+          + (interstitialSegmentBytes > 0 ? createEbmlElement(EBML_VOID_ID, Buffer.alloc(interstitialSegmentBytes)).length : 0)
+        const tracksPosition = infoPosition + info.length
+        const invalidInfoPosition = infoPosition + tracks.length + 65_536
+        const nextSeekHeads = seekHeadSpecs.map((spec) => createEbmlSeekHeadEntries([
+          ...(spec.includeInfo ? [{
+            targetId: EBML_INFO_ID,
+            position: spec.invalidInfoTarget ? invalidInfoPosition : spec.staleInfoTarget ? (staleInfoPosition ?? 0) : infoPosition,
+          }] : []),
+          ...(spec.includeTracks ? [{
+            targetId: EBML_TRACKS_ID,
+            position: spec.staleTracksTarget ? (staleTracksPosition ?? 0) : tracksPosition,
+          }] : []),
+        ]))
+        if (nextSeekHeads.length === seekHeads.length && nextSeekHeads.every((seekHead, index) => seekHead.equals(seekHeads[index] ?? Buffer.alloc(0)))) {
+          break
+        }
+        seekHeads = nextSeekHeads
+      }
+    }
+    const segment = createEbmlElement(EBML_SEGMENT_ID, Buffer.concat([
+      ...seekHeads,
+      ...prefixedSegmentContent,
+      ...(staleInfo ? [staleInfo] : []),
+      ...(staleTracks ? [staleTracks] : []),
+      ...(interstitialSegmentBytes > 0 ? [createEbmlElement(EBML_VOID_ID, Buffer.alloc(interstitialSegmentBytes))] : []),
+      info,
+      tracks,
+    ]))
+    return Buffer.concat([ebmlHeader, segment])
+  }
+
+  const AAC_SAMPLE_RATES = [96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025, 8_000, 7_350]
+
+  function aacSampleRateIndex(sampleRate: number): number {
+    const index = AAC_SAMPLE_RATES.indexOf(sampleRate)
+    if (index < 0) {
+      throw new Error(`Unsupported AAC sample rate in test helper: ${sampleRate}`)
+    }
+    return index
+  }
+
+  function createAacAdtsFrame(sampleRate: number, channelCount: number, payloadLength: number = 8, rawBlocksPerFrame: number = 1): Buffer {
+    if (rawBlocksPerFrame < 1 || rawBlocksPerFrame > 4) {
+      throw new Error(`Unsupported raw block count in AAC test helper: ${rawBlocksPerFrame}`)
+    }
+    const frameLength = 7 + payloadLength
+    const sampleRateIndex = aacSampleRateIndex(sampleRate)
+    const frame = Buffer.alloc(frameLength, 0)
+    frame[0] = 0xff
+    frame[1] = 0xf1
+    frame[2] = (1 << 6) | (sampleRateIndex << 2) | ((channelCount >> 2) & 0x1)
+    frame[3] = ((channelCount & 0x3) << 6) | ((frameLength >> 11) & 0x3)
+    frame[4] = (frameLength >> 3) & 0xff
+    frame[5] = ((frameLength & 0x7) << 5) | 0x1f
+    frame[6] = 0xfc | ((rawBlocksPerFrame - 1) & 0x03)
+    return frame
+  }
+
+  function createTestAacBuffer(
+    frameCount: number = 75,
+    sampleRate: number = 48_000,
+    channelCount: number = 2,
+    payloadLength: number = 8,
+    rawBlocksPerFrame: number = 1,
+  ): Buffer {
+    return Buffer.concat(Array.from({ length: frameCount }, () => createAacAdtsFrame(sampleRate, channelCount, payloadLength, rawBlocksPerFrame)))
+  }
+
+  function createFakeMvhdTaggedMp4Buffer(durationSeconds: number, timescale: number = 1_000): Buffer {
+    const fakeMvhd = Buffer.alloc(24)
+    fakeMvhd.write('mvhd', 0, 'ascii')
+    fakeMvhd.writeUInt32BE(0, 4)
+    fakeMvhd.writeUInt32BE(0, 8)
+    fakeMvhd.writeUInt32BE(0, 12)
+    fakeMvhd.writeUInt32BE(timescale, 16)
+    fakeMvhd.writeUInt32BE(Math.round(durationSeconds * timescale), 20)
+
+    return Buffer.concat([
+      createMp4Atom('ftyp', Buffer.from('isom0000', 'ascii')),
+      createMp4Atom('free', fakeMvhd),
+    ])
+  }
+
+  function createLargeFakeTailTaggedMp4Buffer(durationSeconds: number, totalBytes: number = 270_000, timescale: number = 1_000): Buffer {
+    const fakeMoov = createMp4Atom('moov', createMp4Atom('mvhd', (() => {
+      const mvhdPayload = Buffer.alloc(20)
+      mvhdPayload.writeUInt32BE(0, 0)
+      mvhdPayload.writeUInt32BE(0, 4)
+      mvhdPayload.writeUInt32BE(0, 8)
+      mvhdPayload.writeUInt32BE(timescale, 12)
+      mvhdPayload.writeUInt32BE(Math.round(durationSeconds * timescale), 16)
+      return mvhdPayload
+    })()))
+    const ftyp = createMp4Atom('ftyp', Buffer.from('isom0000', 'ascii'))
+    const mdatPayloadLength = totalBytes - ftyp.length - 8
+    const mdatPayload = Buffer.alloc(mdatPayloadLength, 0)
+    fakeMoov.copy(mdatPayload, Math.max(0, mdatPayload.length - fakeMoov.length))
+
+    return Buffer.concat([ftyp, createMp4Atom('mdat', mdatPayload)])
+  }
+
+  function createMalformedShortFmtWavBuffer(): Buffer {
+    const buffer = Buffer.alloc(44)
+    buffer.write('RIFF', 0, 'ascii')
+    buffer.writeUInt32LE(buffer.length - 8, 4)
+    buffer.write('WAVE', 8, 'ascii')
+    buffer.write('fmt ', 12, 'ascii')
+    buffer.writeUInt32LE(4, 16)
+    buffer.writeUInt32LE(0x00020000, 20)
+    buffer.write('data', 24, 'ascii')
+    buffer.writeUInt32LE(4, 28)
+    buffer.writeUInt32LE(8, 32)
+    return buffer
+  }
+
+  const AVI_TEST_FRAME_RATE = 20
+
+  function createRiffChunk(chunkId: string, payload: Buffer): Buffer {
+    const header = Buffer.alloc(8)
+    header.write(chunkId, 0, 'ascii')
+    header.writeUInt32LE(payload.length, 4)
+    const padding = payload.length % 2 === 1 ? Buffer.from([0]) : Buffer.alloc(0)
+    return Buffer.concat([header, payload, padding])
+  }
+
+  function createRiffList(listType: string, children: Buffer[]): Buffer {
+    return createRiffChunk('LIST', Buffer.concat([Buffer.from(listType, 'ascii'), ...children]))
+  }
+
+  function createRiffForm(formType: string, children: Buffer[]): Buffer {
+    const payload = Buffer.concat([Buffer.from(formType, 'ascii'), ...children])
+    const header = Buffer.alloc(8)
+    header.write('RIFF', 0, 'ascii')
+    header.writeUInt32LE(payload.length, 4)
+    return Buffer.concat([header, payload])
+  }
+
+  function createAviMainHeader(
+    durationSeconds: number,
+    width: number,
+    height: number,
+    options: { zeroDuration?: boolean | undefined; zeroDimensions?: boolean | undefined } = {},
+  ): Buffer {
+    const payload = Buffer.alloc(56)
+    payload.writeUInt32LE(options.zeroDuration ? 0 : Math.round(1_000_000 / AVI_TEST_FRAME_RATE), 0)
+    payload.writeUInt32LE(options.zeroDuration ? 0 : Math.round(durationSeconds * AVI_TEST_FRAME_RATE), 16)
+    payload.writeUInt32LE(2, 24)
+    payload.writeUInt32LE(options.zeroDimensions ? 0 : width, 32)
+    payload.writeUInt32LE(options.zeroDimensions ? 0 : height, 36)
+    return payload
+  }
+
+  function createAviStreamHeader(streamType: 'vids' | 'auds', durationSeconds: number): Buffer {
+    const payload = Buffer.alloc(56)
+    payload.write(streamType, 0, 'ascii')
+    payload.writeUInt32LE(1, 20)
+    if (streamType === 'vids') {
+      payload.write('DIB ', 4, 'ascii')
+      payload.writeUInt32LE(AVI_TEST_FRAME_RATE, 24)
+      payload.writeUInt32LE(Math.round(durationSeconds * AVI_TEST_FRAME_RATE), 32)
+      return payload
+    }
+
+    payload.writeUInt32LE(48_000, 24)
+    payload.writeUInt32LE(Math.round(durationSeconds * 48_000), 32)
+    return payload
+  }
+
+  function createAviBitmapInfoHeader(width: number, height: number): Buffer {
+    const payload = Buffer.alloc(40)
+    payload.writeUInt32LE(40, 0)
+    payload.writeInt32LE(width, 4)
+    payload.writeInt32LE(height, 8)
+    payload.writeUInt16LE(1, 12)
+    payload.writeUInt16LE(24, 14)
+    return payload
+  }
+
+  function createAviWaveFormat(): Buffer {
+    const payload = Buffer.alloc(16)
+    payload.writeUInt16LE(1, 0)
+    payload.writeUInt16LE(2, 2)
+    payload.writeUInt32LE(48_000, 4)
+    payload.writeUInt32LE(192_000, 8)
+    payload.writeUInt16LE(4, 12)
+    payload.writeUInt16LE(16, 14)
+    return payload
+  }
+
+  function createTestAviBuffer(
+    options: {
+      durationSeconds?: number
+      width?: number
+      height?: number
+      audioTrackFirst?: boolean
+      zeroMainHeaderDuration?: boolean
+      zeroMainHeaderDimensions?: boolean
+      truncateVideoFormat?: boolean
+      tailPaddingBytes?: number
+    } = {},
+  ): Buffer {
+    const durationSeconds = options.durationSeconds ?? 3.5
+    const width = options.width ?? 640
+    const height = options.height ?? 360
+    const audioTrackFirst = options.audioTrackFirst ?? true
+    const tailPaddingBytes = options.tailPaddingBytes ?? 0
+    const videoStreamList = createRiffList('strl', [
+      createRiffChunk('strh', createAviStreamHeader('vids', durationSeconds)),
+      createRiffChunk(
+        'strf',
+        options.truncateVideoFormat
+          ? createAviBitmapInfoHeader(width, height).subarray(0, 8)
+          : createAviBitmapInfoHeader(width, height),
+      ),
+    ])
+    const audioStreamList = createRiffList('strl', [
+      createRiffChunk('strh', createAviStreamHeader('auds', durationSeconds)),
+      createRiffChunk('strf', createAviWaveFormat()),
+    ])
+    const hdrl = createRiffList('hdrl', [
+      createRiffChunk(
+        'avih',
+        createAviMainHeader(durationSeconds, width, height, {
+          zeroDuration: options.zeroMainHeaderDuration,
+          zeroDimensions: options.zeroMainHeaderDimensions,
+        }),
+      ),
+      ...(audioTrackFirst ? [audioStreamList, videoStreamList] : [videoStreamList, audioStreamList]),
+    ])
+    return createRiffForm('AVI ', [
+      hdrl,
+      createRiffList('movi', []),
+      ...(tailPaddingBytes > 0 ? [createRiffChunk('JUNK', Buffer.alloc(tailPaddingBytes))] : []),
+    ])
+  }
+
+  function encodeSynchsafeInteger(value: number): Buffer {
+    return Buffer.from([
+      (value >> 21) & 0x7f,
+      (value >> 14) & 0x7f,
+      (value >> 7) & 0x7f,
+      value & 0x7f,
+    ])
+  }
+
+  function createId3Frame(frameId: string, payload: Buffer, version: 3 | 4 = 3): Buffer {
+    const sizeBuffer = version === 4 ? encodeSynchsafeInteger(payload.length) : Buffer.alloc(4)
+    if (version !== 4) {
+      sizeBuffer.writeUInt32BE(payload.length, 0)
+    }
+
+    const frame = Buffer.alloc(10 + payload.length)
+    frame.write(frameId, 0, 'ascii')
+    sizeBuffer.copy(frame, 4)
+    payload.copy(frame, 10)
+    return frame
+  }
+
+  function createId3v23TextFrame(frameId: string, value: string): Buffer {
+    const text = Buffer.from(value, 'utf8')
+    const payload = Buffer.concat([Buffer.from([3]), text])
+    return createId3Frame(frameId, payload, 3)
+  }
+
+  function createId3v23Frame(frameId: string, payload: Buffer): Buffer {
+    return createId3Frame(frameId, payload, 3)
+  }
+
+  function createId3ExtendedHeader(version: 3 | 4): Buffer {
+    if (version === 3) {
+      const header = Buffer.alloc(10)
+      header.writeUInt32BE(6, 0)
+      header.writeUInt16BE(0, 4)
+      header.writeUInt32BE(0, 6)
+      return header
+    }
+
+    const header = Buffer.alloc(6)
+    encodeSynchsafeInteger(6).copy(header, 0)
+    header[4] = 1
+    header[5] = 0
+    return header
+  }
+
+  function createTestMp3Id3Buffer(
+    metadata: { title: string; artist: string; album: string },
+    options: { version?: 3 | 4; extendedHeader?: boolean } = {},
+  ): Buffer {
+    const version = options.version ?? 3
+    const frames = Buffer.concat([
+      createId3Frame('TIT2', Buffer.concat([Buffer.from([3]), Buffer.from(metadata.title, 'utf8')]), version),
+      createId3Frame('TPE1', Buffer.concat([Buffer.from([3]), Buffer.from(metadata.artist, 'utf8')]), version),
+      createId3Frame('TALB', Buffer.concat([Buffer.from([3]), Buffer.from(metadata.album, 'utf8')]), version),
+    ])
+    const extendedHeader = options.extendedHeader ? createId3ExtendedHeader(version) : Buffer.alloc(0)
+    const header = Buffer.alloc(10)
+    header.write('ID3', 0, 'ascii')
+    header[3] = version
+    header[4] = 0
+    header[5] = options.extendedHeader ? 0x40 : 0
+    encodeSynchsafeInteger(extendedHeader.length + frames.length).copy(header, 6)
+    return Buffer.concat([header, extendedHeader, frames, Buffer.from([0xff, 0xfb, 0x90, 0x64])])
+  }
+
+  function createMalformedUtf16Mp3Buffer(): Buffer {
+    const frames = Buffer.concat([
+      createId3v23Frame('TIT2', Buffer.from([2, 0xff])),
+    ])
+    const header = Buffer.alloc(10)
+    header.write('ID3', 0, 'ascii')
+    header[3] = 3
+    header[4] = 0
+    encodeSynchsafeInteger(frames.length).copy(header, 6)
+    return Buffer.concat([header, frames, Buffer.from([0xff, 0xfb, 0x90, 0x64])])
+  }
+
+  function createMalformedV24SynchsafeSizeMp3Buffer(metadata: { title: string; artist: string; album: string }): Buffer {
+    const frames = Buffer.concat([
+      createId3Frame('TIT2', Buffer.concat([Buffer.from([3]), Buffer.from(metadata.title, 'utf8')]), 4),
+      createId3Frame('TPE1', Buffer.concat([Buffer.from([3]), Buffer.from(metadata.artist, 'utf8')]), 4),
+      createId3Frame('TALB', Buffer.concat([Buffer.from([3]), Buffer.from(metadata.album, 'utf8')]), 4),
+    ])
+    const padding = Buffer.alloc(128)
+    const header = Buffer.alloc(10)
+    header.write('ID3', 0, 'ascii')
+    header[3] = 4
+    header[4] = 0
+    header[9] = 0x80 | frames.length
+    return Buffer.concat([header, frames, padding, Buffer.from([0xff, 0xfb, 0x90, 0x64])])
+  }
+
+  function createLargeMp3Id3Buffer(metadata: { title: string; artist: string; album: string }, trailingFrameBytes: number = 300_000): Buffer {
+    const frames = Buffer.concat([
+      createId3v23TextFrame('TIT2', metadata.title),
+      createId3v23TextFrame('TPE1', metadata.artist),
+      createId3v23TextFrame('TALB', metadata.album),
+      createId3v23Frame('APIC', Buffer.alloc(trailingFrameBytes, 0)),
+    ])
+    const header = Buffer.alloc(10)
+    header.write('ID3', 0, 'ascii')
+    header[3] = 3
+    header[4] = 0
+    encodeSynchsafeInteger(frames.length).copy(header, 6)
+    return Buffer.concat([header, frames, Buffer.from([0xff, 0xfb, 0x90, 0x64])])
+  }
+
+  function createVorbisCommentBody(metadata: { title: string; artist: string; album: string }): Buffer {
+    const vendor = Buffer.from('graphify-ts', 'utf8')
+    const vendorLength = Buffer.alloc(4)
+    vendorLength.writeUInt32LE(vendor.length, 0)
+    const comments = [
+      `TITLE=${metadata.title}`,
+      `ARTIST=${metadata.artist}`,
+      `ALBUM=${metadata.album}`,
+    ].map((entry) => {
+      const comment = Buffer.from(entry, 'utf8')
+      const length = Buffer.alloc(4)
+      length.writeUInt32LE(comment.length, 0)
+      return Buffer.concat([length, comment])
+    })
+    const commentCount = Buffer.alloc(4)
+    commentCount.writeUInt32LE(comments.length, 0)
+    return Buffer.concat([vendorLength, vendor, commentCount, ...comments])
+  }
+
+  function createFlacMetadataBlock(blockType: number, payload: Buffer, isLast: boolean): Buffer {
+    const header = Buffer.alloc(4)
+    header[0] = (isLast ? 0x80 : 0) | (blockType & 0x7f)
+    header.writeUIntBE(payload.length, 1, 3)
+    return Buffer.concat([header, payload])
+  }
+
+  function createFlacStreamInfo(durationSeconds: number, sampleRate: number = 48_000, channelCount: number = 2, bitsPerSample: number = 16): Buffer {
+    const streamInfo = Buffer.alloc(34)
+    const totalSamples = BigInt(Math.round(durationSeconds * sampleRate))
+    streamInfo.writeUInt16BE(4096, 0)
+    streamInfo.writeUInt16BE(4096, 2)
+    const packedHeader =
+      (BigInt(sampleRate & 0x0f_ffff) << 44n) |
+      (BigInt(channelCount - 1) << 41n) |
+      (BigInt(bitsPerSample - 1) << 36n) |
+      totalSamples
+    streamInfo.writeBigUInt64BE(packedHeader, 10)
+    return streamInfo
+  }
+
+  function createTestFlacBuffer(
+    metadata: { title: string; artist: string; album: string },
+    options: {
+      durationSeconds?: number
+      sampleRate?: number
+      channelCount?: number
+      leadingPaddingBytes?: number
+      truncateCommentBlock?: boolean
+    } = {},
+  ): Buffer {
+    const durationSeconds = options.durationSeconds ?? 3.75
+    const sampleRate = options.sampleRate ?? 48_000
+    const channelCount = options.channelCount ?? 2
+    const streamInfoBlock = createFlacMetadataBlock(0, createFlacStreamInfo(durationSeconds, sampleRate, channelCount), false)
+    const leadingPaddingBlock = options.leadingPaddingBytes
+      ? createFlacMetadataBlock(1, Buffer.alloc(options.leadingPaddingBytes, 0), false)
+      : null
+    const commentBlock = createFlacMetadataBlock(4, createVorbisCommentBody(metadata), true)
+    const serializedCommentBlock = options.truncateCommentBlock
+      ? commentBlock.subarray(0, Math.min(commentBlock.length, 8))
+      : commentBlock
+    return Buffer.concat([
+      Buffer.from('fLaC', 'ascii'),
+      streamInfoBlock,
+      ...(leadingPaddingBlock ? [leadingPaddingBlock] : []),
+      serializedCommentBlock,
+      Buffer.from([0xff, 0xf8, 0x00, 0x00]),
+    ])
+  }
+
+  function createOggPage(
+    packet: Buffer,
+    options: { headerType?: number; granulePosition?: bigint; bitstreamSerialNumber?: number; sequenceNumber?: number } = {},
+  ): Buffer {
+    if (packet.length >= 255) {
+      throw new Error('Test helper only supports Ogg packets smaller than 255 bytes.')
+    }
+
+    const header = Buffer.alloc(28)
+    header.write('OggS', 0, 'ascii')
+    header[4] = 0
+    header[5] = options.headerType ?? 0
+    header.writeBigUInt64LE(options.granulePosition ?? 0n, 6)
+    header.writeUInt32LE(options.bitstreamSerialNumber ?? 1, 14)
+    header.writeUInt32LE(options.sequenceNumber ?? 0, 18)
+    header.writeUInt32LE(0, 22)
+    header[26] = 1
+    header[27] = packet.length
+    return Buffer.concat([header, packet])
+  }
+
+  function createOggSkeletonBosPage(bitstreamSerialNumber: number = 7): Buffer {
+    return createOggPage(Buffer.from('fishead\0', 'binary'), {
+      headerType: 0x02,
+      granulePosition: 0n,
+      bitstreamSerialNumber,
+      sequenceNumber: 0,
+    })
+  }
+
+  function createVorbisIdentificationPacket(sampleRate: number, channelCount: number): Buffer {
+    const packet = Buffer.alloc(30)
+    packet[0] = 1
+    packet.write('vorbis', 1, 'ascii')
+    packet.writeUInt32LE(0, 7)
+    packet[11] = channelCount
+    packet.writeUInt32LE(sampleRate, 12)
+    packet.writeUInt32LE(0, 16)
+    packet.writeUInt32LE(0, 20)
+    packet.writeUInt32LE(0, 24)
+    packet[28] = 0x11
+    packet[29] = 1
+    return packet
+  }
+
+  function createVorbisCommentPacket(metadata: { title: string; artist: string; album: string }): Buffer {
+    return Buffer.concat([
+      Buffer.from([3]),
+      Buffer.from('vorbis', 'ascii'),
+      createVorbisCommentBody(metadata),
+      Buffer.from([1]),
+    ])
+  }
+
+  function createOggVorbisStreamPages(
+    metadata: { title: string; artist: string; album: string },
+    options: { durationSeconds?: number; sampleRate?: number; channelCount?: number; bitstreamSerialNumber?: number } = {},
+  ): Buffer[] {
+    const durationSeconds = options.durationSeconds ?? 2.5
+    const sampleRate = options.sampleRate ?? 44_100
+    const channelCount = options.channelCount ?? 2
+    const totalSamples = BigInt(Math.round(durationSeconds * sampleRate))
+    const serial = options.bitstreamSerialNumber ?? 17
+    return [
+      createOggPage(createVorbisIdentificationPacket(sampleRate, channelCount), {
+        headerType: 0x02,
+        granulePosition: 0n,
+        bitstreamSerialNumber: serial,
+        sequenceNumber: 0,
+      }),
+      createOggPage(createVorbisCommentPacket(metadata), {
+        granulePosition: 0n,
+        bitstreamSerialNumber: serial,
+        sequenceNumber: 1,
+      }),
+      createOggPage(Buffer.from([0]), {
+        headerType: 0x04,
+        granulePosition: totalSamples,
+        bitstreamSerialNumber: serial,
+        sequenceNumber: 2,
+      }),
+    ]
+  }
+
+  function createTestOggVorbisBuffer(
+    metadata: { title: string; artist: string; album: string },
+    options: { durationSeconds?: number; sampleRate?: number; channelCount?: number; bitstreamSerialNumber?: number } = {},
+  ): Buffer {
+    return Buffer.concat(createOggVorbisStreamPages(metadata, options))
+  }
+
+  function createOggFillerPages(totalBytes: number, bitstreamSerialNumber: number, startingSequenceNumber: number = 0): Buffer[] {
+    const pages: Buffer[] = []
+    let sequenceNumber = startingSequenceNumber
+    let producedBytes = 0
+    while (producedBytes < totalBytes) {
+      const isLastPage = producedBytes + 282 >= totalBytes
+      const page = createOggPage(Buffer.alloc(254, sequenceNumber % 251), {
+        headerType: sequenceNumber === startingSequenceNumber ? 0x02 : isLastPage ? 0x04 : 0,
+        granulePosition: 0n,
+        bitstreamSerialNumber,
+        sequenceNumber,
+      })
+      pages.push(page)
+      producedBytes += page.length
+      sequenceNumber += 1
+    }
+    return pages
+  }
+
+  function createOpusHeadPacket(channelCount: number, inputSampleRate: number = 48_000, preSkip: number = 312): Buffer {
+    const packet = Buffer.alloc(19)
+    packet.write('OpusHead', 0, 'ascii')
+    packet[8] = 1
+    packet[9] = channelCount
+    packet.writeUInt16LE(preSkip, 10)
+    packet.writeUInt32LE(inputSampleRate, 12)
+    packet.writeInt16LE(0, 16)
+    packet[18] = 0
+    return packet
+  }
+
+  function createOpusTagsPacket(metadata: { title: string; artist: string; album: string }): Buffer {
+    return Buffer.concat([Buffer.from('OpusTags', 'ascii'), createVorbisCommentBody(metadata)])
+  }
+
+  function createTestOggOpusBuffer(
+    metadata: { title: string; artist: string; album: string },
+    options: { durationSeconds?: number; channelCount?: number; inputSampleRate?: number; preSkip?: number } = {},
+  ): Buffer {
+    const durationSeconds = options.durationSeconds ?? 1.75
+    const channelCount = options.channelCount ?? 1
+    const inputSampleRate = options.inputSampleRate ?? 48_000
+    const preSkip = options.preSkip ?? 312
+    const serial = 23
+    const terminalGranulePosition = BigInt(Math.round(durationSeconds * 48_000) + preSkip)
+    return Buffer.concat([
+      createOggPage(createOpusHeadPacket(channelCount, inputSampleRate, preSkip), {
+        headerType: 0x02,
+        granulePosition: 0n,
+        bitstreamSerialNumber: serial,
+        sequenceNumber: 0,
+      }),
+      createOggPage(createOpusTagsPacket(metadata), {
+        granulePosition: 0n,
+        bitstreamSerialNumber: serial,
+        sequenceNumber: 1,
+      }),
+      createOggPage(Buffer.from([0]), {
+        headerType: 0x04,
+        granulePosition: terminalGranulePosition,
+        bitstreamSerialNumber: serial,
+        sequenceNumber: 2,
+      }),
+    ])
+  }
+
+  function expectSourceEntriesToUseCapability(result: ReturnType<typeof extract>, sourceFile: string, capabilityId: string): void {
+    const sourceNodes = result.nodes.filter((node) => node.source_file === sourceFile)
+    const sourceEdges = result.edges.filter((edge) => edge.source_file === sourceFile)
+
+    expect(sourceNodes.length).toBeGreaterThan(0)
+    expect(sourceEdges.length).toBeGreaterThan(0)
+    expect(sourceNodes.every((node) => node.layer === 'base')).toBe(true)
+    expect(sourceEdges.every((edge) => edge.layer === 'base')).toBe(true)
+    expect(sourceNodes.every((node) => Array.isArray(node.provenance) && node.provenance.length > 0)).toBe(true)
+    expect(sourceEdges.every((edge) => Array.isArray(edge.provenance) && edge.provenance.length > 0)).toBe(true)
+
+    for (const node of sourceNodes) {
+      expect(node).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: capabilityId, stage: 'extract' })],
+      })
+    }
+
+    for (const edge of sourceEdges) {
+      expect(edge).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: capabilityId, stage: 'extract' })],
+      })
+    }
   }
 
   it('builds stable ids without leading punctuation', () => {
@@ -30,6 +1125,19 @@ describe('extract', () => {
 
     expect(labels).toContain('Transformer')
     expect(labels.some((label) => label.includes('__init__') || label.includes('forward'))).toBe(true)
+  })
+
+  it('emits explicit base-layer provenance during raw code extraction', () => {
+    const result = extractPython(join(FIXTURES_DIR, 'sample.py'))
+
+    expect(result.nodes.length).toBeGreaterThan(0)
+    expect(result.edges.length).toBeGreaterThan(0)
+    expect(result.nodes.every((node) => node.layer === 'base')).toBe(true)
+    expect(result.edges.every((edge) => edge.layer === 'base')).toBe(true)
+    expect(result.nodes.every((node) => Array.isArray(node.provenance) && node.provenance.length > 0)).toBe(true)
+    expect(result.edges.every((edge) => Array.isArray(edge.provenance) && edge.provenance.length > 0)).toBe(true)
+    expect(result.nodes[0]?.provenance).toEqual(expect.arrayContaining([expect.objectContaining({ capability_id: 'builtin:extract:python', stage: 'extract' })]))
+    expect(result.edges[0]?.provenance).toEqual(expect.arrayContaining([expect.objectContaining({ capability_id: 'builtin:extract:python', stage: 'extract' })]))
   })
 
   it('keeps python structural edges deterministic', () => {
@@ -70,6 +1178,7 @@ describe('extract', () => {
       const result = extractPython(filePath)
       const rationaleNodes = result.nodes.filter((node) => node.file_type === 'rationale')
       const rationaleLabels = rationaleNodes.map((node) => node.label)
+      const rationaleEdges = result.edges.filter((edge) => edge.relation === 'rationale_for')
       const rationaleTargets = new Set(result.edges.filter((edge) => edge.relation === 'rationale_for').map((edge) => edge.target))
       const fileNodeId = result.nodes.find((node) => node.label === 'auth.py')?.id
       const classNodeId = result.nodes.find((node) => node.label === 'AuthClient')?.id
@@ -83,6 +1192,26 @@ describe('extract', () => {
       expect(rationaleTargets.has(fileNodeId ?? '')).toBe(true)
       expect(rationaleTargets.has(classNodeId ?? '')).toBe(true)
       expect(rationaleTargets.has(methodNodeId ?? '')).toBe(true)
+      expect(rationaleNodes.every((node) => node.layer === 'base')).toBe(true)
+      expect(rationaleEdges.every((edge) => edge.layer === 'base')).toBe(true)
+      expect(rationaleNodes.every((node) => Array.isArray(node.provenance) && node.provenance.length > 0)).toBe(true)
+      expect(rationaleEdges.every((edge) => Array.isArray(edge.provenance) && edge.provenance.length > 0)).toBe(true)
+      expect(rationaleNodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            layer: 'base',
+            provenance: [expect.objectContaining({ capability_id: 'builtin:extract:python', stage: 'extract' })],
+          }),
+        ]),
+      )
+      expect(rationaleEdges).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            layer: 'base',
+            provenance: [expect.objectContaining({ capability_id: 'builtin:extract:python', stage: 'extract' })],
+          }),
+        ]),
+      )
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -111,8 +1240,10 @@ describe('extract', () => {
 
       const result = extract([filePath])
       const labels = result.nodes.map((node) => node.label)
+      const rationaleNodes = result.nodes.filter((node) => node.file_type === 'rationale')
       const nodeById = new Map(result.nodes.map((node) => [node.id, node.label]))
       const calls = new Set(result.edges.filter((edge) => edge.relation === 'calls').map((edge) => `${nodeById.get(edge.source)}->${nodeById.get(edge.target)}`))
+      const rationaleEdges = result.edges.filter((edge) => edge.relation === 'rationale_for')
       const fetchId = result.nodes.find((node) => node.label === '.fetch()')?.id
       const rationaleTargets = new Set(result.edges.filter((edge) => edge.relation === 'rationale_for').map((edge) => edge.target))
 
@@ -123,6 +1254,26 @@ describe('extract', () => {
       expect(calls.has('.fetch()->._request()')).toBe(true)
       expect(calls.has('._request()->helper()')).toBe(true)
       expect(rationaleTargets.has(fetchId ?? '')).toBe(true)
+      expect(rationaleNodes.every((node) => node.layer === 'base')).toBe(true)
+      expect(rationaleEdges.every((edge) => edge.layer === 'base')).toBe(true)
+      expect(rationaleNodes.every((node) => Array.isArray(node.provenance) && node.provenance.length > 0)).toBe(true)
+      expect(rationaleEdges.every((edge) => Array.isArray(edge.provenance) && edge.provenance.length > 0)).toBe(true)
+      expect(rationaleNodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            layer: 'base',
+            provenance: [expect.objectContaining({ capability_id: 'builtin:extract:python', stage: 'extract' })],
+          }),
+        ]),
+      )
+      expect(rationaleEdges).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            layer: 'base',
+            provenance: [expect.objectContaining({ capability_id: 'builtin:extract:python', stage: 'extract' })],
+          }),
+        ]),
+      )
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -699,6 +1850,7 @@ describe('extract', () => {
       const tocId = result.nodes.find((node) => node.label === 'Addon.toc')?.id
       const titleId = result.nodes.find((node) => node.label === 'Title: Sample Addon')?.id
       const luaId = result.nodes.find((node) => node.label === 'Main.lua')?.id
+      const referenceEdge = result.edges.find((edge) => edge.source === tocId && edge.target === luaId && edge.relation === 'references')
 
       expect(labels).toContain('Addon.toc')
       expect(labels).toContain('Title: Sample Addon')
@@ -707,6 +1859,10 @@ describe('extract', () => {
       expect(luaId).toBeTruthy()
       expect(result.edges.some((edge) => edge.source === tocId && edge.target === titleId && edge.relation === 'contains')).toBe(true)
       expect(result.edges.some((edge) => edge.source === tocId && edge.target === luaId && edge.relation === 'references')).toBe(true)
+      expect(referenceEdge).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:toc', stage: 'extract' })],
+      })
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -1064,6 +2220,239 @@ describe('extract', () => {
     }
   })
 
+  it('emits capability-specific provenance for javascript and typescript extraction', () => {
+    const root = createTempRoot()
+    try {
+      const cases = [
+        {
+          fileName: 'loader.ts',
+          capabilityId: 'builtin:extract:typescript',
+          content: ['export class Loader {', '  load() {', '    return helper()', '  }', '}', '', 'function helper() {', '  return true', '}'].join('\n'),
+        },
+        {
+          fileName: 'loader.js',
+          capabilityId: 'builtin:extract:javascript',
+          content: ['export class Loader {', '  load() {', '    return helper()', '  }', '}', '', 'function helper() {', '  return true', '}'].join('\n'),
+        },
+      ]
+
+      for (const testCase of cases) {
+        const filePath = join(root, testCase.fileName)
+        writeFileSync(filePath, testCase.content, 'utf8')
+
+        const result = extract([filePath])
+        const labels = result.nodes.filter((node) => node.source_file === filePath).map((node) => node.label)
+
+        expect(labels).toEqual(expect.arrayContaining([testCase.fileName, 'Loader', '.load()', 'helper()']))
+        expect(result.edges.some((edge) => edge.source_file === filePath && edge.relation === 'calls')).toBe(true)
+        expectSourceEntriesToUseCapability(result, filePath, testCase.capabilityId)
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('emits raw metadata for go, java, and ruby extraction families', () => {
+    const root = createTempRoot()
+    try {
+      const cases = [
+        {
+          fileName: 'client.go',
+          capabilityId: 'builtin:extract:go',
+          labels: ['client.go', 'Client', '.Get()', '.do()', 'helper()'],
+          content: [
+            'package main',
+            '',
+            'type Client struct {}',
+            'func (c *Client) Get() error {',
+            '  return c.do()',
+            '}',
+            'func (c *Client) do() error {',
+            '  return helper()',
+            '}',
+            'func helper() error {',
+            '  return nil',
+            '}',
+          ].join('\n'),
+        },
+        {
+          fileName: 'Service.java',
+          capabilityId: 'builtin:extract:java',
+          labels: ['Service.java', 'Service', '.run()', '.helper()'],
+          content: ['class Service {', '  void run() {', '    helper();', '  }', '  void helper() {}', '}'].join('\n'),
+        },
+        {
+          fileName: 'client.rb',
+          capabilityId: 'builtin:extract:ruby',
+          labels: ['client.rb', 'Client', '.get()', '.request()'],
+          content: ['class Client', '  def get', '    request()', '  end', '', '  def request', '  end', 'end'].join('\n'),
+        },
+      ]
+
+      for (const testCase of cases) {
+        const filePath = join(root, testCase.fileName)
+        writeFileSync(filePath, testCase.content, 'utf8')
+
+        const result = extract([filePath])
+        const labels = result.nodes.filter((node) => node.source_file === filePath).map((node) => node.label)
+
+        expect(labels).toEqual(expect.arrayContaining(testCase.labels))
+        expect(result.edges.some((edge) => edge.source_file === filePath && (edge.relation === 'calls' || edge.relation === 'method'))).toBe(true)
+        expectSourceEntriesToUseCapability(result, filePath, testCase.capabilityId)
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('emits raw metadata for lightweight scanner extractors', () => {
+    const root = createTempRoot()
+    try {
+      const cases = [
+        {
+          fileName: 'sample.lua',
+          capabilityId: 'builtin:extract:lua',
+          labels: ['sample.lua', 'Client', '.get()', 'request()'],
+          content: ['local Client = {}', '', 'function Client:get()', '  request()', 'end', '', 'function request()', 'end'].join('\n'),
+        },
+        {
+          fileName: 'sample.ex',
+          capabilityId: 'builtin:extract:elixir',
+          labels: ['sample.ex', 'ApiClient', '.get()', '.request()'],
+          content: ['defmodule ApiClient do', '  def get do', '    request()', '  end', '', '  def request do', '  end', 'end'].join('\n'),
+        },
+        {
+          fileName: 'sample.jl',
+          capabilityId: 'builtin:extract:julia',
+          labels: ['sample.jl', 'Client', 'fetch()', 'normalize()'],
+          content: ['struct Client', 'end', '', 'function fetch(client)', '  normalize()', 'end', '', 'function normalize()', 'end'].join('\n'),
+        },
+        {
+          fileName: 'sample.ps1',
+          capabilityId: 'builtin:extract:powershell',
+          labels: ['sample.ps1', 'ApiClient', '.Get()', 'Invoke-Request()', 'Normalize-Response()'],
+          content: [
+            'class ApiClient {',
+            '  [void] Get() {',
+            '    Invoke-Request',
+            '  }',
+            '}',
+            '',
+            'function Invoke-Request {',
+            '  Normalize-Response',
+            '}',
+            '',
+            'function Normalize-Response {',
+            '}',
+          ].join('\n'),
+        },
+        {
+          fileName: 'sample.m',
+          capabilityId: 'builtin:extract:objective-c',
+          labels: ['sample.m', 'Client', '.get()', '.request()'],
+          content: [
+            '#import <Foundation/Foundation.h>',
+            '',
+            '@interface Client : NSObject',
+            '@end',
+            '',
+            '@implementation Client',
+            '- (void)get {',
+            '  [self request];',
+            '}',
+            '',
+            '- (void)request {',
+            '}',
+            '@end',
+          ].join('\n'),
+        },
+      ]
+
+      for (const testCase of cases) {
+        const filePath = join(root, testCase.fileName)
+        writeFileSync(filePath, testCase.content, 'utf8')
+
+        const result = extract([filePath])
+        const labels = result.nodes.filter((node) => node.source_file === filePath).map((node) => node.label)
+
+        expect(labels).toEqual(expect.arrayContaining(testCase.labels))
+        expect(
+          result.edges.some((edge) => edge.source_file === filePath && (edge.relation === 'calls' || edge.relation === 'method' || edge.relation === 'contains')),
+        ).toBe(true)
+        expectSourceEntriesToUseCapability(result, filePath, testCase.capabilityId)
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('emits capability-specific provenance for generic fallback languages', () => {
+    const root = createTempRoot()
+    try {
+      const cases = [
+        {
+          fileName: 'worker.rs',
+          capabilityId: 'builtin:extract:rust',
+          labels: ['worker.rs', 'Worker', '.run()', '.helper()', 'boot()'],
+          content: [
+            'struct Worker {}',
+            'impl Worker {',
+            '  fn run(&self) {',
+            '    self.helper();',
+            '  }',
+            '  fn helper(&self) {}',
+            '}',
+            'fn boot() {',
+            '  Worker::run();',
+            '}',
+          ].join('\n'),
+        },
+        {
+          fileName: 'worker.kt',
+          capabilityId: 'builtin:extract:kotlin',
+          labels: ['worker.kt', 'Worker', '.run()', '.helper()'],
+          content: ['open class BaseTask', 'class Worker: BaseTask() {', '  fun run(): Int = helper()', '  fun helper(): Int { return 1 }', '}'].join('\n'),
+        },
+        {
+          fileName: 'container.swift',
+          capabilityId: 'builtin:extract:swift',
+          labels: ['container.swift', 'Container', '.hash()', '.helper()'],
+          content: [
+            'class BaseCollection {}',
+            'final class Container: BaseCollection {',
+            '  func hash() -> Int { return helper() }',
+            '  func helper() -> Int { return 0 }',
+            '}',
+          ].join('\n'),
+        },
+        {
+          fileName: 'engine.cpp',
+          capabilityId: 'builtin:extract:c-family',
+          labels: ['engine.cpp', 'Engine', '.start()', '.stop()'],
+          content: ['class Engine {', 'public:', '  void start();', '  void stop();', '};', 'void Engine::start() {', '  stop();', '}', 'void Engine::stop() {}'].join(
+            '\n',
+          ),
+        },
+      ]
+
+      for (const testCase of cases) {
+        const filePath = join(root, testCase.fileName)
+        writeFileSync(filePath, testCase.content, 'utf8')
+
+        const result = extract([filePath])
+        const labels = result.nodes.filter((node) => node.source_file === filePath).map((node) => node.label)
+
+        expect(labels).toEqual(expect.arrayContaining(testCase.labels))
+        expect(
+          result.edges.some((edge) => edge.source_file === filePath && (edge.relation === 'calls' || edge.relation === 'inherits' || edge.relation === 'method')),
+        ).toBe(true)
+        expectSourceEntriesToUseCapability(result, filePath, testCase.capabilityId)
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('extracts markdown sections and local references for non-code corpora', () => {
     const root = createTempRoot()
     try {
@@ -1079,14 +2468,2135 @@ describe('extract', () => {
       const labels = result.nodes.map((node) => node.label)
       const nodeByKey = new Map(result.nodes.map((node) => [`${node.file_type}:${node.label}`, node.id]))
       const relations = new Set(result.edges.map((edge) => `${edge.source}:${edge.relation}:${edge.target}`))
+      const imageNode = result.nodes.find((node) => node.file_type === 'image' && node.label === 'diagram.svg')
+      const referenceEdge = result.edges.find(
+        (edge) => edge.source === nodeByKey.get('document:Overview') && edge.target === nodeByKey.get('document:guide.md') && edge.relation === 'references',
+      )
+      const embedEdge = result.edges.find(
+        (edge) => edge.source === nodeByKey.get('document:Overview') && edge.target === nodeByKey.get('image:diagram.svg') && edge.relation === 'embeds',
+      )
 
       expect(labels).toContain('README.md')
       expect(labels).toContain('Overview')
       expect(labels).toContain('Details')
-      expect(result.nodes.some((node) => node.file_type === 'image' && node.label === 'diagram.svg')).toBe(true)
+      expect(imageNode).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:image', stage: 'extract' })],
+      })
       expect(relations.has(`${nodeByKey.get('document:README.md')}:contains:${nodeByKey.get('document:Overview')}`)).toBe(true)
       expect(relations.has(`${nodeByKey.get('document:Overview')}:references:${nodeByKey.get('document:guide.md')}`)).toBe(true)
       expect(relations.has(`${nodeByKey.get('document:Overview')}:embeds:${nodeByKey.get('image:diagram.svg')}`)).toBe(true)
+      expect(referenceEdge).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:markdown', stage: 'extract' })],
+      })
+      expect(embedEdge).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:markdown', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('lifts hidden sidecar metadata onto extracted image file nodes', () => {
+    const root = createTempRoot()
+    try {
+      const imagePath = join(root, 'diagram.png')
+      writeFileSync(imagePath, Buffer.from([137, 80, 78, 71]))
+      writeFileSync(
+        binaryIngestSidecarPath(imagePath),
+        JSON.stringify(
+          {
+            source_url: 'https://example.com/diagram.png',
+            captured_at: '2026-04-13T03:00:00Z',
+            contributor: 'graphify-ts',
+          },
+          null,
+          2,
+        ),
+        'utf8',
+      )
+
+      const result = extract([imagePath])
+      const imageNode = result.nodes.find((node) => node.file_type === 'image' && node.label === 'diagram.png')
+
+      expect(imageNode).toMatchObject({
+        source_url: 'https://example.com/diagram.png',
+        captured_at: '2026-04-13T03:00:00Z',
+        contributor: 'graphify-ts',
+        layer: 'base',
+        provenance: expect.arrayContaining([
+          expect.objectContaining({ capability_id: 'builtin:extract:image', stage: 'extract' }),
+          expect.objectContaining({
+            capability_id: 'builtin:ingest:image',
+            stage: 'ingest',
+            source_url: 'https://example.com/diagram.png',
+            captured_at: '2026-04-13T03:00:00Z',
+            contributor: 'graphify-ts',
+          }),
+        ]),
+      })
+      expect(imageNode?.provenance).toHaveLength(2)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('lifts hidden sidecar metadata onto extracted pdf file nodes without disturbing pdf heuristics', () => {
+    const root = createTempRoot()
+    try {
+      const paperPath = join(root, 'paper.pdf')
+      const pdfContent = '%PDF-1.4\n1 0 obj\n<< /Title (Graphify Paper) /Subject (Runtime Notes) >>\nstream\n(Abstract) Tj\nendstream\nendobj\n'
+      writeFileSync(paperPath, pdfContent, 'latin1')
+      writeFileSync(
+        binaryIngestSidecarPath(paperPath),
+        JSON.stringify(
+          {
+            source_url: 'https://example.com/paper.pdf',
+            captured_at: '2026-04-13T04:00:00Z',
+            contributor: 'graphify-ts',
+          },
+          null,
+          2,
+        ),
+        'utf8',
+      )
+
+      const result = extract([paperPath])
+      const paperNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'paper.pdf')
+      const titleNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'Graphify Paper')
+      const containsEdges = result.edges.filter((edge) => edge.source_file === paperPath && edge.relation === 'contains')
+
+      expect(paperNode).toMatchObject({
+        title: 'Graphify Paper',
+        subject: 'Runtime Notes',
+        source_url: 'https://example.com/paper.pdf',
+        captured_at: '2026-04-13T04:00:00Z',
+        contributor: 'graphify-ts',
+        content_type: 'application/pdf',
+        file_bytes: Buffer.byteLength(pdfContent, 'latin1'),
+        layer: 'base',
+        provenance: expect.arrayContaining([
+          expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' }),
+          expect.objectContaining({
+            capability_id: 'builtin:ingest:pdf',
+            stage: 'ingest',
+            source_url: 'https://example.com/paper.pdf',
+            captured_at: '2026-04-13T04:00:00Z',
+            contributor: 'graphify-ts',
+          }),
+        ]),
+      })
+      expect(titleNode).toMatchObject({
+        layer: 'base',
+        provenance: expect.arrayContaining([
+          expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' }),
+          expect.objectContaining({ capability_id: 'builtin:ingest:pdf', stage: 'ingest' }),
+        ]),
+      })
+      expect(paperNode?.provenance).toHaveLength(2)
+      expect(titleNode?.provenance).toHaveLength(2)
+      expect(containsEdges.length).toBeGreaterThan(0)
+      expect(containsEdges.every((edge) => Array.isArray(edge.provenance) && edge.provenance.length === 2)).toBe(true)
+      for (const edge of containsEdges) {
+        expect(edge).toMatchObject({
+          layer: 'base',
+          provenance: expect.arrayContaining([
+            expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' }),
+            expect.objectContaining({ capability_id: 'builtin:ingest:pdf', stage: 'ingest' }),
+          ]),
+        })
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts local audio and video files as metadata-aware file nodes', () => {
+    const root = createTempRoot()
+    try {
+      const audioPath = join(root, 'episode.mp3')
+      const videoPath = join(root, 'demo.mp4')
+      writeFileSync(audioPath, Buffer.from('ID3'))
+      writeFileSync(videoPath, Buffer.from([0, 0, 0, 24, 102, 116, 121, 112]))
+      writeFileSync(
+        binaryIngestSidecarPath(audioPath),
+        JSON.stringify(
+          {
+            source_url: 'https://example.com/podcast/episodes/1',
+            captured_at: '2026-04-14T01:00:00Z',
+            contributor: 'graphify-ts',
+          },
+          null,
+          2,
+        ),
+        'utf8',
+      )
+      writeFileSync(
+        binaryIngestSidecarPath(videoPath),
+        JSON.stringify(
+          {
+            source_url: 'https://example.com/sessions/demo',
+            captured_at: '2026-04-14T01:05:00Z',
+            contributor: 'graphify-ts',
+          },
+          null,
+          2,
+        ),
+        'utf8',
+      )
+
+      const result = extract([audioPath, videoPath])
+      const audioNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'episode.mp3')
+      const videoNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'demo.mp4')
+
+      expect(audioNode).toMatchObject({
+        source_url: 'https://example.com/podcast/episodes/1',
+        captured_at: '2026-04-14T01:00:00Z',
+        contributor: 'graphify-ts',
+        content_type: 'audio/mpeg',
+        file_bytes: 3,
+        layer: 'base',
+        provenance: expect.arrayContaining([
+          expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' }),
+          expect.objectContaining({
+            capability_id: 'builtin:ingest:webpage',
+            stage: 'ingest',
+            source_url: 'https://example.com/podcast/episodes/1',
+            captured_at: '2026-04-14T01:00:00Z',
+            contributor: 'graphify-ts',
+          }),
+        ]),
+      })
+      expect(videoNode).toMatchObject({
+        source_url: 'https://example.com/sessions/demo',
+        captured_at: '2026-04-14T01:05:00Z',
+        contributor: 'graphify-ts',
+        content_type: 'video/mp4',
+        file_bytes: 8,
+        layer: 'base',
+        provenance: expect.arrayContaining([
+          expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' }),
+          expect.objectContaining({
+            capability_id: 'builtin:ingest:webpage',
+            stage: 'ingest',
+            source_url: 'https://example.com/sessions/demo',
+            captured_at: '2026-04-14T01:05:00Z',
+            contributor: 'graphify-ts',
+          }),
+        ]),
+      })
+      expect(audioNode?.provenance).toHaveLength(2)
+      expect(videoNode?.provenance).toHaveLength(2)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts deterministic duration metadata for wav and mp4 media assets', () => {
+    const root = createTempRoot()
+    try {
+      const wavPath = join(root, 'tone.wav')
+      const mp4Path = join(root, 'clip.mp4')
+      const wavBuffer = createTestWavBuffer(1.5)
+      const mp4Buffer = createTestMp4Buffer(2.5)
+      writeFileSync(wavPath, wavBuffer)
+      writeFileSync(mp4Path, mp4Buffer)
+
+      const result = extract([wavPath, mp4Path])
+      const wavNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'tone.wav')
+      const mp4Node = result.nodes.find((node) => node.file_type === 'video' && node.label === 'clip.mp4')
+
+      expect(wavNode).toMatchObject({
+        content_type: 'audio/wav',
+        file_bytes: wavBuffer.length,
+        media_duration_seconds: 1.5,
+        audio_sample_rate_hz: 4000,
+        audio_channel_count: 2,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+      expect(mp4Node).toMatchObject({
+        content_type: 'video/mp4',
+        file_bytes: mp4Buffer.length,
+        media_duration_seconds: 2.5,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts deterministic MP3 track metadata from ID3 tags', () => {
+    const root = createTempRoot()
+    try {
+      const mp3Path = join(root, 'episode.mp3')
+      const mp3Buffer = createTestMp3Id3Buffer({
+        title: 'Roadmap Review',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      })
+      writeFileSync(mp3Path, mp3Buffer)
+
+      const result = extract([mp3Path])
+      const mp3Node = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'episode.mp3')
+
+      expect(mp3Node).toMatchObject({
+        content_type: 'audio/mpeg',
+        file_bytes: mp3Buffer.length,
+        audio_title: 'Roadmap Review',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts MP3 track metadata from ID3 tags with v2.3 and v2.4 extended headers', () => {
+    const root = createTempRoot()
+    try {
+      const v23Path = join(root, 'episode-v23.mp3')
+      const v24Path = join(root, 'episode-v24.mp3')
+      writeFileSync(v23Path, createTestMp3Id3Buffer({
+        title: 'Roadmap Review',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      }, { version: 3, extendedHeader: true }))
+      writeFileSync(v24Path, createTestMp3Id3Buffer({
+        title: 'Roadmap Review',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      }, { version: 4, extendedHeader: true }))
+
+      const result = extract([v23Path, v24Path])
+      const v23Node = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'episode-v23.mp3')
+      const v24Node = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'episode-v24.mp3')
+
+      expect(v23Node).toMatchObject({
+        audio_title: 'Roadmap Review',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+      })
+      expect(v24Node).toMatchObject({
+        audio_title: 'Roadmap Review',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('omits MP3 tag metadata when a UTF-16 ID3 text frame is malformed', () => {
+    const root = createTempRoot()
+    try {
+      const mp3Path = join(root, 'broken-id3.mp3')
+      const mp3Buffer = createMalformedUtf16Mp3Buffer()
+      writeFileSync(mp3Path, mp3Buffer)
+
+      const result = extract([mp3Path])
+      const mp3Node = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'broken-id3.mp3')
+
+      expect(mp3Node).toMatchObject({
+        content_type: 'audio/mpeg',
+        file_bytes: mp3Buffer.length,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+      expect(mp3Node?.audio_title).toBeUndefined()
+      expect(mp3Node?.audio_artist).toBeUndefined()
+      expect(mp3Node?.audio_album).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('omits MP3 tag metadata when a v2.4 synchsafe size field is malformed', () => {
+    const root = createTempRoot()
+    try {
+      const mp3Path = join(root, 'broken-size-id3.mp3')
+      const mp3Buffer = createMalformedV24SynchsafeSizeMp3Buffer({
+        title: 'Roadmap Review',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      })
+      writeFileSync(mp3Path, mp3Buffer)
+
+      const result = extract([mp3Path])
+      const mp3Node = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'broken-size-id3.mp3')
+
+      expect(mp3Node).toMatchObject({
+        content_type: 'audio/mpeg',
+        file_bytes: mp3Buffer.length,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+      expect(mp3Node?.audio_title).toBeUndefined()
+      expect(mp3Node?.audio_artist).toBeUndefined()
+      expect(mp3Node?.audio_album).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts MP3 track metadata even when later ID3 frames make the overall tag large', () => {
+    const root = createTempRoot()
+    try {
+      const mp3Path = join(root, 'large-id3.mp3')
+      const mp3Buffer = createLargeMp3Id3Buffer({
+        title: 'Roadmap Review',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      })
+      writeFileSync(mp3Path, mp3Buffer)
+
+      const result = extract([mp3Path])
+      const mp3Node = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'large-id3.mp3')
+
+      expect(mp3Node).toMatchObject({
+        content_type: 'audio/mpeg',
+        file_bytes: mp3Buffer.length,
+        audio_title: 'Roadmap Review',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts deterministic FLAC and Ogg-family metadata from saved audio assets', () => {
+    const root = createTempRoot()
+    try {
+      const flacPath = join(root, 'episode.flac')
+      const oggPath = join(root, 'episode.ogg')
+      const opusPath = join(root, 'episode.opus')
+      const flacBuffer = createTestFlacBuffer({
+        title: 'Roadmap Review',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      })
+      const oggBuffer = createTestOggVorbisBuffer({
+        title: 'Release Notes',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      })
+      const opusBuffer = createTestOggOpusBuffer({
+        title: 'Voice Memo',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      })
+      writeFileSync(flacPath, flacBuffer)
+      writeFileSync(oggPath, oggBuffer)
+      writeFileSync(opusPath, opusBuffer)
+
+      const result = extract([flacPath, oggPath, opusPath])
+      const flacNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'episode.flac')
+      const oggNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'episode.ogg')
+      const opusNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'episode.opus')
+
+      expect(flacNode).toMatchObject({
+        content_type: 'audio/flac',
+        file_bytes: flacBuffer.length,
+        media_duration_seconds: 3.75,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        audio_title: 'Roadmap Review',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+      expect(oggNode).toMatchObject({
+        content_type: 'audio/ogg',
+        file_bytes: oggBuffer.length,
+        media_duration_seconds: 2.5,
+        audio_sample_rate_hz: 44100,
+        audio_channel_count: 2,
+        audio_title: 'Release Notes',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+      expect(opusNode).toMatchObject({
+        content_type: 'audio/opus',
+        file_bytes: opusBuffer.length,
+        media_duration_seconds: 1.75,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 1,
+        audio_title: 'Voice Memo',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts Ogg Vorbis metadata when a non-audio BOS stream appears before the target stream', () => {
+    const root = createTempRoot()
+    try {
+      const oggPath = join(root, 'prefixed.ogg')
+      const oggBuffer = Buffer.concat([
+        createOggSkeletonBosPage(),
+        ...createOggVorbisStreamPages({
+          title: 'Release Notes',
+          artist: 'Graphify FM',
+          album: 'Engineering Notes',
+        }),
+      ])
+      writeFileSync(oggPath, oggBuffer)
+
+      const result = extract([oggPath])
+      const oggNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'prefixed.ogg')
+
+      expect(oggNode).toMatchObject({
+        content_type: 'audio/ogg',
+        file_bytes: oggBuffer.length,
+        media_duration_seconds: 2.5,
+        audio_sample_rate_hz: 44100,
+        audio_channel_count: 2,
+        audio_title: 'Release Notes',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts Opus metadata when a non-audio BOS stream appears before the target stream', () => {
+    const root = createTempRoot()
+    try {
+      const opusPath = join(root, 'prefixed.opus')
+      const opusBuffer = Buffer.concat([
+        createOggSkeletonBosPage(),
+        createTestOggOpusBuffer({
+          title: 'Voice Memo',
+          artist: 'Graphify FM',
+          album: 'Engineering Notes',
+        }),
+      ])
+      writeFileSync(opusPath, opusBuffer)
+
+      const result = extract([opusPath])
+      const opusNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'prefixed.opus')
+
+      expect(opusNode).toMatchObject({
+        content_type: 'audio/opus',
+        file_bytes: opusBuffer.length,
+        media_duration_seconds: 1.75,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 1,
+        audio_title: 'Voice Memo',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts Ogg Vorbis metadata when a large prefixed non-audio stream pushes the target BOS page beyond the default head window', () => {
+    const root = createTempRoot()
+    try {
+      const oggPath = join(root, 'large-prefixed.ogg')
+      const oggBuffer = Buffer.concat([
+        ...createOggFillerPages(300_000, 29),
+        ...createOggVorbisStreamPages({
+          title: 'Release Notes',
+          artist: 'Graphify FM',
+          album: 'Engineering Notes',
+        }),
+      ])
+      writeFileSync(oggPath, oggBuffer)
+
+      const result = extract([oggPath])
+      const oggNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'large-prefixed.ogg')
+
+      expect(oggNode).toMatchObject({
+        content_type: 'audio/ogg',
+        file_bytes: oggBuffer.length,
+        media_duration_seconds: 2.5,
+        audio_sample_rate_hz: 44100,
+        audio_channel_count: 2,
+        audio_title: 'Release Notes',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts Opus metadata when a large prefixed non-audio stream pushes the target BOS page beyond the default head window', () => {
+    const root = createTempRoot()
+    try {
+      const opusPath = join(root, 'large-prefixed.opus')
+      const opusBuffer = Buffer.concat([
+        ...createOggFillerPages(300_000, 29),
+        createTestOggOpusBuffer({
+          title: 'Voice Memo',
+          artist: 'Graphify FM',
+          album: 'Engineering Notes',
+        }),
+      ])
+      writeFileSync(opusPath, opusBuffer)
+
+      const result = extract([opusPath])
+      const opusNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'large-prefixed.opus')
+
+      expect(opusNode).toMatchObject({
+        content_type: 'audio/opus',
+        file_bytes: opusBuffer.length,
+        media_duration_seconds: 1.75,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 1,
+        audio_title: 'Voice Memo',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts deterministic AAC and M4A metadata from saved audio assets', () => {
+    const root = createTempRoot()
+    try {
+      const aacPath = join(root, 'tone.aac')
+      const m4aPath = join(root, 'episode.m4a')
+      const aacBuffer = createTestAacBuffer()
+      const m4aBuffer = createTestM4aBuffer({
+        title: 'Roadmap Review',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      })
+      writeFileSync(aacPath, aacBuffer)
+      writeFileSync(m4aPath, m4aBuffer)
+
+      const result = extract([aacPath, m4aPath])
+      const aacNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'tone.aac')
+      const m4aNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'episode.m4a')
+
+      expect(aacNode).toMatchObject({
+        content_type: 'audio/aac',
+        file_bytes: aacBuffer.length,
+        media_duration_seconds: 1.6,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+      expect(m4aNode).toMatchObject({
+        content_type: 'audio/mp4',
+        file_bytes: m4aBuffer.length,
+        media_duration_seconds: 2.5,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        audio_title: 'Roadmap Review',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('omits AAC duration metadata when the final ADTS frame is truncated', () => {
+    const root = createTempRoot()
+    try {
+      const aacPath = join(root, 'truncated.aac')
+      const aacBuffer = createTestAacBuffer().subarray(0, createTestAacBuffer().length - 3)
+      writeFileSync(aacPath, aacBuffer)
+
+      const result = extract([aacPath])
+      const aacNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'truncated.aac')
+
+      expect(aacNode).toMatchObject({
+        content_type: 'audio/aac',
+        file_bytes: aacBuffer.length,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+      expect(aacNode?.media_duration_seconds).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts AAC duration metadata using the ADTS raw block count', () => {
+    const root = createTempRoot()
+    try {
+      const aacPath = join(root, 'multiblock.aac')
+      const aacBuffer = createTestAacBuffer(20, 48_000, 2, 8, 3)
+      writeFileSync(aacPath, aacBuffer)
+
+      const result = extract([aacPath])
+      const aacNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'multiblock.aac')
+
+      expect(aacNode).toMatchObject({
+        content_type: 'audio/aac',
+        file_bytes: aacBuffer.length,
+        media_duration_seconds: 1.28,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('omits M4A track metadata when the ilst data box is truncated', () => {
+    const root = createTempRoot()
+    try {
+      const m4aPath = join(root, 'broken-tags.m4a')
+      const m4aBuffer = createTestM4aBuffer({
+        title: 'Roadmap Review',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      }, { truncateMetadata: true })
+      writeFileSync(m4aPath, m4aBuffer)
+
+      const result = extract([m4aPath])
+      const m4aNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'broken-tags.m4a')
+
+      expect(m4aNode).toMatchObject({
+        content_type: 'audio/mp4',
+        file_bytes: m4aBuffer.length,
+        media_duration_seconds: 2.5,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+      expect(m4aNode?.audio_title).toBeUndefined()
+      expect(m4aNode?.audio_artist).toBeUndefined()
+      expect(m4aNode?.audio_album).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts deterministic MP4-family, AVI, and Matroska/WebM video metadata from saved assets, including large AVI files', () => {
+    const root = createTempRoot()
+    try {
+      const mp4Path = join(root, 'clip.mp4')
+      const aviPath = join(root, 'recording.avi')
+      const webmPath = join(root, 'session.webm')
+      const mkvPath = join(root, 'archive.mkv')
+      const mp4Buffer = createTestVideoMp4Buffer()
+      const aviBuffer = createTestAviBuffer({
+        zeroMainHeaderDuration: true,
+        zeroMainHeaderDimensions: true,
+        tailPaddingBytes: 300_000,
+      })
+      const webmBuffer = createTestMatroskaBuffer()
+      const mkvBuffer = createTestMatroskaBuffer({ docType: 'matroska', durationSeconds: 6.75, width: 854, height: 480 })
+      writeFileSync(mp4Path, mp4Buffer)
+      writeFileSync(aviPath, aviBuffer)
+      writeFileSync(webmPath, webmBuffer)
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mp4Path, aviPath, webmPath, mkvPath])
+      const mp4Node = result.nodes.find((node) => node.file_type === 'video' && node.label === 'clip.mp4')
+      const aviNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'recording.avi')
+      const webmNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'session.webm')
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'archive.mkv')
+
+      expect(mp4Node).toMatchObject({
+        content_type: 'video/mp4',
+        file_bytes: mp4Buffer.length,
+        media_duration_seconds: 2.5,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1920,
+        video_height_px: 1080,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(aviNode).toMatchObject({
+        content_type: 'video/x-msvideo',
+        file_bytes: aviBuffer.length,
+        media_duration_seconds: 3.5,
+        video_width_px: 640,
+        video_height_px: 360,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(webmNode).toMatchObject({
+        content_type: 'video/webm',
+        file_bytes: webmBuffer.length,
+        media_duration_seconds: 4.25,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 6.75,
+        video_width_px: 854,
+        video_height_px: 480,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts embedded audio-track metadata from Matroska/WebM video assets when the video track appears before the audio track', () => {
+    const root = createTempRoot()
+    try {
+      const webmPath = join(root, 'session.webm')
+      const webmBuffer = createTestMatroskaBuffer({ audioTrackFirst: false, includeAudioTrackMetadata: true })
+      writeFileSync(webmPath, webmBuffer)
+
+      const result = extract([webmPath])
+      const webmNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'session.webm')
+
+      expect(webmNode).toMatchObject({
+        content_type: 'video/webm',
+        file_bytes: webmBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts Matroska/WebM metadata when a large prefixed segment element pushes Info and Tracks beyond the default head window', () => {
+    const root = createTempRoot()
+    try {
+      const webmPath = join(root, 'windowed-session.webm')
+      const webmBuffer = createTestMatroskaBuffer({
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        prefixedSegmentBytes: 300_000,
+      })
+      writeFileSync(webmPath, webmBuffer)
+
+      const result = extract([webmPath])
+      const webmNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'windowed-session.webm')
+
+      expect(webmNode).toMatchObject({
+        content_type: 'video/webm',
+        file_bytes: webmBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts Matroska/WebM metadata via SeekHead when Info and Tracks sit beyond the widened head window', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'seekhead-windowed.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        prefixedSegmentBytes: 600_000,
+        useSeekHead: true,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'seekhead-windowed.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts Matroska/WebM metadata when later top-level Info and Tracks sit beyond the widened head window without SeekHead help', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'top-level-windowed.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        prefixedSegmentBytes: 600_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-windowed.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('clears stale Matroska/WebM audio-track metadata when a later top-level Tracks element is video-only without SeekHead help', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'top-level-tracks-clear-audio.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: false,
+        interstitialSegmentBytes: 600_000,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-tracks-clear-audio.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(mkvNode).not.toHaveProperty('audio_sample_rate_hz')
+      expect(mkvNode).not.toHaveProperty('audio_channel_count')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('clears stale Matroska/WebM video-dimension metadata when a later top-level Tracks element is audio-only without SeekHead help', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'top-level-tracks-clear-video.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        interstitialSegmentBytes: 600_000,
+        finalTracksAudioOnly: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-tracks-clear-video.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(mkvNode).not.toHaveProperty('video_width_px')
+      expect(mkvNode).not.toHaveProperty('video_height_px')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps Matroska/WebM track metadata when a later authoritative Tracks element is unreadable', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'seekhead-tracks-unreadable.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        useSeekHead: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        prefixedTracksBytes: 1_100_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'seekhead-tracks-unreadable.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        video_width_px: 5,
+        video_height_px: 2,
+        audio_sample_rate_hz: 8_000,
+        audio_channel_count: 1,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps Matroska/WebM track metadata when a later top-level Tracks element is unreadable without SeekHead help', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'top-level-tracks-unreadable.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        interstitialSegmentBytes: 600_000,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        prefixedTracksBytes: 1_100_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-tracks-unreadable.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        video_width_px: 5,
+        video_height_px: 2,
+        audio_sample_rate_hz: 8_000,
+        audio_channel_count: 1,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('clears stale Matroska/WebM duration metadata when a later top-level Info element omits duration without SeekHead help', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'top-level-info-clear-duration.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        interstitialSegmentBytes: 600_000,
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        malformedDuration: true,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-info-clear-duration.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(mkvNode).not.toHaveProperty('media_duration_seconds')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps Matroska/WebM duration when a later SeekHead Info target is unreadable', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'seekhead-unreadable-info.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        useSeekHead: true,
+        invalidTrailingInfoSeekHead: true,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'seekhead-unreadable-info.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts Matroska/WebM duration via SeekHead when the Info element starts inside the head window but its payload is truncated', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'seekhead-info-partial.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        prefixedInfoBytes: 600_000,
+        useSeekHead: true,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'seekhead-info-partial.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts Matroska/WebM duration without SeekHead when the direct Info element starts inside the head window but its payload is truncated', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-info-partial.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        prefixedInfoBytes: 600_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-info-partial.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts Matroska/WebM track metadata via SeekHead when the Tracks element starts inside the head window but its payload is truncated', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'seekhead-tracks-partial.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        prefixedTracksBytes: 600_000,
+        useSeekHead: true,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'seekhead-tracks-partial.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts Matroska/WebM track metadata without SeekHead when the direct Tracks element starts inside the head window but its payload is truncated', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-tracks-partial.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        prefixedTracksBytes: 600_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-tracks-partial.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('replaces stale Matroska/WebM duration metadata without SeekHead when the later direct Info element starts inside the head window but its payload is truncated', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-info-corrective.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        prefixedInfoBytes: 600_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-info-corrective.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('replaces stale Matroska/WebM track metadata without SeekHead when the later direct Tracks element starts inside the head window but its payload is truncated', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-tracks-corrective.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        prefixedTracksBytes: 600_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-tracks-corrective.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts Matroska/WebM metadata when separate SeekHeads advertise Info and Tracks beyond the widened head window', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'seekhead-split.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        prefixedSegmentBytes: 600_000,
+        useSeekHead: true,
+        splitSeekHeads: true,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'seekhead-split.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts Matroska/WebM metadata when a later SeekHead corrects a stale first Tracks target', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'seekhead-fallback.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        prefixedSegmentBytes: 600_000,
+        useSeekHead: true,
+        staleFirstTracksSeekHead: true,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'seekhead-fallback.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts Matroska/WebM metadata when a later SeekHead overrides stale direct Tracks metadata', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'seekhead-corrective.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        useSeekHead: true,
+        staleFirstTracksSeekHead: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'seekhead-corrective.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts Matroska/WebM metadata when a later SeekHead overrides stale direct Info metadata', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'seekhead-info-corrective.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        useSeekHead: true,
+        staleFirstInfoSeekHead: true,
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'seekhead-info-corrective.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('clears stale Matroska/WebM audio-track metadata when a later authoritative Tracks element is video-only', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'seekhead-tracks-clear-audio.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: false,
+        useSeekHead: true,
+        staleFirstTracksSeekHead: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'seekhead-tracks-clear-audio.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(mkvNode).not.toHaveProperty('audio_sample_rate_hz')
+      expect(mkvNode).not.toHaveProperty('audio_channel_count')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('clears stale Matroska/WebM video-dimension metadata when a later authoritative Tracks element is audio-only', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'seekhead-tracks-clear-video.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        useSeekHead: true,
+        staleFirstTracksSeekHead: true,
+        finalTracksAudioOnly: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'seekhead-tracks-clear-video.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(mkvNode).not.toHaveProperty('video_width_px')
+      expect(mkvNode).not.toHaveProperty('video_height_px')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('clears stale Matroska/WebM duration metadata when a later authoritative Info element omits duration', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'seekhead-info-clear-duration.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        useSeekHead: true,
+        staleFirstInfoSeekHead: true,
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        malformedDuration: true,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'seekhead-info-clear-duration.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(mkvNode).not.toHaveProperty('media_duration_seconds')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts embedded audio-track metadata from AVI video assets when the video stream appears before the audio stream', () => {
+    const root = createTempRoot()
+    try {
+      const aviPath = join(root, 'clip.avi')
+      const aviBuffer = createTestAviBuffer({ audioTrackFirst: false })
+      writeFileSync(aviPath, aviBuffer)
+
+      const result = extract([aviPath])
+      const aviNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'clip.avi')
+
+      expect(aviNode).toMatchObject({
+        content_type: 'video/x-msvideo',
+        file_bytes: aviBuffer.length,
+        media_duration_seconds: 3.5,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 640,
+        video_height_px: 360,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts embedded audio-track metadata from MP4-family video assets when the video track appears before the audio track', () => {
+    const root = createTempRoot()
+    try {
+      const movPath = join(root, 'clip.mov')
+      const movBuffer = createTestVideoMp4Buffer({ audioTrackFirst: false })
+      writeFileSync(movPath, movBuffer)
+
+      const result = extract([movPath])
+      const movNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'clip.mov')
+
+      expect(movNode).toMatchObject({
+        content_type: 'video/quicktime',
+        file_bytes: movBuffer.length,
+        media_duration_seconds: 2.5,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1920,
+        video_height_px: 1080,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('omits AVI resolution metadata when the video format chunk is truncated', () => {
+    const root = createTempRoot()
+    try {
+      const aviPath = join(root, 'broken-video.avi')
+      const aviBuffer = createTestAviBuffer({ zeroMainHeaderDimensions: true, truncateVideoFormat: true })
+      writeFileSync(aviPath, aviBuffer)
+
+      const result = extract([aviPath])
+      const aviNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'broken-video.avi')
+
+      expect(aviNode).toMatchObject({
+        content_type: 'video/x-msvideo',
+        file_bytes: aviBuffer.length,
+        media_duration_seconds: 3.5,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(aviNode?.video_width_px).toBeUndefined()
+      expect(aviNode?.video_height_px).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('omits MP4-family video resolution metadata when the visual sample entry is truncated', () => {
+    const root = createTempRoot()
+    try {
+      const mp4Path = join(root, 'broken-video.mp4')
+      const mp4Buffer = createTestVideoMp4Buffer({ truncateVideoSampleEntry: true })
+      writeFileSync(mp4Path, mp4Buffer)
+
+      const result = extract([mp4Path])
+      const mp4Node = result.nodes.find((node) => node.file_type === 'video' && node.label === 'broken-video.mp4')
+
+      expect(mp4Node).toMatchObject({
+        content_type: 'video/mp4',
+        file_bytes: mp4Buffer.length,
+        media_duration_seconds: 2.5,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(mp4Node?.video_width_px).toBeUndefined()
+      expect(mp4Node?.video_height_px).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('falls back to tkhd dimensions when the MP4-family visual sample entry is truncated', () => {
+    const root = createTempRoot()
+    try {
+      const mp4Path = join(root, 'tkhd-fallback.mp4')
+      const mp4Buffer = createTestVideoMp4Buffer({ truncateVideoSampleEntry: true, includeVideoTkhdDimensions: true })
+      writeFileSync(mp4Path, mp4Buffer)
+
+      const result = extract([mp4Path])
+      const mp4Node = result.nodes.find((node) => node.file_type === 'video' && node.label === 'tkhd-fallback.mp4')
+
+      expect(mp4Node).toMatchObject({
+        content_type: 'video/mp4',
+        file_bytes: mp4Buffer.length,
+        media_duration_seconds: 2.5,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1920,
+        video_height_px: 1080,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('falls back to mdhd duration for MP4-family audio assets when mvhd is absent', () => {
+    const root = createTempRoot()
+    try {
+      const m4aPath = join(root, 'track.m4a')
+      const m4aBuffer = createTestM4aBuffer(
+        { title: 'Fallback Song', artist: 'Graphify FM', album: 'Parity' },
+        { omitMovieHeaderDuration: true, includeTrackMdhdDuration: true },
+      )
+      writeFileSync(m4aPath, m4aBuffer)
+
+      const result = extract([m4aPath])
+      const m4aNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'track.m4a')
+
+      expect(m4aNode).toMatchObject({
+        content_type: 'audio/mp4',
+        file_bytes: m4aBuffer.length,
+        media_duration_seconds: 2.5,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        audio_title: 'Fallback Song',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Parity',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('falls back to mdhd duration for MP4-family video assets when mvhd is absent', () => {
+    const root = createTempRoot()
+    try {
+      const mp4Path = join(root, 'mdhd-fallback.mp4')
+      const mp4Buffer = createTestVideoMp4Buffer({ omitMovieHeaderDuration: true, includeTrackMdhdDuration: true })
+      writeFileSync(mp4Path, mp4Buffer)
+
+      const result = extract([mp4Path])
+      const mp4Node = result.nodes.find((node) => node.file_type === 'video' && node.label === 'mdhd-fallback.mp4')
+
+      expect(mp4Node).toMatchObject({
+        content_type: 'video/mp4',
+        file_bytes: mp4Buffer.length,
+        media_duration_seconds: 2.5,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1920,
+        video_height_px: 1080,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('omits Matroska/WebM duration metadata when the Duration element is malformed', () => {
+    const root = createTempRoot()
+    try {
+      const webmPath = join(root, 'broken-duration.webm')
+      const webmBuffer = createTestMatroskaBuffer({ malformedDuration: true })
+      writeFileSync(webmPath, webmBuffer)
+
+      const result = extract([webmPath])
+      const webmNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'broken-duration.webm')
+
+      expect(webmNode).toMatchObject({
+        content_type: 'video/webm',
+        file_bytes: webmBuffer.length,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(webmNode?.media_duration_seconds).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('omits Matroska/WebM duration metadata when the TimecodeScale element is zero', () => {
+    const root = createTempRoot()
+    try {
+      const webmPath = join(root, 'zero-scale.webm')
+      const webmBuffer = createTestMatroskaBuffer({ timecodeScale: 0 })
+      writeFileSync(webmPath, webmBuffer)
+
+      const result = extract([webmPath])
+      const webmNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'zero-scale.webm')
+
+      expect(webmNode).toMatchObject({
+        content_type: 'video/webm',
+        file_bytes: webmBuffer.length,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(webmNode?.media_duration_seconds).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('uses the matching logical stream when deriving Ogg duration metadata', () => {
+    const root = createTempRoot()
+    try {
+      const oggPath = join(root, 'chained.ogg')
+      const oggBuffer = Buffer.concat([
+        createTestOggVorbisBuffer({
+          title: 'Release Notes',
+          artist: 'Graphify FM',
+          album: 'Engineering Notes',
+        }, { durationSeconds: 2.5, bitstreamSerialNumber: 17 }),
+        createTestOggVorbisBuffer({
+          title: 'Other Stream',
+          artist: 'Fallback FM',
+          album: 'Ignored Album',
+        }, { durationSeconds: 7.25, bitstreamSerialNumber: 29 }),
+      ])
+      writeFileSync(oggPath, oggBuffer)
+
+      const result = extract([oggPath])
+      const oggNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'chained.ogg')
+
+      expect(oggNode).toMatchObject({
+        content_type: 'audio/ogg',
+        media_duration_seconds: 2.5,
+        audio_sample_rate_hz: 44100,
+        audio_channel_count: 2,
+        audio_title: 'Release Notes',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts Ogg track metadata even when non-target stream pages are interleaved before the comment packet', () => {
+    const root = createTempRoot()
+    try {
+      const oggPath = join(root, 'interleaved.ogg')
+      const targetPages = createOggVorbisStreamPages({
+        title: 'Release Notes',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      }, { bitstreamSerialNumber: 17 })
+      const targetIdPage = targetPages[0]!
+      const targetCommentPage = targetPages[1]!
+      const targetTerminalPage = targetPages[2]!
+      const interleavedOtherPage = createOggPage(Buffer.alloc(48, 0), {
+        headerType: 0x02,
+        granulePosition: 0n,
+        bitstreamSerialNumber: 29,
+        sequenceNumber: 0,
+      })
+      const oggBuffer = Buffer.concat([
+        targetIdPage,
+        interleavedOtherPage,
+        targetCommentPage,
+        targetTerminalPage,
+      ])
+      writeFileSync(oggPath, oggBuffer)
+
+      const result = extract([oggPath])
+      const oggNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'interleaved.ogg')
+
+      expect(oggNode).toMatchObject({
+        content_type: 'audio/ogg',
+        media_duration_seconds: 2.5,
+        audio_sample_rate_hz: 44100,
+        audio_channel_count: 2,
+        audio_title: 'Release Notes',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('finds the target Ogg duration even when later streams push it outside the last scan window', () => {
+    const root = createTempRoot()
+    try {
+      const oggPath = join(root, 'far-tail.ogg')
+      const oggBuffer = Buffer.concat([
+        createTestOggVorbisBuffer({
+          title: 'Release Notes',
+          artist: 'Graphify FM',
+          album: 'Engineering Notes',
+        }, { durationSeconds: 2.5, bitstreamSerialNumber: 17 }),
+        ...createOggFillerPages(300_000, 29),
+      ])
+      writeFileSync(oggPath, oggBuffer)
+
+      const result = extract([oggPath])
+      const oggNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'far-tail.ogg')
+
+      expect(oggNode).toMatchObject({
+        content_type: 'audio/ogg',
+        media_duration_seconds: 2.5,
+        audio_sample_rate_hz: 44100,
+        audio_channel_count: 2,
+        audio_title: 'Release Notes',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('reports Opus audio_sample_rate_hz as the fixed decode rate', () => {
+    const root = createTempRoot()
+    try {
+      const opusPath = join(root, 'voice-16k.opus')
+      const opusBuffer = createTestOggOpusBuffer({
+        title: 'Voice Memo',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      }, { inputSampleRate: 16_000 })
+      writeFileSync(opusPath, opusBuffer)
+
+      const result = extract([opusPath])
+      const opusNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'voice-16k.opus')
+
+      expect(opusNode).toMatchObject({
+        content_type: 'audio/opus',
+        media_duration_seconds: 1.75,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 1,
+        audio_title: 'Voice Memo',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts FLAC track metadata even when a large metadata block appears before Vorbis comments', () => {
+    const root = createTempRoot()
+    try {
+      const flacPath = join(root, 'large-padding.flac')
+      const flacBuffer = createTestFlacBuffer({
+        title: 'Roadmap Review',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      }, { leadingPaddingBytes: 300_000 })
+      writeFileSync(flacPath, flacBuffer)
+
+      const result = extract([flacPath])
+      const flacNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'large-padding.flac')
+
+      expect(flacNode).toMatchObject({
+        content_type: 'audio/flac',
+        media_duration_seconds: 3.75,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        audio_title: 'Roadmap Review',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('omits FLAC track metadata when the Vorbis comment block is truncated', () => {
+    const root = createTempRoot()
+    try {
+      const flacPath = join(root, 'broken-comments.flac')
+      const flacBuffer = createTestFlacBuffer({
+        title: 'Roadmap Review',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      }, { truncateCommentBlock: true })
+      writeFileSync(flacPath, flacBuffer)
+
+      const result = extract([flacPath])
+      const flacNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'broken-comments.flac')
+
+      expect(flacNode).toMatchObject({
+        content_type: 'audio/flac',
+        file_bytes: flacBuffer.length,
+        media_duration_seconds: 3.75,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+      expect(flacNode?.audio_title).toBeUndefined()
+      expect(flacNode?.audio_artist).toBeUndefined()
+      expect(flacNode?.audio_album).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('omits wav duration metadata when the declared data chunk is truncated', () => {
+    const root = createTempRoot()
+    try {
+      const wavPath = join(root, 'truncated.wav')
+      const truncatedHeaderOnlyBuffer = createTestWavBuffer(3).subarray(0, 44)
+      writeFileSync(wavPath, truncatedHeaderOnlyBuffer)
+
+      const result = extract([wavPath])
+      const wavNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'truncated.wav')
+
+      expect(wavNode).toMatchObject({
+        content_type: 'audio/wav',
+        file_bytes: truncatedHeaderOnlyBuffer.length,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+      expect(wavNode?.media_duration_seconds).toBeUndefined()
+      expect(wavNode?.audio_sample_rate_hz).toBeUndefined()
+      expect(wavNode?.audio_channel_count).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('omits wav metadata when the fmt chunk is too short to describe the stream', () => {
+    const root = createTempRoot()
+    try {
+      const wavPath = join(root, 'short-fmt.wav')
+      const malformedBuffer = createMalformedShortFmtWavBuffer()
+      writeFileSync(wavPath, malformedBuffer)
+
+      const result = extract([wavPath])
+      const wavNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'short-fmt.wav')
+
+      expect(wavNode).toMatchObject({
+        content_type: 'audio/wav',
+        file_bytes: malformedBuffer.length,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+      expect(wavNode?.media_duration_seconds).toBeUndefined()
+      expect(wavNode?.audio_sample_rate_hz).toBeUndefined()
+      expect(wavNode?.audio_channel_count).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('omits mp4 duration metadata when mvhd-like bytes are not inside a real moov atom', () => {
+    const root = createTempRoot()
+    try {
+      const mp4Path = join(root, 'fake-duration.mp4')
+      const fakeMp4Buffer = createFakeMvhdTaggedMp4Buffer(9.25)
+      writeFileSync(mp4Path, fakeMp4Buffer)
+
+      const result = extract([mp4Path])
+      const mp4Node = result.nodes.find((node) => node.file_type === 'video' && node.label === 'fake-duration.mp4')
+
+      expect(mp4Node).toMatchObject({
+        content_type: 'video/mp4',
+        file_bytes: fakeMp4Buffer.length,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(mp4Node?.media_duration_seconds).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('omits mp4 duration metadata when fake moov bytes only appear inside mdat payload data', () => {
+    const root = createTempRoot()
+    try {
+      const mp4Path = join(root, 'tail-fake-duration.mp4')
+      const fakeMp4Buffer = createLargeFakeTailTaggedMp4Buffer(12.75)
+      writeFileSync(mp4Path, fakeMp4Buffer)
+
+      const result = extract([mp4Path])
+      const mp4Node = result.nodes.find((node) => node.file_type === 'video' && node.label === 'tail-fake-duration.mp4')
+
+      expect(mp4Node).toMatchObject({
+        content_type: 'video/mp4',
+        file_bytes: fakeMp4Buffer.length,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(mp4Node?.media_duration_seconds).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps binary extraction resilient when a detected media asset disappears before extraction', () => {
+    const root = createTempRoot()
+    try {
+      const audioPath = join(root, 'episode.mp3')
+      writeFileSync(audioPath, Buffer.from('ID3'))
+      rmSync(audioPath)
+
+      const result = extract([audioPath])
+      const audioNode = result.nodes.find((node) => node.file_type === 'audio' && node.label === 'episode.mp3')
+
+      expect(audioNode).toMatchObject({
+        label: 'episode.mp3',
+        content_type: 'audio/mpeg',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+      expect(audioNode?.file_bytes).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores malformed hidden sidecar metadata for binary extraction', () => {
+    const root = createTempRoot()
+    try {
+      const imagePath = join(root, 'broken.png')
+      writeFileSync(imagePath, Buffer.from([137, 80, 78, 71]))
+      writeFileSync(binaryIngestSidecarPath(imagePath), '{not-json', 'utf8')
+
+      const result = extract([imagePath])
+      const imageNode = result.nodes.find((node) => node.file_type === 'image' && node.label === 'broken.png')
+
+      expect(imageNode).toMatchObject({
+        label: 'broken.png',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:image', stage: 'extract' })],
+      })
+      expect(imageNode?.source_url).toBeUndefined()
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -1123,6 +4633,7 @@ describe('extract', () => {
       const noteNode = result.nodes.find((node) => node.label === 'notes.md')
       const authenticateId = result.nodes.find((node) => node.label === 'authenticate()')?.id
       const requestTokenId = result.nodes.find((node) => node.label === 'requestToken()')?.id
+      const referenceEdges = result.edges.filter((edge) => edge.source === noteNode?.id && edge.relation === 'references')
 
       expect(noteNode).toMatchObject({
         title: 'Auth notebook',
@@ -1134,6 +4645,184 @@ describe('extract', () => {
       expect(Array.isArray(noteNode?.source_nodes)).toBe(true)
       expect(result.edges.some((edge) => edge.source === noteNode?.id && edge.target === authenticateId && edge.relation === 'references')).toBe(true)
       expect(result.edges.some((edge) => edge.source === noteNode?.id && edge.target === requestTokenId && edge.relation === 'references')).toBe(true)
+      expect(referenceEdges).toHaveLength(2)
+      expect(referenceEdges.every((edge) => edge.layer === 'base')).toBe(true)
+      expect(referenceEdges.every((edge) => Array.isArray(edge.provenance) && edge.provenance.length > 0)).toBe(true)
+      for (const edge of referenceEdges) {
+        expect(edge).toMatchObject({
+          layer: 'base',
+          provenance: [expect.objectContaining({ capability_id: 'builtin:extract:markdown', stage: 'extract' })],
+        })
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('emits explicit base-layer provenance on frontmatter-enriched markdown extraction before normalization', () => {
+    const root = createTempRoot()
+    try {
+      const guidePath = join(root, 'guide.md')
+      const appendixPath = join(root, 'appendix.md')
+      writeFileSync(appendixPath, '# Appendix\n', 'utf8')
+      writeFileSync(
+        guidePath,
+        [
+          '---',
+          'title: "Guide"',
+          'layer: "semantic"',
+          'provenance: "spoofed"',
+          'source_url: "https://example.com/guide"',
+          'captured_at: "2026-04-13T00:00:00Z"',
+          'author: "Docs Team"',
+          'contributor: "graphify-ts"',
+          '---',
+          '',
+          '# Guide',
+          '',
+          'See [Appendix](appendix.md).',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([guidePath, appendixPath])
+      const fileNode = result.nodes.find((node) => node.label === 'guide.md')
+      const headingNode = result.nodes.find((node) => node.label === 'Guide' && node.source_file === guidePath)
+      const referenceEdge = result.edges.find((edge) => edge.source_file === guidePath && edge.relation === 'references')
+
+      expect(fileNode).toMatchObject({
+        layer: 'base',
+        source_url: 'https://example.com/guide',
+        captured_at: '2026-04-13T00:00:00Z',
+        author: 'Docs Team',
+        contributor: 'graphify-ts',
+        provenance: expect.arrayContaining([
+          expect.objectContaining({ capability_id: 'builtin:extract:markdown', stage: 'extract' }),
+          expect.objectContaining({
+            capability_id: 'builtin:ingest:webpage',
+            stage: 'ingest',
+            source_url: 'https://example.com/guide',
+            captured_at: '2026-04-13T00:00:00Z',
+            author: 'Docs Team',
+            contributor: 'graphify-ts',
+          }),
+        ]),
+      })
+      expect(headingNode).toMatchObject({
+        layer: 'base',
+        provenance: expect.arrayContaining([
+          expect.objectContaining({ capability_id: 'builtin:extract:markdown', stage: 'extract' }),
+          expect.objectContaining({ capability_id: 'builtin:ingest:webpage', stage: 'ingest' }),
+        ]),
+      })
+      expect(referenceEdge).toMatchObject({
+        layer: 'base',
+        provenance: expect.arrayContaining([
+          expect.objectContaining({ capability_id: 'builtin:extract:markdown', stage: 'extract' }),
+          expect.objectContaining({ capability_id: 'builtin:ingest:webpage', stage: 'ingest' }),
+        ]),
+      })
+      expect(fileNode?.provenance).toHaveLength(2)
+      expect(headingNode?.provenance).toHaveLength(2)
+      expect(referenceEdge?.provenance).toHaveLength(2)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('emits capability-specific ingest provenance for registry-driven text captures before normalization', () => {
+    const root = createTempRoot()
+    try {
+      const cases = [
+        {
+          fileName: 'github-notes.md',
+          sourceUrl: 'https://github.com/mohanagy/graphify-ts',
+          ingestCapabilityId: 'builtin:ingest:github',
+        },
+        {
+          fileName: 'youtube-notes.md',
+          sourceUrl: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+          ingestCapabilityId: 'builtin:ingest:youtube',
+        },
+        {
+          fileName: 'tweet-notes.md',
+          sourceUrl: 'https://x.com/graphify/status/1234567890',
+          ingestCapabilityId: 'builtin:ingest:tweet',
+        },
+        {
+          fileName: 'arxiv-notes.md',
+          sourceUrl: 'https://arxiv.org/abs/1706.03762',
+          ingestCapabilityId: 'builtin:ingest:arxiv',
+        },
+        {
+          fileName: 'hackernews-notes.md',
+          sourceUrl: 'https://news.ycombinator.com/item?id=8863',
+          ingestCapabilityId: 'builtin:ingest:hackernews',
+        },
+      ] as const
+
+      for (const testCase of cases) {
+        const filePath = join(root, testCase.fileName)
+        writeFileSync(
+          filePath,
+          [
+            '---',
+            `source_url: "${testCase.sourceUrl}"`,
+            'captured_at: "2026-04-13T00:00:00Z"',
+            'author: "Graphify Team"',
+            'contributor: "graphify-ts"',
+            '---',
+            '',
+            '# Notes',
+            '',
+            'Captured for metadata parity.',
+          ].join('\n'),
+          'utf8',
+        )
+
+        const result = extract([filePath])
+        const fileNode = result.nodes.find((node) => node.label === testCase.fileName)
+        const headingNode = result.nodes.find((node) => node.label === 'Notes' && node.source_file === filePath)
+        const containsEdge = result.edges.find((edge) => edge.source_file === filePath && edge.relation === 'contains')
+
+        expect(fileNode).toMatchObject({
+          source_url: testCase.sourceUrl,
+          captured_at: '2026-04-13T00:00:00Z',
+          author: 'Graphify Team',
+          contributor: 'graphify-ts',
+          provenance: expect.arrayContaining([expect.objectContaining({ capability_id: testCase.ingestCapabilityId, stage: 'ingest' })]),
+        })
+        expect(headingNode).toMatchObject({
+          provenance: expect.arrayContaining([expect.objectContaining({ capability_id: testCase.ingestCapabilityId, stage: 'ingest' })]),
+        })
+        expect(containsEdge).toMatchObject({
+          provenance: expect.arrayContaining([expect.objectContaining({ capability_id: testCase.ingestCapabilityId, stage: 'ingest' })]),
+        })
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps frontmatter-only markdown captures on extract provenance when source_url is absent', () => {
+    const root = createTempRoot()
+    try {
+      const notePath = join(root, 'local-notes.md')
+      writeFileSync(notePath, ['---', 'title: "Local Notes"', 'author: "Graphify Team"', 'contributor: "graphify-ts"', '---', '', '# Notes'].join('\n'), 'utf8')
+
+      const result = extract([notePath])
+      const fileNode = result.nodes.find((node) => node.label === 'local-notes.md')
+      const headingNode = result.nodes.find((node) => node.label === 'Notes' && node.source_file === notePath)
+      const containsEdge = result.edges.find((edge) => edge.source_file === notePath && edge.relation === 'contains')
+
+      expect(fileNode).toMatchObject({
+        title: 'Local Notes',
+        author: 'Graphify Team',
+        contributor: 'graphify-ts',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:markdown', stage: 'extract' })],
+      })
+      expect(headingNode?.provenance).toEqual([expect.objectContaining({ capability_id: 'builtin:extract:markdown', stage: 'extract' })])
+      expect(containsEdge?.provenance).toEqual([expect.objectContaining({ capability_id: 'builtin:extract:markdown', stage: 'extract' })])
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -1180,11 +4869,20 @@ describe('extract', () => {
       const result = extract([paperPath])
       const abstractId = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'Abstract')?.id
       const referencesId = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'References')?.id
+      const doiNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'DOI:10.1234/example.5678')
+      const arxivNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'arXiv:2103.12345')
+      const citeKeyNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'cite:vaswani2017attention')
+      const secondCiteKeyNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'cite:devlin2018bert')
+      const referenceNode = result.nodes.find((node) => node.file_type === 'paper' && node.semantic_kind === 'reference' && String(node.label).startsWith('[1]'))
+      const citesEdges = result.edges.filter((edge) => edge.source === abstractId && edge.relation === 'cites')
+      const referenceContainsEdge = result.edges.find((edge) => edge.source === referencesId && edge.target === referenceNode?.id && edge.relation === 'contains')
       const doiId = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'DOI:10.1234/example.5678')?.id
       const arxivId = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'arXiv:2103.12345')?.id
       const citeKeyId = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'cite:vaswani2017attention')?.id
       const secondCiteKeyId = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'cite:devlin2018bert')?.id
       const referenceNodeId = result.nodes.find((node) => node.file_type === 'paper' && node.semantic_kind === 'reference' && String(node.label).startsWith('[1]'))?.id
+      const semanticNodes = [doiNode, arxivNode, citeKeyNode, secondCiteKeyNode, referenceNode]
+      const semanticEdges = [...citesEdges, referenceContainsEdge]
 
       expect(abstractId).toBeTruthy()
       expect(referencesId).toBeTruthy()
@@ -1198,8 +4896,126 @@ describe('extract', () => {
       expect(result.edges.some((edge) => edge.source === abstractId && edge.target === citeKeyId && edge.relation === 'cites')).toBe(true)
       expect(result.edges.some((edge) => edge.source === abstractId && edge.target === secondCiteKeyId && edge.relation === 'cites')).toBe(true)
       expect(result.edges.some((edge) => edge.source === referencesId && edge.target === referenceNodeId && edge.relation === 'contains')).toBe(true)
+      expect(semanticNodes).toHaveLength(5)
+      expect(semanticEdges).toHaveLength(5)
+      expect(semanticNodes.every((node) => node?.layer === 'base')).toBe(true)
+      expect(semanticEdges.every((edge) => edge?.layer === 'base')).toBe(true)
+      expect(semanticNodes.every((node) => Array.isArray(node?.provenance) && node.provenance.length > 0)).toBe(true)
+      expect(semanticEdges.every((edge) => Array.isArray(edge?.provenance) && edge.provenance.length > 0)).toBe(true)
+      for (const node of semanticNodes) {
+        expect(node).toMatchObject({
+          layer: 'base',
+          provenance: [expect.objectContaining({ capability_id: 'builtin:extract:markdown-paper', stage: 'extract' })],
+        })
+      }
+      for (const edge of semanticEdges) {
+        expect(edge).toMatchObject({
+          layer: 'base',
+          provenance: [expect.objectContaining({ capability_id: 'builtin:extract:markdown-paper', stage: 'extract' })],
+        })
+      }
       expect(result.nodes.some((node) => String(node.label).includes('ignored2020'))).toBe(false)
       expect(result.nodes.some((node) => String(node.label).includes('10.9999/ignored'))).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('splits multi-key latex citations and enforces the per-line key limit for markdown papers', () => {
+    const root = createTempRoot()
+    try {
+      const paperPath = join(root, 'paper.md')
+      const primaryKeys = ['vaswani2017attention', 'devlin2018bert', 'raffel2020t5']
+      const overflowKeys = Array.from({ length: 18 }, (_, index) => `overflow${index + 1}`)
+
+      writeFileSync(
+        paperPath,
+        [
+          '# Abstract',
+          'We also reference DOI:10.1234/bootstrap.1 for classification.',
+          `See also \\cite{${primaryKeys.join(',')}} for background.`,
+          `Benchmark against \\citep{${overflowKeys.join(',')}} when comparing results.`,
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([paperPath])
+      const abstractId = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'Abstract')?.id
+      const citationKeyNodes = result.nodes.filter((node) => node.file_type === 'paper' && node.citation_kind === 'citation_key')
+      const citationKeyNodeIds = new Set(citationKeyNodes.map((node) => node.id))
+      const citationKeyLabels = new Set(citationKeyNodes.map((node) => node.label))
+      const citesEdges = result.edges.filter((edge) => edge.source === abstractId && edge.relation === 'cites' && citationKeyNodeIds.has(edge.target))
+
+      expect(abstractId).toBeTruthy()
+      expect(citationKeyNodes).toHaveLength(primaryKeys.length + 16)
+      for (const key of primaryKeys) {
+        expect(citationKeyLabels.has(`cite:${key}`)).toBe(true)
+      }
+      for (const key of overflowKeys.slice(0, 16)) {
+        expect(citationKeyLabels.has(`cite:${key}`)).toBe(true)
+      }
+      expect(citationKeyLabels.has('cite:overflow17')).toBe(false)
+      expect(citationKeyLabels.has('cite:overflow18')).toBe(false)
+      expect(citesEdges).toHaveLength(primaryKeys.length + 16)
+      expect(citationKeyNodes.every((node) => node.layer === 'base')).toBe(true)
+      expect(citesEdges.every((edge) => edge.layer === 'base')).toBe(true)
+      expect(citationKeyNodes.every((node) => Array.isArray(node.provenance) && node.provenance.length > 0)).toBe(true)
+      expect(citesEdges.every((edge) => Array.isArray(edge.provenance) && edge.provenance.length > 0)).toBe(true)
+      for (const node of citationKeyNodes) {
+        expect(node).toMatchObject({
+          layer: 'base',
+          provenance: [expect.objectContaining({ capability_id: 'builtin:extract:markdown-paper', stage: 'extract' })],
+        })
+      }
+      for (const edge of citesEdges) {
+        expect(edge).toMatchObject({
+          layer: 'base',
+          provenance: [expect.objectContaining({ capability_id: 'builtin:extract:markdown-paper', stage: 'extract' })],
+        })
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts arxiv citation format variants from markdown papers', () => {
+    const root = createTempRoot()
+    try {
+      const paperPath = join(root, 'paper.md')
+      const expectedArxivNodes = [
+        { label: 'arXiv:math.CO/0123456', source_url: 'https://arxiv.org/abs/math.CO/0123456' },
+        { label: 'arXiv:2103.12345', source_url: 'https://arxiv.org/abs/2103.12345' },
+        { label: 'arXiv:2103.54321v2', source_url: 'https://arxiv.org/abs/2103.54321v2' },
+        { label: 'arXiv:2201.99999', source_url: 'https://arxiv.org/abs/2201.99999' },
+        { label: 'arXiv:2302.00001', source_url: 'https://arxiv.org/abs/2302.00001' },
+      ]
+
+      writeFileSync(
+        paperPath,
+        ['# Abstract', 'We compare arXiv:math.CO/0123456, arXiv:2103.12345, arXiv:2103.54321v2, arxiv.org/abs/2201.99999, and ArXiV: 2302.00001.'].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([paperPath])
+      const abstractId = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'Abstract')?.id
+      const citesEdges = result.edges.filter((edge) => edge.source === abstractId && edge.relation === 'cites')
+
+      expect(abstractId).toBeTruthy()
+      expect(citesEdges).toHaveLength(expectedArxivNodes.length)
+      for (const expectedNode of expectedArxivNodes) {
+        const node = result.nodes.find((candidate) => candidate.file_type === 'paper' && candidate.label === expectedNode.label)
+        const edge = result.edges.find((candidate) => candidate.source === abstractId && candidate.target === node?.id && candidate.relation === 'cites')
+
+        expect(node).toMatchObject({
+          source_url: expectedNode.source_url,
+          layer: 'base',
+          provenance: [expect.objectContaining({ capability_id: 'builtin:extract:markdown-paper', stage: 'extract' })],
+        })
+        expect(edge).toMatchObject({
+          layer: 'base',
+          provenance: [expect.objectContaining({ capability_id: 'builtin:extract:markdown-paper', stage: 'extract' })],
+        })
+      }
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -1227,6 +5043,11 @@ describe('extract', () => {
       const referenceOne = result.nodes.find((node) => node.file_type === 'paper' && node.reference_index === 1)
       const referenceTwo = result.nodes.find((node) => node.file_type === 'paper' && node.reference_index === 2)
       const referenceThree = result.nodes.find((node) => node.file_type === 'paper' && node.reference_index === 3)
+      const referenceDoiNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'DOI:10.5555/foundational')
+      const referenceArxivNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'arXiv:2401.12345')
+      const numberedReferences = [referenceOne, referenceTwo, referenceThree]
+      const citesEdges = result.edges.filter((edge) => edge.source === abstractId && edge.relation === 'cites')
+      const referenceSourceEdges = result.edges.filter((edge) => edge.relation === 'cites' && (edge.source === referenceOne?.id || edge.source === referenceTwo?.id))
 
       expect(abstractId).toBeTruthy()
       expect(referenceOne).toMatchObject({
@@ -1248,9 +5069,124 @@ describe('extract', () => {
         reference_year: 2022,
         reference_title: 'Another Paper',
       })
+      expect(referenceDoiNode).toMatchObject({
+        source_url: 'https://doi.org/10.5555/foundational',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:markdown-paper', stage: 'extract' })],
+      })
+      expect(referenceArxivNode).toMatchObject({
+        source_url: 'https://arxiv.org/abs/2401.12345',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:markdown-paper', stage: 'extract' })],
+      })
       expect(result.edges.some((edge) => edge.source === abstractId && edge.target === referenceOne?.id && edge.relation === 'cites')).toBe(true)
       expect(result.edges.some((edge) => edge.source === abstractId && edge.target === referenceTwo?.id && edge.relation === 'cites')).toBe(true)
       expect(result.edges.some((edge) => edge.source === abstractId && edge.target === referenceThree?.id && edge.relation === 'cites')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === referenceOne?.id && edge.target === referenceDoiNode?.id && edge.relation === 'cites')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === referenceTwo?.id && edge.target === referenceArxivNode?.id && edge.relation === 'cites')).toBe(true)
+      expect(numberedReferences).toHaveLength(3)
+      expect(citesEdges).toHaveLength(3)
+      expect(referenceSourceEdges).toHaveLength(2)
+      expect(numberedReferences.every((node) => node?.layer === 'base')).toBe(true)
+      expect(citesEdges.every((edge) => edge.layer === 'base')).toBe(true)
+      expect(referenceSourceEdges.every((edge) => edge.layer === 'base')).toBe(true)
+      expect(numberedReferences.every((node) => Array.isArray(node?.provenance) && node.provenance.length > 0)).toBe(true)
+      expect(citesEdges.every((edge) => Array.isArray(edge.provenance) && edge.provenance.length > 0)).toBe(true)
+      expect(referenceSourceEdges.every((edge) => Array.isArray(edge.provenance) && edge.provenance.length > 0)).toBe(true)
+      for (const node of numberedReferences) {
+        expect(node).toMatchObject({
+          layer: 'base',
+          provenance: [expect.objectContaining({ capability_id: 'builtin:extract:markdown-paper', stage: 'extract' })],
+        })
+      }
+      for (const edge of citesEdges) {
+        expect(edge).toMatchObject({
+          layer: 'base',
+          provenance: [expect.objectContaining({ capability_id: 'builtin:extract:markdown-paper', stage: 'extract' })],
+        })
+      }
+      for (const edge of referenceSourceEdges) {
+        expect(edge).toMatchObject({
+          layer: 'base',
+          provenance: [expect.objectContaining({ capability_id: 'builtin:extract:markdown-paper', stage: 'extract' })],
+        })
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('lifts explicit bibliography urls into markdown paper references when no doi or arxiv is present', () => {
+    const root = createTempRoot()
+    try {
+      const paperPath = join(root, 'paper.md')
+      writeFileSync(
+        paperPath,
+        [
+          '# Abstract',
+          'We compare the baselines in [1-2].',
+          '## References',
+          '[1] Smith et al. (2024). External Runtime Paper. https://example.com/runtime-paper.html.',
+          '[2] Doe et al. (2025). Follow Up Appendix. https://example.com/follow-up.pdf,',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([paperPath])
+      const referenceOne = result.nodes.find((node) => node.file_type === 'paper' && node.reference_index === 1)
+      const referenceTwo = result.nodes.find((node) => node.file_type === 'paper' && node.reference_index === 2)
+
+      expect(referenceOne).toMatchObject({
+        reference_index: 1,
+        reference_year: 2024,
+        reference_title: 'External Runtime Paper',
+        source_url: 'https://example.com/runtime-paper.html',
+      })
+      expect(referenceTwo).toMatchObject({
+        reference_index: 2,
+        reference_year: 2025,
+        reference_title: 'Follow Up Appendix',
+        source_url: 'https://example.com/follow-up.pdf',
+      })
+      expect(referenceOne?.doi).toBeUndefined()
+      expect(referenceOne?.arxiv_id).toBeUndefined()
+      expect(referenceTwo?.doi).toBeUndefined()
+      expect(referenceTwo?.arxiv_id).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps doi and arxiv source urls canonical when markdown bibliography entries also include plain urls', () => {
+    const root = createTempRoot()
+    try {
+      const paperPath = join(root, 'paper.md')
+      writeFileSync(
+        paperPath,
+        [
+          '# Abstract',
+          'We compare the baselines in [1-2].',
+          '## References',
+          '[1] Smith et al. (2024). Runtime Paper. https://example.com/runtime-paper DOI:10.4242/runtime.paper',
+          '[2] Doe et al. (2025). Follow Up Study. https://example.com/follow-up arXiv:2502.54321',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([paperPath])
+      const referenceOne = result.nodes.find((node) => node.file_type === 'paper' && node.reference_index === 1)
+      const referenceTwo = result.nodes.find((node) => node.file_type === 'paper' && node.reference_index === 2)
+
+      expect(referenceOne).toMatchObject({
+        reference_index: 1,
+        doi: '10.4242/runtime.paper',
+        source_url: 'https://doi.org/10.4242/runtime.paper',
+      })
+      expect(referenceTwo).toMatchObject({
+        reference_index: 2,
+        arxiv_id: '2502.54321',
+        source_url: 'https://arxiv.org/abs/2502.54321',
+      })
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -1285,10 +5221,15 @@ describe('extract', () => {
       const result = extract([paperPath, guidePath])
       const abstractId = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'Abstract')?.id
       const guideId = result.nodes.find((node) => node.file_type === 'document' && node.label === 'guide.md')?.id
+      const referenceEdge = result.edges.find((edge) => edge.source === abstractId && edge.target === guideId && edge.relation === 'references')
 
       expect(abstractId).toBeTruthy()
       expect(guideId).toBeTruthy()
       expect(result.edges.some((edge) => edge.source === abstractId && edge.target === guideId && edge.relation === 'references')).toBe(true)
+      expect(referenceEdge).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' })],
+      })
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -1319,7 +5260,7 @@ describe('extract', () => {
     }
   })
 
-  it('extracts pdf metadata, TJ-array text, and resolved reference source urls', () => {
+  it('extracts pdf metadata, inline numeric citation resolution, TJ-array text, and resolved reference source urls', () => {
     const root = createTempRoot()
     try {
       const paperPath = join(root, 'paper.pdf')
@@ -1331,9 +5272,11 @@ describe('extract', () => {
           '<< /Title (Graphify Paper) /Author (Jane Doe) /Subject (Runtime Notes) >>',
           'stream',
           '[(Abstract)] TJ',
+          '(We build on [1] and compare against [2].) Tj',
           '[(See DOI:10.1000/example.42 and arXiv:2501.12345)] TJ',
           '[(References)] TJ',
           '([1] Doe et al. (2024). Runtime Paper. DOI:10.4242/runtime.paper) Tj',
+          '([2] Roe et al. (2025). Follow Up Paper. arXiv:2502.54321) Tj',
           'endstream',
           'endobj',
         ].join('\n'),
@@ -1343,19 +5286,146 @@ describe('extract', () => {
       const result = extract([paperPath])
       const paperNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'paper.pdf')
       const abstractId = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'Abstract')?.id
+      const referencesId = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'References')?.id
       const doiNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'DOI:10.1000/example.42')
       const arxivNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'arXiv:2501.12345')
+      const referenceNode = result.nodes.find(
+        (node) => node.file_type === 'paper' && node.semantic_kind === 'reference' && String(node.label).startsWith('[1] Doe et al.'),
+      )
+      const referenceTwo = result.nodes.find(
+        (node) => node.file_type === 'paper' && node.semantic_kind === 'reference' && String(node.label).startsWith('[2] Roe et al.'),
+      )
+      const referenceDoiNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'DOI:10.4242/runtime.paper')
+      const referenceArxivNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'arXiv:2502.54321')
+      const doiCitationEdge = result.edges.find((edge) => edge.source === abstractId && edge.target === doiNode?.id && edge.relation === 'cites')
+      const referenceContainsEdges = result.edges.filter((edge) => edge.source === referencesId && edge.relation === 'contains')
+      const referenceCitationEdge = result.edges.find((edge) => edge.source === referenceNode?.id && edge.target === referenceDoiNode?.id && edge.relation === 'cites')
+      const referenceArxivEdge = result.edges.find((edge) => edge.source === referenceTwo?.id && edge.target === referenceArxivNode?.id && edge.relation === 'cites')
+      const abstractReferenceEdges = result.edges.filter(
+        (edge) => edge.source === abstractId && edge.relation === 'cites' && (edge.target === referenceNode?.id || edge.target === referenceTwo?.id),
+      )
 
       expect(paperNode).toMatchObject({
         title: 'Graphify Paper',
         author: 'Jane Doe',
         subject: 'Runtime Notes',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' })],
       })
       expect(abstractId).toBeTruthy()
-      expect(doiNode).toMatchObject({ source_url: 'https://doi.org/10.1000/example.42' })
-      expect(arxivNode).toMatchObject({ source_url: 'https://arxiv.org/abs/2501.12345' })
+      expect(doiNode).toMatchObject({
+        source_url: 'https://doi.org/10.1000/example.42',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' })],
+      })
+      expect(arxivNode).toMatchObject({
+        source_url: 'https://arxiv.org/abs/2501.12345',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' })],
+      })
+      expect(referenceNode).toMatchObject({
+        reference_index: 1,
+        reference_year: 2024,
+        reference_title: 'Runtime Paper',
+        doi: '10.4242/runtime.paper',
+        source_url: 'https://doi.org/10.4242/runtime.paper',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' })],
+      })
+      expect(referenceDoiNode).toMatchObject({
+        source_url: 'https://doi.org/10.4242/runtime.paper',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' })],
+      })
+      expect(referenceTwo).toMatchObject({
+        reference_index: 2,
+        reference_year: 2025,
+        reference_title: 'Follow Up Paper',
+        arxiv_id: '2502.54321',
+        source_url: 'https://arxiv.org/abs/2502.54321',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' })],
+      })
+      expect(referenceArxivNode).toMatchObject({
+        source_url: 'https://arxiv.org/abs/2502.54321',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' })],
+      })
+      expect(doiCitationEdge).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' })],
+      })
+      expect(referenceCitationEdge).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' })],
+      })
+      expect(referenceArxivEdge).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' })],
+      })
+      expect(abstractReferenceEdges).toHaveLength(2)
+      expect(referenceContainsEdges).toHaveLength(2)
+      expect(referenceContainsEdges.every((edge) => edge.layer === 'base')).toBe(true)
+      expect(referenceContainsEdges.every((edge) => Array.isArray(edge.provenance) && edge.provenance.length > 0)).toBe(true)
+      expect(abstractReferenceEdges.every((edge) => edge.layer === 'base')).toBe(true)
+      expect(abstractReferenceEdges.every((edge) => Array.isArray(edge.provenance) && edge.provenance.length > 0)).toBe(true)
       expect(result.edges.some((edge) => edge.source === abstractId && edge.target === doiNode?.id && edge.relation === 'cites')).toBe(true)
       expect(result.edges.some((edge) => edge.source === abstractId && edge.target === arxivNode?.id && edge.relation === 'cites')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === referencesId && edge.target === referenceNode?.id && edge.relation === 'contains')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === referencesId && edge.target === referenceTwo?.id && edge.relation === 'contains')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === abstractId && edge.target === referenceNode?.id && edge.relation === 'cites')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === abstractId && edge.target === referenceTwo?.id && edge.relation === 'cites')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === referenceNode?.id && edge.target === referenceDoiNode?.id && edge.relation === 'cites')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === referenceTwo?.id && edge.target === referenceArxivNode?.id && edge.relation === 'cites')).toBe(true)
+      for (const edge of referenceContainsEdges) {
+        expect(edge).toMatchObject({
+          layer: 'base',
+          provenance: [expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' })],
+        })
+      }
+      for (const edge of abstractReferenceEdges) {
+        expect(edge).toMatchObject({
+          layer: 'base',
+          provenance: [expect.objectContaining({ capability_id: 'builtin:extract:paper', stage: 'extract' })],
+        })
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('lifts explicit bibliography urls into pdf reference metadata when no doi or arxiv is present', () => {
+    const root = createTempRoot()
+    try {
+      const paperPath = join(root, 'paper.pdf')
+      writeFileSync(
+        paperPath,
+        [
+          '%PDF-1.4',
+          '1 0 obj',
+          '<< /Title (Graphify Paper) >>',
+          'stream',
+          '(Abstract) Tj',
+          '([1]) Tj',
+          '(References) Tj',
+          '([1] Doe et al. (2024). Runtime Paper. https://example.com/runtime-paper.pdf.) Tj',
+          'endstream',
+          'endobj',
+        ].join('\n'),
+        'latin1',
+      )
+
+      const result = extract([paperPath])
+      const referenceNode = result.nodes.find((node) => node.file_type === 'paper' && node.reference_index === 1)
+
+      expect(referenceNode).toMatchObject({
+        reference_index: 1,
+        reference_year: 2024,
+        reference_title: 'Runtime Paper',
+        source_url: 'https://example.com/runtime-paper.pdf',
+      })
+      expect(referenceNode?.doi).toBeUndefined()
+      expect(referenceNode?.arxiv_id).toBeUndefined()
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -1402,15 +5472,42 @@ describe('extract', () => {
 
       const result = extract([docxPath])
       const labels = result.nodes.map((node) => node.label)
+      const titleNode = result.nodes.find((node) => node.file_type === 'document' && node.label === 'Guide Title')
+      const overviewNode = result.nodes.find((node) => node.file_type === 'document' && node.label === 'Overview')
+      const detailsNode = result.nodes.find((node) => node.file_type === 'document' && node.label === 'Details')
+      const fileNodeId = result.nodes.find((node) => node.file_type === 'document' && node.label === 'guide.docx')?.id
       const nodeByKey = new Map(result.nodes.map((node) => [`${node.file_type}:${node.label}`, node.id]))
       const relations = new Set(result.edges.map((edge) => `${edge.source}:${edge.relation}:${edge.target}`))
+      const containsEdges = result.edges.filter((edge) => edge.relation === 'contains')
 
       expect(labels).toContain('guide.docx')
       expect(labels).toContain('Guide Title')
       expect(labels).toContain('Overview')
       expect(labels).toContain('Details')
+      expect(titleNode).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+      })
+      expect(overviewNode).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+      })
+      expect(detailsNode).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+      })
+      expect(relations.has(`${fileNodeId}:contains:${nodeByKey.get('document:Guide Title')}`)).toBe(true)
       expect(relations.has(`${nodeByKey.get('document:guide.docx')}:contains:${nodeByKey.get('document:Overview')}`)).toBe(true)
       expect(relations.has(`${nodeByKey.get('document:Overview')}:contains:${nodeByKey.get('document:Details')}`)).toBe(true)
+      expect(containsEdges).toHaveLength(3)
+      expect(containsEdges.every((edge) => edge.layer === 'base')).toBe(true)
+      expect(containsEdges.every((edge) => Array.isArray(edge.provenance) && edge.provenance.length > 0)).toBe(true)
+      for (const edge of containsEdges) {
+        expect(edge).toMatchObject({
+          layer: 'base',
+          provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+        })
+      }
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -1440,10 +5537,15 @@ describe('extract', () => {
       const result = extract([docxPath, linkedGuidePath])
       const overviewId = result.nodes.find((node) => node.file_type === 'document' && node.label === 'Overview')?.id
       const linkedGuideId = result.nodes.find((node) => node.file_type === 'document' && node.label === 'linked-guide.md')?.id
+      const referenceEdge = result.edges.find((edge) => edge.source === overviewId && edge.target === linkedGuideId && edge.relation === 'references')
 
       expect(overviewId).toBeTruthy()
       expect(linkedGuideId).toBeTruthy()
       expect(result.edges.some((edge) => edge.source === overviewId && edge.target === linkedGuideId && edge.relation === 'references')).toBe(true)
+      expect(referenceEdge).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+      })
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -1470,14 +5572,34 @@ describe('extract', () => {
 
       const result = extract([docxPath])
       const overviewId = result.nodes.find((node) => node.file_type === 'document' && node.label === 'Overview')?.id
-      const doiId = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'DOI:10.1000/guide.1')?.id
-      const arxivId = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'arXiv:2401.12345')?.id
+      const doiNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'DOI:10.1000/guide.1')
+      const arxivNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'arXiv:2401.12345')
+      const doiId = doiNode?.id
+      const arxivId = arxivNode?.id
+      const doiEdge = result.edges.find((edge) => edge.source === overviewId && edge.target === doiId && edge.relation === 'cites')
+      const arxivEdge = result.edges.find((edge) => edge.source === overviewId && edge.target === arxivId && edge.relation === 'cites')
 
       expect(overviewId).toBeTruthy()
       expect(doiId).toBeTruthy()
       expect(arxivId).toBeTruthy()
       expect(result.edges.some((edge) => edge.source === overviewId && edge.target === doiId && edge.relation === 'cites')).toBe(true)
       expect(result.edges.some((edge) => edge.source === overviewId && edge.target === arxivId && edge.relation === 'cites')).toBe(true)
+      expect(doiNode).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+      })
+      expect(arxivNode).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+      })
+      expect(doiEdge).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+      })
+      expect(arxivEdge).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+      })
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -1511,18 +5633,214 @@ describe('extract', () => {
       })
 
       writeFileSync(docxPath, Buffer.from(archive))
+      writeFileSync(
+        binaryIngestSidecarPath(docxPath),
+        JSON.stringify(
+          {
+            source_url: 'https://example.com/guide.docx',
+            captured_at: '2026-04-14T01:00:00Z',
+            contributor: 'graphify-ts',
+          },
+          null,
+          2,
+        ),
+        'utf8',
+      )
 
       const result = extract([docxPath])
       const fileNode = result.nodes.find((node) => node.file_type === 'document' && node.label === 'guide.docx')
       const doiNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'DOI:10.1000/guide.1')
+      const doiEdge = result.edges.find((edge) => edge.relation === 'cites' && edge.target === doiNode?.id)
 
       expect(fileNode).toMatchObject({
         title: 'Guide Title',
         author: 'Jane Doe',
         subject: 'Design Notes',
         description: 'Background material for the graph runtime.',
+        source_url: 'https://example.com/guide.docx',
+        captured_at: '2026-04-14T01:00:00Z',
+        contributor: 'graphify-ts',
+        layer: 'base',
+        provenance: expect.arrayContaining([
+          expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' }),
+          expect.objectContaining({
+            capability_id: 'builtin:ingest:webpage',
+            stage: 'ingest',
+            source_url: 'https://example.com/guide.docx',
+            captured_at: '2026-04-14T01:00:00Z',
+            contributor: 'graphify-ts',
+          }),
+        ]),
       })
-      expect(doiNode).toMatchObject({ source_url: 'https://doi.org/10.1000/guide.1' })
+      expect(doiNode).toMatchObject({
+        source_url: 'https://doi.org/10.1000/guide.1',
+        layer: 'base',
+        provenance: expect.arrayContaining([
+          expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' }),
+          expect.objectContaining({ capability_id: 'builtin:ingest:webpage', stage: 'ingest' }),
+        ]),
+      })
+      expect(doiEdge).toMatchObject({
+        layer: 'base',
+        provenance: expect.arrayContaining([
+          expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' }),
+          expect.objectContaining({ capability_id: 'builtin:ingest:webpage', stage: 'ingest' }),
+        ]),
+      })
+      expect(fileNode?.provenance).toHaveLength(2)
+      expect(doiNode?.provenance).toHaveLength(2)
+      expect(doiEdge?.provenance).toHaveLength(2)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts numbered reference entries, bibliography detection, and inline citation resolution from docx sections', () => {
+    const root = createTempRoot()
+    try {
+      const docxPath = join(root, 'paper.docx')
+      const archive = zipSync({
+        'word/document.xml': strToU8(
+          [
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">',
+            '  <w:body>',
+            '    <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Introduction</w:t></w:r></w:p>',
+            '    <w:p><w:r><w:t>We build on [1] and extend the comparison in [2-3].</w:t></w:r></w:p>',
+            '    <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Bibliography</w:t></w:r></w:p>',
+            '    <w:p><w:r><w:t>[1] Smith et al. (2024). Foundational Work. DOI:10.1234/example</w:t></w:r></w:p>',
+            '    <w:p><w:r><w:t>[2] Doe et al. (2025). Follow Up Study. arXiv:2501.12345</w:t></w:r></w:p>',
+            '    <w:p><w:r><w:t>[3] Lee (2026). Another Paper.</w:t></w:r></w:p>',
+            '  </w:body>',
+            '</w:document>',
+          ].join(''),
+        ),
+      })
+
+      writeFileSync(docxPath, Buffer.from(archive))
+
+      const result = extract([docxPath])
+      const introductionId = result.nodes.find((node) => node.file_type === 'document' && node.label === 'Introduction')?.id
+      const bibliographyId = result.nodes.find((node) => node.file_type === 'document' && node.label === 'Bibliography')?.id
+      const referenceNode = result.nodes.find((node) => node.file_type === 'paper' && node.reference_index === 1)
+      const referenceTwo = result.nodes.find((node) => node.file_type === 'paper' && node.reference_index === 2)
+      const referenceThree = result.nodes.find((node) => node.file_type === 'paper' && node.reference_index === 3)
+      const doiNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'DOI:10.1234/example')
+      const arxivNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'arXiv:2501.12345')
+      const containsEdges = result.edges.filter((edge) => edge.source === bibliographyId && edge.relation === 'contains')
+      const introReferenceEdges = result.edges.filter(
+        (edge) => edge.source === introductionId && edge.relation === 'cites' && [referenceNode?.id, referenceTwo?.id, referenceThree?.id].includes(edge.target),
+      )
+      const citesEdge = result.edges.find((edge) => edge.source === referenceNode?.id && edge.target === doiNode?.id && edge.relation === 'cites')
+      const arxivCitesEdge = result.edges.find((edge) => edge.source === referenceTwo?.id && edge.target === arxivNode?.id && edge.relation === 'cites')
+
+      expect(introductionId).toBeTruthy()
+      expect(bibliographyId).toBeTruthy()
+      expect(referenceNode).toMatchObject({
+        semantic_kind: 'reference',
+        reference_index: 1,
+        reference_year: 2024,
+        reference_title: 'Foundational Work',
+        doi: '10.1234/example',
+        source_url: 'https://doi.org/10.1234/example',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+      })
+      expect(referenceTwo).toMatchObject({
+        semantic_kind: 'reference',
+        reference_index: 2,
+        reference_year: 2025,
+        reference_title: 'Follow Up Study',
+        arxiv_id: '2501.12345',
+        source_url: 'https://arxiv.org/abs/2501.12345',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+      })
+      expect(referenceThree).toMatchObject({
+        semantic_kind: 'reference',
+        reference_index: 3,
+        reference_year: 2026,
+        reference_title: 'Another Paper',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+      })
+      expect(doiNode).toMatchObject({
+        source_url: 'https://doi.org/10.1234/example',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+      })
+      expect(arxivNode).toMatchObject({
+        source_url: 'https://arxiv.org/abs/2501.12345',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+      })
+      expect(citesEdge).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+      })
+      expect(arxivCitesEdge).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+      })
+      expect(containsEdges).toHaveLength(3)
+      expect(introReferenceEdges).toHaveLength(3)
+      expect(containsEdges.every((edge) => edge.layer === 'base')).toBe(true)
+      expect(containsEdges.every((edge) => Array.isArray(edge.provenance) && edge.provenance.length > 0)).toBe(true)
+      expect(introReferenceEdges.every((edge) => edge.layer === 'base')).toBe(true)
+      expect(introReferenceEdges.every((edge) => Array.isArray(edge.provenance) && edge.provenance.length > 0)).toBe(true)
+      expect(result.edges.some((edge) => edge.source === bibliographyId && edge.target === referenceNode?.id && edge.relation === 'contains')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === bibliographyId && edge.target === referenceTwo?.id && edge.relation === 'contains')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === bibliographyId && edge.target === referenceThree?.id && edge.relation === 'contains')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === introductionId && edge.target === referenceNode?.id && edge.relation === 'cites')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === introductionId && edge.target === referenceTwo?.id && edge.relation === 'cites')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === introductionId && edge.target === referenceThree?.id && edge.relation === 'cites')).toBe(true)
+      for (const edge of containsEdges) {
+        expect(edge).toMatchObject({
+          layer: 'base',
+          provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+        })
+      }
+      for (const edge of introReferenceEdges) {
+        expect(edge).toMatchObject({
+          layer: 'base',
+          provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+        })
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('lifts explicit bibliography urls into docx reference metadata when no doi or arxiv is present', () => {
+    const root = createTempRoot()
+    try {
+      const docxPath = join(root, 'guide.docx')
+      const archive = zipSync({
+        'word/document.xml': strToU8(
+          [
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">',
+            '  <w:body>',
+            '    <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Bibliography</w:t></w:r></w:p>',
+            '    <w:p><w:r><w:t>[1] Smith et al. (2024). Runtime Paper. https://example.com/runtime-paper.html.</w:t></w:r></w:p>',
+            '  </w:body>',
+            '</w:document>',
+          ].join(''),
+        ),
+      })
+
+      writeFileSync(docxPath, Buffer.from(archive))
+
+      const result = extract([docxPath])
+      const referenceNode = result.nodes.find((node) => node.file_type === 'paper' && node.reference_index === 1)
+
+      expect(referenceNode).toMatchObject({
+        semantic_kind: 'reference',
+        reference_index: 1,
+        reference_year: 2024,
+        reference_title: 'Runtime Paper',
+        source_url: 'https://example.com/runtime-paper.html',
+      })
+      expect(referenceNode?.doi).toBeUndefined()
+      expect(referenceNode?.arxiv_id).toBeUndefined()
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -1554,21 +5872,136 @@ describe('extract', () => {
       })
 
       writeFileSync(workbookPath, Buffer.from(archive))
+      writeFileSync(
+        binaryIngestSidecarPath(workbookPath),
+        JSON.stringify(
+          {
+            source_url: 'https://example.com/metrics.xlsx',
+            captured_at: '2026-04-14T02:00:00Z',
+            contributor: 'graphify-ts',
+          },
+          null,
+          2,
+        ),
+        'utf8',
+      )
 
       const result = extract([workbookPath])
       const labels = result.nodes.filter((node) => node.file_type === 'document').map((node) => node.label)
       const workbookNode = result.nodes.find((node) => node.file_type === 'document' && node.label === 'metrics.xlsx')
+      const summaryNode = result.nodes.find((node) => node.file_type === 'document' && node.label === 'Summary')
+      const experimentsNode = result.nodes.find((node) => node.file_type === 'document' && node.label === 'Experiments')
       const nodeByKey = new Map(result.nodes.map((node) => [`${node.file_type}:${node.label}`, node.id]))
       const relations = new Set(result.edges.map((edge) => `${edge.source}:${edge.relation}:${edge.target}`))
+      const containsEdges = result.edges.filter((edge) => edge.source === workbookNode?.id && edge.relation === 'contains')
 
       expect(workbookNode).toMatchObject({
         title: 'Metrics Workbook',
         author: 'Jane Doe',
+        source_url: 'https://example.com/metrics.xlsx',
+        captured_at: '2026-04-14T02:00:00Z',
+        contributor: 'graphify-ts',
+        layer: 'base',
+        provenance: expect.arrayContaining([
+          expect.objectContaining({ capability_id: 'builtin:extract:xlsx', stage: 'extract' }),
+          expect.objectContaining({
+            capability_id: 'builtin:ingest:webpage',
+            stage: 'ingest',
+            source_url: 'https://example.com/metrics.xlsx',
+            captured_at: '2026-04-14T02:00:00Z',
+            contributor: 'graphify-ts',
+          }),
+        ]),
+      })
+      expect(summaryNode).toMatchObject({
+        layer: 'base',
+        provenance: expect.arrayContaining([
+          expect.objectContaining({ capability_id: 'builtin:extract:xlsx', stage: 'extract' }),
+          expect.objectContaining({ capability_id: 'builtin:ingest:webpage', stage: 'ingest' }),
+        ]),
+      })
+      expect(experimentsNode).toMatchObject({
+        layer: 'base',
+        provenance: expect.arrayContaining([
+          expect.objectContaining({ capability_id: 'builtin:extract:xlsx', stage: 'extract' }),
+          expect.objectContaining({ capability_id: 'builtin:ingest:webpage', stage: 'ingest' }),
+        ]),
       })
       expect(labels).toContain('Summary')
       expect(labels).toContain('Experiments')
       expect(relations.has(`${nodeByKey.get('document:metrics.xlsx')}:contains:${nodeByKey.get('document:Summary')}`)).toBe(true)
       expect(relations.has(`${nodeByKey.get('document:metrics.xlsx')}:contains:${nodeByKey.get('document:Experiments')}`)).toBe(true)
+      expect(containsEdges).toHaveLength(2)
+      expect(containsEdges.every((edge) => edge.layer === 'base')).toBe(true)
+      expect(containsEdges.every((edge) => Array.isArray(edge.provenance) && edge.provenance.length === 2)).toBe(true)
+      expect(workbookNode?.provenance).toHaveLength(2)
+      expect(summaryNode?.provenance).toHaveLength(2)
+      expect(experimentsNode?.provenance).toHaveLength(2)
+      for (const edge of containsEdges) {
+        expect(edge).toMatchObject({
+          layer: 'base',
+          provenance: expect.arrayContaining([
+            expect.objectContaining({ capability_id: 'builtin:extract:xlsx', stage: 'extract' }),
+            expect.objectContaining({ capability_id: 'builtin:ingest:webpage', stage: 'ingest' }),
+          ]),
+        })
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts citation nodes from xlsx shared strings', () => {
+    const root = createTempRoot()
+    try {
+      const workbookPath = join(root, 'citations.xlsx')
+      const archive = zipSync({
+        'xl/workbook.xml': strToU8(
+          [
+            '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
+            '  <sheets>',
+            '    <sheet name="Summary" sheetId="1" r:id="rId1" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>',
+            '  </sheets>',
+            '</workbook>',
+          ].join(''),
+        ),
+        'xl/sharedStrings.xml': strToU8(
+          [
+            '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
+            '  <si><t>See DOI:10.1234/example.5678 and arXiv:2103.12345 for details.</t></si>',
+            '</sst>',
+          ].join(''),
+        ),
+      })
+
+      writeFileSync(workbookPath, Buffer.from(archive))
+
+      const result = extract([workbookPath])
+      const workbookNode = result.nodes.find((node) => node.file_type === 'document' && node.label === 'citations.xlsx')
+      const doiNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'DOI:10.1234/example.5678')
+      const arxivNode = result.nodes.find((node) => node.file_type === 'paper' && node.label === 'arXiv:2103.12345')
+      const citesEdges = result.edges.filter((edge) => edge.source === workbookNode?.id && edge.relation === 'cites')
+
+      expect(workbookNode).toBeTruthy()
+      expect(doiNode).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:xlsx', stage: 'extract' })],
+      })
+      expect(arxivNode).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:xlsx', stage: 'extract' })],
+      })
+      expect(result.edges.some((edge) => edge.source === workbookNode?.id && edge.target === doiNode?.id && edge.relation === 'cites')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === workbookNode?.id && edge.target === arxivNode?.id && edge.relation === 'cites')).toBe(true)
+      expect(citesEdges).toHaveLength(2)
+      expect(citesEdges.every((edge) => edge.layer === 'base')).toBe(true)
+      expect(citesEdges.every((edge) => Array.isArray(edge.provenance) && edge.provenance.length > 0)).toBe(true)
+      for (const edge of citesEdges) {
+        expect(edge).toMatchObject({
+          layer: 'base',
+          provenance: [expect.objectContaining({ capability_id: 'builtin:extract:xlsx', stage: 'extract' })],
+        })
+      }
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -1579,10 +6012,42 @@ describe('extract', () => {
     try {
       const docxPath = join(root, 'broken.docx')
       writeFileSync(docxPath, Buffer.from('not-a-zip-archive'), 'utf8')
+      writeFileSync(
+        binaryIngestSidecarPath(docxPath),
+        JSON.stringify(
+          {
+            source_url: 'https://example.com/broken.docx',
+            captured_at: '2026-04-14T03:00:00Z',
+            contributor: 'graphify-ts',
+          },
+          null,
+          2,
+        ),
+        'utf8',
+      )
 
       const result = extract([docxPath])
 
-      expect(result.nodes.map((node) => node.label)).toEqual(['broken.docx'])
+      expect(result.nodes).toHaveLength(1)
+      expect(result.nodes[0]).toMatchObject({
+        label: 'broken.docx',
+        file_type: 'document',
+        source_url: 'https://example.com/broken.docx',
+        captured_at: '2026-04-14T03:00:00Z',
+        contributor: 'graphify-ts',
+        layer: 'base',
+        provenance: expect.arrayContaining([
+          expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' }),
+          expect.objectContaining({
+            capability_id: 'builtin:ingest:webpage',
+            stage: 'ingest',
+            source_url: 'https://example.com/broken.docx',
+            captured_at: '2026-04-14T03:00:00Z',
+            contributor: 'graphify-ts',
+          }),
+        ]),
+      })
+      expect(result.nodes[0]?.provenance).toHaveLength(2)
       expect(result.edges).toEqual([])
     } finally {
       rmSync(root, { recursive: true, force: true })
@@ -1601,7 +6066,13 @@ describe('extract', () => {
 
       const result = extract([docxPath])
 
-      expect(result.nodes.map((node) => node.label)).toEqual(['large.docx'])
+      expect(result.nodes).toHaveLength(1)
+      expect(result.nodes[0]).toMatchObject({
+        label: 'large.docx',
+        file_type: 'document',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:docx', stage: 'extract' })],
+      })
       expect(result.edges).toEqual([])
     } finally {
       rmSync(root, { recursive: true, force: true })
@@ -1751,6 +6222,53 @@ describe('extract', () => {
     }
   })
 
+  it('invalidates cached binary extraction results when hidden ingest sidecar metadata changes', () => {
+    const root = createTempRoot()
+    try {
+      const imagePath = join(root, 'diagram.png')
+      writeFileSync(imagePath, Buffer.from([137, 80, 78, 71]))
+      writeFileSync(
+        binaryIngestSidecarPath(imagePath),
+        JSON.stringify(
+          {
+            source_url: 'https://example.com/diagram-v1.png',
+            captured_at: '2026-04-13T06:00:00Z',
+            contributor: 'graphify-ts',
+          },
+          null,
+          2,
+        ),
+        'utf8',
+      )
+
+      const first = extract([imagePath])
+      const second = extract([imagePath])
+
+      expect(first.nodes).toEqual(second.nodes)
+      expect(second.nodes.find((node) => node.label === 'diagram.png')?.source_url).toBe('https://example.com/diagram-v1.png')
+
+      writeFileSync(
+        binaryIngestSidecarPath(imagePath),
+        JSON.stringify(
+          {
+            source_url: 'https://example.com/diagram-v2.png',
+            captured_at: '2026-04-13T06:05:00Z',
+            contributor: 'graphify-ts',
+          },
+          null,
+          2,
+        ),
+        'utf8',
+      )
+
+      const third = extract([imagePath])
+
+      expect(third.nodes.find((node) => node.label === 'diagram.png')?.source_url).toBe('https://example.com/diagram-v2.png')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('falls back to a file-only node for oversized text documents', () => {
     const root = createTempRoot()
     try {
@@ -1760,7 +6278,12 @@ describe('extract', () => {
       const result = extract([filePath])
 
       expect(result.nodes).toHaveLength(1)
-      expect(result.nodes[0]).toMatchObject({ label: 'large.md', file_type: 'document' })
+      expect(result.nodes[0]).toMatchObject({
+        label: 'large.md',
+        file_type: 'document',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:markdown', stage: 'extract' })],
+      })
       expect(result.edges).toHaveLength(0)
     } finally {
       rmSync(root, { recursive: true, force: true })
@@ -1798,6 +6321,917 @@ describe('extract', () => {
       const recovered = extract([filePath])
 
       expect(recovered.nodes.some((node) => node.label === 'foo()')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached raw extractions from the pre-metadata cache version', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'sample.py')
+      writeFileSync(filePath, 'def foo():\n    pass\n', 'utf8')
+
+      const cachePath = join(cacheDir(), `${fileHash(filePath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 10,
+          nodes: [{ id: 'stale_file', label: 'sample.py', file_type: 'code', source_file: filePath }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([filePath])
+      const fileNode = recovered.nodes.find((node) => node.label === 'sample.py')
+
+      expect(recovered.nodes.some((node) => node.label === 'foo()')).toBe(true)
+      expect(fileNode).toMatchObject({
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:python', stage: 'extract' })],
+      })
+      expect(recovered.edges.every((edge) => edge.layer === 'base')).toBe(true)
+      expect(recovered.edges.every((edge) => Array.isArray(edge.provenance) && edge.provenance.length > 0)).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-duration cache version', () => {
+    const root = createTempRoot()
+    try {
+      const wavPath = join(root, 'tone.wav')
+      const wavBuffer = createTestWavBuffer(1.5)
+      writeFileSync(wavPath, wavBuffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(wavPath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 13,
+          nodes: [{ id: 'stale_audio', label: 'tone.wav', file_type: 'audio', source_file: wavPath }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([wavPath])
+      const wavNode = recovered.nodes.find((node) => node.file_type === 'audio' && node.label === 'tone.wav')
+
+      expect(wavNode).toMatchObject({
+        content_type: 'audio/wav',
+        file_bytes: wavBuffer.length,
+        media_duration_seconds: 1.5,
+        audio_sample_rate_hz: 4000,
+        audio_channel_count: 2,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-audio-tag cache version', () => {
+    const root = createTempRoot()
+    try {
+      const mp3Path = join(root, 'episode.mp3')
+      const mp3Buffer = createTestMp3Id3Buffer({
+        title: 'Roadmap Review',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      })
+      writeFileSync(mp3Path, mp3Buffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(mp3Path)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 14,
+          nodes: [{ id: 'stale_audio', label: 'episode.mp3', file_type: 'audio', source_file: mp3Path }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([mp3Path])
+      const mp3Node = recovered.nodes.find((node) => node.file_type === 'audio' && node.label === 'episode.mp3')
+
+      expect(mp3Node).toMatchObject({
+        content_type: 'audio/mpeg',
+        file_bytes: mp3Buffer.length,
+        audio_title: 'Roadmap Review',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-flac-ogg-audio cache version', () => {
+    const root = createTempRoot()
+    try {
+      const flacPath = join(root, 'episode.flac')
+      const flacBuffer = createTestFlacBuffer({
+        title: 'Roadmap Review',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      })
+      writeFileSync(flacPath, flacBuffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(flacPath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 15,
+          nodes: [{ id: 'stale_audio', label: 'episode.flac', file_type: 'audio', source_file: flacPath }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([flacPath])
+      const flacNode = recovered.nodes.find((node) => node.file_type === 'audio' && node.label === 'episode.flac')
+
+      expect(flacNode).toMatchObject({
+        content_type: 'audio/flac',
+        file_bytes: flacBuffer.length,
+        media_duration_seconds: 3.75,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        audio_title: 'Roadmap Review',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-aac-m4a cache version', () => {
+    const root = createTempRoot()
+    try {
+      const m4aPath = join(root, 'episode.m4a')
+      const m4aBuffer = createTestM4aBuffer({
+        title: 'Roadmap Review',
+        artist: 'Graphify FM',
+        album: 'Engineering Notes',
+      })
+      writeFileSync(m4aPath, m4aBuffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(m4aPath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 16,
+          nodes: [{ id: 'stale_audio', label: 'episode.m4a', file_type: 'audio', source_file: m4aPath }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([m4aPath])
+      const m4aNode = recovered.nodes.find((node) => node.file_type === 'audio' && node.label === 'episode.m4a')
+
+      expect(m4aNode).toMatchObject({
+        content_type: 'audio/mp4',
+        file_bytes: m4aBuffer.length,
+        media_duration_seconds: 2.5,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        audio_title: 'Roadmap Review',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-video-container cache version', () => {
+    const root = createTempRoot()
+    try {
+      const webmPath = join(root, 'session.webm')
+      const webmBuffer = createTestMatroskaBuffer()
+      writeFileSync(webmPath, webmBuffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(webmPath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 17,
+          nodes: [{ id: 'stale_video', label: 'session.webm', file_type: 'video', source_file: webmPath }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([webmPath])
+      const webmNode = recovered.nodes.find((node) => node.file_type === 'video' && node.label === 'session.webm')
+
+      expect(webmNode).toMatchObject({
+        content_type: 'video/webm',
+        file_bytes: webmBuffer.length,
+        media_duration_seconds: 4.25,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-avi-video cache version', () => {
+    const root = createTempRoot()
+    try {
+      const aviPath = join(root, 'recording.avi')
+      const aviBuffer = createTestAviBuffer({ zeroMainHeaderDuration: true, zeroMainHeaderDimensions: true })
+      writeFileSync(aviPath, aviBuffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(aviPath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 18,
+          nodes: [{ id: 'stale_avi_video', label: 'recording.avi', file_type: 'video', source_file: aviPath }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([aviPath])
+      const aviNode = recovered.nodes.find((node) => node.file_type === 'video' && node.label === 'recording.avi')
+
+      expect(aviNode).toMatchObject({
+        content_type: 'video/x-msvideo',
+        file_bytes: aviBuffer.length,
+        media_duration_seconds: 3.5,
+        video_width_px: 640,
+        video_height_px: 360,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-avi-video-audio cache version', () => {
+    const root = createTempRoot()
+    try {
+      const aviPath = join(root, 'clip.avi')
+      const aviBuffer = createTestAviBuffer({ audioTrackFirst: false })
+      writeFileSync(aviPath, aviBuffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(aviPath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 24,
+          nodes: [{ id: 'stale_avi_video_audio', label: 'clip.avi', file_type: 'video', source_file: aviPath }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([aviPath])
+      const aviNode = recovered.nodes.find((node) => node.file_type === 'video' && node.label === 'clip.avi')
+
+      expect(aviNode).toMatchObject({
+        content_type: 'video/x-msvideo',
+        file_bytes: aviBuffer.length,
+        media_duration_seconds: 3.5,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 640,
+        video_height_px: 360,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-matroska-video-audio cache version', () => {
+    const root = createTempRoot()
+    try {
+      const webmPath = join(root, 'session.webm')
+      const webmBuffer = createTestMatroskaBuffer({ audioTrackFirst: false, includeAudioTrackMetadata: true })
+      writeFileSync(webmPath, webmBuffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(webmPath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 25,
+          nodes: [{ id: 'stale_matroska_video_audio', label: 'session.webm', file_type: 'video', source_file: webmPath }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([webmPath])
+      const webmNode = recovered.nodes.find((node) => node.file_type === 'video' && node.label === 'session.webm')
+
+      expect(webmNode).toMatchObject({
+        content_type: 'video/webm',
+        file_bytes: webmBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-matroska-window cache version', () => {
+    const root = createTempRoot()
+    try {
+      const webmPath = join(root, 'windowed-session.webm')
+      const webmBuffer = createTestMatroskaBuffer({
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        prefixedSegmentBytes: 300_000,
+      })
+      writeFileSync(webmPath, webmBuffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(webmPath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 26,
+          nodes: [{ id: 'stale_matroska_window', label: 'windowed-session.webm', file_type: 'video', source_file: webmPath }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([webmPath])
+      const webmNode = recovered.nodes.find((node) => node.file_type === 'video' && node.label === 'windowed-session.webm')
+
+      expect(webmNode).toMatchObject({
+        content_type: 'video/webm',
+        file_bytes: webmBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-matroska-seekhead cache version', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'seekhead-windowed.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        prefixedSegmentBytes: 600_000,
+        useSeekHead: true,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(mkvPath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 27,
+          nodes: [{ id: 'stale_matroska_seekhead', label: 'seekhead-windowed.mkv', file_type: 'video', source_file: mkvPath }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([mkvPath])
+      const mkvNode = recovered.nodes.find((node) => node.file_type === 'video' && node.label === 'seekhead-windowed.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-matroska-seekhead-partial cache version', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'seekhead-tracks-partial.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        prefixedTracksBytes: 600_000,
+        useSeekHead: true,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(mkvPath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 28,
+          nodes: [{ id: 'stale_matroska_seekhead_partial', label: 'seekhead-tracks-partial.mkv', file_type: 'video', source_file: mkvPath }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([mkvPath])
+      const mkvNode = recovered.nodes.find((node) => node.file_type === 'video' && node.label === 'seekhead-tracks-partial.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-matroska-discovery-bundle cache version', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'seekhead-split.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        prefixedSegmentBytes: 600_000,
+        useSeekHead: true,
+        splitSeekHeads: true,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(mkvPath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 32,
+          nodes: [{ id: 'stale_matroska_discovery_bundle', label: 'seekhead-split.mkv', file_type: 'video', source_file: mkvPath }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([mkvPath])
+      const mkvNode = recovered.nodes.find((node) => node.file_type === 'video' && node.label === 'seekhead-split.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-matroska-top-level-fallback cache version', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'top-level-windowed.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        prefixedSegmentBytes: 600_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(mkvPath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 33,
+          nodes: [{ id: 'stale_matroska_top_level_fallback', label: 'top-level-windowed.mkv', file_type: 'video', source_file: mkvPath }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([mkvPath])
+      const mkvNode = recovered.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-windowed.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-matroska-authoritative-clear cache version when later Info omits duration', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'seekhead-info-clear-duration.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        useSeekHead: true,
+        staleFirstInfoSeekHead: true,
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        malformedDuration: true,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(mkvPath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 34,
+          nodes: [{
+            id: 'stale_matroska_authoritative_clear_duration',
+            label: 'seekhead-info-clear-duration.mkv',
+            file_type: 'video',
+            source_file: mkvPath,
+            media_duration_seconds: 1.5,
+          }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([mkvPath])
+      const mkvNode = recovered.nodes.find((node) => node.file_type === 'video' && node.label === 'seekhead-info-clear-duration.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(mkvNode).not.toHaveProperty('media_duration_seconds')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-matroska-authoritative-clear cache version when later Tracks omit audio metadata', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'seekhead-tracks-clear-audio.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: false,
+        useSeekHead: true,
+        staleFirstTracksSeekHead: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(mkvPath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 34,
+          nodes: [{
+            id: 'stale_matroska_authoritative_clear_audio',
+            label: 'seekhead-tracks-clear-audio.mkv',
+            file_type: 'video',
+            source_file: mkvPath,
+            audio_sample_rate_hz: 8_000,
+            audio_channel_count: 1,
+          }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([mkvPath])
+      const mkvNode = recovered.nodes.find((node) => node.file_type === 'video' && node.label === 'seekhead-tracks-clear-audio.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(mkvNode).not.toHaveProperty('audio_sample_rate_hz')
+      expect(mkvNode).not.toHaveProperty('audio_channel_count')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-matroska-unreadable-tracks cache version', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'seekhead-tracks-unreadable.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        useSeekHead: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        prefixedTracksBytes: 1_100_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(mkvPath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 35,
+          nodes: [{
+            id: 'stale_matroska_unreadable_tracks',
+            label: 'seekhead-tracks-unreadable.mkv',
+            file_type: 'video',
+            source_file: mkvPath,
+          }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([mkvPath])
+      const mkvNode = recovered.nodes.find((node) => node.file_type === 'video' && node.label === 'seekhead-tracks-unreadable.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        video_width_px: 5,
+        video_height_px: 2,
+        audio_sample_rate_hz: 8_000,
+        audio_channel_count: 1,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-ogg-bos cache version', () => {
+    const root = createTempRoot()
+    try {
+      const oggPath = join(root, 'prefixed.ogg')
+      const oggBuffer = Buffer.concat([
+        createOggSkeletonBosPage(),
+        ...createOggVorbisStreamPages({
+          title: 'Release Notes',
+          artist: 'Graphify FM',
+          album: 'Engineering Notes',
+        }),
+      ])
+      writeFileSync(oggPath, oggBuffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(oggPath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 19,
+          nodes: [{ id: 'stale_ogg_audio', label: 'prefixed.ogg', file_type: 'audio', source_file: oggPath }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([oggPath])
+      const oggNode = recovered.nodes.find((node) => node.file_type === 'audio' && node.label === 'prefixed.ogg')
+
+      expect(oggNode).toMatchObject({
+        content_type: 'audio/ogg',
+        file_bytes: oggBuffer.length,
+        media_duration_seconds: 2.5,
+        audio_sample_rate_hz: 44100,
+        audio_channel_count: 2,
+        audio_title: 'Release Notes',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-ogg-window cache version', () => {
+    const root = createTempRoot()
+    try {
+      const oggPath = join(root, 'large-prefixed.ogg')
+      const oggBuffer = Buffer.concat([
+        ...createOggFillerPages(300_000, 29),
+        ...createOggVorbisStreamPages({
+          title: 'Release Notes',
+          artist: 'Graphify FM',
+          album: 'Engineering Notes',
+        }),
+      ])
+      writeFileSync(oggPath, oggBuffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(oggPath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 20,
+          nodes: [{ id: 'stale_large_prefixed_ogg_audio', label: 'large-prefixed.ogg', file_type: 'audio', source_file: oggPath }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([oggPath])
+      const oggNode = recovered.nodes.find((node) => node.file_type === 'audio' && node.label === 'large-prefixed.ogg')
+
+      expect(oggNode).toMatchObject({
+        content_type: 'audio/ogg',
+        file_bytes: oggBuffer.length,
+        media_duration_seconds: 2.5,
+        audio_sample_rate_hz: 44100,
+        audio_channel_count: 2,
+        audio_title: 'Release Notes',
+        audio_artist: 'Graphify FM',
+        audio_album: 'Engineering Notes',
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:audio', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-mp4-video-audio cache version', () => {
+    const root = createTempRoot()
+    try {
+      const mp4Path = join(root, 'clip.mp4')
+      const mp4Buffer = createTestVideoMp4Buffer()
+      writeFileSync(mp4Path, mp4Buffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(mp4Path)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 21,
+          nodes: [{ id: 'stale_mp4_video', label: 'clip.mp4', file_type: 'video', source_file: mp4Path }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([mp4Path])
+      const mp4Node = recovered.nodes.find((node) => node.file_type === 'video' && node.label === 'clip.mp4')
+
+      expect(mp4Node).toMatchObject({
+        content_type: 'video/mp4',
+        file_bytes: mp4Buffer.length,
+        media_duration_seconds: 2.5,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1920,
+        video_height_px: 1080,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-mp4-tkhd fallback cache version', () => {
+    const root = createTempRoot()
+    try {
+      const mp4Path = join(root, 'tkhd-fallback.mp4')
+      const mp4Buffer = createTestVideoMp4Buffer({ truncateVideoSampleEntry: true, includeVideoTkhdDimensions: true })
+      writeFileSync(mp4Path, mp4Buffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(mp4Path)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 22,
+          nodes: [{ id: 'stale_tkhd_fallback_video', label: 'tkhd-fallback.mp4', file_type: 'video', source_file: mp4Path }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([mp4Path])
+      const mp4Node = recovered.nodes.find((node) => node.file_type === 'video' && node.label === 'tkhd-fallback.mp4')
+
+      expect(mp4Node).toMatchObject({
+        content_type: 'video/mp4',
+        file_bytes: mp4Buffer.length,
+        media_duration_seconds: 2.5,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1920,
+        video_height_px: 1080,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-mp4-mdhd fallback cache version', () => {
+    const root = createTempRoot()
+    try {
+      const mp4Path = join(root, 'mdhd-fallback.mp4')
+      const mp4Buffer = createTestVideoMp4Buffer({ omitMovieHeaderDuration: true, includeTrackMdhdDuration: true })
+      writeFileSync(mp4Path, mp4Buffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(mp4Path)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 23,
+          nodes: [{ id: 'stale_mdhd_fallback_video', label: 'mdhd-fallback.mp4', file_type: 'video', source_file: mp4Path }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([mp4Path])
+      const mp4Node = recovered.nodes.find((node) => node.file_type === 'video' && node.label === 'mdhd-fallback.mp4')
+
+      expect(mp4Node).toMatchObject({
+        content_type: 'video/mp4',
+        file_bytes: mp4Buffer.length,
+        media_duration_seconds: 2.5,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1920,
+        video_height_px: 1080,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
