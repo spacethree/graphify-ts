@@ -108,16 +108,61 @@ function createMp4HandlerBox(handlerType: string): Buffer {
   return createMp4Atom('hdlr', payload)
 }
 
-function createMp4TrackBox(handlerType: string, stsd: Buffer): Buffer {
+function createMp4TrackHeaderBox(width: number, height: number): Buffer {
+  const payload = Buffer.alloc(84)
+  payload.writeUInt32BE(0x00000007, 0)
+  payload.writeUInt32BE(1, 12)
+  payload.writeUInt32BE(0, 20)
+  payload.writeUInt16BE(0, 32)
+  payload.writeUInt16BE(0, 34)
+  payload.writeUInt16BE(0x0100, 36)
+  payload.writeUInt32BE(0x00010000, 40)
+  payload.writeUInt32BE(0, 44)
+  payload.writeUInt32BE(0, 48)
+  payload.writeUInt32BE(0, 52)
+  payload.writeUInt32BE(0x00010000, 56)
+  payload.writeUInt32BE(0, 60)
+  payload.writeUInt32BE(0, 64)
+  payload.writeUInt32BE(0, 68)
+  payload.writeUInt32BE(0x40000000, 72)
+  payload.writeUInt32BE(width * 65_536, 76)
+  payload.writeUInt32BE(height * 65_536, 80)
+  return createMp4Atom('tkhd', payload)
+}
+
+function createMp4MediaHeaderBox(durationSeconds: number, timescale: number = 1_000): Buffer {
+  const payload = Buffer.alloc(24)
+  payload.writeUInt32BE(0, 0)
+  payload.writeUInt32BE(0, 4)
+  payload.writeUInt32BE(0, 8)
+  payload.writeUInt32BE(timescale, 12)
+  payload.writeUInt32BE(Math.round(durationSeconds * timescale), 16)
+  payload.writeUInt16BE(0, 20)
+  payload.writeUInt16BE(0, 22)
+  return createMp4Atom('mdhd', payload)
+}
+
+function createMp4TrackBox(
+  handlerType: string,
+  stsd: Buffer,
+  options: {
+    tkhd?: Buffer | null
+    mdhd?: Buffer | null
+  } = {},
+): Buffer {
   return createMp4Atom(
     'trak',
-    createMp4Atom(
-      'mdia',
-      Buffer.concat([
-        createMp4HandlerBox(handlerType),
-        createMp4Atom('minf', createMp4Atom('stbl', stsd)),
-      ]),
-    ),
+    Buffer.concat([
+      ...(options.tkhd ? [options.tkhd] : []),
+      createMp4Atom(
+        'mdia',
+        Buffer.concat([
+          ...(options.mdhd ? [options.mdhd] : []),
+          createMp4HandlerBox(handlerType),
+          createMp4Atom('minf', createMp4Atom('stbl', stsd)),
+        ]),
+      ),
+    ]),
   )
 }
 
@@ -170,6 +215,10 @@ function createTestVideoMp4Buffer(
     width?: number
     height?: number
     audioTrackFirst?: boolean
+    truncateVideoSampleEntry?: boolean
+    includeVideoTkhdDimensions?: boolean
+    omitMovieHeaderDuration?: boolean
+    includeTrackMdhdDuration?: boolean
   } = {},
 ): Buffer {
   const durationSeconds = options.durationSeconds ?? 2.5
@@ -185,16 +234,28 @@ function createTestVideoMp4Buffer(
   mvhdPayload.writeUInt32BE(Math.round(durationSeconds * 1_000), 16)
 
   const audioStsd = createMp4StsdBox([createMp4AudioSampleEntry(48_000, 2)])
-  const videoStsd = createMp4StsdBox([createMp4VideoSampleEntry(width, height)])
-  const audioTrak = createMp4TrackBox('soun', audioStsd)
-  const videoTrak = createMp4TrackBox('vide', videoStsd)
+  const videoEntry = options.truncateVideoSampleEntry
+    ? createMp4VideoSampleEntry(width, height).subarray(0, createMp4VideoSampleEntry(width, height).length - 3)
+    : createMp4VideoSampleEntry(width, height)
+  const videoStsd = createMp4StsdBox([videoEntry])
+  const audioTrak = createMp4TrackBox('soun', audioStsd, {
+    mdhd: options.includeTrackMdhdDuration ? createMp4MediaHeaderBox(durationSeconds) : null,
+  })
+  const videoTrak = createMp4TrackBox(
+    'vide',
+    videoStsd,
+    {
+      tkhd: options.includeVideoTkhdDimensions ? createMp4TrackHeaderBox(width, height) : null,
+      mdhd: options.includeTrackMdhdDuration ? createMp4MediaHeaderBox(durationSeconds) : null,
+    },
+  )
 
   return Buffer.concat([
     createMp4Atom('ftyp', Buffer.from('isom0000', 'ascii')),
     createMp4Atom(
       'moov',
       Buffer.concat([
-        createMp4Atom('mvhd', mvhdPayload),
+        ...(options.omitMovieHeaderDuration ? [] : [createMp4Atom('mvhd', mvhdPayload)]),
         ...(audioTrackFirst ? [audioTrak, videoTrak] : [videoTrak, audioTrak]),
       ]),
     ),
@@ -211,8 +272,11 @@ const EBML_TRACKS_ID = [0x16, 0x54, 0xae, 0x6b]
 const EBML_TRACK_ENTRY_ID = [0xae]
 const EBML_TRACK_TYPE_ID = [0x83]
 const EBML_VIDEO_ID = [0xe0]
+const EBML_AUDIO_ID = [0xe1]
 const EBML_PIXEL_WIDTH_ID = [0xb0]
 const EBML_PIXEL_HEIGHT_ID = [0xba]
+const EBML_SAMPLING_FREQUENCY_ID = [0xb5]
+const EBML_CHANNELS_ID = [0x9f]
 
 function encodeEbmlSize(value: number): Buffer {
   for (let length = 1; length <= 8; length += 1) {
@@ -268,6 +332,9 @@ function createTestMatroskaBuffer(
     height?: number
     audioTrackFirst?: boolean
     timecodeScale?: number
+    includeAudioTrackMetadata?: boolean
+    audioSampleRate?: number
+    audioChannelCount?: number
   } = {},
 ): Buffer {
   const docType = options.docType ?? 'webm'
@@ -276,6 +343,8 @@ function createTestMatroskaBuffer(
   const height = options.height ?? 720
   const audioTrackFirst = options.audioTrackFirst ?? true
   const timecodeScale = options.timecodeScale ?? 1_000_000
+  const audioSampleRate = options.audioSampleRate ?? 48_000
+  const audioChannelCount = options.audioChannelCount ?? 2
 
   const info = createEbmlElement(EBML_INFO_ID, Buffer.concat([
     createEbmlUnsignedElement(EBML_TIMECODE_SCALE_ID, timecodeScale),
@@ -288,7 +357,15 @@ function createTestMatroskaBuffer(
       createEbmlUnsignedElement(EBML_PIXEL_HEIGHT_ID, height),
     ])),
   ]))
-  const audioTrackEntry = createEbmlElement(EBML_TRACK_ENTRY_ID, createEbmlUnsignedElement(EBML_TRACK_TYPE_ID, 2))
+  const audioTrackEntry = createEbmlElement(EBML_TRACK_ENTRY_ID, Buffer.concat([
+    createEbmlUnsignedElement(EBML_TRACK_TYPE_ID, 2),
+    ...(options.includeAudioTrackMetadata
+      ? [createEbmlElement(EBML_AUDIO_ID, Buffer.concat([
+          createEbmlFloatElement(EBML_SAMPLING_FREQUENCY_ID, audioSampleRate),
+          createEbmlUnsignedElement(EBML_CHANNELS_ID, audioChannelCount),
+        ]))]
+      : []),
+  ]))
   const tracks = createEbmlElement(EBML_TRACKS_ID, Buffer.concat(
     audioTrackFirst ? [audioTrackEntry, videoTrackEntry] : [videoTrackEntry, audioTrackEntry],
   ))
@@ -1172,6 +1249,118 @@ describe('generateGraph', () => {
           expect.objectContaining({
             file_type: 'video',
             label: 'clip.mov',
+            media_duration_seconds: 2.5,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
+            video_width_px: 1920,
+            video_height_px: 1080,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with embedded audio-track metadata for AVI video assets when the video stream appears first', () => {
+    withTempDir((tempDir) => {
+      const aviBuffer = createTestAviBuffer({ audioTrackFirst: false })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Clip](clip.avi)\n', 'utf8')
+      writeFileSync(join(tempDir, 'clip.avi'), aviBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'clip.avi',
+            media_duration_seconds: 3.5,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
+            video_width_px: 640,
+            video_height_px: 360,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with embedded audio-track metadata for Matroska/WebM video assets when the video track appears first', () => {
+    withTempDir((tempDir) => {
+      const webmBuffer = createTestMatroskaBuffer({ audioTrackFirst: false, includeAudioTrackMetadata: true })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Session](session.webm)\n', 'utf8')
+      writeFileSync(join(tempDir, 'session.webm'), webmBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'session.webm',
+            media_duration_seconds: 4.25,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
+            video_width_px: 1280,
+            video_height_px: 720,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with tkhd dimension fallback for MP4-family video assets when the visual sample entry is truncated', () => {
+    withTempDir((tempDir) => {
+      const mp4Buffer = createTestVideoMp4Buffer({ truncateVideoSampleEntry: true, includeVideoTkhdDimensions: true })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Clip](tkhd-fallback.mp4)\n', 'utf8')
+      writeFileSync(join(tempDir, 'tkhd-fallback.mp4'), mp4Buffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'tkhd-fallback.mp4',
+            media_duration_seconds: 2.5,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
+            video_width_px: 1920,
+            video_height_px: 1080,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with mdhd duration fallback for MP4-family video assets when mvhd is absent', () => {
+    withTempDir((tempDir) => {
+      const mp4Buffer = createTestVideoMp4Buffer({ omitMovieHeaderDuration: true, includeTrackMdhdDuration: true })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Clip](mdhd-fallback.mp4)\n', 'utf8')
+      writeFileSync(join(tempDir, 'mdhd-fallback.mp4'), mp4Buffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'mdhd-fallback.mp4',
             media_duration_seconds: 2.5,
             audio_sample_rate_hz: 48000,
             audio_channel_count: 2,
