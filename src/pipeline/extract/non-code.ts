@@ -1715,9 +1715,9 @@ function parseMatroskaSeekHeadTargets(
           const targetId = seekIdElement ? readEbmlUnsignedValue(buffer, seekIdElement) : null
           const targetPosition = seekPositionElement ? readEbmlUnsignedValue(buffer, seekPositionElement) : null
           if (targetPosition !== null && targetPosition >= 0) {
-            if (targetId === MATROSKA_INFO_ID && !infoPositions.includes(targetPosition)) {
+            if (targetId === MATROSKA_INFO_ID && infoPositions.length < MATROSKA_MAX_SEEK_TARGETS_PER_TYPE && !infoPositions.includes(targetPosition)) {
               infoPositions.push(targetPosition)
-            } else if (targetId === MATROSKA_TRACKS_ID && !tracksPositions.includes(targetPosition)) {
+            } else if (targetId === MATROSKA_TRACKS_ID && tracksPositions.length < MATROSKA_MAX_SEEK_TARGETS_PER_TYPE && !tracksPositions.includes(targetPosition)) {
               tracksPositions.push(targetPosition)
             }
           }
@@ -1728,6 +1728,56 @@ function parseMatroskaSeekHeadTargets(
         }
         seekOffset = seekEntry.endOffset
       }
+    }
+
+    if (infoPositions.length >= MATROSKA_MAX_SEEK_TARGETS_PER_TYPE && tracksPositions.length >= MATROSKA_MAX_SEEK_TARGETS_PER_TYPE) {
+      break
+    }
+
+    if (childElement.endOffset <= offset) {
+      break
+    }
+    offset = childElement.endOffset
+  }
+
+  return { infoPositions, tracksPositions }
+}
+
+function parseMatroskaTopLevelTargets(
+  filePath: string,
+  fileBytes: number,
+  segment: EbmlElementHeader,
+): { infoPositions: number[], tracksPositions: number[] } {
+  if (segment.bodyOffset < 0 || segment.bodyOffset >= fileBytes) {
+    return { infoPositions: [], tracksPositions: [] }
+  }
+
+  const segmentWindow = readFileWindow(
+    filePath,
+    segment.bodyOffset,
+    Math.min(fileBytes - segment.bodyOffset, MATROSKA_TOP_LEVEL_SCAN_BYTES),
+  )
+  if (!segmentWindow) {
+    return { infoPositions: [], tracksPositions: [] }
+  }
+
+  const infoPositions: number[] = []
+  const tracksPositions: number[] = []
+  let offset = 0
+  while (offset < segmentWindow.length) {
+    const childElement = readEbmlElementHeader(segmentWindow, offset, segmentWindow.length)
+    if (!childElement) {
+      break
+    }
+
+    if (childElement.id === MATROSKA_INFO_ID && infoPositions.length < MATROSKA_MAX_SEEK_TARGETS_PER_TYPE && !infoPositions.includes(childElement.startOffset)) {
+      infoPositions.push(childElement.startOffset)
+    } else if (childElement.id === MATROSKA_TRACKS_ID && tracksPositions.length < MATROSKA_MAX_SEEK_TARGETS_PER_TYPE && !tracksPositions.includes(childElement.startOffset)) {
+      tracksPositions.push(childElement.startOffset)
+    }
+
+    if (infoPositions.length >= MATROSKA_MAX_SEEK_TARGETS_PER_TYPE && tracksPositions.length >= MATROSKA_MAX_SEEK_TARGETS_PER_TYPE) {
+      break
     }
 
     if (childElement.endOffset <= offset) {
@@ -1885,6 +1935,7 @@ function extractMatroskaVideoMetadata(filePath: string, fileBytes: number | unde
   const infoElement = findEbmlChildElement(head, segment, MATROSKA_INFO_ID)
   const tracksElement = findEbmlChildElement(head, segment, MATROSKA_TRACKS_ID)
   const seekHeadTargets = parseMatroskaSeekHeadTargets(head, segment)
+  const topLevelTargets = parseMatroskaTopLevelTargets(filePath, fileBytes, segment)
   const directDurationSeconds = infoElement
     ? parseMatroskaInfoMetadata(head, infoElement)
     : null
@@ -1894,9 +1945,11 @@ function extractMatroskaVideoMetadata(filePath: string, fileBytes: number | unde
         ? [{ position: Math.max(0, infoElement.startOffset - segment.bodyOffset), sourceRank: 0, duration: directDurationSeconds }]
         : []),
       ...seekHeadTargets.infoPositions.map((position) => ({ position, sourceRank: 1, duration: null as number | null })),
+      ...topLevelTargets.infoPositions.map((position) => ({ position, sourceRank: 2, duration: null as number | null })),
     ].sort((left, right) => left.position - right.position || left.sourceRank - right.sourceRank)
 
     let resolvedDuration: number | null = null
+    let resolvedDurationPosition: number | null = null
     for (const candidate of infoCandidates) {
       const candidateDuration = candidate.sourceRank === 0
         ? candidate.duration
@@ -1904,9 +1957,10 @@ function extractMatroskaVideoMetadata(filePath: string, fileBytes: number | unde
             const seekTarget = readMatroskaSeekTargetElement(filePath, fileBytes, segment, candidate.position, MATROSKA_INFO_ID)
             return seekTarget ? parseMatroskaInfoMetadata(seekTarget.buffer, seekTarget.element) : null
           })()
-      if (candidateDuration !== null) {
-        resolvedDuration = candidateDuration
-      }
+      resolvedDuration = resolvedDurationPosition !== null && candidate.position === resolvedDurationPosition
+        ? candidateDuration ?? resolvedDuration
+        : candidateDuration
+      resolvedDurationPosition = candidate.position
     }
     return resolvedDuration
   })()
@@ -1923,6 +1977,11 @@ function extractMatroskaVideoMetadata(filePath: string, fileBytes: number | unde
         sourceRank: 1,
         metadata: null as { width: number | null, height: number | null, audioSampleRate: number | null, audioChannelCount: number | null } | null,
       })),
+      ...topLevelTargets.tracksPositions.map((position) => ({
+        position,
+        sourceRank: 2,
+        metadata: null as { width: number | null, height: number | null, audioSampleRate: number | null, audioChannelCount: number | null } | null,
+      })),
     ].sort((left, right) => left.position - right.position || left.sourceRank - right.sourceRank)
 
     let resolvedTrackMetadata: { width: number | null, height: number | null, audioSampleRate: number | null, audioChannelCount: number | null } = {
@@ -1931,6 +1990,7 @@ function extractMatroskaVideoMetadata(filePath: string, fileBytes: number | unde
       audioSampleRate: null,
       audioChannelCount: null,
     }
+    let resolvedTrackPosition: number | null = null
     for (const candidate of trackCandidates) {
       const candidateMetadata = candidate.sourceRank === 0
         ? candidate.metadata
@@ -1941,12 +2001,15 @@ function extractMatroskaVideoMetadata(filePath: string, fileBytes: number | unde
       if (!candidateMetadata) {
         continue
       }
-      resolvedTrackMetadata = {
-        width: candidateMetadata.width ?? resolvedTrackMetadata.width,
-        height: candidateMetadata.height ?? resolvedTrackMetadata.height,
-        audioSampleRate: candidateMetadata.audioSampleRate ?? resolvedTrackMetadata.audioSampleRate,
-        audioChannelCount: candidateMetadata.audioChannelCount ?? resolvedTrackMetadata.audioChannelCount,
-      }
+      resolvedTrackMetadata = resolvedTrackPosition !== null && candidate.position === resolvedTrackPosition
+        ? {
+            width: candidateMetadata.width ?? resolvedTrackMetadata.width,
+            height: candidateMetadata.height ?? resolvedTrackMetadata.height,
+            audioSampleRate: candidateMetadata.audioSampleRate ?? resolvedTrackMetadata.audioSampleRate,
+            audioChannelCount: candidateMetadata.audioChannelCount ?? resolvedTrackMetadata.audioChannelCount,
+          }
+        : candidateMetadata
+      resolvedTrackPosition = candidate.position
     }
     return resolvedTrackMetadata
   })()
@@ -2205,6 +2268,7 @@ const BINARY_METADATA_HEADER_BYTES = 65_536
 const AAC_SAMPLES_PER_RAW_BLOCK = 1_024
 const FLAC_METADATA_SCAN_BYTES = 262_144
 const MATROSKA_METADATA_SCAN_BYTES = 524_288
+const MATROSKA_TOP_LEVEL_SCAN_BYTES = 1_048_576
 const MATROSKA_SEEK_TARGET_SCAN_BYTES = 1_048_576
 const MP3_ID3_SCAN_BYTES = 262_144
 const MP4_DURATION_SCAN_BYTES = 262_144
@@ -2215,6 +2279,7 @@ const AAC_SAMPLE_RATES = [96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000
 const MP4_TITLE_METADATA_BOX_TYPE = Buffer.from([0xa9, 0x6e, 0x61, 0x6d])
 const MP4_ARTIST_METADATA_BOX_TYPE = Buffer.from([0xa9, 0x41, 0x52, 0x54])
 const MP4_ALBUM_METADATA_BOX_TYPE = Buffer.from([0xa9, 0x61, 0x6c, 0x62])
+const MATROSKA_MAX_SEEK_TARGETS_PER_TYPE = 8
 const MATROSKA_DEFAULT_TIMECODE_SCALE_NS = 1_000_000
 const MATROSKA_EBML_HEADER_ID = 0x1a45dfa3
 const MATROSKA_SEGMENT_ID = 0x18538067
