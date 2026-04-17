@@ -4,6 +4,12 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-04-17
+
+### Fixed
+
+- Prevented overview-first HTML exports from opening browser-freezing interactive pages for oversized single communities by falling back to summary/search views with safe deep links
+
 ## [0.2.1] - 2026-04-17
 
 ### Added

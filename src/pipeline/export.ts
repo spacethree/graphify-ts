@@ -126,6 +126,7 @@ interface OverviewCommunitySummary {
   count: number
   cohesion: number | null
   href: string
+  pageMode: 'interactive' | 'summary'
   topNodes: Array<{
     id: string
     label: string
@@ -405,6 +406,10 @@ function resolveHtmlExportMode(payload: HtmlPayload, requestedMode: HtmlExportOp
   return shouldUseOverview
     ? { mode: 'overview', communityPageCount: payload.legend.length, reason: 'graph exceeded inline HTML thresholds' }
     : { mode: 'inline', communityPageCount: 0, reason: 'graph fits inline HTML thresholds' }
+}
+
+function nodeAnchorId(nodeId: string): string {
+  return `node-${Buffer.from(nodeId, 'utf8').toString('base64url')}`
 }
 
 function buildInteractiveHtml(payload: HtmlPayload, isDirected: boolean, options: InteractiveHtmlPageOptions = {}): string {
@@ -1033,6 +1038,362 @@ if (initialHash && nodeIndex.has(initialHash)) {
 </html>`
 }
 
+function buildCommunitySummaryHtml(payload: HtmlPayload, options: InteractiveHtmlPageOptions = {}): string {
+  const backLinkMarkup =
+    typeof options.backLinkHref === 'string' && options.backLinkHref.length > 0
+      ? `<p class="muted" style="margin-bottom:10px;"><a class="back-link" href="${escapeHtml(options.backLinkHref)}">${escapeHtml(options.backLinkLabel ?? '← Back')}</a></p>`
+      : ''
+
+  const sortedNodes = [...payload.nodes].sort((left, right) => right.degree - left.degree || left.label.localeCompare(right.label))
+  const summaryNodes = sortedNodes.map((node) => ({
+    anchor_id: nodeAnchorId(node.id),
+    label: node.label,
+    source_file: node.source_file,
+    source_location: node.source_location,
+    safe_source_url: node.safe_source_url,
+    file_type: node.file_type,
+    degree: node.degree,
+    confidence: node.confidence,
+    search_text: `${node.label} ${node.source_file} ${node.source_location} ${node.file_type}`.toLowerCase(),
+  }))
+  const topNodes = summaryNodes.slice(0, 12)
+  const topFiles = [...sortedNodes.reduce((counts, node) => {
+    const sourceFile = node.source_file || '(unknown source)'
+    counts.set(sourceFile, (counts.get(sourceFile) ?? 0) + 1)
+    return counts
+  }, new Map<string, number>()).entries()]
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, 12)
+
+  const topNodesMarkup =
+    topNodes.length === 0
+      ? '<p class="empty">No node summary is available for this community.</p>'
+      : `<div class="list">${topNodes
+          .map(
+            (node) => `<a class="list-link" href="#${escapeHtml(node.anchor_id)}">
+  <strong>${escapeHtml(node.label)}</strong>
+  <span class="muted">degree ${node.degree} · ${escapeHtml(node.source_file || 'Unknown source')}</span>
+</a>`,
+          )
+          .join('\n')}</div>`
+
+  const topFilesMarkup =
+    topFiles.length === 0
+      ? '<p class="empty">No file summary is available for this community.</p>'
+      : `<div class="list">${topFiles
+          .map(
+            ([sourceFile, count]) => `<div class="list-link static">
+  <strong>${escapeHtml(sourceFile)}</strong>
+  <span class="muted">${count} node${count === 1 ? '' : 's'}</span>
+</div>`,
+          )
+          .join('\n')}</div>`
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>${escapeHtml(options.pageTitle ?? 'graphify-ts')}</title>
+<style>
+  :root {
+    color-scheme: light;
+    --panel-border: #d7dce5;
+    --panel-bg: #fbfcfe;
+    --text-muted: #5b6473;
+    --accent: #2553d8;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    color: #111827;
+    background: #eef2f7;
+  }
+
+  main {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 24px;
+  }
+
+  .panel {
+    border: 1px solid var(--panel-border);
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.94);
+    padding: 18px;
+    margin-bottom: 16px;
+    box-shadow: 0 4px 14px rgba(15, 23, 42, 0.04);
+  }
+
+  h1, h2, h3, p { margin: 0; }
+  h1 { font-size: 1.45rem; }
+  h2 { font-size: 1rem; margin-bottom: 12px; }
+  .lede { color: var(--text-muted); line-height: 1.55; margin-top: 8px; }
+  .muted { color: var(--text-muted); font-size: 0.88rem; }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 12px;
+    padding: 6px 10px;
+    border-radius: 999px;
+    background: #fff4db;
+    color: #9a6700;
+    font-size: 0.82rem;
+    font-weight: 600;
+  }
+  .back-link { color: var(--accent); text-decoration: none; }
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+    margin-top: 16px;
+  }
+  .stat {
+    border-radius: 12px;
+    padding: 12px;
+    background: white;
+    border: 1px solid #e6ebf2;
+  }
+  .stat strong { display: block; margin-top: 4px; font-size: 1.1rem; }
+  .split {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(320px, 360px);
+    gap: 16px;
+    align-items: start;
+  }
+  #search {
+    width: 100%;
+    padding: 12px 14px;
+    margin-bottom: 12px;
+    border-radius: 12px;
+    border: 1px solid #cdd6e3;
+    background: white;
+  }
+  .list {
+    display: grid;
+    gap: 10px;
+  }
+  .list-link {
+    display: block;
+    border: 1px solid #d7dce5;
+    border-radius: 12px;
+    padding: 12px 14px;
+    background: white;
+    color: inherit;
+    text-decoration: none;
+  }
+  .list-link.static {
+    cursor: default;
+  }
+  .list-link:hover {
+    border-color: var(--accent);
+  }
+  #matches {
+    display: grid;
+    gap: 12px;
+  }
+  .match-link {
+    display: block;
+    border: 1px solid #d7dce5;
+    border-radius: 14px;
+    padding: 14px;
+    background: white;
+    color: inherit;
+    text-decoration: none;
+  }
+  .match-link:hover {
+    border-color: var(--accent);
+  }
+  .match-meta {
+    color: var(--text-muted);
+    font-size: 0.82rem;
+    margin-top: 4px;
+  }
+  .selection-panel {
+    display: grid;
+    gap: 8px;
+  }
+  .meta-row {
+    display: grid;
+    grid-template-columns: minmax(92px, auto) 1fr;
+    gap: 12px;
+    align-items: start;
+    font-size: 0.9rem;
+  }
+  .meta-row span:first-child {
+    color: var(--text-muted);
+  }
+  .meta-row a {
+    color: var(--accent);
+    word-break: break-all;
+  }
+  code {
+    background: #eef2ff;
+    padding: 0.15rem 0.35rem;
+    border-radius: 6px;
+    word-break: break-word;
+  }
+  .empty {
+    color: var(--text-muted);
+    font-size: 0.92rem;
+    line-height: 1.5;
+  }
+</style>
+</head>
+<body>
+<main>
+  <section class="panel">
+    ${backLinkMarkup}
+    <div class="badge">Summary-only community mode</div>
+    <h1>${escapeHtml(options.heading ?? 'graphify-ts')}</h1>
+    <p class="lede">${escapeHtml(options.lede ?? 'This community is too large to render as one interactive graph without freezing the browser. Use the summaries and searchable node list below instead.')}</p>
+    <div class="stats" id="stats">
+      <div class="stat"><div class="muted">Nodes</div><strong>${payload.stats.nodes}</strong></div>
+      <div class="stat"><div class="muted">Edges</div><strong>${payload.stats.edges}</strong></div>
+      <div class="stat"><div class="muted">Communities</div><strong>${payload.stats.communities}</strong></div>
+    </div>
+  </section>
+
+  <div class="split">
+    <section class="panel">
+      <h2>Search nodes by label or file</h2>
+      <input id="search" placeholder="Filter this community by label or source file..." />
+      <div id="matches" class="list"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Selected node</h2>
+      <p id="selectionEmpty" class="empty">Pick a top node or search result to inspect it here without loading every node into the DOM.</p>
+      <div id="selectionDetails" class="selection-panel" hidden>
+        <h3 id="selectedLabel"></h3>
+        <div class="meta-row"><span>Source</span><code id="selectedSource"></code></div>
+        <div class="meta-row"><span>Type</span><span id="selectedType"></span></div>
+        <div class="meta-row"><span>Confidence</span><span id="selectedConfidence"></span></div>
+        <div class="meta-row"><span>Degree</span><span id="selectedDegree"></span></div>
+        <div id="selectedSourceUrlRow" class="meta-row" hidden><span>Source URL</span><a id="selectedSourceUrl" target="_blank" rel="noreferrer noopener"></a></div>
+      </div>
+    </section>
+
+    <div>
+      <section class="panel">
+        <h2>Top connected nodes</h2>
+        ${topNodesMarkup}
+      </section>
+      <section class="panel">
+        <h2>Most represented files</h2>
+        ${topFilesMarkup}
+      </section>
+    </div>
+  </div>
+</main>
+<script>
+const SUMMARY_NODES = ${serializeForInlineScript(summaryNodes)};
+const SEARCH_RESULT_LIMIT = 50;
+const searchInput = document.getElementById('search');
+const matches = document.getElementById('matches');
+const selectionEmpty = document.getElementById('selectionEmpty');
+const selectionDetails = document.getElementById('selectionDetails');
+const selectedLabel = document.getElementById('selectedLabel');
+const selectedSource = document.getElementById('selectedSource');
+const selectedType = document.getElementById('selectedType');
+const selectedConfidence = document.getElementById('selectedConfidence');
+const selectedDegree = document.getElementById('selectedDegree');
+const selectedSourceUrlRow = document.getElementById('selectedSourceUrlRow');
+const selectedSourceUrl = document.getElementById('selectedSourceUrl');
+const nodesByAnchor = new Map(SUMMARY_NODES.map((node) => [node.anchor_id, node]));
+
+function renderSelection(anchorId) {
+  const node = nodesByAnchor.get(anchorId);
+  if (!node) {
+    selectionEmpty.hidden = false;
+    selectionDetails.hidden = true;
+    selectedLabel.textContent = '';
+    selectedSource.textContent = '';
+    selectedType.textContent = '';
+    selectedConfidence.textContent = '';
+    selectedDegree.textContent = '';
+    selectedSourceUrlRow.hidden = true;
+    selectedSourceUrl.textContent = '';
+    selectedSourceUrl.removeAttribute('href');
+    return;
+  }
+
+  selectionEmpty.hidden = true;
+  selectionDetails.hidden = false;
+  selectedLabel.textContent = node.label;
+  selectedSource.textContent = [node.source_file, node.source_location].filter(Boolean).join(': ') || 'Unknown source';
+  selectedType.textContent = node.file_type || 'unknown';
+  selectedConfidence.textContent = node.confidence;
+  selectedDegree.textContent = String(node.degree);
+
+  if (typeof node.safe_source_url === 'string' && node.safe_source_url.length > 0) {
+    selectedSourceUrlRow.hidden = false;
+    selectedSourceUrl.href = node.safe_source_url;
+    selectedSourceUrl.textContent = node.safe_source_url;
+  } else {
+    selectedSourceUrlRow.hidden = true;
+    selectedSourceUrl.textContent = '';
+    selectedSourceUrl.removeAttribute('href');
+  }
+}
+
+function renderMatches(query) {
+  matches.replaceChildren();
+  const trimmed = query.trim().toLowerCase();
+  if (!trimmed) {
+    const hint = document.createElement('p');
+    hint.className = 'empty';
+    hint.textContent = 'Type to search this community without rendering every node up front.';
+    matches.appendChild(hint);
+    return;
+  }
+
+  const filtered = SUMMARY_NODES.filter((node) => node.search_text.includes(trimmed)).slice(0, SEARCH_RESULT_LIMIT);
+  if (filtered.length === 0) {
+    const hint = document.createElement('p');
+    hint.className = 'empty';
+    hint.textContent = 'No matches yet. Try a file name, symbol, or concept.';
+    matches.appendChild(hint);
+    return;
+  }
+
+  filtered.forEach((node) => {
+    const link = document.createElement('a');
+    link.className = 'match-link';
+    link.href = '#' + node.anchor_id;
+
+    const title = document.createElement('strong');
+    title.textContent = node.label;
+
+    const meta = document.createElement('div');
+    meta.className = 'match-meta';
+    meta.textContent = node.source_file + ' · degree ' + node.degree;
+
+    link.append(title, meta);
+    matches.appendChild(link);
+  });
+}
+
+function renderFromHash() {
+  const hash = decodeURIComponent(window.location.hash.replace(/^#/, ''));
+  renderSelection(hash);
+}
+
+searchInput.addEventListener('input', (event) => {
+  renderMatches(event.target.value || '');
+});
+
+window.addEventListener('hashchange', renderFromHash);
+
+renderMatches('');
+renderFromHash();
+</script>
+</body>
+</html>`
+}
+
 function buildOverviewHtml(
   stats: HtmlStats,
   searchIndex: Array<{ label: string; source_file: string; community_name: string; href: string }>,
@@ -1166,7 +1527,7 @@ function buildOverviewHtml(
 
   <section class="panel">
     <h2>Communities</h2>
-    <p class="lede">Open a focused community page to render only a manageable slice of the graph.</p>
+    <p class="lede">Open a focused community page for interactive rendering, or a summary page when one community is still too large to draw safely.</p>
     <div id="communities" class="list"></div>
   </section>
 </main>
@@ -1231,7 +1592,7 @@ function renderCommunities(query) {
 
     const action = document.createElement('div');
     action.className = 'top-nodes';
-    action.textContent = 'Open community →';
+    action.textContent = community.pageMode === 'summary' ? 'Open community summary →' : 'Open community →';
 
     link.append(title, meta, topNodes, action);
     elements.communities.appendChild(link);
@@ -1473,16 +1834,26 @@ export function toHtml(
       const subgraphCommunities = { 0: [...nodeIds] }
       const subgraphLabels = { 0: communityName }
       const pagePayload = buildHtmlPayload(subgraph, subgraphCommunities, subgraphLabels)
+      const pageMode: OverviewCommunitySummary['pageMode'] =
+        resolveHtmlExportMode(pagePayload, 'auto').mode === 'inline' ? 'interactive' : 'summary'
 
       writeFileSync(
         pagePath,
-        buildInteractiveHtml(pagePayload, graph.isDirected(), {
-          pageTitle: `${communityName} · graphify-ts`,
-          heading: communityName,
-          lede: 'Focused community view. Use this page for interactive exploration without loading the entire graph at once.',
-          backLinkHref: relative(dirname(pagePath), outputPath).replaceAll('\\', '/'),
-          backLinkLabel: '← Back to overview',
-        }),
+        pageMode === 'interactive'
+          ? buildInteractiveHtml(pagePayload, graph.isDirected(), {
+              pageTitle: `${communityName} · graphify-ts`,
+              heading: communityName,
+              lede: 'Focused community view. Use this page for interactive exploration without loading the entire graph at once.',
+              backLinkHref: relative(dirname(pagePath), outputPath).replaceAll('\\', '/'),
+              backLinkLabel: '← Back to overview',
+            })
+          : buildCommunitySummaryHtml(pagePayload, {
+              pageTitle: `${communityName} · graphify-ts`,
+              heading: communityName,
+              lede: 'This community is too large to render as one interactive graph without freezing the browser. Use the searchable node list and summaries below instead.',
+              backLinkHref: relative(dirname(pagePath), outputPath).replaceAll('\\', '/'),
+              backLinkLabel: '← Back to overview',
+            }),
         'utf8',
       )
 
@@ -1491,7 +1862,9 @@ export function toHtml(
           id: nodeId,
           label: String(graph.nodeAttributes(nodeId).label ?? nodeId),
           degree: graph.degree(nodeId),
-          href: `${COMMUNITY_PAGES_DIRNAME}/community-${communityId}.html#${encodeURIComponent(nodeId)}`,
+          href: `${COMMUNITY_PAGES_DIRNAME}/community-${communityId}.html#${
+            pageMode === 'summary' ? nodeAnchorId(nodeId) : encodeURIComponent(nodeId)
+          }`,
         }))
         .sort((left, right) => right.degree - left.degree || left.label.localeCompare(right.label))
         .slice(0, 4)
@@ -1502,17 +1875,23 @@ export function toHtml(
         count: nodeIds.length,
         cohesion: options.cohesionScores?.[communityId] ?? null,
         href: `${COMMUNITY_PAGES_DIRNAME}/community-${communityId}.html`,
+        pageMode,
         topNodes,
       }
     })
     .sort((left, right) => right.count - left.count || left.label.localeCompare(right.label))
 
+  const communityPageModes = new Map(communitySummaries.map((community) => [community.id, community.pageMode]))
   const searchIndex = payload.nodes
     .map((node) => ({
       label: node.label,
       source_file: node.source_file,
       community_name: node.community_name,
-      href: `${COMMUNITY_PAGES_DIRNAME}/community-${node.community}.html#${encodeURIComponent(node.id)}`,
+      href: `${COMMUNITY_PAGES_DIRNAME}/community-${node.community}.html#${
+        communityPageModes.get(node.community) === 'summary'
+          ? nodeAnchorId(node.id)
+          : encodeURIComponent(node.id)
+      }`,
     }))
     .sort((left, right) => left.label.localeCompare(right.label))
 

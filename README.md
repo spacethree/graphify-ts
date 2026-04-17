@@ -1,6 +1,6 @@
 # graphify-ts
 
-[![version 0.2.1](https://img.shields.io/badge/version-0.2.1-2563eb)](https://github.com/mohanagy/graphify-ts)
+[![version 0.2.2](https://img.shields.io/badge/version-0.2.2-2563eb)](https://github.com/mohanagy/graphify-ts)
 [![node >=20](https://img.shields.io/badge/node-%E2%89%A520-3c873a)](https://nodejs.org/)
 [![TypeScript 5.8](https://img.shields.io/badge/typescript-5.8-3178c6)](https://www.typescriptlang.org/)
 [![Vitest 3.2](https://img.shields.io/badge/tests-Vitest%203.2-6e9f18)](https://vitest.dev/)
@@ -89,13 +89,13 @@ graphify-out/
 ├── graph.html       interactive graph explorer (or overview page for large graphs)
 ├── GRAPH_REPORT.md  summary report with god nodes, semantic anomalies, and suggested questions
 ├── graph.json       machine-readable graph for query/serve flows, community labels, and semantic anomalies
-├── graph-pages/     focused community explorer pages for large graphs
+├── graph-pages/     focused community explorer pages, with summary-only fallbacks for oversized communities
 └── cache/           content-addressed extraction cache
 ```
 
 Optional exports are also available for wiki, Obsidian, SVG, GraphML, and Neo4j workflows.
 
-For smaller graphs, `graph.html` stays self-contained and opens the full interactive explorer directly. For larger graphs, `graphify-ts` switches to an overview-first HTML mode that opens quickly, shows semantic community names, and links into focused per-community pages under `graph-pages/`.
+For smaller graphs, `graph.html` stays self-contained and opens the full interactive explorer directly. For larger graphs, `graphify-ts` switches to an overview-first HTML mode that opens quickly, shows semantic community names, and links into focused per-community pages under `graph-pages/`. If one detected community is still too large to render safely as a single vis graph, its page becomes a summary/search view instead of a browser-freezing interactive canvas.
 
 ## Common commands
 

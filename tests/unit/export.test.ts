@@ -232,6 +232,73 @@ describe('export', () => {
     })
   })
 
+  it('writes summary-only community pages when a focused community still exceeds inline thresholds', () => {
+    const graph = buildFromJson(
+      {
+        nodes: Array.from({ length: 1300 }, (_, index) => ({
+          id: `node-${index}`,
+          label: `Node${index}`,
+          file_type: 'code',
+          source_file: `/repo/src/module-${index % 7}.ts`,
+        })),
+        edges: [],
+      },
+      { directed: true },
+    )
+
+    withTempDir((tempDir) => {
+      const outputPath = join(tempDir, 'graph.html')
+      const result = toHtml(graph, { 0: graph.nodeIds() }, outputPath, { 0: 'Large Community' })
+
+      const overview = readFileSync(outputPath, 'utf8')
+      const communityPage = readFileSync(join(tempDir, 'graph-pages', 'community-0.html'), 'utf8')
+
+      expect(result.mode).toBe('overview')
+      expect(overview).toContain('Open community summary')
+      expect(communityPage).toContain('This community is too large to render as one interactive graph')
+      expect(communityPage).toContain('Top connected nodes')
+      expect(communityPage).toContain('Search nodes by label or file')
+      expect(communityPage).toContain('Selected node')
+      expect(communityPage).toContain('const SUMMARY_NODES =')
+      expect(communityPage).not.toContain('vis-network')
+      expect(communityPage).not.toContain('const RAW_EDGES =')
+      expect(communityPage).not.toContain('<article id=')
+    })
+  })
+
+  it('uses deterministic safe anchors for summary-only community deep links', () => {
+    const specialNodeId = 'src/routes/foo bar.ts#handler'
+    const expectedAnchor = `node-${Buffer.from(specialNodeId, 'utf8').toString('base64url')}`
+    const graph = buildFromJson(
+      {
+        nodes: [
+          { id: specialNodeId, label: 'SpecialNode', file_type: 'code', source_file: '/repo/src/routes/foo bar.ts' },
+          ...Array.from({ length: 1299 }, (_, index) => ({
+            id: `node-${index}`,
+            label: `Node${index}`,
+            file_type: 'code',
+            source_file: `/repo/src/module-${index % 7}.ts`,
+          })),
+        ],
+        edges: [],
+      },
+      { directed: true },
+    )
+
+    withTempDir((tempDir) => {
+      const outputPath = join(tempDir, 'graph.html')
+      toHtml(graph, { 0: graph.nodeIds() }, outputPath, { 0: 'Large Community' })
+
+      const overview = readFileSync(outputPath, 'utf8')
+      const communityPage = readFileSync(join(tempDir, 'graph-pages', 'community-0.html'), 'utf8')
+
+      expect(overview).toContain(`#${expectedAnchor}`)
+      expect(communityPage).toContain(`"anchor_id":"${expectedAnchor}"`)
+      expect(communityPage).not.toContain(`id="${expectedAnchor}"`)
+      expect(communityPage).not.toContain(`id="${encodeURIComponent(specialNodeId)}"`)
+    })
+  })
+
   it('writes html edge arrow config that matches graph directedness', () => {
     const undirectedGraph = makeGraph()
     const directedGraph = buildFromJson(
