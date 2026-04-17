@@ -2024,6 +2024,1558 @@ describe('extract', () => {
     }
   })
 
+  it('extracts rust module ownership and pub use imports with method calls', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'worker.rs')
+      writeFileSync(
+        filePath,
+        [
+          'mod engine {',
+          '  pub struct Worker {}',
+          '  impl Worker {',
+          '    pub fn run(&self) {',
+          '      self.helper();',
+          '    }',
+          '    fn helper(&self) {}',
+          '  }',
+          '}',
+          'pub use crate::engine::Worker;',
+          'fn boot() {',
+          '  Worker::run();',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([filePath])
+      const labels = result.nodes.map((node) => node.label)
+      const nodeById = new Map(result.nodes.map((node) => [node.id, node.label]))
+      const fileId = result.nodes.find((node) => node.label === 'worker.rs')?.id
+      const moduleId = result.nodes.find((node) => node.label === 'engine')?.id
+      const workerId = result.nodes.find((node) => node.label === 'Worker')?.id
+      const calls = new Set(result.edges.filter((edge) => edge.relation === 'calls').map((edge) => `${nodeById.get(edge.source)}->${nodeById.get(edge.target)}`))
+
+      expect(labels).toContain('engine')
+      expect(labels).toContain('Worker')
+      expect(labels).toContain('.run()')
+      expect(labels).toContain('.helper()')
+      expect(labels).toContain('boot()')
+      expect(moduleId).toBeTruthy()
+      expect(workerId).toBeTruthy()
+      expect(fileId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === fileId && edge.target === moduleId && edge.relation === 'contains')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === moduleId && edge.target === workerId && edge.relation === 'contains')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === fileId && edge.target === workerId && edge.relation === 'imports_from')).toBe(true)
+      expect(calls.has('.run()->.helper()')).toBe(true)
+      expect(calls.has('boot()->.run()')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts rust trait signatures and impl conformance edges inside a module', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'worker.rs')
+      writeFileSync(
+        filePath,
+        [
+          'mod engine {',
+          '  pub trait Runner {',
+          '    fn run(&self);',
+          '  }',
+          '  pub struct Worker {}',
+          '  impl Runner for Worker {',
+          '    fn run(&self) {}',
+          '  }',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([filePath])
+      const engineId = result.nodes.find((node) => node.label === 'engine')?.id
+      const runnerId = result.edges.find((edge) => edge.source === engineId && edge.relation === 'contains' && result.nodes.find((node) => node.id === edge.target)?.label === 'Runner')?.target
+      const workerId = result.edges.find((edge) => edge.source === engineId && edge.relation === 'contains' && result.nodes.find((node) => node.id === edge.target)?.label === 'Worker')?.target
+      const runnerRunId = result.edges.find((edge) => edge.source === runnerId && edge.relation === 'method' && result.nodes.find((node) => node.id === edge.target)?.label === '.run()')?.target
+      const workerRunId = result.edges.find((edge) => edge.source === workerId && edge.relation === 'method' && result.nodes.find((node) => node.id === edge.target)?.label === '.run()')?.target
+
+      expect(engineId).toBeTruthy()
+      expect(runnerId).toBeTruthy()
+      expect(workerId).toBeTruthy()
+      expect(runnerRunId).toBeTruthy()
+      expect(workerRunId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === workerId && edge.target === runnerId && edge.relation === 'inherits')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('resolves imported rust traits for impl conformance without creating duplicate trait owners', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'worker.rs')
+      writeFileSync(
+        filePath,
+        [
+          'mod traits {',
+          '  pub trait Runner {',
+          '    fn run(&self);',
+          '  }',
+          '}',
+          'use crate::traits::Runner;',
+          'struct Worker {}',
+          'impl Runner for Worker {',
+          '  fn run(&self) {}',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([filePath])
+      const fileId = result.nodes.find((node) => node.label === 'worker.rs')?.id
+      const traitsId = result.nodes.find((node) => node.label === 'traits')?.id
+      const runnerNodes = result.nodes.filter((node) => node.label === 'Runner')
+      const runnerId = result.edges.find((edge) => edge.source === traitsId && edge.relation === 'contains' && runnerNodes.some((node) => node.id === edge.target))?.target
+      const workerId = result.nodes.find((node) => node.label === 'Worker')?.id
+
+      expect(runnerNodes).toHaveLength(1)
+      expect(runnerId).toBeTruthy()
+      expect(workerId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === fileId && edge.target === runnerId && edge.relation === 'imports_from')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === workerId && edge.target === runnerId && edge.relation === 'inherits')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === fileId && edge.target === runnerId && edge.relation === 'contains')).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('resolves cross-file rust trait imports for impl conformance without placeholder owners', () => {
+    const root = createTempRoot()
+    try {
+      const traitsPath = join(root, 'traits.rs')
+      const workerPath = join(root, 'worker.rs')
+      writeFileSync(
+        traitsPath,
+        ['pub trait Runner {', '  fn run(&self);', '}'].join('\n'),
+        'utf8',
+      )
+      writeFileSync(
+        workerPath,
+        ['use crate::traits::Runner;', 'struct Worker {}', 'impl Runner for Worker {', '  fn run(&self) {}', '}'].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([workerPath, traitsPath])
+      const workerFileId = result.nodes.find((node) => node.label === 'worker.rs')?.id
+      const workerId = result.nodes.find((node) => node.label === 'Worker')?.id
+      const runnerNodes = result.nodes.filter((node) => node.label === 'Runner')
+      const runnerId = runnerNodes[0]?.id
+
+      expect(runnerNodes).toHaveLength(1)
+      expect(workerFileId).toBeTruthy()
+      expect(workerId).toBeTruthy()
+      expect(runnerId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === workerFileId && edge.target === runnerId && edge.relation === 'imports_from')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === workerId && edge.target === runnerId && edge.relation === 'inherits')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('resolves aliased rust grouped-use calls onto imported owner methods without duplicate owners', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'worker.rs')
+      writeFileSync(
+        filePath,
+        [
+          'mod engine {',
+          '  pub struct Worker {}',
+          '  impl Worker {',
+          '    pub fn run(&self) {}',
+          '  }',
+          '}',
+          'pub use crate::engine::{Worker as Client};',
+          'fn boot() {',
+          '  Client::run();',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([filePath])
+      const fileId = result.nodes.find((node) => node.label === 'worker.rs')?.id
+      const engineId = result.nodes.find((node) => node.label === 'engine')?.id
+      const workerNodes = result.nodes.filter((node) => node.label === 'Worker')
+      const workerId = result.edges.find((edge) => edge.source === engineId && edge.relation === 'contains' && workerNodes.some((node) => node.id === edge.target))?.target
+      const runId = result.edges.find((edge) => edge.source === workerId && edge.relation === 'method' && result.nodes.find((node) => node.id === edge.target)?.label === '.run()')?.target
+      const bootId = result.edges.find((edge) => edge.source === fileId && edge.relation === 'contains' && result.nodes.find((node) => node.id === edge.target)?.label === 'boot()')?.target
+
+      expect(workerNodes).toHaveLength(1)
+      expect(workerId).toBeTruthy()
+      expect(runId).toBeTruthy()
+      expect(bootId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === fileId && edge.target === workerId && edge.relation === 'imports_from')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === bootId && edge.target === runId && edge.relation === 'calls')).toBe(true)
+      expect(result.nodes.some((node) => node.label === 'Client')).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('resolves aliased rust trait imports for impl conformance without creating duplicate trait owners', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'worker.rs')
+      writeFileSync(
+        filePath,
+        [
+          'mod traits {',
+          '  pub trait Runner {',
+          '    fn run(&self);',
+          '  }',
+          '}',
+          'use crate::traits::Runner as AliasTrait;',
+          'struct Worker {}',
+          'impl AliasTrait for Worker {',
+          '  fn run(&self) {}',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([filePath])
+      const fileId = result.nodes.find((node) => node.label === 'worker.rs')?.id
+      const traitsId = result.nodes.find((node) => node.label === 'traits')?.id
+      const runnerNodes = result.nodes.filter((node) => node.label === 'Runner')
+      const runnerId = result.edges.find((edge) => edge.source === traitsId && edge.relation === 'contains' && runnerNodes.some((node) => node.id === edge.target))?.target
+      const workerId = result.nodes.find((node) => node.label === 'Worker')?.id
+
+      expect(runnerNodes).toHaveLength(1)
+      expect(runnerId).toBeTruthy()
+      expect(workerId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === fileId && edge.target === runnerId && edge.relation === 'imports_from')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === workerId && edge.target === runnerId && edge.relation === 'inherits')).toBe(true)
+      expect(result.nodes.some((node) => node.label === 'AliasTrait')).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('resolves rust super paths for method calls inside nested modules', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'worker.rs')
+      writeFileSync(
+        filePath,
+        [
+          'mod outer {',
+          '  pub struct Worker {}',
+          '  impl Worker {',
+          '    pub fn run(&self) {}',
+          '  }',
+          '  mod inner {',
+          '    pub fn boot() {',
+          '      super::Worker::run();',
+          '    }',
+          '  }',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([filePath])
+      const outerId = result.nodes.find((node) => node.label === 'outer')?.id
+      const innerId = result.edges.find((edge) => edge.source === outerId && edge.relation === 'contains' && result.nodes.find((node) => node.id === edge.target)?.label === 'inner')?.target
+      const workerId = result.edges.find((edge) => edge.source === outerId && edge.relation === 'contains' && result.nodes.find((node) => node.id === edge.target)?.label === 'Worker')?.target
+      const runId = result.edges.find((edge) => edge.source === workerId && edge.relation === 'method' && result.nodes.find((node) => node.id === edge.target)?.label === '.run()')?.target
+      const bootId = result.edges.find((edge) => edge.source === innerId && edge.relation === 'contains' && result.nodes.find((node) => node.id === edge.target)?.label === 'boot()')?.target
+
+      expect(workerId).toBeTruthy()
+      expect(runId).toBeTruthy()
+      expect(bootId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === bootId && edge.target === runId && edge.relation === 'calls')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('resolves rust anchor-only super paths for free-function calls inside nested modules', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'worker.rs')
+      writeFileSync(
+        filePath,
+        [
+          'fn run() {}',
+          'mod outer {',
+          '  pub fn run() {}',
+          '  mod inner {',
+          '    pub fn boot() {',
+          '      super::run();',
+          '    }',
+          '  }',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([filePath])
+      const fileId = result.nodes.find((node) => node.label === 'worker.rs')?.id
+      const topLevelRunId = result.edges.find((edge) => edge.source === fileId && edge.relation === 'contains' && result.nodes.find((node) => node.id === edge.target)?.label === 'run()')?.target
+      const outerId = result.nodes.find((node) => node.label === 'outer')?.id
+      const innerId = result.edges.find((edge) => edge.source === outerId && edge.relation === 'contains' && result.nodes.find((node) => node.id === edge.target)?.label === 'inner')?.target
+      const outerRunId = result.edges.find((edge) => edge.source === outerId && edge.relation === 'contains' && result.nodes.find((node) => node.id === edge.target)?.label === 'run()')?.target
+      const bootId = result.edges.find((edge) => edge.source === innerId && edge.relation === 'contains' && result.nodes.find((node) => node.id === edge.target)?.label === 'boot()')?.target
+
+      expect(topLevelRunId).toBeTruthy()
+      expect(outerRunId).toBeTruthy()
+      expect(bootId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === bootId && edge.target === outerRunId && edge.relation === 'calls')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === bootId && edge.target === topLevelRunId && edge.relation === 'calls')).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('does not resolve missing rust anchor-only super paths onto unrelated free functions', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'worker.rs')
+      writeFileSync(
+        filePath,
+        [
+          'fn run() {}',
+          'mod outer {',
+          '  mod inner {',
+          '    pub fn boot() {',
+          '      super::run();',
+          '    }',
+          '  }',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([filePath])
+      const bootId = result.nodes.find((node) => node.label === 'boot()')?.id
+      const runId = result.nodes.find((node) => node.label === 'run()')?.id
+
+      expect(bootId).toBeTruthy()
+      expect(runId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === bootId && edge.target === runId && edge.relation === 'calls')).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('does not emit self-inherits edges for inherent rust impl blocks', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'worker.rs')
+      writeFileSync(
+        filePath,
+        [
+          'mod engine {',
+          '  pub struct Worker {}',
+          '  impl Worker {',
+          '    fn run(&self) {}',
+          '  }',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([filePath])
+      const engineId = result.nodes.find((node) => node.label === 'engine')?.id
+      const workerId = result.edges.find((edge) => edge.source === engineId && edge.relation === 'contains' && result.nodes.find((node) => node.id === edge.target)?.label === 'Worker')?.target
+
+      expect(workerId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === workerId && edge.target === workerId && edge.relation === 'inherits')).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached rust extractions from the pre-rust-relative-path cache version', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'worker.rs')
+      writeFileSync(
+        filePath,
+        [
+          'mod outer {',
+          '  pub struct Worker {}',
+          '  impl Worker {',
+          '    pub fn run(&self) {}',
+          '  }',
+          '  mod inner {',
+          '    pub fn boot() {',
+          '      super::Worker::run();',
+          '    }',
+          '  }',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const cachePath = join(cacheDir(), `${fileHash(filePath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 54,
+          nodes: [
+            { id: 'stale_rust_file', label: 'worker.rs', file_type: 'code', source_file: filePath },
+            { id: 'stale_rust_outer', label: 'outer', file_type: 'code', source_file: filePath },
+            { id: 'stale_rust_inner', label: 'inner', file_type: 'code', source_file: filePath },
+            { id: 'stale_rust_boot', label: 'boot()', file_type: 'code', source_file: filePath },
+            { id: 'stale_rust_run', label: '.run()', file_type: 'code', source_file: filePath },
+          ],
+          edges: [
+            { source: 'stale_rust_outer', target: 'stale_rust_inner', relation: 'contains' },
+            { source: 'stale_rust_inner', target: 'stale_rust_boot', relation: 'contains' },
+          ],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([filePath])
+      const outerId = recovered.nodes.find((node) => node.label === 'outer')?.id
+      const innerId = recovered.edges.find((edge) => edge.source === outerId && edge.relation === 'contains' && recovered.nodes.find((node) => node.id === edge.target)?.label === 'inner')?.target
+      const workerId = recovered.edges.find((edge) => edge.source === outerId && edge.relation === 'contains' && recovered.nodes.find((node) => node.id === edge.target)?.label === 'Worker')?.target
+      const runId = recovered.edges.find((edge) => edge.source === workerId && edge.relation === 'method' && recovered.nodes.find((node) => node.id === edge.target)?.label === '.run()')?.target
+      const bootId = recovered.edges.find((edge) => edge.source === innerId && edge.relation === 'contains' && recovered.nodes.find((node) => node.id === edge.target)?.label === 'boot()')?.target
+
+      expect(runId).toBeTruthy()
+      expect(bootId).toBeTruthy()
+      expect(recovered.edges.some((edge) => edge.source === bootId && edge.target === runId && edge.relation === 'calls')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached rust extractions from the pre-rust-aliased-use cache version', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'worker.rs')
+      writeFileSync(
+        filePath,
+        [
+          'mod engine {',
+          '  pub struct Worker {}',
+          '  impl Worker {',
+          '    pub fn run(&self) {}',
+          '  }',
+          '}',
+          'pub use crate::engine::{Worker as Client};',
+          'fn boot() {',
+          '  Client::run();',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const cachePath = join(cacheDir(), `${fileHash(filePath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 57,
+          nodes: [
+            { id: 'stale_rust_file', label: 'worker.rs', file_type: 'code', source_file: filePath },
+            { id: 'stale_rust_engine', label: 'engine', file_type: 'code', source_file: filePath },
+            { id: 'stale_rust_worker', label: 'Worker', file_type: 'code', source_file: filePath },
+            { id: 'stale_rust_boot', label: 'boot()', file_type: 'code', source_file: filePath },
+            { id: 'stale_rust_run', label: '.run()', file_type: 'code', source_file: filePath },
+          ],
+          edges: [
+            { source: 'stale_rust_file', target: 'stale_rust_engine', relation: 'contains' },
+            { source: 'stale_rust_engine', target: 'stale_rust_worker', relation: 'contains' },
+            { source: 'stale_rust_file', target: 'stale_rust_boot', relation: 'contains' },
+          ],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([filePath])
+      const fileId = recovered.nodes.find((node) => node.label === 'worker.rs')?.id
+      const engineId = recovered.nodes.find((node) => node.label === 'engine')?.id
+      const workerId = recovered.edges.find((edge) => edge.source === engineId && edge.relation === 'contains' && recovered.nodes.find((node) => node.id === edge.target)?.label === 'Worker')?.target
+      const runId = recovered.edges.find((edge) => edge.source === workerId && edge.relation === 'method' && recovered.nodes.find((node) => node.id === edge.target)?.label === '.run()')?.target
+      const bootId = recovered.edges.find((edge) => edge.source === fileId && edge.relation === 'contains' && recovered.nodes.find((node) => node.id === edge.target)?.label === 'boot()')?.target
+
+      expect(workerId).toBeTruthy()
+      expect(runId).toBeTruthy()
+      expect(bootId).toBeTruthy()
+      expect(recovered.edges.some((edge) => edge.source === fileId && edge.target === workerId && edge.relation === 'imports_from')).toBe(true)
+      expect(recovered.edges.some((edge) => edge.source === bootId && edge.target === runId && edge.relation === 'calls')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached rust extractions from the pre-rust-anchor-only-relative-call cache version', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'worker.rs')
+      writeFileSync(
+        filePath,
+        [
+          'fn run() {}',
+          'mod outer {',
+          '  pub fn run() {}',
+          '  mod inner {',
+          '    pub fn boot() {',
+          '      super::run();',
+          '    }',
+          '  }',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const cachePath = join(cacheDir(), `${fileHash(filePath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 55,
+          nodes: [
+            { id: 'stale_rust_file', label: 'worker.rs', file_type: 'code', source_file: filePath },
+            { id: 'stale_rust_outer', label: 'outer', file_type: 'code', source_file: filePath },
+            { id: 'stale_rust_inner', label: 'inner', file_type: 'code', source_file: filePath },
+            { id: 'stale_rust_boot', label: 'boot()', file_type: 'code', source_file: filePath },
+            { id: 'stale_rust_run', label: 'run()', file_type: 'code', source_file: filePath },
+          ],
+          edges: [
+            { source: 'stale_rust_file', target: 'stale_rust_outer', relation: 'contains' },
+            { source: 'stale_rust_outer', target: 'stale_rust_inner', relation: 'contains' },
+            { source: 'stale_rust_inner', target: 'stale_rust_boot', relation: 'contains' },
+          ],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([filePath])
+      const fileId = recovered.nodes.find((node) => node.label === 'worker.rs')?.id
+      const topLevelRunId = recovered.edges.find((edge) => edge.source === fileId && edge.relation === 'contains' && recovered.nodes.find((node) => node.id === edge.target)?.label === 'run()')?.target
+      const outerId = recovered.nodes.find((node) => node.label === 'outer')?.id
+      const innerId = recovered.edges.find((edge) => edge.source === outerId && edge.relation === 'contains' && recovered.nodes.find((node) => node.id === edge.target)?.label === 'inner')?.target
+      const outerRunId = recovered.edges.find((edge) => edge.source === outerId && edge.relation === 'contains' && recovered.nodes.find((node) => node.id === edge.target)?.label === 'run()')?.target
+      const bootId = recovered.edges.find((edge) => edge.source === innerId && edge.relation === 'contains' && recovered.nodes.find((node) => node.id === edge.target)?.label === 'boot()')?.target
+
+      expect(topLevelRunId).toBeTruthy()
+      expect(outerRunId).toBeTruthy()
+      expect(bootId).toBeTruthy()
+      expect(recovered.edges.some((edge) => edge.source === bootId && edge.target === outerRunId && edge.relation === 'calls')).toBe(true)
+      expect(recovered.edges.some((edge) => edge.source === bootId && edge.target === topLevelRunId && edge.relation === 'calls')).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached rust extractions from the pre-rust-missing-anchor-only-relative-call cache version', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'worker.rs')
+      writeFileSync(
+        filePath,
+        [
+          'fn run() {}',
+          'mod outer {',
+          '  mod inner {',
+          '    pub fn boot() {',
+          '      super::run();',
+          '    }',
+          '  }',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const cachePath = join(cacheDir(), `${fileHash(filePath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 56,
+          nodes: [
+            { id: 'stale_rust_file', label: 'worker.rs', file_type: 'code', source_file: filePath },
+            { id: 'stale_rust_boot', label: 'boot()', file_type: 'code', source_file: filePath },
+            { id: 'stale_rust_run', label: 'run()', file_type: 'code', source_file: filePath },
+          ],
+          edges: [{ source: 'stale_rust_boot', target: 'stale_rust_run', relation: 'calls' }],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([filePath])
+      const bootId = recovered.nodes.find((node) => node.label === 'boot()')?.id
+      const runId = recovered.nodes.find((node) => node.label === 'run()')?.id
+
+      expect(bootId).toBeTruthy()
+      expect(runId).toBeTruthy()
+      expect(recovered.edges.some((edge) => edge.source === bootId && edge.target === runId && edge.relation === 'calls')).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached rust extractions from the pre-rust-imported-trait cache version', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'worker.rs')
+      writeFileSync(
+        filePath,
+        [
+          'mod traits {',
+          '  pub trait Runner {',
+          '    fn run(&self);',
+          '  }',
+          '}',
+          'use crate::traits::Runner;',
+          'struct Worker {}',
+          'impl Runner for Worker {',
+          '  fn run(&self) {}',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const cachePath = join(cacheDir(), `${fileHash(filePath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 53,
+          nodes: [
+            { id: 'stale_rust_file', label: 'worker.rs', file_type: 'code', source_file: filePath },
+            { id: 'stale_rust_traits', label: 'traits', file_type: 'code', source_file: filePath },
+            { id: 'stale_rust_runner_import', label: 'Runner', file_type: 'code', source_file: filePath },
+            { id: 'stale_rust_runner_module', label: 'Runner', file_type: 'code', source_file: filePath },
+            { id: 'stale_rust_worker', label: 'Worker', file_type: 'code', source_file: filePath },
+          ],
+          edges: [
+            { source: 'stale_rust_file', target: 'stale_rust_traits', relation: 'contains' },
+            { source: 'stale_rust_traits', target: 'stale_rust_runner_module', relation: 'contains' },
+            { source: 'stale_rust_file', target: 'stale_rust_runner_import', relation: 'contains' },
+            { source: 'stale_rust_worker', target: 'stale_rust_runner_import', relation: 'inherits' },
+          ],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([filePath])
+      const fileId = recovered.nodes.find((node) => node.label === 'worker.rs')?.id
+      const traitsId = recovered.nodes.find((node) => node.label === 'traits')?.id
+      const runnerNodes = recovered.nodes.filter((node) => node.label === 'Runner')
+      const runnerId = recovered.edges.find((edge) => edge.source === traitsId && edge.relation === 'contains' && runnerNodes.some((node) => node.id === edge.target))?.target
+      const workerId = recovered.nodes.find((node) => node.label === 'Worker')?.id
+
+      expect(runnerNodes).toHaveLength(1)
+      expect(runnerId).toBeTruthy()
+      expect(workerId).toBeTruthy()
+      expect(recovered.edges.some((edge) => edge.source === fileId && edge.target === runnerId && edge.relation === 'contains')).toBe(false)
+      expect(recovered.edges.some((edge) => edge.source === workerId && edge.target === runnerId && edge.relation === 'inherits')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached rust extractions from the pre-ast-foundation cache version', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'worker.rs')
+      writeFileSync(
+        filePath,
+        [
+          'mod engine {',
+          '  pub struct Worker {}',
+          '  impl Worker {',
+          '    pub fn run(&self) {',
+          '      self.helper();',
+          '    }',
+          '    fn helper(&self) {}',
+          '  }',
+          '}',
+          'pub use crate::engine::Worker;',
+          'fn boot() {',
+          '  Worker::run();',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const cachePath = join(cacheDir(), `${fileHash(filePath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 45,
+          nodes: [
+            { id: 'stale_rust_file', label: 'worker.rs', file_type: 'code', source_file: filePath },
+            { id: 'stale_rust_worker', label: 'Worker', file_type: 'code', source_file: filePath },
+          ],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([filePath])
+      const fileId = recovered.nodes.find((node) => node.label === 'worker.rs')?.id
+      const moduleId = recovered.nodes.find((node) => node.label === 'engine')?.id
+      const workerId = recovered.nodes.find((node) => node.label === 'Worker')?.id
+
+      expect(moduleId).toBeTruthy()
+      expect(workerId).toBeTruthy()
+      expect(recovered.edges.some((edge) => edge.source === fileId && edge.target === moduleId && edge.relation === 'contains')).toBe(true)
+      expect(recovered.edges.some((edge) => edge.source === fileId && edge.target === workerId && edge.relation === 'imports_from')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached rust extractions from the pre-rust-inherent-impl-trait cache version', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'worker.rs')
+      writeFileSync(
+        filePath,
+        [
+          'mod engine {',
+          '  pub struct Worker {}',
+          '  impl Worker {',
+          '    fn run(&self) {}',
+          '  }',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const cachePath = join(cacheDir(), `${fileHash(filePath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 52,
+          nodes: [
+            { id: 'stale_rust_file', label: 'worker.rs', file_type: 'code', source_file: filePath },
+            { id: 'stale_rust_engine', label: 'engine', file_type: 'code', source_file: filePath },
+            { id: 'stale_rust_worker', label: 'Worker', file_type: 'code', source_file: filePath },
+          ],
+          edges: [
+            { source: 'stale_rust_file', target: 'stale_rust_engine', relation: 'contains' },
+            { source: 'stale_rust_engine', target: 'stale_rust_worker', relation: 'contains' },
+            { source: 'stale_rust_worker', target: 'stale_rust_worker', relation: 'inherits' },
+          ],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([filePath])
+      const engineId = recovered.nodes.find((node) => node.label === 'engine')?.id
+      const workerId = recovered.edges.find((edge) => edge.source === engineId && edge.relation === 'contains' && recovered.nodes.find((node) => node.id === edge.target)?.label === 'Worker')?.target
+
+      expect(workerId).toBeTruthy()
+      expect(recovered.edges.some((edge) => edge.source === workerId && edge.target === workerId && edge.relation === 'inherits')).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached rust extractions from the pre-rust-trait-conformance cache version', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'worker.rs')
+      writeFileSync(
+        filePath,
+        [
+          'mod engine {',
+          '  pub trait Runner {',
+          '    fn run(&self);',
+          '  }',
+          '  pub struct Worker {}',
+          '  impl Runner for Worker {',
+          '    fn run(&self) {}',
+          '  }',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const cachePath = join(cacheDir(), `${fileHash(filePath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 51,
+          nodes: [
+            { id: 'stale_rust_file', label: 'worker.rs', file_type: 'code', source_file: filePath },
+            { id: 'stale_rust_engine', label: 'engine', file_type: 'code', source_file: filePath },
+            { id: 'stale_rust_worker', label: 'Worker', file_type: 'code', source_file: filePath },
+          ],
+          edges: [
+            { source: 'stale_rust_file', target: 'stale_rust_engine', relation: 'contains' },
+            { source: 'stale_rust_engine', target: 'stale_rust_worker', relation: 'contains' },
+          ],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([filePath])
+      const engineId = recovered.nodes.find((node) => node.label === 'engine')?.id
+      const runnerId = recovered.edges.find((edge) => edge.source === engineId && edge.relation === 'contains' && recovered.nodes.find((node) => node.id === edge.target)?.label === 'Runner')?.target
+      const workerId = recovered.edges.find((edge) => edge.source === engineId && edge.relation === 'contains' && recovered.nodes.find((node) => node.id === edge.target)?.label === 'Worker')?.target
+
+      expect(runnerId).toBeTruthy()
+      expect(workerId).toBeTruthy()
+      expect(recovered.edges.some((edge) => edge.source === workerId && edge.target === runnerId && edge.relation === 'inherits')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts rust generic impl methods under the owner type and keeps self calls on that owner', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'worker.rs')
+      writeFileSync(
+        filePath,
+        [
+          'struct Worker<T> {}',
+          'impl<T> Worker<T> {',
+          '  fn run(&self) {',
+          '    self.helper();',
+          '  }',
+          '  fn helper(&self) {}',
+          '}',
+          'struct Other {}',
+          'impl Other {',
+          '  fn helper(&self) {}',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([filePath])
+      const workerId = result.nodes.find((node) => node.label === 'Worker')?.id
+      const otherId = result.nodes.find((node) => node.label === 'Other')?.id
+      const workerMethodEdges = result.edges.filter((edge) => edge.source === workerId && edge.relation === 'method')
+      const otherMethodEdges = result.edges.filter((edge) => edge.source === otherId && edge.relation === 'method')
+      const workerRunId = workerMethodEdges.find((edge) => result.nodes.find((node) => node.id === edge.target)?.label === '.run()')?.target
+      const workerHelperId = workerMethodEdges.find((edge) => result.nodes.find((node) => node.id === edge.target)?.label === '.helper()')?.target
+      const otherHelperId = otherMethodEdges.find((edge) => result.nodes.find((node) => node.id === edge.target)?.label === '.helper()')?.target
+
+      expect(workerId).toBeTruthy()
+      expect(otherId).toBeTruthy()
+      expect(workerMethodEdges).toHaveLength(2)
+      expect(workerRunId).toBeTruthy()
+      expect(workerHelperId).toBeTruthy()
+      expect(otherHelperId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === workerRunId && edge.target === workerHelperId && edge.relation === 'calls')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === workerRunId && edge.target === otherHelperId && edge.relation === 'calls')).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts nested rust module ownership without merging same-named types', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'worker.rs')
+      writeFileSync(
+        filePath,
+        [
+          'mod alpha {',
+          '  pub struct Worker {}',
+          '  impl Worker {',
+          '    pub fn run(&self) {}',
+          '  }',
+          '}',
+          'mod beta {',
+          '  pub struct Worker {}',
+          '  impl Worker {',
+          '    pub fn run(&self) {}',
+          '  }',
+          '}',
+          'fn boot_alpha() {',
+          '  alpha::Worker::run();',
+          '}',
+          'fn boot_beta() {',
+          '  beta::Worker::run();',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([filePath])
+      const alphaId = result.nodes.find((node) => node.label === 'alpha')?.id
+      const betaId = result.nodes.find((node) => node.label === 'beta')?.id
+      const workerNodes = result.nodes.filter((node) => node.label === 'Worker')
+      const alphaWorkerId = result.edges.find((edge) => edge.source === alphaId && edge.relation === 'contains' && workerNodes.some((node) => node.id === edge.target))?.target
+      const betaWorkerId = result.edges.find((edge) => edge.source === betaId && edge.relation === 'contains' && workerNodes.some((node) => node.id === edge.target))?.target
+      const alphaRunId = result.edges.find((edge) => edge.source === alphaWorkerId && edge.relation === 'method')?.target
+      const betaRunId = result.edges.find((edge) => edge.source === betaWorkerId && edge.relation === 'method')?.target
+      const bootAlphaId = result.nodes.find((node) => node.label === 'boot_alpha()')?.id
+      const bootBetaId = result.nodes.find((node) => node.label === 'boot_beta()')?.id
+
+      expect(workerNodes).toHaveLength(2)
+      expect(alphaWorkerId).toBeTruthy()
+      expect(betaWorkerId).toBeTruthy()
+      expect(alphaWorkerId).not.toBe(betaWorkerId)
+      expect(alphaRunId).toBeTruthy()
+      expect(betaRunId).toBeTruthy()
+      expect(alphaRunId).not.toBe(betaRunId)
+      expect(result.edges.some((edge) => edge.source === bootAlphaId && edge.target === alphaRunId && edge.relation === 'calls')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === bootBetaId && edge.target === betaRunId && edge.relation === 'calls')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === bootAlphaId && edge.target === betaRunId && edge.relation === 'calls')).toBe(false)
+      expect(result.edges.some((edge) => edge.source === bootBetaId && edge.target === alphaRunId && edge.relation === 'calls')).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts grouped rust use imports without adding false prefix import edges', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'worker.rs')
+      writeFileSync(
+        filePath,
+        [
+          'mod engine {',
+          '  pub struct Foo {}',
+          '  pub struct Bar {}',
+          '}',
+          'use crate::engine::{Foo, Bar};',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([filePath])
+      const fileId = result.nodes.find((node) => node.label === 'worker.rs')?.id
+      const fooId = result.nodes.find((node) => node.label === 'Foo')?.id
+      const barId = result.nodes.find((node) => node.label === 'Bar')?.id
+      const engineId = result.nodes.find((node) => node.label === 'engine')?.id
+
+      expect(result.edges.some((edge) => edge.source === fileId && edge.target === fooId && edge.relation === 'imports_from')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === fileId && edge.target === barId && edge.relation === 'imports_from')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === fileId && edge.target === engineId && edge.relation === 'imports_from')).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached rust extractions from the pre-rust-namespaced-owner cache version', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'worker.rs')
+      writeFileSync(
+        filePath,
+        [
+          'mod alpha {',
+          '  pub struct Worker {}',
+          '  impl Worker {',
+          '    pub fn run(&self) {}',
+          '  }',
+          '}',
+          'mod beta {',
+          '  pub struct Worker {}',
+          '  impl Worker {',
+          '    pub fn run(&self) {}',
+          '  }',
+          '}',
+          'fn boot_alpha() {',
+          '  alpha::Worker::run();',
+          '}',
+          'fn boot_beta() {',
+          '  beta::Worker::run();',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const cachePath = join(cacheDir(), `${fileHash(filePath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 46,
+          nodes: [
+            { id: 'stale_rust_file', label: 'worker.rs', file_type: 'code', source_file: filePath },
+            { id: 'stale_rust_worker', label: 'Worker', file_type: 'code', source_file: filePath },
+          ],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([filePath])
+      const alphaId = recovered.nodes.find((node) => node.label === 'alpha')?.id
+      const betaId = recovered.nodes.find((node) => node.label === 'beta')?.id
+      const workerNodes = recovered.nodes.filter((node) => node.label === 'Worker')
+      const alphaWorkerId = recovered.edges.find((edge) => edge.source === alphaId && edge.relation === 'contains' && workerNodes.some((node) => node.id === edge.target))?.target
+      const betaWorkerId = recovered.edges.find((edge) => edge.source === betaId && edge.relation === 'contains' && workerNodes.some((node) => node.id === edge.target))?.target
+
+      expect(workerNodes).toHaveLength(2)
+      expect(alphaWorkerId).toBeTruthy()
+      expect(betaWorkerId).toBeTruthy()
+      expect(alphaWorkerId).not.toBe(betaWorkerId)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts rust imports and calls when use declarations appear before the local module owner', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'worker.rs')
+      writeFileSync(
+        filePath,
+        [
+          'use crate::engine::Worker;',
+          'mod engine {',
+          '  pub struct Worker {}',
+          '  impl Worker {',
+          '    pub fn run(&self) {}',
+          '  }',
+          '}',
+          'fn boot() {',
+          '  Worker::run();',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([filePath])
+      const fileId = result.nodes.find((node) => node.label === 'worker.rs')?.id
+      const engineId = result.nodes.find((node) => node.label === 'engine')?.id
+      const workerId = result.edges.find((edge) => edge.source === engineId && edge.relation === 'contains')?.target
+      const runId = result.edges.find((edge) => edge.source === workerId && edge.relation === 'method')?.target
+      const bootId = result.nodes.find((node) => node.label === 'boot()')?.id
+
+      expect(workerId).toBeTruthy()
+      expect(runId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === fileId && edge.target === workerId && edge.relation === 'imports_from')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === bootId && edge.target === runId && edge.relation === 'calls')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('emits nested rust imports_from edges from the importing module instead of the file', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'worker.rs')
+      writeFileSync(
+        filePath,
+        [
+          'mod api {',
+          '  pub struct Worker {}',
+          '  impl Worker {',
+          '    pub fn run(&self) {}',
+          '  }',
+          '}',
+          'mod client {',
+          '  use crate::api::Worker;',
+          '  pub fn boot() {',
+          '    Worker::run();',
+          '  }',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([filePath])
+      const fileId = result.nodes.find((node) => node.label === 'worker.rs')?.id
+      const apiId = result.nodes.find((node) => node.label === 'api')?.id
+      const clientId = result.nodes.find((node) => node.label === 'client')?.id
+      const workerId = result.edges.find((edge) => edge.source === apiId && edge.relation === 'contains' && result.nodes.find((node) => node.id === edge.target)?.label === 'Worker')?.target
+      const runId = result.edges.find((edge) => edge.source === workerId && edge.relation === 'method' && result.nodes.find((node) => node.id === edge.target)?.label === '.run()')?.target
+      const bootId = result.edges.find((edge) => edge.source === clientId && edge.relation === 'contains' && result.nodes.find((node) => node.id === edge.target)?.label === 'boot()')?.target
+
+      expect(clientId).toBeTruthy()
+      expect(workerId).toBeTruthy()
+      expect(runId).toBeTruthy()
+      expect(bootId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === clientId && edge.target === workerId && edge.relation === 'imports_from')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === fileId && edge.target === workerId && edge.relation === 'imports_from')).toBe(false)
+      expect(result.edges.some((edge) => edge.source === bootId && edge.target === runId && edge.relation === 'calls')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached rust extractions from the pre-rust-import-order cache version', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'worker.rs')
+      writeFileSync(
+        filePath,
+        [
+          'use crate::engine::Worker;',
+          'mod engine {',
+          '  pub struct Worker {}',
+          '  impl Worker {',
+          '    pub fn run(&self) {}',
+          '  }',
+          '}',
+          'fn boot() {',
+          '  Worker::run();',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const cachePath = join(cacheDir(), `${fileHash(filePath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 47,
+          nodes: [
+            { id: 'stale_rust_file', label: 'worker.rs', file_type: 'code', source_file: filePath },
+            { id: 'stale_rust_worker', label: 'Worker', file_type: 'code', source_file: filePath },
+          ],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([filePath])
+      const fileId = recovered.nodes.find((node) => node.label === 'worker.rs')?.id
+      const engineId = recovered.nodes.find((node) => node.label === 'engine')?.id
+      const workerId = recovered.edges.find((edge) => edge.source === engineId && edge.relation === 'contains')?.target
+
+      expect(workerId).toBeTruthy()
+      expect(recovered.edges.some((edge) => edge.source === fileId && edge.target === workerId && edge.relation === 'imports_from')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts qualified rust impl owners onto the existing namespaced type', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'worker.rs')
+      writeFileSync(
+        filePath,
+        [
+          'mod engine {',
+          '  pub struct Worker {}',
+          '}',
+          'impl crate::engine::Worker {',
+          '  fn run(&self) {}',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([filePath])
+      const engineId = result.nodes.find((node) => node.label === 'engine')?.id
+      const workerNodes = result.nodes.filter((node) => node.label === 'Worker')
+      const workerId = result.edges.find((edge) => edge.source === engineId && edge.relation === 'contains' && workerNodes.some((node) => node.id === edge.target))?.target
+      const runId = result.edges.find((edge) => edge.source === workerId && edge.relation === 'method')?.target
+
+      expect(workerNodes).toHaveLength(1)
+      expect(workerId).toBeTruthy()
+      expect(runId).toBeTruthy()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts qualified rust impl owners before the namespaced type declaration without duplicate owners', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'worker.rs')
+      writeFileSync(
+        filePath,
+        [
+          'impl crate::engine::Worker {',
+          '  fn run(&self) {}',
+          '}',
+          'mod engine {',
+          '  pub struct Worker {}',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([filePath])
+      const engineId = result.nodes.find((node) => node.label === 'engine')?.id
+      const workerNodes = result.nodes.filter((node) => node.label === 'Worker')
+      const workerId = result.edges.find((edge) => edge.source === engineId && edge.relation === 'contains' && workerNodes.some((node) => node.id === edge.target))?.target
+      const runId = result.edges.find((edge) => edge.source === workerId && edge.relation === 'method')?.target
+
+      expect(workerNodes).toHaveLength(1)
+      expect(workerId).toBeTruthy()
+      expect(runId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === result.nodes.find((node) => node.label === 'worker.rs')?.id && edge.target === workerId && edge.relation === 'contains')).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('does not resolve rust variable receiver calls onto unrelated local types', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'worker.rs')
+      writeFileSync(
+        filePath,
+        [
+          'struct Worker {}',
+          'impl Worker {',
+          '  fn run(&self) {}',
+          '}',
+          'fn boot(client: ApiClient) {',
+          '  client.run();',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([filePath])
+      const bootId = result.nodes.find((node) => node.label === 'boot()')?.id
+      const runId = result.nodes.find((node) => node.label === '.run()')?.id
+
+      expect(bootId).toBeTruthy()
+      expect(runId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === bootId && edge.target === runId && edge.relation === 'calls')).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('does not resolve qualified rust module calls onto unrelated free functions', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'worker.rs')
+      writeFileSync(
+        filePath,
+        [
+          'mod api {',
+          '  pub fn helper() {}',
+          '}',
+          'fn run() {}',
+          'fn boot() {',
+          '  api::run();',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([filePath])
+      const bootId = result.nodes.find((node) => node.label === 'boot()')?.id
+      const runId = result.nodes.find((node) => node.label === 'run()')?.id
+
+      expect(bootId).toBeTruthy()
+      expect(runId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === bootId && edge.target === runId && edge.relation === 'calls')).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached rust extractions from the pre-rust-qualified-impl cache version', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'worker.rs')
+      writeFileSync(
+        filePath,
+        [
+          'mod engine {',
+          '  pub struct Worker {}',
+          '}',
+          'impl crate::engine::Worker {',
+          '  fn run(&self) {}',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const cachePath = join(cacheDir(), `${fileHash(filePath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 48,
+          nodes: [
+            { id: 'stale_rust_file', label: 'worker.rs', file_type: 'code', source_file: filePath },
+            { id: 'stale_rust_worker', label: 'Worker', file_type: 'code', source_file: filePath },
+          ],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([filePath])
+      const engineId = recovered.nodes.find((node) => node.label === 'engine')?.id
+      const workerNodes = recovered.nodes.filter((node) => node.label === 'Worker')
+      const workerId = recovered.edges.find((edge) => edge.source === engineId && edge.relation === 'contains' && workerNodes.some((node) => node.id === edge.target))?.target
+
+      expect(workerNodes).toHaveLength(1)
+      expect(workerId).toBeTruthy()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached rust extractions from the pre-rust-qualified-ordering cache version', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'worker.rs')
+      writeFileSync(
+        filePath,
+        [
+          'mod api {',
+          '  pub fn helper() {}',
+          '}',
+          'fn run() {}',
+          'fn boot() {',
+          '  api::run();',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const cachePath = join(cacheDir(), `${fileHash(filePath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 50,
+          nodes: [
+            { id: 'stale_rust_file', label: 'worker.rs', file_type: 'code', source_file: filePath },
+            { id: 'stale_rust_boot', label: 'boot()', file_type: 'code', source_file: filePath },
+            { id: 'stale_rust_run', label: 'run()', file_type: 'code', source_file: filePath },
+          ],
+          edges: [{ source: 'stale_rust_boot', target: 'stale_rust_run', relation: 'calls' }],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([filePath])
+      const bootId = recovered.nodes.find((node) => node.label === 'boot()')?.id
+      const runId = recovered.nodes.find((node) => node.label === 'run()')?.id
+
+      expect(bootId).toBeTruthy()
+      expect(runId).toBeTruthy()
+      expect(recovered.edges.some((edge) => edge.source === bootId && edge.target === runId && edge.relation === 'calls')).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts rust local namespaced type calls inside the current module', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'worker.rs')
+      writeFileSync(
+        filePath,
+        [
+          'mod alpha {',
+          '  pub struct Worker {}',
+          '  impl Worker {',
+          '    pub fn run(&self) {}',
+          '  }',
+          '  fn boot() {',
+          '    Worker::run();',
+          '  }',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([filePath])
+      const alphaId = result.nodes.find((node) => node.label === 'alpha')?.id
+      const workerId = result.edges.find((edge) => edge.source === alphaId && edge.relation === 'contains' && result.nodes.find((node) => node.id === edge.target)?.label === 'Worker')?.target
+      const runId = result.edges.find((edge) => edge.source === workerId && edge.relation === 'method')?.target
+      const bootId = result.edges.find((edge) => edge.source === alphaId && edge.relation === 'contains' && result.nodes.find((node) => node.id === edge.target)?.label === 'boot()')?.target
+
+      expect(workerId).toBeTruthy()
+      expect(runId).toBeTruthy()
+      expect(bootId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === bootId && edge.target === runId && edge.relation === 'calls')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('does not resolve aliased rust use calls onto unrelated local methods', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'worker.rs')
+      writeFileSync(
+        filePath,
+        [
+          'mod engine {',
+          '  pub struct Worker {}',
+          '}',
+          'use crate::engine::Worker as Client;',
+          'struct Other {}',
+          'impl Other {',
+          '  fn run(&self) {}',
+          '}',
+          'fn boot() {',
+          '  Client::run();',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([filePath])
+      const bootId = result.nodes.find((node) => node.label === 'boot()')?.id
+      const otherRunId = result.edges.find((edge) => edge.relation === 'method' && result.nodes.find((node) => node.id === edge.target)?.label === '.run()')?.target
+
+      expect(bootId).toBeTruthy()
+      expect(otherRunId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === bootId && edge.target === otherRunId && edge.relation === 'calls')).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached rust extractions from the pre-rust-local-namespace cache version', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'worker.rs')
+      writeFileSync(
+        filePath,
+        [
+          'mod alpha {',
+          '  pub struct Worker {}',
+          '  impl Worker {',
+          '    pub fn run(&self) {}',
+          '  }',
+          '  fn boot() {',
+          '    Worker::run();',
+          '  }',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const cachePath = join(cacheDir(), `${fileHash(filePath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 49,
+          nodes: [
+            { id: 'stale_rust_file', label: 'worker.rs', file_type: 'code', source_file: filePath },
+            { id: 'stale_rust_alpha', label: 'alpha', file_type: 'code', source_file: filePath },
+          ],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([filePath])
+      const alphaId = recovered.nodes.find((node) => node.label === 'alpha')?.id
+      const workerId = recovered.edges.find((edge) => edge.source === alphaId && edge.relation === 'contains' && recovered.nodes.find((node) => node.id === edge.target)?.label === 'Worker')?.target
+      const runId = recovered.edges.find((edge) => edge.source === workerId && edge.relation === 'method')?.target
+      const bootId = recovered.edges.find((edge) => edge.source === alphaId && edge.relation === 'contains' && recovered.nodes.find((node) => node.id === edge.target)?.label === 'boot()')?.target
+
+      expect(workerId).toBeTruthy()
+      expect(runId).toBeTruthy()
+      expect(bootId).toBeTruthy()
+      expect(recovered.edges.some((edge) => edge.source === bootId && edge.target === runId && edge.relation === 'calls')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached rust extractions from the pre-rust-nested-import-scope cache version', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'worker.rs')
+      writeFileSync(
+        filePath,
+        [
+          'mod api {',
+          '  pub struct Worker {}',
+          '  impl Worker {',
+          '    pub fn run(&self) {}',
+          '  }',
+          '}',
+          'mod client {',
+          '  use crate::api::Worker;',
+          '  pub fn boot() {',
+          '    Worker::run();',
+          '  }',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const cachePath = join(cacheDir(), `${fileHash(filePath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 58,
+          nodes: [
+            { id: 'stale_rust_file', label: 'worker.rs', file_type: 'code', source_file: filePath },
+            { id: 'stale_rust_api', label: 'api', file_type: 'code', source_file: filePath },
+            { id: 'stale_rust_client', label: 'client', file_type: 'code', source_file: filePath },
+            { id: 'stale_rust_worker', label: 'Worker', file_type: 'code', source_file: filePath },
+            { id: 'stale_rust_boot', label: 'boot()', file_type: 'code', source_file: filePath },
+            { id: 'stale_rust_run', label: '.run()', file_type: 'code', source_file: filePath },
+          ],
+          edges: [
+            { source: 'stale_rust_file', target: 'stale_rust_api', relation: 'contains' },
+            { source: 'stale_rust_file', target: 'stale_rust_client', relation: 'contains' },
+            { source: 'stale_rust_api', target: 'stale_rust_worker', relation: 'contains' },
+            { source: 'stale_rust_client', target: 'stale_rust_boot', relation: 'contains' },
+            { source: 'stale_rust_file', target: 'stale_rust_worker', relation: 'imports_from' },
+          ],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([filePath])
+      const fileId = recovered.nodes.find((node) => node.label === 'worker.rs')?.id
+      const apiId = recovered.nodes.find((node) => node.label === 'api')?.id
+      const clientId = recovered.nodes.find((node) => node.label === 'client')?.id
+      const workerId = recovered.edges.find((edge) => edge.source === apiId && edge.relation === 'contains' && recovered.nodes.find((node) => node.id === edge.target)?.label === 'Worker')?.target
+      const runId = recovered.edges.find((edge) => edge.source === workerId && edge.relation === 'method' && recovered.nodes.find((node) => node.id === edge.target)?.label === '.run()')?.target
+      const bootId = recovered.edges.find((edge) => edge.source === clientId && edge.relation === 'contains' && recovered.nodes.find((node) => node.id === edge.target)?.label === 'boot()')?.target
+
+      expect(clientId).toBeTruthy()
+      expect(workerId).toBeTruthy()
+      expect(runId).toBeTruthy()
+      expect(bootId).toBeTruthy()
+      expect(recovered.edges.some((edge) => edge.source === clientId && edge.target === workerId && edge.relation === 'imports_from')).toBe(true)
+      expect(recovered.edges.some((edge) => edge.source === fileId && edge.target === workerId && edge.relation === 'imports_from')).toBe(false)
+      expect(recovered.edges.some((edge) => edge.source === bootId && edge.target === runId && edge.relation === 'calls')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts grouped rust use imports with qualified leaves under the outer namespace', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'worker.rs')
+      writeFileSync(
+        filePath,
+        [
+          'mod engine {',
+          '  mod nested {',
+          '    pub struct Worker {}',
+          '  }',
+          '  pub struct Bar {}',
+          '}',
+          'use crate::engine::{nested::Worker, Bar};',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([filePath])
+      const fileId = result.nodes.find((node) => node.label === 'worker.rs')?.id
+      const engineId = result.nodes.find((node) => node.label === 'engine')?.id
+      const nestedId = result.edges.find((edge) => edge.source === engineId && edge.relation === 'contains' && result.nodes.find((node) => node.id === edge.target)?.label === 'nested')?.target
+      const workerId = result.edges.find((edge) => edge.source === nestedId && edge.relation === 'contains' && result.nodes.find((node) => node.id === edge.target)?.label === 'Worker')?.target
+      const barId = result.edges.find((edge) => edge.source === engineId && edge.relation === 'contains' && result.nodes.find((node) => node.id === edge.target)?.label === 'Bar')?.target
+
+      expect(workerId).toBeTruthy()
+      expect(barId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === fileId && edge.target === workerId && edge.relation === 'imports_from')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === fileId && edge.target === barId && edge.relation === 'imports_from')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('extracts qualified c++ methods under their owner type', () => {
     const root = createTempRoot()
     try {
@@ -3589,6 +5141,199 @@ describe('extract', () => {
     }
   })
 
+  it('clears stale Matroska/WebM audio-track metadata when a later top-level Tracks element is video-only and bounded by a trailing child without SeekHead help', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'top-level-tracks-trailing-child-clear-audio.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: false,
+        interstitialSegmentBytes: 600_000,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        trailingTracksChildBytes: 65_536,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-tracks-trailing-child-clear-audio.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(mkvNode).not.toHaveProperty('audio_sample_rate_hz')
+      expect(mkvNode).not.toHaveProperty('audio_channel_count')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('clears stale Matroska/WebM video-dimension metadata when a later top-level Tracks element is audio-only and bounded by a trailing child without SeekHead help', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'top-level-tracks-trailing-child-clear-video.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        interstitialSegmentBytes: 600_000,
+        finalTracksAudioOnly: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        trailingTracksChildBytes: 65_536,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-tracks-trailing-child-clear-video.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(mkvNode).not.toHaveProperty('video_width_px')
+      expect(mkvNode).not.toHaveProperty('video_height_px')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('replaces stale Matroska/WebM track metadata when a later top-level Tracks element is corrected and bounded by a trailing child without SeekHead help', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'top-level-tracks-trailing-child-corrective.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        interstitialSegmentBytes: 600_000,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        trailingTracksChildBytes: 65_536,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-tracks-trailing-child-corrective.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps stale Matroska/WebM track metadata when a later top-level Tracks element is followed by an overrun trailing child without SeekHead help', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'top-level-tracks-trailing-child-overrun-stale.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        interstitialSegmentBytes: 600_000,
+        finalTracksAudioOnly: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        malformedTrailingTracksChildBytes: 65_536,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-tracks-trailing-child-overrun-stale.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        video_width_px: 5,
+        video_height_px: 2,
+        audio_sample_rate_hz: 8_000,
+        audio_channel_count: 1,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps stale Matroska/WebM track metadata when a later top-level Tracks element is followed by a truncated trailing child header without SeekHead help', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'top-level-tracks-trailing-child-truncated-stale.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        interstitialSegmentBytes: 600_000,
+        finalTracksAudioOnly: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        truncatedTrailingTracksChildHeader: true,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-tracks-trailing-child-truncated-stale.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        video_width_px: 5,
+        video_height_px: 2,
+        audio_sample_rate_hz: 8_000,
+        audio_channel_count: 1,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('clears stale Matroska/WebM duration metadata when a later top-level Info element omits duration without SeekHead help', () => {
     const root = createTempRoot()
     try {
@@ -3715,6 +5460,114 @@ describe('extract', () => {
 
       const result = extract([mkvPath])
       const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-info-trailing-child-invalid-overrun-stale.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 1.5,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps stale Matroska/WebM duration metadata when a later top-level Info element omits duration and is followed by an overrun trailing child without SeekHead help', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'top-level-info-trailing-child-omitted-overrun-stale.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        interstitialSegmentBytes: 600_000,
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        omitDuration: true,
+        malformedTrailingInfoChildBytes: 65_536,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-info-trailing-child-omitted-overrun-stale.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 1.5,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps stale Matroska/WebM duration metadata when a later top-level Info element omits duration and is followed by a truncated trailing child header without SeekHead help', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'top-level-info-trailing-child-omitted-truncated-stale.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        interstitialSegmentBytes: 600_000,
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        omitDuration: true,
+        truncatedTrailingInfoChildHeader: true,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-info-trailing-child-omitted-truncated-stale.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 1.5,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps stale Matroska/WebM duration metadata when a later top-level Info element has malformed Duration followed by a truncated trailing child header without SeekHead help', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'top-level-info-trailing-child-invalid-truncated-stale.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        interstitialSegmentBytes: 600_000,
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        malformedDuration: true,
+        truncatedTrailingInfoChildHeader: true,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-info-trailing-child-invalid-truncated-stale.mkv')
 
       expect(mkvNode).toMatchObject({
         content_type: 'video/x-matroska',

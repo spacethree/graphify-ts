@@ -975,6 +975,647 @@ describe('generateGraph', () => {
     })
   })
 
+  test('builds graph artifacts for rust module ownership and pub use imports with method calls', () => {
+    withTempDir((tempDir) => {
+      writeFileSync(
+        join(tempDir, 'worker.rs'),
+        [
+          'mod engine {',
+          '  pub struct Worker {}',
+          '  impl Worker {',
+          '    pub fn run(&self) {',
+          '      self.helper();',
+          '    }',
+          '    fn helper(&self) {}',
+          '  }',
+          '}',
+          'pub use crate::engine::Worker;',
+          'fn boot() {',
+          '  Worker::run();',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+        links: Array<{ source: string; target: string; relation: string }>
+      }
+      const fileNode = graphData.nodes.find((node) => node.label === 'worker.rs')
+      const moduleNode = graphData.nodes.find((node) => node.label === 'engine')
+      const workerNode = graphData.nodes.find((node) => node.label === 'Worker')
+
+      expect(result.codeFiles).toBe(1)
+      expect(moduleNode).toBeTruthy()
+      expect(workerNode).toBeTruthy()
+      expect(graphData.nodes.some((node) => node.label === '.run()')).toBe(true)
+      expect(graphData.nodes.some((node) => node.label === '.helper()')).toBe(true)
+      expect(graphData.nodes.some((node) => node.label === 'boot()')).toBe(true)
+      expect(graphData.links.some((edge) => edge.source === fileNode?.id && edge.target === moduleNode?.id && edge.relation === 'contains')).toBe(true)
+      expect(graphData.links.some((edge) => edge.source === moduleNode?.id && edge.target === workerNode?.id && edge.relation === 'contains')).toBe(true)
+      expect(graphData.links.some((edge) => edge.source === fileNode?.id && edge.target === workerNode?.id && edge.relation === 'imports_from')).toBe(true)
+    })
+  })
+
+  test('builds graph artifacts for rust trait signatures and impl conformance edges inside a module', () => {
+    withTempDir((tempDir) => {
+      writeFileSync(
+        join(tempDir, 'worker.rs'),
+        [
+          'mod engine {',
+          '  pub trait Runner {',
+          '    fn run(&self);',
+          '  }',
+          '  pub struct Worker {}',
+          '  impl Runner for Worker {',
+          '    fn run(&self) {}',
+          '  }',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+        links: Array<{ source: string; target: string; relation: string }>
+      }
+      const engineNode = graphData.nodes.find((node) => node.label === 'engine')
+      const runnerId = graphData.links.find((edge) => edge.source === engineNode?.id && edge.relation === 'contains' && graphData.nodes.find((node) => node.id === edge.target)?.label === 'Runner')?.target
+      const workerId = graphData.links.find((edge) => edge.source === engineNode?.id && edge.relation === 'contains' && graphData.nodes.find((node) => node.id === edge.target)?.label === 'Worker')?.target
+      const runnerRunId = graphData.links.find((edge) => edge.source === runnerId && edge.relation === 'method' && graphData.nodes.find((node) => node.id === edge.target)?.label === '.run()')?.target
+      const workerRunId = graphData.links.find((edge) => edge.source === workerId && edge.relation === 'method' && graphData.nodes.find((node) => node.id === edge.target)?.label === '.run()')?.target
+
+      expect(result.codeFiles).toBe(1)
+      expect(engineNode).toBeTruthy()
+      expect(runnerId).toBeTruthy()
+      expect(workerId).toBeTruthy()
+      expect(runnerRunId).toBeTruthy()
+      expect(workerRunId).toBeTruthy()
+      expect(graphData.links.some((edge) => edge.source === workerId && edge.target === runnerId && edge.relation === 'inherits')).toBe(true)
+    })
+  })
+
+  test('builds graph artifacts for imported rust traits without duplicate trait owners', () => {
+    withTempDir((tempDir) => {
+      writeFileSync(
+        join(tempDir, 'worker.rs'),
+        [
+          'mod traits {',
+          '  pub trait Runner {',
+          '    fn run(&self);',
+          '  }',
+          '}',
+          'use crate::traits::Runner;',
+          'struct Worker {}',
+          'impl Runner for Worker {',
+          '  fn run(&self) {}',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+        links: Array<{ source: string; target: string; relation: string }>
+      }
+      const fileNode = graphData.nodes.find((node) => node.label === 'worker.rs')
+      const traitsNode = graphData.nodes.find((node) => node.label === 'traits')
+      const runnerNodes = graphData.nodes.filter((node) => node.label === 'Runner')
+      const runnerId = graphData.links.find((edge) => edge.source === traitsNode?.id && edge.relation === 'contains' && runnerNodes.some((node) => node.id === edge.target))?.target
+      const workerNode = graphData.nodes.find((node) => node.label === 'Worker')
+
+      expect(result.codeFiles).toBe(1)
+      expect(runnerNodes).toHaveLength(1)
+      expect(runnerId).toBeTruthy()
+      expect(workerNode).toBeTruthy()
+      expect(graphData.links.some((edge) => edge.source === fileNode?.id && edge.target === runnerId && edge.relation === 'imports_from')).toBe(true)
+      expect(graphData.links.some((edge) => edge.source === workerNode?.id && edge.target === runnerId && edge.relation === 'inherits')).toBe(true)
+      expect(graphData.links.some((edge) => edge.source === fileNode?.id && edge.target === runnerId && edge.relation === 'contains')).toBe(false)
+    })
+  })
+
+  test('builds graph artifacts for rust super-path method calls inside nested modules', () => {
+    withTempDir((tempDir) => {
+      writeFileSync(
+        join(tempDir, 'worker.rs'),
+        [
+          'mod outer {',
+          '  pub struct Worker {}',
+          '  impl Worker {',
+          '    pub fn run(&self) {}',
+          '  }',
+          '  mod inner {',
+          '    pub fn boot() {',
+          '      super::Worker::run();',
+          '    }',
+          '  }',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+        links: Array<{ source: string; target: string; relation: string }>
+      }
+      const outerNode = graphData.nodes.find((node) => node.label === 'outer')
+      const innerId = graphData.links.find((edge) => edge.source === outerNode?.id && edge.relation === 'contains' && graphData.nodes.find((node) => node.id === edge.target)?.label === 'inner')?.target
+      const workerId = graphData.links.find((edge) => edge.source === outerNode?.id && edge.relation === 'contains' && graphData.nodes.find((node) => node.id === edge.target)?.label === 'Worker')?.target
+      const runId = graphData.links.find((edge) => edge.source === workerId && edge.relation === 'method' && graphData.nodes.find((node) => node.id === edge.target)?.label === '.run()')?.target
+      const bootId = graphData.links.find((edge) => edge.source === innerId && edge.relation === 'contains' && graphData.nodes.find((node) => node.id === edge.target)?.label === 'boot()')?.target
+
+      expect(result.codeFiles).toBe(1)
+      expect(runId).toBeTruthy()
+      expect(bootId).toBeTruthy()
+      expect(graphData.links.some((edge) => edge.source === bootId && edge.target === runId && edge.relation === 'calls')).toBe(true)
+    })
+  })
+
+  test('builds graph artifacts for cross-file rust trait imports without placeholder owners', () => {
+    withTempDir((tempDir) => {
+      writeFileSync(join(tempDir, 'traits.rs'), ['pub trait Runner {', '  fn run(&self);', '}'].join('\n'), 'utf8')
+      writeFileSync(
+        join(tempDir, 'worker.rs'),
+        ['use crate::traits::Runner;', 'struct Worker {}', 'impl Runner for Worker {', '  fn run(&self) {}', '}'].join('\n'),
+        'utf8',
+      )
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+        links: Array<{ source: string; target: string; relation: string }>
+      }
+      const workerFileId = graphData.nodes.find((node) => node.label === 'worker.rs')?.id
+      const workerId = graphData.nodes.find((node) => node.label === 'Worker')?.id
+      const runnerNodes = graphData.nodes.filter((node) => node.label === 'Runner')
+      const runnerId = runnerNodes[0]?.id
+
+      expect(result.codeFiles).toBe(2)
+      expect(runnerNodes).toHaveLength(1)
+      expect(workerFileId).toBeTruthy()
+      expect(workerId).toBeTruthy()
+      expect(runnerId).toBeTruthy()
+      expect(graphData.links.some((edge) => edge.source === workerFileId && edge.target === runnerId && edge.relation === 'imports_from')).toBe(true)
+      expect(graphData.links.some((edge) => edge.source === workerId && edge.target === runnerId && edge.relation === 'inherits')).toBe(true)
+    })
+  })
+
+  test('builds graph artifacts for aliased rust grouped-use calls without duplicate owners', () => {
+    withTempDir((tempDir) => {
+      writeFileSync(
+        join(tempDir, 'worker.rs'),
+        [
+          'mod engine {',
+          '  pub struct Worker {}',
+          '  impl Worker {',
+          '    pub fn run(&self) {}',
+          '  }',
+          '}',
+          'pub use crate::engine::{Worker as Client};',
+          'fn boot() {',
+          '  Client::run();',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+        links: Array<{ source: string; target: string; relation: string }>
+      }
+      const fileNode = graphData.nodes.find((node) => node.label === 'worker.rs')
+      const engineNode = graphData.nodes.find((node) => node.label === 'engine')
+      const workerNodes = graphData.nodes.filter((node) => node.label === 'Worker')
+      const workerId = graphData.links.find((edge) => edge.source === engineNode?.id && edge.relation === 'contains' && workerNodes.some((node) => node.id === edge.target))?.target
+      const runId = graphData.links.find((edge) => edge.source === workerId && edge.relation === 'method' && graphData.nodes.find((node) => node.id === edge.target)?.label === '.run()')?.target
+      const bootId = graphData.links.find((edge) => edge.source === fileNode?.id && edge.relation === 'contains' && graphData.nodes.find((node) => node.id === edge.target)?.label === 'boot()')?.target
+
+      expect(result.codeFiles).toBe(1)
+      expect(workerNodes).toHaveLength(1)
+      expect(workerId).toBeTruthy()
+      expect(runId).toBeTruthy()
+      expect(bootId).toBeTruthy()
+      expect(graphData.links.some((edge) => edge.source === fileNode?.id && edge.target === workerId && edge.relation === 'imports_from')).toBe(true)
+      expect(graphData.links.some((edge) => edge.source === bootId && edge.target === runId && edge.relation === 'calls')).toBe(true)
+      expect(graphData.nodes.some((node) => node.label === 'Client')).toBe(false)
+    })
+  })
+
+  test('builds graph artifacts with nested rust imports_from edges on the importing module', () => {
+    withTempDir((tempDir) => {
+      writeFileSync(
+        join(tempDir, 'worker.rs'),
+        [
+          'mod api {',
+          '  pub struct Worker {}',
+          '  impl Worker {',
+          '    pub fn run(&self) {}',
+          '  }',
+          '}',
+          'mod client {',
+          '  use crate::api::Worker;',
+          '  pub fn boot() {',
+          '    Worker::run();',
+          '  }',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+        links: Array<{ source: string; target: string; relation: string }>
+      }
+      const fileNode = graphData.nodes.find((node) => node.label === 'worker.rs')
+      const apiNode = graphData.nodes.find((node) => node.label === 'api')
+      const clientNode = graphData.nodes.find((node) => node.label === 'client')
+      const workerId = graphData.links.find((edge) => edge.source === apiNode?.id && edge.relation === 'contains' && graphData.nodes.find((node) => node.id === edge.target)?.label === 'Worker')?.target
+      const runId = graphData.links.find((edge) => edge.source === workerId && edge.relation === 'method' && graphData.nodes.find((node) => node.id === edge.target)?.label === '.run()')?.target
+      const bootId = graphData.links.find((edge) => edge.source === clientNode?.id && edge.relation === 'contains' && graphData.nodes.find((node) => node.id === edge.target)?.label === 'boot()')?.target
+
+      expect(result.codeFiles).toBe(1)
+      expect(clientNode).toBeTruthy()
+      expect(workerId).toBeTruthy()
+      expect(runId).toBeTruthy()
+      expect(bootId).toBeTruthy()
+      expect(graphData.links.some((edge) => edge.source === clientNode?.id && edge.target === workerId && edge.relation === 'imports_from')).toBe(true)
+      expect(graphData.links.some((edge) => edge.source === fileNode?.id && edge.target === workerId && edge.relation === 'imports_from')).toBe(false)
+      expect(graphData.links.some((edge) => edge.source === bootId && edge.target === runId && edge.relation === 'calls')).toBe(true)
+    })
+  })
+
+  test('builds graph artifacts for aliased rust trait imports without duplicate trait owners', () => {
+    withTempDir((tempDir) => {
+      writeFileSync(
+        join(tempDir, 'worker.rs'),
+        [
+          'mod traits {',
+          '  pub trait Runner {',
+          '    fn run(&self);',
+          '  }',
+          '}',
+          'use crate::traits::Runner as AliasTrait;',
+          'struct Worker {}',
+          'impl AliasTrait for Worker {',
+          '  fn run(&self) {}',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+        links: Array<{ source: string; target: string; relation: string }>
+      }
+      const fileNode = graphData.nodes.find((node) => node.label === 'worker.rs')
+      const traitsNode = graphData.nodes.find((node) => node.label === 'traits')
+      const runnerNodes = graphData.nodes.filter((node) => node.label === 'Runner')
+      const runnerId = graphData.links.find((edge) => edge.source === traitsNode?.id && edge.relation === 'contains' && runnerNodes.some((node) => node.id === edge.target))?.target
+      const workerNode = graphData.nodes.find((node) => node.label === 'Worker')
+
+      expect(result.codeFiles).toBe(1)
+      expect(runnerNodes).toHaveLength(1)
+      expect(runnerId).toBeTruthy()
+      expect(workerNode).toBeTruthy()
+      expect(graphData.links.some((edge) => edge.source === fileNode?.id && edge.target === runnerId && edge.relation === 'imports_from')).toBe(true)
+      expect(graphData.links.some((edge) => edge.source === workerNode?.id && edge.target === runnerId && edge.relation === 'inherits')).toBe(true)
+      expect(graphData.nodes.some((node) => node.label === 'AliasTrait')).toBe(false)
+    })
+  })
+
+  test('builds graph artifacts for rust anchor-only super-path free-function calls inside nested modules', () => {
+    withTempDir((tempDir) => {
+      writeFileSync(
+        join(tempDir, 'worker.rs'),
+        [
+          'fn run() {}',
+          'mod outer {',
+          '  pub fn run() {}',
+          '  mod inner {',
+          '    pub fn boot() {',
+          '      super::run();',
+          '    }',
+          '  }',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+        links: Array<{ source: string; target: string; relation: string }>
+      }
+      const fileId = graphData.nodes.find((node) => node.label === 'worker.rs')?.id
+      const topLevelRunId = graphData.links.find((edge) => edge.source === fileId && edge.relation === 'contains' && graphData.nodes.find((node) => node.id === edge.target)?.label === 'run()')?.target
+      const outerId = graphData.nodes.find((node) => node.label === 'outer')?.id
+      const innerId = graphData.links.find((edge) => edge.source === outerId && edge.relation === 'contains' && graphData.nodes.find((node) => node.id === edge.target)?.label === 'inner')?.target
+      const outerRunId = graphData.links.find((edge) => edge.source === outerId && edge.relation === 'contains' && graphData.nodes.find((node) => node.id === edge.target)?.label === 'run()')?.target
+      const bootId = graphData.links.find((edge) => edge.source === innerId && edge.relation === 'contains' && graphData.nodes.find((node) => node.id === edge.target)?.label === 'boot()')?.target
+
+      expect(result.codeFiles).toBe(1)
+      expect(topLevelRunId).toBeTruthy()
+      expect(outerRunId).toBeTruthy()
+      expect(bootId).toBeTruthy()
+      expect(graphData.links.some((edge) => edge.source === bootId && edge.target === outerRunId && edge.relation === 'calls')).toBe(true)
+      expect(graphData.links.some((edge) => edge.source === bootId && edge.target === topLevelRunId && edge.relation === 'calls')).toBe(false)
+    })
+  })
+
+  test('builds graph artifacts without false calls from missing rust anchor-only super paths', () => {
+    withTempDir((tempDir) => {
+      writeFileSync(
+        join(tempDir, 'worker.rs'),
+        [
+          'fn run() {}',
+          'mod outer {',
+          '  mod inner {',
+          '    pub fn boot() {',
+          '      super::run();',
+          '    }',
+          '  }',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+        links: Array<{ source: string; target: string; relation: string }>
+      }
+      const bootNode = graphData.nodes.find((node) => node.label === 'boot()')
+      const runNode = graphData.nodes.find((node) => node.label === 'run()')
+
+      expect(result.codeFiles).toBe(1)
+      expect(bootNode).toBeTruthy()
+      expect(runNode).toBeTruthy()
+      expect(graphData.links.some((edge) => edge.source === bootNode?.id && edge.target === runNode?.id && edge.relation === 'calls')).toBe(false)
+    })
+  })
+
+  test('builds graph artifacts without self-inherits edges for inherent rust impl blocks', () => {
+    withTempDir((tempDir) => {
+      writeFileSync(
+        join(tempDir, 'worker.rs'),
+        [
+          'mod engine {',
+          '  pub struct Worker {}',
+          '  impl Worker {',
+          '    fn run(&self) {}',
+          '  }',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+        links: Array<{ source: string; target: string; relation: string }>
+      }
+      const engineNode = graphData.nodes.find((node) => node.label === 'engine')
+      const workerId = graphData.links.find((edge) => edge.source === engineNode?.id && edge.relation === 'contains' && graphData.nodes.find((node) => node.id === edge.target)?.label === 'Worker')?.target
+
+      expect(result.codeFiles).toBe(1)
+      expect(workerId).toBeTruthy()
+      expect(graphData.links.some((edge) => edge.source === workerId && edge.target === workerId && edge.relation === 'inherits')).toBe(false)
+    })
+  })
+
+  test('builds graph artifacts for nested rust modules without merging same-named types', () => {
+    withTempDir((tempDir) => {
+      writeFileSync(
+        join(tempDir, 'worker.rs'),
+        [
+          'mod alpha {',
+          '  pub struct Worker {}',
+          '  impl Worker {',
+          '    pub fn run(&self) {}',
+          '  }',
+          '}',
+          'mod beta {',
+          '  pub struct Worker {}',
+          '  impl Worker {',
+          '    pub fn run(&self) {}',
+          '  }',
+          '}',
+          'fn boot_alpha() {',
+          '  alpha::Worker::run();',
+          '}',
+          'fn boot_beta() {',
+          '  beta::Worker::run();',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+        links: Array<{ source: string; target: string; relation: string }>
+      }
+      const alphaNode = graphData.nodes.find((node) => node.label === 'alpha')
+      const betaNode = graphData.nodes.find((node) => node.label === 'beta')
+      const workerNodes = graphData.nodes.filter((node) => node.label === 'Worker')
+      const alphaWorkerId = graphData.links.find((edge) => edge.source === alphaNode?.id && edge.relation === 'contains' && workerNodes.some((node) => node.id === edge.target))?.target
+      const betaWorkerId = graphData.links.find((edge) => edge.source === betaNode?.id && edge.relation === 'contains' && workerNodes.some((node) => node.id === edge.target))?.target
+      const alphaRunId = graphData.links.find((edge) => edge.source === alphaWorkerId && edge.relation === 'method')?.target
+      const betaRunId = graphData.links.find((edge) => edge.source === betaWorkerId && edge.relation === 'method')?.target
+      const bootAlphaNode = graphData.nodes.find((node) => node.label === 'boot_alpha()')
+      const bootBetaNode = graphData.nodes.find((node) => node.label === 'boot_beta()')
+
+      expect(result.codeFiles).toBe(1)
+      expect(workerNodes).toHaveLength(2)
+      expect(alphaWorkerId).toBeTruthy()
+      expect(betaWorkerId).toBeTruthy()
+      expect(alphaWorkerId).not.toBe(betaWorkerId)
+      expect(alphaRunId).toBeTruthy()
+      expect(betaRunId).toBeTruthy()
+      expect(alphaRunId).not.toBe(betaRunId)
+      expect(graphData.links.some((edge) => edge.source === bootAlphaNode?.id && edge.target === alphaRunId && edge.relation === 'calls')).toBe(true)
+      expect(graphData.links.some((edge) => edge.source === bootBetaNode?.id && edge.target === betaRunId && edge.relation === 'calls')).toBe(true)
+    })
+  })
+
+  test('builds graph artifacts for rust imports when use declarations appear before the local module owner', () => {
+    withTempDir((tempDir) => {
+      writeFileSync(
+        join(tempDir, 'worker.rs'),
+        [
+          'use crate::engine::Worker;',
+          'mod engine {',
+          '  pub struct Worker {}',
+          '  impl Worker {',
+          '    pub fn run(&self) {}',
+          '  }',
+          '}',
+          'fn boot() {',
+          '  Worker::run();',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+        links: Array<{ source: string; target: string; relation: string }>
+      }
+      const fileNode = graphData.nodes.find((node) => node.label === 'worker.rs')
+      const engineNode = graphData.nodes.find((node) => node.label === 'engine')
+      const workerId = graphData.links.find((edge) => edge.source === engineNode?.id && edge.relation === 'contains')?.target
+      const runId = graphData.links.find((edge) => edge.source === workerId && edge.relation === 'method')?.target
+      const bootNode = graphData.nodes.find((node) => node.label === 'boot()')
+
+      expect(result.codeFiles).toBe(1)
+      expect(workerId).toBeTruthy()
+      expect(runId).toBeTruthy()
+      expect(graphData.links.some((edge) => edge.source === fileNode?.id && edge.target === workerId && edge.relation === 'imports_from')).toBe(true)
+      expect(graphData.links.some((edge) => edge.source === bootNode?.id && edge.target === runId && edge.relation === 'calls')).toBe(true)
+    })
+  })
+
+  test('builds graph artifacts for qualified rust impl owners on the existing namespaced type', () => {
+    withTempDir((tempDir) => {
+      writeFileSync(
+        join(tempDir, 'worker.rs'),
+        [
+          'mod engine {',
+          '  pub struct Worker {}',
+          '}',
+          'impl crate::engine::Worker {',
+          '  fn run(&self) {}',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+        links: Array<{ source: string; target: string; relation: string }>
+      }
+      const engineNode = graphData.nodes.find((node) => node.label === 'engine')
+      const workerNodes = graphData.nodes.filter((node) => node.label === 'Worker')
+      const workerId = graphData.links.find((edge) => edge.source === engineNode?.id && edge.relation === 'contains' && workerNodes.some((node) => node.id === edge.target))?.target
+      const runId = graphData.links.find((edge) => edge.source === workerId && edge.relation === 'method')?.target
+
+      expect(result.codeFiles).toBe(1)
+      expect(workerNodes).toHaveLength(1)
+      expect(workerId).toBeTruthy()
+      expect(runId).toBeTruthy()
+    })
+  })
+
+  test('builds graph artifacts for qualified rust impl owners before the namespaced type declaration without duplicate owners', () => {
+    withTempDir((tempDir) => {
+      writeFileSync(
+        join(tempDir, 'worker.rs'),
+        [
+          'impl crate::engine::Worker {',
+          '  fn run(&self) {}',
+          '}',
+          'mod engine {',
+          '  pub struct Worker {}',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+        links: Array<{ source: string; target: string; relation: string }>
+      }
+      const fileNode = graphData.nodes.find((node) => node.label === 'worker.rs')
+      const engineNode = graphData.nodes.find((node) => node.label === 'engine')
+      const workerNodes = graphData.nodes.filter((node) => node.label === 'Worker')
+      const workerId = graphData.links.find((edge) => edge.source === engineNode?.id && edge.relation === 'contains' && workerNodes.some((node) => node.id === edge.target))?.target
+      const runId = graphData.links.find((edge) => edge.source === workerId && edge.relation === 'method')?.target
+
+      expect(result.codeFiles).toBe(1)
+      expect(workerNodes).toHaveLength(1)
+      expect(workerId).toBeTruthy()
+      expect(runId).toBeTruthy()
+      expect(graphData.links.some((edge) => edge.source === fileNode?.id && edge.target === workerId && edge.relation === 'contains')).toBe(false)
+    })
+  })
+
+  test('builds graph artifacts for rust local namespaced type calls inside the current module', () => {
+    withTempDir((tempDir) => {
+      writeFileSync(
+        join(tempDir, 'worker.rs'),
+        [
+          'mod alpha {',
+          '  pub struct Worker {}',
+          '  impl Worker {',
+          '    pub fn run(&self) {}',
+          '  }',
+          '  fn boot() {',
+          '    Worker::run();',
+          '  }',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+        links: Array<{ source: string; target: string; relation: string }>
+      }
+      const alphaNode = graphData.nodes.find((node) => node.label === 'alpha')
+      const workerId = graphData.links.find((edge) => edge.source === alphaNode?.id && edge.relation === 'contains' && graphData.nodes.find((node) => node.id === edge.target)?.label === 'Worker')?.target
+      const runId = graphData.links.find((edge) => edge.source === workerId && edge.relation === 'method')?.target
+      const bootId = graphData.links.find((edge) => edge.source === alphaNode?.id && edge.relation === 'contains' && graphData.nodes.find((node) => node.id === edge.target)?.label === 'boot()')?.target
+
+      expect(result.codeFiles).toBe(1)
+      expect(workerId).toBeTruthy()
+      expect(runId).toBeTruthy()
+      expect(bootId).toBeTruthy()
+      expect(graphData.links.some((edge) => edge.source === bootId && edge.target === runId && edge.relation === 'calls')).toBe(true)
+    })
+  })
+
+  test('builds graph artifacts without false calls from qualified rust module paths onto unrelated free functions', () => {
+    withTempDir((tempDir) => {
+      writeFileSync(
+        join(tempDir, 'worker.rs'),
+        [
+          'mod api {',
+          '  pub fn helper() {}',
+          '}',
+          'fn run() {}',
+          'fn boot() {',
+          '  api::run();',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+        links: Array<{ source: string; target: string; relation: string }>
+      }
+      const bootNode = graphData.nodes.find((node) => node.label === 'boot()')
+      const runNode = graphData.nodes.find((node) => node.label === 'run()')
+
+      expect(result.codeFiles).toBe(1)
+      expect(bootNode).toBeTruthy()
+      expect(runNode).toBeTruthy()
+      expect(graphData.links.some((edge) => edge.source === bootNode?.id && edge.target === runNode?.id && edge.relation === 'calls')).toBe(false)
+    })
+  })
+
   test('builds graph artifacts for a docs-and-images corpus without code', () => {
     withTempDir((tempDir) => {
       writeFileSync(join(tempDir, 'README.md'), '# Overview\n![Diagram](diagram.svg)\nSee [Guide](guide.md)\n## Details\n', 'utf8')
@@ -1745,6 +2386,199 @@ describe('generateGraph', () => {
     })
   })
 
+  test('builds graph artifacts without stale Matroska/WebM audio-track metadata when a later top-level Tracks element is video-only and bounded by a trailing child without SeekHead help', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: false,
+        interstitialSegmentBytes: 600_000,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        trailingTracksChildBytes: 65_536,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](top-level-tracks-trailing-child-clear-audio.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'top-level-tracks-trailing-child-clear-audio.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+      const mkvNode = graphData.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-tracks-trailing-child-clear-audio.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        label: 'top-level-tracks-trailing-child-clear-audio.mkv',
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        video_width_px: 1280,
+        video_height_px: 720,
+      })
+      expect(mkvNode).not.toHaveProperty('audio_sample_rate_hz')
+      expect(mkvNode).not.toHaveProperty('audio_channel_count')
+    })
+  })
+
+  test('builds graph artifacts without stale Matroska/WebM video-dimension metadata when a later top-level Tracks element is audio-only and bounded by a trailing child without SeekHead help', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        interstitialSegmentBytes: 600_000,
+        finalTracksAudioOnly: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        trailingTracksChildBytes: 65_536,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](top-level-tracks-trailing-child-clear-video.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'top-level-tracks-trailing-child-clear-video.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+      const mkvNode = graphData.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-tracks-trailing-child-clear-video.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        label: 'top-level-tracks-trailing-child-clear-video.mkv',
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+      })
+      expect(mkvNode).not.toHaveProperty('video_width_px')
+      expect(mkvNode).not.toHaveProperty('video_height_px')
+    })
+  })
+
+  test('builds graph artifacts with corrected Matroska/WebM track metadata when a later top-level Tracks element is bounded by a trailing child without SeekHead help', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        interstitialSegmentBytes: 600_000,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        trailingTracksChildBytes: 65_536,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](top-level-tracks-trailing-child-corrective.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'top-level-tracks-trailing-child-corrective.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+      const mkvNode = graphData.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-tracks-trailing-child-corrective.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        label: 'top-level-tracks-trailing-child-corrective.mkv',
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+      })
+    })
+  })
+
+  test('builds graph artifacts with preserved stale Matroska/WebM track metadata when a later top-level Tracks element is followed by an overrun trailing child without SeekHead help', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        interstitialSegmentBytes: 600_000,
+        finalTracksAudioOnly: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        malformedTrailingTracksChildBytes: 65_536,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](top-level-tracks-trailing-child-overrun-stale.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'top-level-tracks-trailing-child-overrun-stale.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+      const mkvNode = graphData.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-tracks-trailing-child-overrun-stale.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        label: 'top-level-tracks-trailing-child-overrun-stale.mkv',
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        video_width_px: 5,
+        video_height_px: 2,
+        audio_sample_rate_hz: 8_000,
+        audio_channel_count: 1,
+      })
+    })
+  })
+
+  test('builds graph artifacts with preserved stale Matroska/WebM track metadata when a later top-level Tracks element is followed by a truncated trailing child header without SeekHead help', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        interstitialSegmentBytes: 600_000,
+        finalTracksAudioOnly: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        truncatedTrailingTracksChildHeader: true,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](top-level-tracks-trailing-child-truncated-stale.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'top-level-tracks-trailing-child-truncated-stale.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+      const mkvNode = graphData.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-tracks-trailing-child-truncated-stale.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        label: 'top-level-tracks-trailing-child-truncated-stale.mkv',
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        video_width_px: 5,
+        video_height_px: 2,
+        audio_sample_rate_hz: 8_000,
+        audio_channel_count: 1,
+      })
+    })
+  })
+
   test('builds graph artifacts without stale Matroska/WebM duration metadata when a later top-level Info element omits duration without SeekHead help', () => {
     withTempDir((tempDir) => {
       const mkvBuffer = createTestMatroskaBuffer({
@@ -1877,6 +2711,114 @@ describe('generateGraph', () => {
       expect(result.nonCodeFiles).toBe(2)
       expect(mkvNode).toMatchObject({
         label: 'top-level-info-trailing-child-invalid-overrun-stale.mkv',
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 1.5,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+      })
+    })
+  })
+
+  test('builds graph artifacts with preserved stale Matroska/WebM duration metadata when a later top-level Info element omits duration and is followed by an overrun trailing child without SeekHead help', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        interstitialSegmentBytes: 600_000,
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        omitDuration: true,
+        malformedTrailingInfoChildBytes: 65_536,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](top-level-info-trailing-child-omitted-overrun-stale.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'top-level-info-trailing-child-omitted-overrun-stale.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+      const mkvNode = graphData.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-info-trailing-child-omitted-overrun-stale.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        label: 'top-level-info-trailing-child-omitted-overrun-stale.mkv',
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 1.5,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+      })
+    })
+  })
+
+  test('builds graph artifacts with preserved stale Matroska/WebM duration metadata when a later top-level Info element omits duration and is followed by a truncated trailing child header without SeekHead help', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        interstitialSegmentBytes: 600_000,
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        omitDuration: true,
+        truncatedTrailingInfoChildHeader: true,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](top-level-info-trailing-child-omitted-truncated-stale.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'top-level-info-trailing-child-omitted-truncated-stale.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+      const mkvNode = graphData.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-info-trailing-child-omitted-truncated-stale.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        label: 'top-level-info-trailing-child-omitted-truncated-stale.mkv',
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 1.5,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+      })
+    })
+  })
+
+  test('builds graph artifacts with preserved stale Matroska/WebM duration metadata when a later top-level Info element has malformed Duration followed by a truncated trailing child header without SeekHead help', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        interstitialSegmentBytes: 600_000,
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        malformedDuration: true,
+        truncatedTrailingInfoChildHeader: true,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](top-level-info-trailing-child-invalid-truncated-stale.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'top-level-info-trailing-child-invalid-truncated-stale.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+      const mkvNode = graphData.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-info-trailing-child-invalid-truncated-stale.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        label: 'top-level-info-trailing-child-invalid-truncated-stale.mkv',
         content_type: 'video/x-matroska',
         file_bytes: mkvBuffer.length,
         media_duration_seconds: 1.5,

@@ -28,13 +28,16 @@ import { createTreeSitterWasmParser, treeSitterWasmError, type TreeSitterNode } 
 
 export { _makeId } from './extract/core.js'
 
-const EXTRACTOR_CACHE_VERSION = 45
+const EXTRACTOR_CACHE_VERSION = 59
 const PYTHON_KEYWORDS = new Set(['if', 'elif', 'else', 'for', 'while', 'return', 'class', 'def', 'lambda', 'with', 'print', 'sum'])
 const GENERIC_CODE_EXTENSIONS = new Set(['.go', '.rs', '.java', '.kt', '.kts', '.scala', '.cs', '.c', '.cc', '.cpp', '.cxx', '.h', '.hpp', '.swift', '.php', '.zig'])
 const GENERIC_CONTROL_KEYWORDS = new Set(['if', 'for', 'while', 'switch', 'catch', 'return', 'new', 'delete', 'throw', 'sizeof', 'case', 'do', 'else'])
 const RUBY_KEYWORDS = new Set(['if', 'elsif', 'else', 'unless', 'while', 'until', 'return', 'super', 'yield', 'class', 'def'])
 const RUBY_AST_NESTED_DECLARATION_TYPES = new Set(['class', 'module', 'method', 'singleton_method'])
 const MAX_RUBY_AST_DEPTH = 64
+const RUST_TYPE_DECLARATIONS = new Set(['struct_item', 'enum_item', 'trait_item', 'union_item', 'type_item'])
+const RUST_NESTED_DECLARATION_TYPES = new Set(['mod_item', 'impl_item', 'function_item', ...RUST_TYPE_DECLARATIONS])
+const RUST_IGNORED_PATH_SEGMENTS = new Set(['pub', 'use', 'mut'])
 const LUA_KEYWORDS = new Set(['if', 'then', 'elseif', 'else', 'for', 'while', 'repeat', 'until', 'return', 'function', 'local', 'require'])
 const ELIXIR_KEYWORDS = new Set(['if', 'unless', 'case', 'cond', 'fn', 'def', 'defp', 'defmodule'])
 const JULIA_KEYWORDS = new Set(['if', 'elseif', 'else', 'while', 'for', 'return', 'function', 'struct', 'mutable', 'macro'])
@@ -88,6 +91,8 @@ interface PendingCall {
   calleeName: string
   line: number
   preferredClassId?: string
+  preferredTargetId?: string
+  strictPreferredClass?: boolean
 }
 
 interface PendingCallInput {
@@ -95,6 +100,8 @@ interface PendingCallInput {
   calleeName: string
   line: number
   preferredClassId?: string | undefined
+  preferredTargetId?: string | undefined
+  strictPreferredClass?: boolean | undefined
 }
 
 interface CachedExtractionPayload extends ExtractionFragment {
@@ -1273,12 +1280,14 @@ function writeCachedExtraction(filePath: string, extraction: ExtractionFragment)
 }
 
 function addPendingCall(pendingCalls: PendingCall[], call: PendingCallInput): void {
-  if (call.preferredClassId) {
+  if (call.preferredClassId || call.preferredTargetId) {
     pendingCalls.push({
       callerId: call.callerId,
       calleeName: call.calleeName,
       line: call.line,
-      preferredClassId: call.preferredClassId,
+      ...(call.preferredClassId ? { preferredClassId: call.preferredClassId } : {}),
+      ...(call.preferredTargetId ? { preferredTargetId: call.preferredTargetId } : {}),
+      ...(call.strictPreferredClass ? { strictPreferredClass: true } : {}),
     })
     return
   }
@@ -1304,8 +1313,14 @@ function addResolvedCalls(
 
   const seenPairs = new Set<string>()
   for (const pendingCall of pendingCalls) {
+    const preferredTargetId = pendingCall.preferredTargetId
     const preferredKey = pendingCall.preferredClassId ? `${pendingCall.preferredClassId}:${pendingCall.calleeName.toLowerCase()}` : null
-    const targetId = (preferredKey ? methodIdsByClass.get(preferredKey) : undefined) ?? labelToId.get(pendingCall.calleeName.toLowerCase())
+    const preferredClassTargetId = preferredKey ? methodIdsByClass.get(preferredKey) : undefined
+    if (pendingCall.strictPreferredClass && preferredKey && !preferredClassTargetId && !preferredTargetId) {
+      continue
+    }
+
+    const targetId = preferredTargetId ?? preferredClassTargetId ?? labelToId.get(pendingCall.calleeName.toLowerCase())
     if (!targetId || targetId === pendingCall.callerId) {
       continue
     }
@@ -2793,7 +2808,7 @@ function treeSitterNodeText(sourceText: string, node: TreeSitterNode | null | un
   return sourceText.slice(node.startIndex, node.endIndex)
 }
 
-function warnTreeSitterFallback(language: 'go' | 'java' | 'python' | 'ruby'): void {
+function warnTreeSitterFallback(language: 'go' | 'java' | 'python' | 'ruby' | 'rust'): void {
   const runtimeError = treeSitterWasmError()
   const warningKey = `${language}:${runtimeError ?? 'parser-unavailable'}`
   if (TREE_SITTER_FALLBACK_WARNINGS.has(warningKey)) {
@@ -3422,6 +3437,594 @@ function extractJavaTreeSitter(filePath: string): ExtractionFragment | null {
   }
 }
 
+function findNamedTreeSitterChild(node: TreeSitterNode, ...types: string[]): TreeSitterNode | null {
+  for (const child of namedTreeSitterChildren(node)) {
+    if (types.includes(child.type)) {
+      return child
+    }
+  }
+
+  return null
+}
+
+interface RustScopedPath {
+  isAbsolute: boolean
+  superDepth: number
+  segments: string[]
+}
+
+interface RustImportBinding {
+  bindingName: string
+  path: RustScopedPath
+}
+
+function rustScopedPath(text: string): RustScopedPath {
+  const rawSegments = (text.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []).filter((segment) => !RUST_IGNORED_PATH_SEGMENTS.has(segment))
+  let index = 0
+  let isAbsolute = false
+  let superDepth = 0
+
+  if (rawSegments[index] === 'crate') {
+    isAbsolute = true
+    index += 1
+  } else {
+    while (rawSegments[index] === 'super') {
+      superDepth += 1
+      index += 1
+    }
+
+    if (rawSegments[index] === 'self') {
+      index += 1
+    }
+  }
+
+  return {
+    isAbsolute,
+    superDepth,
+    segments: rawSegments.slice(index),
+  }
+}
+
+function rustResolveScopedPath(path: RustScopedPath, currentNamespacePath: readonly string[]): string[] {
+  if (path.isAbsolute) {
+    return [...path.segments]
+  }
+
+  const basePath =
+    path.superDepth > 0
+      ? currentNamespacePath.slice(0, Math.max(0, currentNamespacePath.length - path.superDepth))
+      : currentNamespacePath
+
+  return [...basePath, ...path.segments]
+}
+
+function joinRustScopedPath(prefix: RustScopedPath | null, suffix: RustScopedPath): RustScopedPath {
+  if (!prefix || suffix.isAbsolute || suffix.superDepth > 0) {
+    return suffix
+  }
+
+  return {
+    isAbsolute: prefix.isAbsolute,
+    superDepth: prefix.superDepth,
+    segments: [...prefix.segments, ...suffix.segments],
+  }
+}
+
+function rustPathSegments(text: string): string[] {
+  return rustScopedPath(text).segments
+}
+
+function rustLastPathSegment(text: string | null | undefined): string | null {
+  const segments = rustPathSegments(text?.trim() ?? '')
+  return segments.at(-1) ?? null
+}
+
+function rustOwnerPathKey(pathSegments: readonly string[]): string {
+  return pathSegments.join('::')
+}
+
+function rustImportScopeKey(pathSegments: readonly string[]): string {
+  return rustOwnerPathKey(pathSegments)
+}
+
+function rustTypeNameFromNode(node: TreeSitterNode | null | undefined, sourceText: string): string | null {
+  if (!node) {
+    return null
+  }
+
+  if (node.type === 'generic_type') {
+    return rustTypeNameFromNode(findNamedTreeSitterChild(node, 'type_identifier', 'scoped_type_identifier'), sourceText)
+  }
+
+  if (node.type === 'type_identifier' || node.type === 'identifier') {
+    return rustLastPathSegment(treeSitterNodeText(sourceText, node))
+  }
+
+  if (node.type === 'scoped_type_identifier' || node.type === 'scoped_identifier') {
+    return rustLastPathSegment(treeSitterNodeText(sourceText, node))
+  }
+
+  return rustLastPathSegment(treeSitterNodeText(sourceText, node))
+}
+
+function rustScopedPathFromNode(node: TreeSitterNode | null | undefined, sourceText: string): RustScopedPath {
+  if (!node) {
+    return { isAbsolute: false, superDepth: 0, segments: [] }
+  }
+
+  if (node.type === 'generic_type') {
+    return rustScopedPathFromNode(findNamedTreeSitterChild(node, 'type_identifier', 'scoped_type_identifier', 'scoped_identifier'), sourceText)
+  }
+
+  if (node.type === 'type_identifier' || node.type === 'identifier' || node.type === 'scoped_type_identifier' || node.type === 'scoped_identifier') {
+    return rustScopedPath(treeSitterNodeText(sourceText, node) ?? '')
+  }
+
+  return rustScopedPath(treeSitterNodeText(sourceText, node) ?? '')
+}
+
+function collectRustImportPaths(node: TreeSitterNode, sourceText: string, prefix: RustScopedPath | null = null): RustImportBinding[] {
+  if (node.type === 'identifier' || node.type === 'type_identifier') {
+    const leafName = rustLastPathSegment(treeSitterNodeText(sourceText, node))
+    return leafName ? [{ bindingName: leafName, path: joinRustScopedPath(prefix, { isAbsolute: false, superDepth: 0, segments: [leafName] }) }] : []
+  }
+
+  if (node.type === 'scoped_identifier' || node.type === 'scoped_type_identifier') {
+    const scopedPath = rustScopedPath(treeSitterNodeText(sourceText, node) ?? '')
+    const bindingName = scopedPath.segments.at(-1)
+    return bindingName ? [{ bindingName, path: joinRustScopedPath(prefix, scopedPath) }] : []
+  }
+
+  if (node.type === 'scoped_use_list') {
+    const scopedChildren = namedTreeSitterChildren(node)
+    const prefixNode = scopedChildren[0]
+    const listNode = scopedChildren[1]
+    const nextPrefix = prefixNode ? joinRustScopedPath(prefix, rustScopedPath(treeSitterNodeText(sourceText, prefixNode) ?? '')) : prefix
+    return listNode ? collectRustImportPaths(listNode, sourceText, nextPrefix) : []
+  }
+
+  if (node.type === 'use_list') {
+    return namedTreeSitterChildren(node).flatMap((child) => collectRustImportPaths(child, sourceText, prefix))
+  }
+
+  if (node.type === 'use_as_clause') {
+    const namedChildren = namedTreeSitterChildren(node)
+    const targetNode = namedChildren[0]
+    const aliasNode = namedChildren[1]
+    const bindingName = rustLastPathSegment(treeSitterNodeText(sourceText, aliasNode))
+    if (!targetNode || !bindingName) {
+      return []
+    }
+
+    const targetBindings = collectRustImportPaths(targetNode, sourceText, prefix)
+    const targetBinding = targetBindings[0]
+    return targetBinding ? [{ bindingName, path: targetBinding.path }] : []
+  }
+
+  return namedTreeSitterChildren(node)
+    .filter((child) => child.type !== 'visibility_modifier')
+    .flatMap((child) => collectRustImportPaths(child, sourceText, prefix))
+}
+
+function collectRustCalls(
+  node: TreeSitterNode,
+  sourceText: string,
+  callerId: string,
+  pendingCalls: PendingCall[],
+  ownerIdsByPath: ReadonlyMap<string, string>,
+  functionIdsByPath: ReadonlyMap<string, string>,
+  importedOwnerIdsByScope: ReadonlyMap<string, ReadonlyMap<string, string>>,
+  externalTargetIds: Set<string>,
+  currentNamespacePath: readonly string[] = [],
+  currentOwnerId?: string,
+): void {
+  const localOwnerIds = new Set(ownerIdsByPath.values())
+  const resolveImportedOwner = (receiverName: string): string | undefined => {
+    return importedOwnerIdsByScope.get(rustImportScopeKey(currentNamespacePath))?.get(receiverName)
+  }
+
+  const resolveOwnerFromScopedPath = (path: RustScopedPath): string | undefined => {
+    const resolvedPath = rustResolveScopedPath(path, currentNamespacePath)
+    const resolvedOwnerId = ownerIdsByPath.get(rustOwnerPathKey(resolvedPath))
+    if (resolvedOwnerId) {
+      return resolvedOwnerId
+    }
+
+    return !path.isAbsolute && path.superDepth === 0 && path.segments.length === 1 ? resolveImportedOwner(path.segments[0] ?? '') : undefined
+  }
+
+  const addStrictRustMethodCall = (preferredOwnerId: string, callee: string, line: number): void => {
+    const preferredTargetId = _makeId(preferredOwnerId, callee)
+    if (!localOwnerIds.has(preferredOwnerId)) {
+      externalTargetIds.add(preferredTargetId)
+    }
+
+    addPendingCall(pendingCalls, {
+      callerId,
+      calleeName: callee,
+      line,
+      preferredClassId: preferredOwnerId,
+      preferredTargetId,
+      strictPreferredClass: true,
+    })
+  }
+
+  if (node.type === 'call_expression') {
+    const functionNode = node.childForFieldName('function') ?? namedTreeSitterChildren(node).find((child) => child.type !== 'arguments') ?? null
+    let calleeName: string | null = null
+    let preferredClassId: string | undefined
+    let strictPreferredClass = false
+
+    if (functionNode?.type === 'field_expression') {
+      const receiverNode = namedTreeSitterChildren(functionNode)[0] ?? null
+      const fieldNode = namedTreeSitterChildren(functionNode).at(-1) ?? null
+      calleeName = rustLastPathSegment(treeSitterNodeText(sourceText, fieldNode))
+      strictPreferredClass = true
+      const receiverText = treeSitterNodeText(sourceText, receiverNode)?.trim()
+      if (receiverText === 'self' || receiverText === 'Self') {
+        preferredClassId = currentOwnerId
+      } else {
+        const receiverPath = rustScopedPath(receiverText ?? '')
+        preferredClassId = resolveOwnerFromScopedPath(receiverPath)
+        if (!preferredClassId || !calleeName) {
+          calleeName = null
+        } else {
+          addStrictRustMethodCall(preferredClassId, calleeName, node.startPosition.row + 1)
+          calleeName = null
+        }
+      }
+    } else {
+      const functionText = treeSitterNodeText(sourceText, functionNode)?.trim()
+      const scopedFunctionPath = rustScopedPath(functionText ?? '')
+      calleeName = scopedFunctionPath.segments.at(-1) ?? null
+      const resolvedFunctionPath = rustResolveScopedPath(scopedFunctionPath, currentNamespacePath)
+      const resolvedFunctionId = functionIdsByPath.get(rustOwnerPathKey(resolvedFunctionPath))
+      const receiverPath: RustScopedPath = {
+        ...scopedFunctionPath,
+        segments: scopedFunctionPath.segments.slice(0, -1),
+      }
+      if (!receiverPath.isAbsolute && receiverPath.superDepth === 0 && receiverPath.segments.length === 1 && (receiverPath.segments[0] === 'self' || receiverPath.segments[0] === 'Self')) {
+        preferredClassId = currentOwnerId
+        strictPreferredClass = true
+      } else if (resolvedFunctionId && (receiverPath.isAbsolute || receiverPath.superDepth > 0 || receiverPath.segments.length > 0)) {
+        if (!calleeName) {
+          calleeName = null
+        } else {
+          addPendingCall(pendingCalls, {
+            callerId,
+            calleeName,
+            line: node.startPosition.row + 1,
+            preferredTargetId: resolvedFunctionId,
+            strictPreferredClass: true,
+          })
+          calleeName = null
+        }
+      } else if (receiverPath.segments.length === 0 && (receiverPath.isAbsolute || receiverPath.superDepth > 0)) {
+        calleeName = null
+      } else if (receiverPath.segments.length > 0) {
+        strictPreferredClass = true
+        preferredClassId = resolveOwnerFromScopedPath(receiverPath)
+        if (!preferredClassId || !calleeName) {
+          calleeName = null
+        } else {
+          addStrictRustMethodCall(preferredClassId, calleeName, node.startPosition.row + 1)
+          calleeName = null
+        }
+      }
+    }
+
+    if (calleeName) {
+      addPendingCall(pendingCalls, {
+        callerId,
+        calleeName,
+        line: node.startPosition.row + 1,
+        ...(preferredClassId ? { preferredClassId, ...(strictPreferredClass ? { strictPreferredClass: true } : {}) } : {}),
+      })
+    }
+  }
+
+  for (const child of namedTreeSitterChildren(node)) {
+    if (RUST_NESTED_DECLARATION_TYPES.has(child.type)) {
+      continue
+    }
+
+    collectRustCalls(child, sourceText, callerId, pendingCalls, ownerIdsByPath, functionIdsByPath, importedOwnerIdsByScope, externalTargetIds, currentNamespacePath, currentOwnerId)
+  }
+}
+
+function extractRustTreeSitter(filePath: string): ExtractionFragment | null {
+  const parser = createTreeSitterWasmParser('rust')
+  if (!parser) {
+    return null
+  }
+
+  const sourceText = readFileSync(filePath, 'utf8')
+  const stem = basename(filePath, extname(filePath))
+  const fileNodeId = _makeId(stem)
+  const nodes: ExtractionNode[] = []
+  const edges: ExtractionEdge[] = []
+  const seenIds = new Set<string>()
+  const seenStructuralEdges = new Set<string>()
+  const methodIdsByClass = new Map<string, string>()
+  const pendingCalls: PendingCall[] = []
+  const pendingRustImports: Array<{ paths: RustImportBinding[]; line: number; scopePath: readonly string[]; sourceId: string }> = []
+  const pendingRustInheritances: Array<{ sourceId: string; traitPath: RustScopedPath; scopePath: readonly string[]; line: number }> = []
+  const pendingRustCallBodies: Array<{ node: TreeSitterNode; callerId: string; currentNamespacePath: readonly string[]; currentOwnerId?: string }> = []
+  const ownerIdsByPath = new Map<string, string>()
+  const functionIdsByPath = new Map<string, string>()
+  const importedOwnerIdsByScope = new Map<string, Map<string, string>>()
+  const externalRustTargetIds = new Set<string>()
+  let tree: ReturnType<typeof parser.parse> | null = null
+
+  const ensureOwnerNode = (ownerPath: readonly string[], line: number): string => {
+    const ownerPathKey = rustOwnerPathKey(ownerPath)
+    const existingOwnerId = ownerIdsByPath.get(ownerPathKey)
+    if (existingOwnerId) {
+      return existingOwnerId
+    }
+
+    const ownerName = ownerPath.at(-1)
+    if (!ownerName) {
+      return fileNodeId
+    }
+
+    const parentOwnerPath = ownerPath.slice(0, -1)
+    const parentOwnerId = parentOwnerPath.length > 0 ? ensureOwnerNode(parentOwnerPath, line) : undefined
+    const ownerId = _makeId(stem, ...ownerPath)
+    addNode(nodes, seenIds, createNode(ownerId, ownerName, filePath, line))
+    addUniqueEdge(edges, seenStructuralEdges, createEdge(parentOwnerId ?? fileNodeId, ownerId, 'contains', filePath, line))
+    ownerIdsByPath.set(ownerPathKey, ownerId)
+    return ownerId
+  }
+
+  const ensureMethodNode = (ownerId: string, methodName: string, line: number): string => {
+    const methodId = _makeId(ownerId, methodName)
+    addNode(nodes, seenIds, createNode(methodId, `.${methodName}()`, filePath, line))
+    addUniqueEdge(edges, seenStructuralEdges, createEdge(ownerId, methodId, 'method', filePath, line))
+    methodIdsByClass.set(`${ownerId}:${methodName.toLowerCase()}`, methodId)
+    return methodId
+  }
+
+  const ensureFunctionNode = (functionPath: readonly string[], functionName: string, line: number, parentOwnerId?: string): string => {
+    const functionId = parentOwnerId ? _makeId(parentOwnerId, functionName) : _makeId(stem, functionName)
+    addNode(nodes, seenIds, createNode(functionId, `${functionName}()`, filePath, line))
+    addUniqueEdge(edges, seenStructuralEdges, createEdge(parentOwnerId ?? fileNodeId, functionId, 'contains', filePath, line))
+    functionIdsByPath.set(rustOwnerPathKey(functionPath), functionId)
+    return functionId
+  }
+
+  const walkRustItems = (node: TreeSitterNode, parentOwnerId?: string, parentOwnerPath: readonly string[] = []): void => {
+    for (const child of namedTreeSitterChildren(node)) {
+      if (child.type === 'use_declaration') {
+        pendingRustImports.push({
+          paths: collectRustImportPaths(child, sourceText),
+          line: child.startPosition.row + 1,
+          scopePath: parentOwnerPath,
+          sourceId: parentOwnerId ?? fileNodeId,
+        })
+        continue
+      }
+
+      if (child.type === 'mod_item') {
+        const moduleName = rustLastPathSegment(treeSitterNodeText(sourceText, child.childForFieldName('name') ?? findNamedTreeSitterChild(child, 'identifier')))
+        if (!moduleName) {
+          continue
+        }
+
+        const modulePath = [...parentOwnerPath, moduleName]
+        const moduleId = ensureOwnerNode(modulePath, child.startPosition.row + 1)
+        const bodyNode = child.childForFieldName('body') ?? findNamedTreeSitterChild(child, 'declaration_list')
+        if (bodyNode) {
+          walkRustItems(bodyNode, moduleId, modulePath)
+        }
+        continue
+      }
+
+      if (RUST_TYPE_DECLARATIONS.has(child.type)) {
+        const typeName = rustTypeNameFromNode(child.childForFieldName('name') ?? findNamedTreeSitterChild(child, 'type_identifier', 'identifier'), sourceText)
+        if (!typeName) {
+          continue
+        }
+
+        const ownerId = ensureOwnerNode([...parentOwnerPath, typeName], child.startPosition.row + 1)
+        if (child.type !== 'trait_item') {
+          continue
+        }
+
+        const bodyNode = child.childForFieldName('body') ?? findNamedTreeSitterChild(child, 'declaration_list')
+        if (!bodyNode) {
+          continue
+        }
+
+        for (const member of namedTreeSitterChildren(bodyNode)) {
+          if (member.type !== 'function_item' && member.type !== 'function_signature_item') {
+            continue
+          }
+
+          const methodName = rustLastPathSegment(
+            treeSitterNodeText(sourceText, member.childForFieldName('name') ?? findNamedTreeSitterChild(member, 'identifier')),
+          )
+          if (!methodName) {
+            continue
+          }
+
+          const methodId = ensureMethodNode(ownerId, methodName, member.startPosition.row + 1)
+          const methodBody = member.childForFieldName('body') ?? findNamedTreeSitterChild(member, 'block')
+          if (methodBody) {
+            pendingRustCallBodies.push({ node: methodBody, callerId: methodId, currentNamespacePath: parentOwnerPath, currentOwnerId: ownerId })
+          }
+        }
+        continue
+      }
+
+      if (child.type === 'impl_item') {
+        const ownerTypeNode = child.childForFieldName('type') ?? findNamedTreeSitterChild(child, 'generic_type', 'type_identifier', 'scoped_type_identifier', 'scoped_identifier')
+        const ownerPath = rustScopedPathFromNode(ownerTypeNode, sourceText)
+        if (ownerPath.segments.length === 0) {
+          continue
+        }
+
+        const effectiveOwnerPath = rustResolveScopedPath(ownerPath, parentOwnerPath)
+        const ownerName = effectiveOwnerPath.at(-1)
+        if (!ownerName) {
+          continue
+        }
+
+        const ownerId = ensureOwnerNode(effectiveOwnerPath, child.startPosition.row + 1)
+        const traitNode = child.childForFieldName('trait')
+        const traitPath = rustScopedPathFromNode(traitNode, sourceText)
+        if (traitPath.segments.length > 0) {
+          pendingRustInheritances.push({
+            sourceId: ownerId,
+            traitPath,
+            scopePath: parentOwnerPath,
+            line: child.startPosition.row + 1,
+          })
+        }
+        const bodyNode = child.childForFieldName('body') ?? findNamedTreeSitterChild(child, 'declaration_list')
+        if (!bodyNode) {
+          continue
+        }
+
+        for (const member of namedTreeSitterChildren(bodyNode)) {
+          if (member.type !== 'function_item') {
+            continue
+          }
+
+          const methodName = rustLastPathSegment(
+            treeSitterNodeText(sourceText, member.childForFieldName('name') ?? findNamedTreeSitterChild(member, 'identifier')),
+          )
+          if (!methodName) {
+            continue
+          }
+
+          const methodId = ensureMethodNode(ownerId, methodName, member.startPosition.row + 1)
+          const methodBody = member.childForFieldName('body') ?? findNamedTreeSitterChild(member, 'block')
+          if (methodBody) {
+            pendingRustCallBodies.push({ node: methodBody, callerId: methodId, currentNamespacePath: parentOwnerPath, currentOwnerId: ownerId })
+          }
+        }
+        continue
+      }
+
+      if (child.type === 'function_item') {
+        const functionName = rustLastPathSegment(
+          treeSitterNodeText(sourceText, child.childForFieldName('name') ?? findNamedTreeSitterChild(child, 'identifier')),
+        )
+        if (!functionName) {
+          continue
+        }
+
+        const functionId = ensureFunctionNode([...parentOwnerPath, functionName], functionName, child.startPosition.row + 1, parentOwnerId)
+        const bodyNode = child.childForFieldName('body') ?? findNamedTreeSitterChild(child, 'block')
+        if (bodyNode) {
+          pendingRustCallBodies.push({ node: bodyNode, callerId: functionId, currentNamespacePath: parentOwnerPath })
+        }
+      }
+    }
+  }
+
+  try {
+    tree = parser.parse(sourceText)
+    if (!tree) {
+      return null
+    }
+
+    addNode(nodes, seenIds, createNode(fileNodeId, basename(filePath), filePath, 1))
+    walkRustItems(tree.rootNode)
+    for (const pendingImport of pendingRustImports) {
+      for (const importBinding of pendingImport.paths) {
+        const resolvedImportPath = rustResolveScopedPath(importBinding.path, pendingImport.scopePath)
+        const pathKey = rustOwnerPathKey(resolvedImportPath)
+        const targetId = ownerIdsByPath.get(pathKey) ?? _makeId(...resolvedImportPath)
+        const scopeKey = rustImportScopeKey(pendingImport.scopePath)
+        const scopedImports = importedOwnerIdsByScope.get(scopeKey) ?? new Map<string, string>()
+        scopedImports.set(importBinding.bindingName, targetId)
+        importedOwnerIdsByScope.set(scopeKey, scopedImports)
+        if (!ownerIdsByPath.has(pathKey)) {
+          externalRustTargetIds.add(targetId)
+        }
+        addUniqueEdge(edges, seenStructuralEdges, createEdge(pendingImport.sourceId, targetId, 'imports_from', filePath, pendingImport.line))
+      }
+    }
+
+    const resolveRustInheritedTraitId = (traitPath: RustScopedPath, scopePath: readonly string[], line: number): string | null => {
+      if (traitPath.segments.length === 0) {
+        return null
+      }
+
+      const resolvedTraitPath = rustResolveScopedPath(traitPath, scopePath)
+      if (traitPath.isAbsolute || traitPath.superDepth > 0 || traitPath.segments.length > 1) {
+        const localTraitId = ownerIdsByPath.get(rustOwnerPathKey(resolvedTraitPath))
+        if (localTraitId) {
+          return localTraitId
+        }
+
+        const externalTraitId = _makeId(...resolvedTraitPath)
+        externalRustTargetIds.add(externalTraitId)
+        return externalTraitId
+      }
+
+      const localTraitId = ownerIdsByPath.get(rustOwnerPathKey(resolvedTraitPath))
+      if (localTraitId) {
+        return localTraitId
+      }
+
+      const importedTraitId = importedOwnerIdsByScope.get(rustImportScopeKey(scopePath))?.get(traitPath.segments[0] ?? '')
+      if (importedTraitId) {
+        if (!ownerIdsByPath.has(rustOwnerPathKey(resolvedTraitPath))) {
+          externalRustTargetIds.add(importedTraitId)
+        }
+        return importedTraitId
+      }
+
+      return ensureOwnerNode(resolvedTraitPath, line)
+    }
+
+    for (const pendingInheritance of pendingRustInheritances) {
+      const targetId = resolveRustInheritedTraitId(pendingInheritance.traitPath, pendingInheritance.scopePath, pendingInheritance.line)
+      if (!targetId || targetId === pendingInheritance.sourceId) {
+        continue
+      }
+
+      addUniqueEdge(
+        edges,
+        seenStructuralEdges,
+        createEdge(pendingInheritance.sourceId, targetId, 'inherits', filePath, pendingInheritance.line),
+      )
+    }
+
+    for (const pendingCallBody of pendingRustCallBodies) {
+      collectRustCalls(
+        pendingCallBody.node,
+        sourceText,
+        pendingCallBody.callerId,
+        pendingCalls,
+        ownerIdsByPath,
+        functionIdsByPath,
+        importedOwnerIdsByScope,
+        externalRustTargetIds,
+        pendingCallBody.currentNamespacePath,
+        pendingCallBody.currentOwnerId,
+      )
+    }
+
+    addResolvedCalls(edges, pendingCalls, nodes, filePath, methodIdsByClass)
+    const validNodeIds = new Set(nodes.map((node) => node.id))
+    return {
+      nodes,
+      edges: edges.filter(
+        (edge) =>
+          validNodeIds.has(edge.source) &&
+          (validNodeIds.has(edge.target) || externalRustTargetIds.has(edge.target) || edge.relation === 'imports' || edge.relation === 'imports_from'),
+      ),
+    }
+  } finally {
+    tree?.delete()
+    parser.delete()
+  }
+}
+
 export function extractJs(filePath: string): ExtractionFragment {
   const sourceText = readFileSync(filePath, 'utf8')
   const sourceFile = ts.createSourceFile(filePath, sourceText, ts.ScriptTarget.Latest, true, scriptKindForPath(filePath))
@@ -3752,7 +4355,15 @@ const SINGLE_FILE_EXTRACTOR_HANDLERS: ExtractorHandlerMap = {
     return extractGenericCode(filePath)
   },
   'builtin:extract:c-family': (filePath) => extractGenericCode(filePath),
-  'builtin:extract:rust': (filePath) => extractGenericCode(filePath),
+  'builtin:extract:rust': (filePath) => {
+    const extraction = extractRustTreeSitter(filePath)
+    if (extraction !== null) {
+      return extraction
+    }
+
+    warnTreeSitterFallback('rust')
+    return extractGenericCode(filePath)
+  },
   'builtin:extract:swift': (filePath) => extractGenericCode(filePath),
   'builtin:extract:kotlin': (filePath) => extractGenericCode(filePath),
   'builtin:extract:csharp': (filePath) => extractGenericCode(filePath),
