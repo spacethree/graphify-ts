@@ -425,7 +425,7 @@ export function detect(root: string, options: DetectOptions = {}): DetectResult 
   if (!needsGraph) {
     warning = `Corpus is ~${totalWords.toLocaleString()} words - fits in a single context window. You may not need a graph.`
   } else if (totalWords >= CORPUS_UPPER_THRESHOLD || totalFiles >= FILE_COUNT_UPPER) {
-    warning = `Large corpus: ${totalFiles} files · ~${totalWords.toLocaleString()} words. Semantic extraction will be expensive (many Claude tokens). Consider running on a subfolder, or use --no-semantic to run AST-only.`
+    warning = `Large corpus: ${totalFiles} files · ~${totalWords.toLocaleString()} words. Graph generation will take longer and produce larger artifacts. Consider running on a subfolder first, or targeting a smaller high-value slice of the repo.`
   }
 
   return {

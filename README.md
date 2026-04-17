@@ -1,61 +1,84 @@
 # graphify-ts
 
-[![version 0.1.5](https://img.shields.io/badge/version-0.1.5-2563eb)](https://github.com/mohanagy/graphify-ts)
+[![version 0.2.1](https://img.shields.io/badge/version-0.2.1-2563eb)](https://github.com/mohanagy/graphify-ts)
 [![node >=20](https://img.shields.io/badge/node-%E2%89%A520-3c873a)](https://nodejs.org/)
 [![TypeScript 5.8](https://img.shields.io/badge/typescript-5.8-3178c6)](https://www.typescriptlang.org/)
 [![Vitest 3.2](https://img.shields.io/badge/tests-Vitest%203.2-6e9f18)](https://vitest.dev/)
-[![MCP stdio + HTTP](https://img.shields.io/badge/runtime-MCP%20stdio%20%2B%20HTTP-7c3aed)](#how-graphify-helps-claude-code-and-other-ai-platforms)
-[![Local first](https://img.shields.io/badge/local--first-no%20cloud%20required-0f766e)](#how-graphify-helps)
-[![Code docs papers images media](https://img.shields.io/badge/corpus-code%20%2B%20docs%20%2B%20papers%20%2B%20images%20%2B%20media-9a3412)](#what-you-get)
-[![HTML JSON Neo4j](https://img.shields.io/badge/outputs-HTML%20%2B%20JSON%20%2B%20Neo4j-f59e0b)](#what-you-get)
-[![No Python runtime](https://img.shields.io/badge/runtime-no%20Python%20required-111827)](#best-fit-today)
-[![license MIT](https://img.shields.io/badge/license-MIT-16a34a)](./LICENSE)
+[![Local first](https://img.shields.io/badge/local--first-no%20cloud%20required-0f766e)](#what-this-package-is-best-at-today)
+[![HTTP + stdio runtime](https://img.shields.io/badge/runtime-HTTP%20%2B%20stdio-7c3aed)](#common-commands)
+[![HTML + JSON artifacts](https://img.shields.io/badge/artifacts-HTML%20%2B%20JSON-f59e0b)](#what-you-get)
+[![No Python runtime](https://img.shields.io/badge/runtime-no%20Python%20required-111827)](#install)
+[![license MIT](https://img.shields.io/badge/license-MIT-16a34a)](https://github.com/mohanagy/graphify-ts/blob/main/LICENSE)
 
-`graphify` is a workflow for turning a codebase, documentation set, or mixed project folder into a local knowledge graph. Instead of treating a repository as a pile of disconnected files, graphify extracts files, symbols, concepts, and relationships so you can explore the project as a connected system.
+`graphify-ts` is a local TypeScript CLI that turns a repository or mixed project folder into reusable graph artifacts. It generates `graph.json`, `GRAPH_REPORT.md`, and HTML views that you can inspect directly, query from the CLI, or serve to local tools.
 
-`graphify-ts` is the Node/TypeScript implementation of that workflow. It lets you generate graph artifacts locally, inspect them in HTML, query them from the CLI, serve them to tools, and use them to give AI platforms like Claude Code a much better map of your repository — all without requiring a Python runtime.
+The package is strongest today as a **local graph generator and explorer for codebases**, especially JavaScript / TypeScript repositories. Broader extraction and ingest support exists, but it varies by extractor family and is documented more precisely in [the current status doc](https://github.com/mohanagy/graphify-ts/blob/main/docs/plans/current-status.md).
 
 The npm package name is `@mohammednagy/graphify-ts`, and the installed command is `graphify-ts`.
 
-## Credit to the original graphify
+## What this package is best at today
 
-`graphify-ts` gives full credit to the original [`graphify`](https://github.com/safishamsi/graphify) project by [Safi Shamsi](https://github.com/safishamsi). That project established the core idea and workflow of turning code, docs, and mixed project folders into a queryable knowledge graph for humans and AI coding assistants.
+- **Generate local graph artifacts** for a repository or mixed project folder.
+- **Explore those artifacts** through HTML, reports, and CLI commands such as `query`, `explain`, `path`, and `diff`.
+- **Provide persistent repo context** for local automation and AI workflows without requiring a Python runtime or a hosted service.
 
-This repository is a Node/TypeScript implementation of that vision, adapted for a Node-native CLI and local graph workflows. If you want the original Python-based project and its broader multimodal feature set, start with `graphify`.
+If you want one sentence: `graphify-ts` is best used as a **local-first codebase graph generator with practical explorer/query tooling around the generated artifacts**.
 
-## What is graphify?
+## Install
 
-Graphify helps you move from raw files to connected understanding.
+Prerequisites:
 
-Instead of manually opening dozens of files just to answer questions like:
+- Node.js 20+
+- npm
 
-- Where does this feature start and end?
-- What are the most important modules in this repo?
-- Which files, functions, or concepts are tightly connected?
-- How is this project organized at a high level?
+Install globally:
 
-Graphify builds a reusable graph of the project and saves it as artifacts you can browse, query, and reuse.
+```bash
+npm install -g @mohammednagy/graphify-ts
+graphify-ts --help
+```
 
-That makes it useful for:
+Or run it one-off with `npx`:
 
-- onboarding into an unfamiliar codebase
-- understanding architecture and dependencies
-- exploring mixed repos with code, docs, and notes
-- creating persistent context for AI coding assistants
-- keeping a local, regeneratable knowledge layer for a project
+```bash
+npx @mohammednagy/graphify-ts --help
+```
 
-## How graphify helps
+If your shell still says `command not found: graphify-ts` immediately after the global install, open a new terminal and check where npm places global executables:
 
-Graphify is especially helpful when you want to:
+```bash
+command -v graphify-ts
+npm prefix -g
+echo "$PATH"
+```
 
-- **Understand a repository faster** by surfacing important nodes, communities, and relationships.
-- **See structure instead of noise** through reports, graph views, and focused exports.
-- **Explore large projects safely** with overview-first HTML for large graphs instead of trying to render everything at once.
-- **Query the codebase semantically** with commands like `query`, `explain`, and `path` on top of generated graph artifacts.
-- **Compare snapshots over time** with `diff` so refactors and graph changes are easier to review.
-- **Spot suspicious structure faster** through semantic anomaly detection for bridge nodes, low-cohesion communities, and unexpected cross-boundary edges.
-- **Reuse the same context across tools** because the graph is saved locally as files that humans and automation can both consume.
-- **Refresh understanding after changes** by regenerating the graph whenever the repo evolves.
+On macOS with Homebrew-managed Node.js, the global executable is typically linked into `/opt/homebrew/bin/graphify-ts`. If `command -v graphify-ts` is empty, make sure `/opt/homebrew/bin` is on your `PATH`, then open a fresh terminal and try again.
+
+## Quick start
+
+Generate graph artifacts for the current folder:
+
+```bash
+graphify-ts generate .
+```
+
+Then inspect the outputs:
+
+- open `graphify-out/graph.html` in a browser
+- read `graphify-out/GRAPH_REPORT.md`
+- keep `graphify-out/graph.json` for CLI queries and serve flows
+
+Run a few common follow-up commands:
+
+```bash
+graphify-ts query "how does the auth flow work?" --graph graphify-out/graph.json
+graphify-ts explain "SomeNodeLabel" --graph graphify-out/graph.json
+graphify-ts path "SourceConcept" "TargetConcept" --graph graphify-out/graph.json
+graphify-ts diff previous-run/graph.json --graph graphify-out/graph.json
+graphify-ts serve graphify-out/graph.json
+```
+
+Replace `SomeNodeLabel`, `SourceConcept`, and `TargetConcept` with labels that actually exist in your generated graph.
 
 ## What you get
 
@@ -72,193 +95,17 @@ graphify-out/
 
 Optional exports are also available for wiki, Obsidian, SVG, GraphML, and Neo4j workflows.
 
-For smaller graphs, `graph.html` stays self-contained and opens the full interactive explorer directly. For larger graphs, `graphify-ts` now switches to an overview-first HTML mode that opens quickly, shows semantic community names, and links into focused per-community pages under `graph-pages/`.
-
-## Best fit today
-
-`graphify-ts` is a strong fit if you want to:
-
-- explore a JavaScript / TypeScript repository with a Node-native toolchain
-- build persistent graph artifacts for AI or agent workflows
-- inspect repo structure through HTML, graph queries, and shortest-path/explain commands
-- evaluate the TypeScript port without depending on the original Python runtime
-
-## Install from npm
-
-Prerequisites:
-
-- Node.js
-- npm
-
-Install the published package globally:
-
-```bash
-npm install -g @mohammednagy/graphify-ts
-graphify-ts --help
-```
-
-If your shell still says `command not found: graphify-ts` immediately after the global install, open a new terminal and check where npm places global executables:
-
-```bash
-command -v graphify-ts
-npm prefix -g
-echo "$PATH"
-```
-
-On macOS with Homebrew-managed Node.js, the global executable is typically linked into `/opt/homebrew/bin/graphify-ts`. If `command -v graphify-ts` is empty, make sure `/opt/homebrew/bin` is on your `PATH`, then open a fresh terminal and try again.
-
-## Use without installing globally
-
-If you prefer one-off execution:
-
-```bash
-npx @mohammednagy/graphify-ts --help
-```
-
-## How graphify helps Claude Code and other AI platforms
-
-AI coding assistants are powerful, but they usually begin with incomplete repository context. Graphify helps by generating a local knowledge layer that the assistant can read instead of forcing it to infer everything from raw file browsing alone.
-
-In practice, graphify gives AI platforms a better starting point:
-
-- `graphify-out/GRAPH_REPORT.md` explains the repo at a higher level, including god nodes, communities, and suggested questions.
-- `graphify-out/graph.json` provides machine-readable structure for query, explain, path, anomaly, and serve workflows.
-- `graphify-out/wiki/index.md` (when you generate wiki output) gives assistants a linked markdown view that is often easier to navigate than raw source trees.
-- `graphify-out/graph.html` and `graphify-out/graph-pages/` let you inspect the same structure visually.
-
-That helps AI platforms like Claude Code:
-
-- orient themselves in an unfamiliar repository faster
-- answer architecture and dependency questions with better grounding
-- spend less context budget on blind file hunting
-- reuse fresh graph artifacts after code changes instead of starting from scratch each time
-
-`graphify-ts` also includes installer commands for local platform integrations such as Claude, Cursor, and Copilot.
-
-There are two different kinds of install commands:
-
-- `graphify-ts install --platform claude` installs the home-level Claude skill for your user account
-- `graphify-ts claude install` installs project-local Claude integration for the current repository
-
-You do **not** have to run `graphify-ts generate .` before either install command for them to succeed.
-
-You run `graphify-ts generate .` because the installed Claude rules point Claude at graph artifacts inside `graphify-out/`, especially:
-
-- `graphify-out/graph.json`
-- `graphify-out/GRAPH_REPORT.md`
-- `graphify-out/wiki/index.md` (when wiki export exists)
-
-Without those files, the skill/rules are installed, but Claude has no generated graph context to read yet.
-
-For Claude Code specifically, the workflow is simple:
-
-1. install the Claude integration
-2. generate graph artifacts for the repository
-3. run the slash command so Claude can use the fresh graph context
-
-Recommended order for Claude Code:
-
-```bash
-# once per machine
-npm install -g @mohammednagy/graphify-ts
-graphify-ts install --platform claude
-
-# once per repository
-graphify-ts claude install
-
-# run whenever you want Claude to use fresh graph context
-graphify-ts generate .
-```
-
-Then inside Claude Code, use the installed slash command:
-
-```text
-/graphify-ts .
-```
-
-That is the current `graphify-ts` command name for the Claude skill.
-
-When you run that command, Claude Code invokes the local `graphify-ts` workflow for the current repository and reads the generated artifacts under `graphify-out/`. That is what makes the integration useful: Claude gets a repo-specific map instead of relying only on ad-hoc file reads.
-
-Because the slash command runs a local command and updates files under `graphify-out/`, Claude Code may ask for permission the first time or when its sandbox settings require confirmation. That prompt is expected.
-
-If you want Claude to benefit immediately in an existing repo, run `graphify-ts generate .` before you start asking codebase questions. If you are just setting up the integration, installing first and generating afterward is perfectly fine.
-
-## Quick start on your own project
-
-Generate graph artifacts for the current folder:
-
-```bash
-graphify-ts generate .
-```
-
-Then inspect the outputs:
-
-- open `graphify-out/graph.html` in a browser
-- read `graphify-out/GRAPH_REPORT.md`
-- keep `graphify-out/graph.json` for CLI queries and server flows
-
-If the graph is large, `graph.html` becomes a lightweight overview page with named communities and search results that link into `graphify-out/graph-pages/community-*.html` instead of trying to render the whole graph at once.
-
-### Useful next commands
-
-```bash
-graphify-ts query "how does the auth flow work?" --graph graphify-out/graph.json
-graphify-ts query "auth" --rank-by degree --community 0 --file-type code --graph graphify-out/graph.json
-graphify-ts diff previous-run/graph.json --graph graphify-out/graph.json
-graphify-ts explain "SomeNodeLabel" --graph graphify-out/graph.json
-graphify-ts path "SourceConcept" "TargetConcept" --graph graphify-out/graph.json
-graphify-ts serve graphify-out/graph.json
-graphify-ts serve graphify-out/graph.json --mcp
-```
-
-Replace `SomeNodeLabel`, `SourceConcept`, and `TargetConcept` with labels that actually exist in your generated graph.
-
-For graph queries, you can now:
-
-- use `--rank-by degree` to prioritize more connected matches over plain text relevance
-- use `--community <id>` to stay inside one detected community
-- use `--file-type <type>` to limit traversal to one node type such as `code` or `document`
-
-When you run `graphify-ts serve graphify-out/graph.json --mcp`, graph-aware prompt consumers now also get:
-
-- prompt descriptions seeded from the actual generated graph instead of fixed boilerplate
-- query/explain/path prompts that include live graph stats, top communities, god nodes, and suggested follow-up questions
-- a `graph_community_summary_prompt` for summarizing one detected community by id, with prompt completion for available `community_id` values
-- a `graph_diff` tool plus direct `diff` method support for comparing the current graph to a baseline `graph.json`
-- a `semantic_anomalies` MCP tool plus an HTTP `/anomalies` endpoint for surfacing bridge nodes, weak communities, and suspicious cross-boundary links
-- freshness metadata on MCP `resources/list` / `resources/read` responses via resource annotations, plus matching graph-version headers on the HTTP runtime so clients can detect stale graph artifacts
-- `resources/subscribe` / `resources/unsubscribe` support with `notifications/resources/updated` and `notifications/resources/list_changed` so MCP clients can react to refreshed graph artifacts
-
-## Try it out
-
-If you want a deterministic smoke test using the bundled fixture corpus in this repo, run:
-
-```bash
-graphify-ts generate tests/fixtures --no-html
-graphify-ts explain HttpClient --graph tests/fixtures/graphify-out/graph.json
-graphify-ts query "HttpClient buildHeaders" --graph tests/fixtures/graphify-out/graph.json
-```
-
-If you do not want a global install, replace `graphify-ts` with `npx @mohammednagy/graphify-ts` in the same commands.
-
-What you should see:
-
-- `generate` completes and writes `tests/fixtures/graphify-out/graph.json`
-- `explain` returns the `HttpClient` node plus its method neighbors
-- `query` returns a small traversal rooted around `HttpClient` and `buildHeaders()`
-
-If you want the interactive UI for the same smoke test, rerun without `--no-html` and open `tests/fixtures/graphify-out/graph.html`.
+For smaller graphs, `graph.html` stays self-contained and opens the full interactive explorer directly. For larger graphs, `graphify-ts` switches to an overview-first HTML mode that opens quickly, shows semantic community names, and links into focused per-community pages under `graph-pages/`.
 
 ## Common commands
 
 | Command | What it does |
 |---|---|
 | `generate [path]` | Build graph artifacts for a folder |
-| `watch [path]` | Build once, then watch supported code, docs, papers, images, local audio/video, and office-document changes |
+| `watch [path]` | Build once, then watch supported files and refresh incrementally |
 | `serve [graph.json]` | Serve graph artifacts over HTTP or stdio |
-| `query "<question>"` | Traverse `graph.json` for a question, with optional ranking and query filters |
-| `diff <baseline-graph.json>` | Compare two graph snapshots and summarize new/removed nodes and edges |
+| `query "<question>"` | Traverse `graph.json` for a question |
+| `diff <baseline-graph.json>` | Compare two graph snapshots |
 | `path <source> <target>` | Find the shortest path between two concepts |
 | `explain <label>` | Explain one node and its neighborhood |
 | `add <url> [path]` | Ingest a URL into a corpus and rebuild with `--update` |
@@ -271,6 +118,85 @@ For the full command surface, run:
 ```bash
 graphify-ts --help
 ```
+
+For graph queries, you can also:
+
+- use `--rank-by degree` to prioritize more connected matches over plain-text relevance
+- use `--community <id>` to stay inside one detected community
+- use `--file-type <type>` to limit traversal to one node type such as `code` or `document`
+
+When you run `graphify-ts serve graphify-out/graph.json --mcp`, graph-aware prompt consumers also get prompt/resource/tool surfaces backed by the generated graph, including community summaries, diff support, anomaly surfacing, and freshness metadata for served artifacts.
+
+## Smoke test with bundled fixtures
+
+If you want a deterministic smoke test using the bundled fixture corpus in this repo, run:
+
+```bash
+graphify-ts generate tests/fixtures --no-html
+graphify-ts explain HttpClient --graph tests/fixtures/graphify-out/graph.json
+graphify-ts query "HttpClient buildHeaders" --graph tests/fixtures/graphify-out/graph.json
+```
+
+If you do not want a global install, replace `graphify-ts` with `npx @mohammednagy/graphify-ts` in the same commands.
+
+Expected result:
+
+- `generate` completes and writes `tests/fixtures/graphify-out/graph.json`
+- `explain` returns the `HttpClient` node plus its method neighbors
+- `query` returns a small traversal rooted around `HttpClient` and `buildHeaders()`
+
+If you want the interactive UI for the same smoke test, rerun without `--no-html` and open `tests/fixtures/graphify-out/graph.html`.
+
+## AI platforms and local integrations
+
+`graphify-ts` can also feed local tooling such as Claude Code, Cursor, Copilot, and other prompt consumers by pointing them at generated artifacts in `graphify-out/`.
+
+There are two different install surfaces:
+
+- `graphify-ts install --platform claude` installs the home-level Claude skill for your user account
+- `graphify-ts claude install` installs project-local Claude integration for the current repository
+
+Recommended Claude Code flow:
+
+```bash
+# once per machine
+npm install -g @mohammednagy/graphify-ts
+graphify-ts install --platform claude
+
+# once per repository
+graphify-ts claude install
+
+# rerun whenever you want fresh graph context
+graphify-ts generate .
+```
+
+Then inside Claude Code:
+
+```text
+/graphify-ts .
+```
+
+You do **not** need to generate first for the install commands to succeed, but you do need generated artifacts before the integration has useful repo context to read.
+
+## Current scope at a glance
+
+This README stays end-user focused. The matrix below is the short version of what is solid now versus broader support that exists but is more bounded or extractor-specific.
+
+| Area | Current shape | Notes |
+|---|---|---|
+| Local graph generation and exploration | **Strong today** | Core `generate` / HTML / report / query / explain / path / diff workflow |
+| JavaScript / TypeScript extraction | **Strong today** | Uses the TypeScript compiler API |
+| Other code-language extraction | **Available, mixed depth** | Deeper AST-backed coverage for Python, Go, Java, Ruby, and a first Rust slice; lighter structural extraction elsewhere |
+| Documents, papers, and office files | **Available** | Markdown/text/PDF/DOCX/XLSX extraction with bounded metadata and citation lifting |
+| Images and local media metadata | **Available, bounded** | Deterministic image nodes plus bounded audio/video metadata extraction; no transcription yet |
+| URL ingest | **Available, route-specific** | Structured capture exists for several source families, with explicit fallback behavior when exact supported routes do not match |
+| Exports and integrations | **Available** | HTML/JSON by default, optional wiki/Obsidian/SVG/GraphML/Neo4j outputs, plus local assistant installers |
+| HTTP / stdio serving | **Available** | Lightweight local runtime around generated graph artifacts |
+
+For the detailed implementation status, limitations, and roadmap material, see:
+
+- [Current status](https://github.com/mohanagy/graphify-ts/blob/main/docs/plans/current-status.md)
+- [Upstream parity and beyond roadmap](https://github.com/mohanagy/graphify-ts/blob/main/docs/plans/2026-04-12-upstream-parity-and-beyond.md)
 
 ## Optional outputs and integrations
 
@@ -292,34 +218,20 @@ graphify-ts cursor install
 graphify-ts copilot install
 ```
 
-## Current scope at a glance
+## Credit to the original graphify
 
-Today, the strongest path is:
+`graphify-ts` gives full credit to the original [`graphify`](https://github.com/safishamsi/graphify) project by [Safi Shamsi](https://github.com/safishamsi). That project established the core idea and workflow of turning code, docs, and mixed project folders into a queryable knowledge graph for humans and AI coding assistants.
 
-- JavaScript / TypeScript extraction via the TypeScript compiler API
-
-Additional coverage exists for:
-
-- Python, Go, Java, Ruby, and a first bounded Rust slice via portable WASM tree-sitter, including namespaced module/type ownership, trait signatures, `impl Trait for Type` conformance, `use`-scoped imports including single-target `... as Alias` bindings, and common method calls plus nested `super::` relative-path coverage
-- several additional languages via lighter structural extraction
-- deterministic document, paper, image, and office-document handling, including DOCX/XLSX metadata lifting plus richer PDF citation metadata
-- first local audio/video file-node support across common media extensions, plus direct PDF/image/audio/video or webpage-shaped binary asset URLs that resolve into the same hidden-sidecar path, with deterministic extension-derived `content_type`, saved-asset `file_bytes`, lightweight duration metadata for WAV plus common MP4-family assets with recognizable top-level container headers and bounded `mdhd` fallback when `mvhd` is absent, deterministic MP4-family video `video_width_px` / `video_height_px` metadata plus embedded audio-track `audio_sample_rate_hz` / `audio_channel_count` from bounded `moov` parsing, including `tkhd` width/height fallback when the visual sample entry is missing or truncated, deterministic AVI `media_duration_seconds` / `video_width_px` / `video_height_px` metadata plus embedded audio-track `audio_sample_rate_hz` / `audio_channel_count` from bounded RIFF parsing, deterministic Matroska/WebM `media_duration_seconds` / `video_width_px` / `video_height_px` plus embedded audio-track `audio_sample_rate_hz` / `audio_channel_count` metadata from a bounded 512 KiB EBML head scan plus a small bounded set of `SeekHead` rereads and a bounded later top-level segment scan, including recovery when large prefixed segment content pushes `Info` or `Tracks` beyond the widened head window, truncates those elements near the boundary, lacks useful `SeekHead` help, or uses split/corrective `SeekHead` hints, including the no-`SeekHead` case where the first direct `Info` or `Tracks` header is visible in the head window and can either reuse already-buffered parseable metadata from that direct prefix, including `Info` prefixes whose remaining payload is only trailing padding beyond the bounded windows and can still keep parseable duration metadata recoverable, while direct or later top-level exact-boundary trailing-child `Info` targets keep corrected duration recoverable in the same bounded path and also clear stale duration when `Duration` is omitted or malformed before the trailing child, while later-top-level overrun or truncated trailing child headers after omitted or malformed `Duration` remain unreadable and preserve earlier valid duration, and `Tracks` prefixes whose remaining payload is only trailing padding beyond the bounded windows and can still reuse buffered parseable metadata or replace stale earlier track metadata from the parseable prefix, and whose exact-boundary trailing child can still reuse buffered parseable metadata, replace stale earlier track metadata, or clear stale omitted track fields from the same parseable prefix, while later top-level exact-boundary trailing-child `Tracks` targets now also replace stale earlier track metadata or clear stale audio-track or video-dimension fields in the same bounded path, while later top-level overrun or truncated trailing-child `Tracks` targets remain unreadable and preserve earlier valid track metadata, or reread from disk when the buffered prefix is insufficient, while still replacing stale earlier duration or track metadata or clearing stale duration, audio, or video-dimension metadata when the later authoritative result omits those fields, and later direct `Info` prefixes whose buffered children already prove `Duration` is invalid or omitted when a trailing metadata child or padding reaches the exact `Info` boundary, while malformed overrun or truncated trailing child headers after omitted or invalid `Duration` remain unreadable and preserve earlier valid duration, and while later unreadable `Info` targets now also preserve earlier valid duration for stale-direct no-`SeekHead` cases and later unreadable `Tracks` targets preserve earlier valid dimension/audio-track metadata, including direct `Tracks` prefixes whose trailing child header is malformed or truncated, plus the parallel stale-direct no-`SeekHead` direct-`Tracks` reread path, common MP3 ID3 `audio_title` / `audio_artist` / `audio_album` metadata lift, deterministic AAC ADTS `media_duration_seconds` / `audio_sample_rate_hz` / `audio_channel_count` metadata, richer M4A MP4-container `audio_sample_rate_hz` / `audio_channel_count` / `audio_title` / `audio_artist` / `audio_album` metadata lift, deterministic FLAC/Ogg Vorbis/Opus `media_duration_seconds` / `audio_sample_rate_hz` / `audio_channel_count` / `audio_title` / `audio_artist` / `audio_album` metadata lift, including Ogg-family audio-stream selection when a leading non-audio BOS stream appears first within a bounded 512 KiB head window, graph/report categorization, and watch/update coverage but no transcription yet
-- additive schema-v2 validation for `schema_version`, layered graph metadata (`base`, `semantic`, `media`), provenance records, immutable legacy-payload normalization during graph build, explicit `graph.json` / reload / `generate --update` schema-version preservation, helper-created raw extraction output that now emits explicit base-layer/provenance metadata, normalization-time projection of flat ingest frontmatter into structured ingest provenance, and registry-driven extraction/ingest dispatch via a builtin capability registry that can disambiguate shared extensions such as markdown document vs paper inputs, emit structured GitHub repo/issue/PR/discussion captures plus exact `/commit/<sha>` commit captures, turn article-style webpages into richer canonicalized markdown with author/description lift, section headings, and outbound-link lists, emit structured single-post tweet/X captures across exact base-post plus `/photo/<n>` and `/video/<n>` media-alias routes with derived handle/post metadata plus explicit capture-status context, emit structured Reddit thread captures across exact thread-root and short-thread aliases plus exact comment-permalink captures with post/comment context and explicit JSON-fallback behavior, emit structured Hacker News item captures across exact `news.ycombinator.com/item?id=` routes with discussion highlights and explicit API-fallback behavior, and emit structured YouTube captures across exact single-video `watch`, `youtu.be`, `shorts`, and `embed` routes, exact `live` routes, exact `/playlist?list=<id>` routes, and exact root channel routes across `@handle`, `/channel/<id>`, and `/c/<slug>` with canonical watch/playlist/channel URLs, derived IDs, handles, or custom-channel slugs, optional watch-page publish/duration metadata, optional transcript-availability plus caption-language hints when canonical watch HTML exposes caption tracks, optional timestamped transcript cue context from one prioritized confirmed caption track with manual-over-ASR preference in the primary language plus fallback across remaining confirmed tracks, start-end ranges when timedtext exposes cue durations and start-only fallback otherwise, optional chapter context when canonical watch HTML exposes it, and explicit oEmbed/HTML fallback context
-- lightweight HTTP and stdio/MCP-style serving
-
-For the detailed implementation status, limitations, and roadmap material that used to live in this README, see:
-
-- [`docs/plans/current-status.md`](docs/plans/current-status.md)
-- [`docs/plans/2026-04-12-upstream-parity-and-beyond.md`](docs/plans/2026-04-12-upstream-parity-and-beyond.md)
+This repository is a Node/TypeScript implementation of that vision, adapted for a Node-native CLI and local graph workflows. If you want the original Python-based project and its broader multimodal feature set, start with `graphify`.
 
 ## Contributing
 
-Contributions are welcome — especially parser fixes, fixture-backed regression coverage, docs improvements, install-flow polish, and graph-quality improvements.
+Contributions are welcome - especially parser fixes, fixture-backed regression coverage, docs improvements, install-flow polish, and graph-quality improvements.
 
 Before opening a pull request, please read:
 
-- [`CONTRIBUTING.md`](CONTRIBUTING.md)
-- [`SECURITY.md`](SECURITY.md)
+- [CONTRIBUTING.md](https://github.com/mohanagy/graphify-ts/blob/main/CONTRIBUTING.md)
+- [SECURITY.md](https://github.com/mohanagy/graphify-ts/blob/main/SECURITY.md)
 
 The repository now includes:
 
@@ -330,4 +242,4 @@ The repository now includes:
 
 If you maintain the repository, apply the recommended GitHub branch protection and open-source safety settings from:
 
-- [`docs/maintainers/repository-settings.md`](docs/maintainers/repository-settings.md)
+- [docs/maintainers/repository-settings.md](https://github.com/mohanagy/graphify-ts/blob/main/docs/maintainers/repository-settings.md)

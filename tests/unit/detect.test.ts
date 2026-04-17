@@ -41,6 +41,24 @@ describe('detect', () => {
     expect(result.warning).not.toBeNull()
   })
 
+  it('warns on large corpora without advertising nonexistent flags or provider costs', () => {
+    const root = createTempRoot()
+    try {
+      for (let index = 0; index < 201; index += 1) {
+        writeFileSync(join(root, `doc-${index}.md`), `${'word '.repeat(250)}\n`, 'utf8')
+      }
+
+      const result = detect(root)
+
+      expect(result.needs_graph).toBe(true)
+      expect(result.warning).toContain('Large corpus:')
+      expect(result.warning).not.toContain('--no-semantic')
+      expect(result.warning).not.toContain('Claude tokens')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('includes saved graphify memory notes while keeping generated artifacts ignored', () => {
     const root = createTempRoot()
     try {

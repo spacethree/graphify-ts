@@ -4,9 +4,30 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-04-17
+
 ### Added
 
+- Schema-v2 extraction metadata with layered provenance contracts, immutable normalization helpers, and regression coverage for legacy payload upgrades and `generate --update` preservation
+- Registry-driven ingestion for structured webpages plus exact GitHub repository/issue/pull-request/discussion/commit, Reddit thread/comment, Hacker News item, and YouTube video/playlist/channel routes
+- Broader deterministic non-code and media extraction, including DOCX/XLSX metadata and citation handling, richer PDF bibliography/source URL lifting, sidecar-backed binary provenance, and bounded metadata for AAC, M4A, FLAC, Ogg Vorbis/Opus, MP4-family, AVI, and Matroska/WebM assets
+- A first bounded Rust tree-sitter extraction slice covering trait signatures, `impl Trait for Type` conformance, aliased `use ... as ...` imports, nested import scoping, and WASM grammar-load isolation
 - Deterministic bibliography `source_url` lifting for numbered Markdown/PDF/DOCX reference entries when plain external URLs are present without DOI/arXiv metadata
+
+### Changed
+
+- Refactored extraction and ingest plumbing into more modular registry-driven paths, including dedicated `extract/` helper modules and a larger `non-code` extraction module for the active document/media path
+- Expanded README and maintainer-facing release documentation to better reflect the package's strongest current workflows, bounded capability matrix, and npm-safe repository links
+- Improved large-corpus detection messaging to recommend smaller high-value slices without advertising nonexistent flags or provider-specific token costs
+
+### Fixed
+
+- Hardened bounded Matroska/WebM metadata discovery and stale-metadata clearing across direct scans, `SeekHead` rereads, and later top-level fallback paths
+- Preserved correct ingest provenance and sidecar-aware incremental rebuild behavior for binary assets, including direct audio/video URLs and saved sidecar metadata
+
+### Notes
+
+- `v0.2.0` was tagged accidentally and was not published to npm or turned into a GitHub release. `0.2.1` is the first published package for the post-`0.1.5` change set and includes the release-documentation corrections made after that accidental tag.
 
 ## [0.1.5] - 2026-04-12
 
