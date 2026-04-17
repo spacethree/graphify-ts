@@ -1824,17 +1824,59 @@ function parseMatroskaInfoMetadata(buffer: Buffer, infoElement: EbmlElementHeade
     : null
 }
 
+function hasMatroskaAuthoritativeInfoWithoutDuration(buffer: Buffer, infoElement: EbmlElementHeader): boolean {
+  let offset = infoElement.bodyOffset
+  while (offset < infoElement.endOffset) {
+    const childElement = readEbmlElementHeader(buffer, offset, infoElement.endOffset)
+    if (!childElement || childElement.endOffset <= offset) {
+      return false
+    }
+    if (childElement.id === MATROSKA_DURATION_ID) {
+      return false
+    }
+    if (childElement.actualEndOffset > infoElement.actualEndOffset) {
+      return false
+    }
+    if (childElement.actualEndOffset === infoElement.actualEndOffset) {
+      return true
+    }
+    offset = childElement.endOffset
+  }
+  return false
+}
+
+function hasMatroskaUnreadableInfoChildAfter(buffer: Buffer, infoElement: EbmlElementHeader, startOffset: number): boolean {
+  let offset = startOffset
+  while (offset < infoElement.endOffset) {
+    const childElement = readEbmlElementHeader(buffer, offset, infoElement.endOffset)
+    if (!childElement || childElement.endOffset <= offset) {
+      return true
+    }
+    if (childElement.actualEndOffset > infoElement.actualEndOffset) {
+      return true
+    }
+    offset = childElement.endOffset
+  }
+  return false
+}
+
 function parseMatroskaBoundedInfoMetadata(buffer: Buffer, infoElement: EbmlElementHeader): number | null | undefined {
   const parsedDuration = parseMatroskaInfoMetadata(buffer, infoElement)
-  if (parsedDuration !== null || isEbmlElementFullyBuffered(buffer, infoElement)) {
+  if (parsedDuration !== null) {
     return parsedDuration
   }
   const durationElement = findEbmlChildElement(buffer, infoElement, MATROSKA_DURATION_ID)
   if (durationElement && isEbmlElementFullyBuffered(buffer, durationElement)) {
     const timecodeScaleElement = findEbmlChildElement(buffer, infoElement, MATROSKA_TIMECODE_SCALE_ID)
-    if (!timecodeScaleElement || isEbmlElementFullyBuffered(buffer, timecodeScaleElement)) {
+    if (
+      (!timecodeScaleElement || isEbmlElementFullyBuffered(buffer, timecodeScaleElement))
+      && !hasMatroskaUnreadableInfoChildAfter(buffer, infoElement, durationElement.endOffset)
+    ) {
       return null
     }
+  }
+  if (!durationElement && hasMatroskaAuthoritativeInfoWithoutDuration(buffer, infoElement)) {
+    return null
   }
   return undefined
 }
@@ -1897,11 +1939,29 @@ function hasMatroskaTrackMetadata(metadata: {
     || metadata.audioChannelCount !== null
 }
 
+function hasMatroskaUnreadableTracksChild(buffer: Buffer, tracksElement: EbmlElementHeader): boolean {
+  let offset = tracksElement.bodyOffset
+  while (offset < tracksElement.endOffset) {
+    const childElement = readEbmlElementHeader(buffer, offset, tracksElement.endOffset)
+    if (!childElement || childElement.endOffset <= offset) {
+      return true
+    }
+    if (childElement.actualEndOffset > tracksElement.actualEndOffset) {
+      return true
+    }
+    offset = childElement.endOffset
+  }
+  return false
+}
+
 function parseMatroskaBoundedTracksMetadata(
   buffer: Buffer,
   tracksElement: EbmlElementHeader,
 ): { width: number | null, height: number | null, audioSampleRate: number | null, audioChannelCount: number | null } | undefined {
   const metadata = parseMatroskaTracksMetadata(buffer, tracksElement)
+  if (hasMatroskaUnreadableTracksChild(buffer, tracksElement)) {
+    return undefined
+  }
   if (hasMatroskaTrackMetadata(metadata) || isEbmlElementFullyBuffered(buffer, tracksElement)) {
     return metadata
   }
@@ -2341,6 +2401,7 @@ const MATROSKA_SEEK_ENTRY_ID = 0x4dbb
 const MATROSKA_SEEK_ID_ID = 0x53ab
 const MATROSKA_SEEK_POSITION_ID = 0x53ac
 const MATROSKA_INFO_ID = 0x1549a966
+const MATROSKA_VOID_ID = 0xec
 const MATROSKA_TIMECODE_SCALE_ID = 0x2ad7b1
 const MATROSKA_DURATION_ID = 0x4489
 const MATROSKA_TRACKS_ID = 0x1654ae6b

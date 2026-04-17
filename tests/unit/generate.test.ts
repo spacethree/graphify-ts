@@ -272,6 +272,7 @@ const EBML_SEEK_POSITION_ID = [0x53, 0xac]
 const EBML_INFO_ID = [0x15, 0x49, 0xa9, 0x66]
 const EBML_TIMECODE_SCALE_ID = [0x2a, 0xd7, 0xb1]
 const EBML_DURATION_ID = [0x44, 0x89]
+const EBML_MUXING_APP_ID = [0x4d, 0x80]
 const EBML_TRACKS_ID = [0x16, 0x54, 0xae, 0x6b]
 const EBML_TRACK_ENTRY_ID = [0xae]
 const EBML_TRACK_TYPE_ID = [0x83]
@@ -319,6 +320,14 @@ function createEbmlElement(id: readonly number[], payload: Buffer): Buffer {
   return Buffer.concat([Buffer.from(id), encodeEbmlSize(payload.length), payload])
 }
 
+function createMalformedEbmlElement(id: readonly number[], payload: Buffer, declaredSize: number): Buffer {
+  return Buffer.concat([Buffer.from(id), encodeEbmlSize(declaredSize), payload])
+}
+
+function createTruncatedEbmlElementHeader(id: readonly number[]): Buffer {
+  return Buffer.concat([Buffer.from(id), Buffer.from([0x40])])
+}
+
 function createEbmlUnsignedElement(id: readonly number[], value: number): Buffer {
   return createEbmlElement(id, encodeEbmlUnsigned(value))
 }
@@ -347,6 +356,7 @@ function createTestMatroskaBuffer(
     width?: number
     height?: number
     audioTrackFirst?: boolean
+    omitDuration?: boolean
     malformedDuration?: boolean
     timecodeScale?: number
     includeAudioTrackMetadata?: boolean
@@ -360,13 +370,19 @@ function createTestMatroskaBuffer(
     interstitialSegmentBytes?: number
     prefixedInfoBytes?: number
     trailingInfoBytes?: number
+    trailingInfoChildBytes?: number
+    malformedTrailingInfoChildBytes?: number
+    truncatedTrailingInfoChildHeader?: boolean
     prefixedTracksBytes?: number
     useSeekHead?: boolean
     splitSeekHeads?: boolean
     staleFirstInfoSeekHead?: boolean
     staleFirstTracksSeekHead?: boolean
     finalTracksAudioOnly?: boolean
+    trailingTracksChildBytes?: number
+    malformedTrailingTracksChildBytes?: number
     trailingTracksBytes?: number
+    truncatedTrailingTracksChildHeader?: boolean
     staleFirstTracksMetadata?: {
       width: number
       height: number
@@ -388,6 +404,9 @@ function createTestMatroskaBuffer(
   const interstitialSegmentBytes = options.interstitialSegmentBytes ?? 0
   const prefixedInfoBytes = options.prefixedInfoBytes ?? 0
   const trailingInfoBytes = options.trailingInfoBytes ?? 0
+  const trailingInfoChildBytes = options.trailingInfoChildBytes ?? 0
+  const malformedTrailingInfoChildBytes = options.malformedTrailingInfoChildBytes ?? 0
+  const truncatedTrailingInfoChildHeader = options.truncatedTrailingInfoChildHeader ?? false
   const prefixedTracksBytes = options.prefixedTracksBytes ?? 0
   const trailingTracksBytes = options.trailingTracksBytes ?? 0
   const useSeekHead = options.useSeekHead ?? false
@@ -395,14 +414,28 @@ function createTestMatroskaBuffer(
   const staleFirstInfoSeekHead = options.staleFirstInfoSeekHead ?? false
   const staleFirstTracksSeekHead = options.staleFirstTracksSeekHead ?? false
   const finalTracksAudioOnly = options.finalTracksAudioOnly ?? false
+  const trailingTracksChildBytes = options.trailingTracksChildBytes ?? 0
+  const malformedTrailingTracksChildBytes = options.malformedTrailingTracksChildBytes ?? 0
+  const truncatedTrailingTracksChildHeader = options.truncatedTrailingTracksChildHeader ?? false
   const staleFirstTracksMetadata = options.staleFirstTracksMetadata
 
   const info = createEbmlElement(EBML_INFO_ID, Buffer.concat([
     ...(prefixedInfoBytes > 0 ? [createEbmlElement(EBML_VOID_ID, Buffer.alloc(prefixedInfoBytes))] : []),
     createEbmlUnsignedElement(EBML_TIMECODE_SCALE_ID, timecodeScale),
-    options.malformedDuration
-      ? createEbmlElement(EBML_DURATION_ID, Buffer.from([0x40, 0x94, 0x00]))
-      : createEbmlFloatElement(EBML_DURATION_ID, durationSeconds * 1_000),
+    ...(options.omitDuration
+      ? []
+      : [options.malformedDuration
+          ? createEbmlElement(EBML_DURATION_ID, Buffer.from([0x40, 0x94, 0x00]))
+          : createEbmlFloatElement(EBML_DURATION_ID, durationSeconds * 1_000)]),
+    ...(trailingInfoChildBytes > 0 ? [createEbmlElement(EBML_MUXING_APP_ID, Buffer.alloc(trailingInfoChildBytes))] : []),
+    ...(malformedTrailingInfoChildBytes > 0
+      ? [createMalformedEbmlElement(
+          EBML_MUXING_APP_ID,
+          Buffer.alloc(malformedTrailingInfoChildBytes),
+          malformedTrailingInfoChildBytes + 32,
+        )]
+      : []),
+    ...(truncatedTrailingInfoChildHeader ? [createTruncatedEbmlElementHeader(EBML_MUXING_APP_ID)] : []),
     ...(trailingInfoBytes > 0 ? [createEbmlElement(EBML_VOID_ID, Buffer.alloc(trailingInfoBytes))] : []),
   ]))
   const staleInfo = staleFirstInfoMetadata
@@ -430,6 +463,15 @@ function createTestMatroskaBuffer(
   const tracks = createEbmlElement(EBML_TRACKS_ID, Buffer.concat([
     ...(prefixedTracksBytes > 0 ? [createEbmlElement(EBML_VOID_ID, Buffer.alloc(prefixedTracksBytes))] : []),
     ...(finalTracksAudioOnly ? [audioTrackEntry] : audioTrackFirst ? [audioTrackEntry, videoTrackEntry] : [videoTrackEntry, audioTrackEntry]),
+    ...(trailingTracksChildBytes > 0 ? [createEbmlElement(EBML_MUXING_APP_ID, Buffer.alloc(trailingTracksChildBytes))] : []),
+    ...(malformedTrailingTracksChildBytes > 0
+      ? [createMalformedEbmlElement(
+          EBML_VOID_ID,
+          Buffer.alloc(malformedTrailingTracksChildBytes),
+          malformedTrailingTracksChildBytes + 32,
+        )]
+      : []),
+    ...(truncatedTrailingTracksChildHeader ? [createTruncatedEbmlElementHeader(EBML_VOID_ID)] : []),
     ...(trailingTracksBytes > 0 ? [createEbmlElement(EBML_VOID_ID, Buffer.alloc(trailingTracksBytes))] : []),
   ]))
   const staleTracks = staleFirstTracksMetadata
@@ -1738,6 +1780,149 @@ describe('generateGraph', () => {
     })
   })
 
+  test('builds graph artifacts without stale Matroska/WebM duration metadata when a later top-level Info element omits duration before a trailing child at the exact Info boundary without SeekHead help', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        interstitialSegmentBytes: 600_000,
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        omitDuration: true,
+        trailingInfoChildBytes: 65_536,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](top-level-info-trailing-child-clear-duration.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'top-level-info-trailing-child-clear-duration.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+      const mkvNode = graphData.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-info-trailing-child-clear-duration.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        label: 'top-level-info-trailing-child-clear-duration.mkv',
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+      })
+      expect(mkvNode).not.toHaveProperty('media_duration_seconds')
+    })
+  })
+
+  test('builds graph artifacts without stale Matroska/WebM duration metadata when a later top-level Info element has malformed Duration before a trailing child at the exact Info boundary without SeekHead help', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        interstitialSegmentBytes: 600_000,
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        malformedDuration: true,
+        trailingInfoChildBytes: 65_536,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](top-level-info-trailing-child-invalid-duration.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'top-level-info-trailing-child-invalid-duration.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+      const mkvNode = graphData.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-info-trailing-child-invalid-duration.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        label: 'top-level-info-trailing-child-invalid-duration.mkv',
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+      })
+      expect(mkvNode).not.toHaveProperty('media_duration_seconds')
+    })
+  })
+
+  test('builds graph artifacts with preserved stale Matroska/WebM duration metadata when a later top-level Info element has malformed Duration followed by an overrun trailing child without SeekHead help', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        interstitialSegmentBytes: 600_000,
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        malformedDuration: true,
+        malformedTrailingInfoChildBytes: 65_536,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](top-level-info-trailing-child-invalid-overrun-stale.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'top-level-info-trailing-child-invalid-overrun-stale.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+      const mkvNode = graphData.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-info-trailing-child-invalid-overrun-stale.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        label: 'top-level-info-trailing-child-invalid-overrun-stale.mkv',
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 1.5,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+      })
+    })
+  })
+
+  test('builds graph artifacts with corrected Matroska/WebM duration when a later top-level Info element is bounded by a trailing child without SeekHead help', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        interstitialSegmentBytes: 600_000,
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        trailingInfoChildBytes: 65_536,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](top-level-info-trailing-child-corrective.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'top-level-info-trailing-child-corrective.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+      const mkvNode = graphData.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-info-trailing-child-corrective.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        label: 'top-level-info-trailing-child-corrective.mkv',
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+      })
+    })
+  })
+
   test('builds graph artifacts with Matroska/WebM track metadata via SeekHead when the Tracks element starts inside the head window but its payload is truncated', () => {
     withTempDir((tempDir) => {
       const mkvBuffer = createTestMatroskaBuffer({
@@ -1819,6 +2004,33 @@ describe('generateGraph', () => {
           expect.objectContaining({
             file_type: 'video',
             label: 'direct-info-trailing-padding.mkv',
+            media_duration_seconds: 4.25,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with Matroska/WebM duration without SeekHead when a direct Info target with parseable duration is followed by a trailing child at the exact Info boundary', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        trailingInfoChildBytes: 1_100_000,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](direct-info-trailing-child.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'direct-info-trailing-child.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'direct-info-trailing-child.mkv',
             media_duration_seconds: 4.25,
           }),
         ]),
@@ -1922,6 +2134,39 @@ describe('generateGraph', () => {
     })
   })
 
+  test('builds graph artifacts with Matroska/WebM track metadata from a direct Tracks prefix without SeekHead when a trailing child reaches the exact Tracks boundary', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        trailingTracksChildBytes: 1_100_000,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](direct-tracks-trailing-child.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'direct-tracks-trailing-child.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'direct-tracks-trailing-child.mkv',
+            media_duration_seconds: 4.25,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
+            video_width_px: 1280,
+            video_height_px: 720,
+          }),
+        ]),
+      )
+    })
+  })
+
   test('builds graph artifacts with corrected Matroska/WebM duration metadata without SeekHead when the later direct Info element starts inside the head window but its payload is truncated', () => {
     withTempDir((tempDir) => {
       const mkvBuffer = createTestMatroskaBuffer({
@@ -1988,6 +2233,36 @@ describe('generateGraph', () => {
     })
   })
 
+  test('builds graph artifacts with corrected Matroska/WebM duration from a direct Info target without SeekHead when corrected duration is followed by a trailing child at the exact Info boundary', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        trailingInfoChildBytes: 1_100_000,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](direct-info-trailing-child-corrective.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'direct-info-trailing-child-corrective.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'direct-info-trailing-child-corrective.mkv',
+            media_duration_seconds: 4.25,
+          }),
+        ]),
+      )
+    })
+  })
+
   test('builds graph artifacts without stale Matroska/WebM duration from a direct Info prefix without SeekHead when the remaining Info payload is trailing padding beyond the head window', () => {
     withTempDir((tempDir) => {
       const mkvBuffer = createTestMatroskaBuffer({
@@ -2014,6 +2289,209 @@ describe('generateGraph', () => {
         file_bytes: mkvBuffer.length,
       })
       expect(mkvNode).not.toHaveProperty('media_duration_seconds')
+    })
+  })
+
+  test('builds graph artifacts without stale Matroska/WebM duration from a direct Info prefix without SeekHead when Duration is omitted before trailing padding beyond the head window', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        omitDuration: true,
+        trailingInfoBytes: 1_100_000,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](direct-info-trailing-padding-omit-duration.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'direct-info-trailing-padding-omit-duration.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+      const mkvNode = graphData.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-info-trailing-padding-omit-duration.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        label: 'direct-info-trailing-padding-omit-duration.mkv',
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+      })
+      expect(mkvNode).not.toHaveProperty('media_duration_seconds')
+    })
+  })
+
+  test('builds graph artifacts without stale Matroska/WebM duration from a direct Info prefix without SeekHead when Duration is omitted before a trailing metadata child beyond the head window', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        omitDuration: true,
+        trailingInfoChildBytes: 1_100_000,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](direct-info-trailing-child-omit-duration.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'direct-info-trailing-child-omit-duration.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+      const mkvNode = graphData.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-info-trailing-child-omit-duration.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        label: 'direct-info-trailing-child-omit-duration.mkv',
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+      })
+      expect(mkvNode).not.toHaveProperty('media_duration_seconds')
+    })
+  })
+
+  test('builds graph artifacts without stale Matroska/WebM duration from a direct Info prefix without SeekHead when Duration is malformed before a trailing metadata child beyond the head window', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        malformedDuration: true,
+        trailingInfoChildBytes: 1_100_000,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](direct-info-trailing-child-invalid-duration.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'direct-info-trailing-child-invalid-duration.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+      const mkvNode = graphData.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-info-trailing-child-invalid-duration.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        label: 'direct-info-trailing-child-invalid-duration.mkv',
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+      })
+      expect(mkvNode).not.toHaveProperty('media_duration_seconds')
+    })
+  })
+
+  test('builds graph artifacts with preserved stale Matroska/WebM duration from a direct Info prefix without SeekHead when malformed Duration is followed by an overrun trailing metadata child', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        malformedDuration: true,
+        malformedTrailingInfoChildBytes: 1_100_000,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](direct-info-trailing-child-invalid-overrun-stale.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'direct-info-trailing-child-invalid-overrun-stale.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+      const mkvNode = graphData.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-info-trailing-child-invalid-overrun-stale.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        label: 'direct-info-trailing-child-invalid-overrun-stale.mkv',
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 1.5,
+      })
+    })
+  })
+
+  test('builds graph artifacts with preserved stale Matroska/WebM duration from a direct Info prefix without SeekHead when malformed Duration is followed by a truncated trailing metadata child header', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        malformedDuration: true,
+        truncatedTrailingInfoChildHeader: true,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](direct-info-trailing-child-invalid-truncated-stale.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'direct-info-trailing-child-invalid-truncated-stale.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+      const mkvNode = graphData.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-info-trailing-child-invalid-truncated-stale.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        label: 'direct-info-trailing-child-invalid-truncated-stale.mkv',
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 1.5,
+      })
+    })
+  })
+
+  test('builds graph artifacts with preserved stale Matroska/WebM duration from a direct Info prefix without SeekHead when an omitted-Duration trailing metadata child overruns the Info boundary', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        omitDuration: true,
+        malformedTrailingInfoChildBytes: 1_100_000,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](direct-info-trailing-child-overrun-stale.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'direct-info-trailing-child-overrun-stale.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+      const mkvNode = graphData.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-info-trailing-child-overrun-stale.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        label: 'direct-info-trailing-child-overrun-stale.mkv',
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 1.5,
+      })
+    })
+  })
+
+  test('builds graph artifacts with preserved stale Matroska/WebM duration from a direct Info prefix without SeekHead when an omitted-Duration trailing metadata child header is truncated', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        omitDuration: true,
+        truncatedTrailingInfoChildHeader: true,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](direct-info-trailing-child-omitted-truncated-stale.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'direct-info-trailing-child-omitted-truncated-stale.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+      const mkvNode = graphData.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-info-trailing-child-omitted-truncated-stale.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        label: 'direct-info-trailing-child-omitted-truncated-stale.mkv',
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 1.5,
+      })
     })
   })
 
@@ -2084,6 +2562,45 @@ describe('generateGraph', () => {
           expect.objectContaining({
             file_type: 'video',
             label: 'direct-tracks-trailing-padding-corrective.mkv',
+            media_duration_seconds: 4.25,
+            audio_sample_rate_hz: 48000,
+            audio_channel_count: 2,
+            video_width_px: 1280,
+            video_height_px: 720,
+          }),
+        ]),
+      )
+    })
+  })
+
+  test('builds graph artifacts with corrected Matroska/WebM track metadata from a direct Tracks prefix without SeekHead when a trailing child reaches the exact Tracks boundary', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        trailingTracksChildBytes: 1_100_000,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](direct-tracks-trailing-child-corrective.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'direct-tracks-trailing-child-corrective.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(graphData.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file_type: 'video',
+            label: 'direct-tracks-trailing-child-corrective.mkv',
             media_duration_seconds: 4.25,
             audio_sample_rate_hz: 48000,
             audio_channel_count: 2,
@@ -2171,6 +2688,43 @@ describe('generateGraph', () => {
     })
   })
 
+  test('builds graph artifacts without stale Matroska/WebM audio-track metadata from a direct Tracks prefix without SeekHead when a trailing child reaches the exact Tracks boundary', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: false,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        trailingTracksChildBytes: 1_100_000,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](direct-tracks-trailing-child-clear-audio.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'direct-tracks-trailing-child-clear-audio.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+      const mkvNode = graphData.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-tracks-trailing-child-clear-audio.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        label: 'direct-tracks-trailing-child-clear-audio.mkv',
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        video_width_px: 1280,
+        video_height_px: 720,
+      })
+      expect(mkvNode).not.toHaveProperty('audio_sample_rate_hz')
+      expect(mkvNode).not.toHaveProperty('audio_channel_count')
+    })
+  })
+
   test('builds graph artifacts without stale Matroska/WebM video-dimension metadata from a direct Tracks prefix without SeekHead when the remaining Tracks payload is trailing padding beyond the head window', () => {
     withTempDir((tempDir) => {
       const mkvBuffer = createTestMatroskaBuffer({
@@ -2198,6 +2752,44 @@ describe('generateGraph', () => {
       expect(result.nonCodeFiles).toBe(2)
       expect(mkvNode).toMatchObject({
         label: 'direct-tracks-trailing-padding-clear-dimensions.mkv',
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+      })
+      expect(mkvNode).not.toHaveProperty('video_width_px')
+      expect(mkvNode).not.toHaveProperty('video_height_px')
+    })
+  })
+
+  test('builds graph artifacts without stale Matroska/WebM video-dimension metadata from a direct Tracks prefix without SeekHead when a trailing child reaches the exact Tracks boundary', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        finalTracksAudioOnly: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        trailingTracksChildBytes: 1_100_000,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](direct-tracks-trailing-child-clear-dimensions.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'direct-tracks-trailing-child-clear-dimensions.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+      const mkvNode = graphData.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-tracks-trailing-child-clear-dimensions.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        label: 'direct-tracks-trailing-child-clear-dimensions.mkv',
         content_type: 'video/x-matroska',
         file_bytes: mkvBuffer.length,
         media_duration_seconds: 4.25,
@@ -2316,6 +2908,82 @@ describe('generateGraph', () => {
       })
       expect(mkvNode).not.toHaveProperty('video_width_px')
       expect(mkvNode).not.toHaveProperty('video_height_px')
+    })
+  })
+
+  test('builds graph artifacts with preserved stale Matroska/WebM track metadata without SeekHead when a later direct Tracks prefix is followed by a truncated trailing child header', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        finalTracksAudioOnly: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        truncatedTrailingTracksChildHeader: true,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](direct-tracks-trailing-child-truncated-stale.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'direct-tracks-trailing-child-truncated-stale.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+      const mkvNode = graphData.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-tracks-trailing-child-truncated-stale.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        label: 'direct-tracks-trailing-child-truncated-stale.mkv',
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        video_width_px: 5,
+        video_height_px: 2,
+        audio_sample_rate_hz: 8_000,
+        audio_channel_count: 1,
+      })
+    })
+  })
+
+  test('builds graph artifacts with preserved stale Matroska/WebM track metadata without SeekHead when a later direct Tracks prefix is followed by an overrun trailing child', () => {
+    withTempDir((tempDir) => {
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        finalTracksAudioOnly: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        malformedTrailingTracksChildBytes: 1_100_000,
+      })
+      writeFileSync(join(tempDir, 'README.md'), '# Overview\nSee [Archive](direct-tracks-trailing-child-overrun-stale.mkv)\n', 'utf8')
+      writeFileSync(join(tempDir, 'direct-tracks-trailing-child-overrun-stale.mkv'), mkvBuffer)
+
+      const result = generateGraph(tempDir)
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+      const mkvNode = graphData.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-tracks-trailing-child-overrun-stale.mkv')
+
+      expect(result.nonCodeFiles).toBe(2)
+      expect(mkvNode).toMatchObject({
+        label: 'direct-tracks-trailing-child-overrun-stale.mkv',
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        video_width_px: 5,
+        video_height_px: 2,
+        audio_sample_rate_hz: 8_000,
+        audio_channel_count: 1,
+      })
     })
   })
 
