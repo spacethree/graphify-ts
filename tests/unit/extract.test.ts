@@ -292,6 +292,7 @@ describe('extract', () => {
   const EBML_INFO_ID = [0x15, 0x49, 0xa9, 0x66]
   const EBML_TIMECODE_SCALE_ID = [0x2a, 0xd7, 0xb1]
   const EBML_DURATION_ID = [0x44, 0x89]
+  const EBML_MUXING_APP_ID = [0x4d, 0x80]
   const EBML_TRACKS_ID = [0x16, 0x54, 0xae, 0x6b]
   const EBML_TRACK_ENTRY_ID = [0xae]
   const EBML_TRACK_TYPE_ID = [0x83]
@@ -339,6 +340,14 @@ describe('extract', () => {
     return Buffer.concat([Buffer.from(id), encodeEbmlSize(payload.length), payload])
   }
 
+  function createMalformedEbmlElement(id: readonly number[], payload: Buffer, declaredSize: number): Buffer {
+    return Buffer.concat([Buffer.from(id), encodeEbmlSize(declaredSize), payload])
+  }
+
+  function createTruncatedEbmlElementHeader(id: readonly number[]): Buffer {
+    return Buffer.concat([Buffer.from(id), Buffer.from([0x40])])
+  }
+
   function createEbmlUnsignedElement(id: readonly number[], value: number): Buffer {
     return createEbmlElement(id, encodeEbmlUnsigned(value))
   }
@@ -367,6 +376,7 @@ describe('extract', () => {
       width?: number
       height?: number
       audioTrackFirst?: boolean
+      omitDuration?: boolean
       malformedDuration?: boolean
       timecodeScale?: number
       includeAudioTrackMetadata?: boolean
@@ -379,6 +389,10 @@ describe('extract', () => {
       prefixedSegmentBytes?: number
       interstitialSegmentBytes?: number
       prefixedInfoBytes?: number
+      trailingInfoBytes?: number
+      trailingInfoChildBytes?: number
+      malformedTrailingInfoChildBytes?: number
+      truncatedTrailingInfoChildHeader?: boolean
       prefixedTracksBytes?: number
       useSeekHead?: boolean
       splitSeekHeads?: boolean
@@ -386,6 +400,10 @@ describe('extract', () => {
       staleFirstTracksSeekHead?: boolean
       invalidTrailingInfoSeekHead?: boolean
       finalTracksAudioOnly?: boolean
+      trailingTracksChildBytes?: number
+      malformedTrailingTracksChildBytes?: number
+      trailingTracksBytes?: number
+      truncatedTrailingTracksChildHeader?: boolean
       staleFirstTracksMetadata?: {
         width: number
         height: number
@@ -406,21 +424,41 @@ describe('extract', () => {
     const prefixedSegmentBytes = options.prefixedSegmentBytes ?? 0
     const interstitialSegmentBytes = options.interstitialSegmentBytes ?? 0
     const prefixedInfoBytes = options.prefixedInfoBytes ?? 0
+    const trailingInfoBytes = options.trailingInfoBytes ?? 0
+    const trailingInfoChildBytes = options.trailingInfoChildBytes ?? 0
+    const malformedTrailingInfoChildBytes = options.malformedTrailingInfoChildBytes ?? 0
+    const truncatedTrailingInfoChildHeader = options.truncatedTrailingInfoChildHeader ?? false
     const prefixedTracksBytes = options.prefixedTracksBytes ?? 0
+    const trailingTracksBytes = options.trailingTracksBytes ?? 0
     const useSeekHead = options.useSeekHead ?? false
     const splitSeekHeads = options.splitSeekHeads ?? false
     const staleFirstInfoSeekHead = options.staleFirstInfoSeekHead ?? false
     const staleFirstTracksSeekHead = options.staleFirstTracksSeekHead ?? false
     const invalidTrailingInfoSeekHead = options.invalidTrailingInfoSeekHead ?? false
     const finalTracksAudioOnly = options.finalTracksAudioOnly ?? false
+    const trailingTracksChildBytes = options.trailingTracksChildBytes ?? 0
+    const malformedTrailingTracksChildBytes = options.malformedTrailingTracksChildBytes ?? 0
+    const truncatedTrailingTracksChildHeader = options.truncatedTrailingTracksChildHeader ?? false
     const staleFirstTracksMetadata = options.staleFirstTracksMetadata
 
     const info = createEbmlElement(EBML_INFO_ID, Buffer.concat([
       ...(prefixedInfoBytes > 0 ? [createEbmlElement(EBML_VOID_ID, Buffer.alloc(prefixedInfoBytes))] : []),
       createEbmlUnsignedElement(EBML_TIMECODE_SCALE_ID, timecodeScale),
-      options.malformedDuration
-        ? createEbmlElement(EBML_DURATION_ID, Buffer.from([0x40, 0x94, 0x00]))
-        : createEbmlFloatElement(EBML_DURATION_ID, durationSeconds * 1_000),
+      ...(options.omitDuration
+        ? []
+        : [options.malformedDuration
+            ? createEbmlElement(EBML_DURATION_ID, Buffer.from([0x40, 0x94, 0x00]))
+            : createEbmlFloatElement(EBML_DURATION_ID, durationSeconds * 1_000)]),
+      ...(trailingInfoChildBytes > 0 ? [createEbmlElement(EBML_MUXING_APP_ID, Buffer.alloc(trailingInfoChildBytes))] : []),
+      ...(malformedTrailingInfoChildBytes > 0
+        ? [createMalformedEbmlElement(
+            EBML_MUXING_APP_ID,
+            Buffer.alloc(malformedTrailingInfoChildBytes),
+            malformedTrailingInfoChildBytes + 32,
+          )]
+        : []),
+      ...(truncatedTrailingInfoChildHeader ? [createTruncatedEbmlElementHeader(EBML_MUXING_APP_ID)] : []),
+      ...(trailingInfoBytes > 0 ? [createEbmlElement(EBML_VOID_ID, Buffer.alloc(trailingInfoBytes))] : []),
     ]))
     const staleInfo = staleFirstInfoMetadata
       ? createEbmlElement(EBML_INFO_ID, Buffer.concat([
@@ -447,6 +485,16 @@ describe('extract', () => {
     const tracks = createEbmlElement(EBML_TRACKS_ID, Buffer.concat([
       ...(prefixedTracksBytes > 0 ? [createEbmlElement(EBML_VOID_ID, Buffer.alloc(prefixedTracksBytes))] : []),
       ...(finalTracksAudioOnly ? [audioTrackEntry] : audioTrackFirst ? [audioTrackEntry, videoTrackEntry] : [videoTrackEntry, audioTrackEntry]),
+      ...(trailingTracksChildBytes > 0 ? [createEbmlElement(EBML_MUXING_APP_ID, Buffer.alloc(trailingTracksChildBytes))] : []),
+      ...(malformedTrailingTracksChildBytes > 0
+        ? [createMalformedEbmlElement(
+            EBML_VOID_ID,
+            Buffer.alloc(malformedTrailingTracksChildBytes),
+            malformedTrailingTracksChildBytes + 32,
+          )]
+        : []),
+      ...(truncatedTrailingTracksChildHeader ? [createTruncatedEbmlElementHeader(EBML_VOID_ID)] : []),
+      ...(trailingTracksBytes > 0 ? [createEbmlElement(EBML_VOID_ID, Buffer.alloc(trailingTracksBytes))] : []),
     ]))
     const staleTracks = staleFirstTracksMetadata
       ? createEbmlElement(EBML_TRACKS_ID, Buffer.concat([
@@ -3576,6 +3624,149 @@ describe('extract', () => {
     }
   })
 
+  it('clears stale Matroska/WebM duration metadata when a later top-level Info element omits duration before a trailing child at the exact Info boundary without SeekHead help', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'top-level-info-trailing-child-clear-duration.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        interstitialSegmentBytes: 600_000,
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        omitDuration: true,
+        trailingInfoChildBytes: 65_536,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-info-trailing-child-clear-duration.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(mkvNode).not.toHaveProperty('media_duration_seconds')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('clears stale Matroska/WebM duration metadata when a later top-level Info element has malformed Duration before a trailing child at the exact Info boundary without SeekHead help', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'top-level-info-trailing-child-invalid-duration.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        interstitialSegmentBytes: 600_000,
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        malformedDuration: true,
+        trailingInfoChildBytes: 65_536,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-info-trailing-child-invalid-duration.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(mkvNode).not.toHaveProperty('media_duration_seconds')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps stale Matroska/WebM duration metadata when a later top-level Info element has malformed Duration followed by an overrun trailing child without SeekHead help', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'top-level-info-trailing-child-invalid-overrun-stale.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        interstitialSegmentBytes: 600_000,
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        malformedDuration: true,
+        malformedTrailingInfoChildBytes: 65_536,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-info-trailing-child-invalid-overrun-stale.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 1.5,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('replaces stale Matroska/WebM duration metadata when a later top-level Info element is corrected and bounded by a trailing child without SeekHead help', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'top-level-info-trailing-child-corrective.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        interstitialSegmentBytes: 600_000,
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        trailingInfoChildBytes: 65_536,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'top-level-info-trailing-child-corrective.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('keeps Matroska/WebM duration when a later SeekHead Info target is unreadable', () => {
     const root = createTempRoot()
     try {
@@ -3655,6 +3846,84 @@ describe('extract', () => {
     }
   })
 
+  it('extracts Matroska/WebM duration from a direct Info prefix without SeekHead when the remaining Info payload is trailing padding beyond the head window', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-info-trailing-padding.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        trailingInfoBytes: 1_100_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-info-trailing-padding.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts Matroska/WebM duration without SeekHead when a direct Info target with parseable duration is followed by a trailing child at the exact Info boundary', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-info-trailing-child.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        trailingInfoChildBytes: 1_100_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-info-trailing-child.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps stale Matroska/WebM duration without SeekHead when a later direct Info target is unreadable on bounded reread', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-info-unreadable-stale.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        prefixedInfoBytes: 1_100_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-info-unreadable-stale.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 1.5,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('extracts Matroska/WebM track metadata via SeekHead when the Tracks element starts inside the head window but its payload is truncated', () => {
     const root = createTempRoot()
     try {
@@ -3718,6 +3987,68 @@ describe('extract', () => {
     }
   })
 
+  it('extracts Matroska/WebM track metadata from a direct Tracks prefix without SeekHead when the remaining Tracks payload is trailing padding beyond the head window', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-tracks-trailing-padding.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        trailingTracksBytes: 1_100_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-tracks-trailing-padding.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts Matroska/WebM track metadata from a direct Tracks prefix without SeekHead when a trailing child reaches the exact Tracks boundary', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-tracks-trailing-child.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        trailingTracksChildBytes: 1_100_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-tracks-trailing-child.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('replaces stale Matroska/WebM duration metadata without SeekHead when the later direct Info element starts inside the head window but its payload is truncated', () => {
     const root = createTempRoot()
     try {
@@ -3744,6 +4075,294 @@ describe('extract', () => {
         audio_channel_count: 2,
         video_width_px: 1280,
         video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('replaces stale Matroska/WebM duration from a direct Info prefix without SeekHead when the remaining Info payload is trailing padding beyond the head window', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-info-trailing-padding-corrective.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        trailingInfoBytes: 1_100_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-info-trailing-padding-corrective.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('replaces stale Matroska/WebM duration from a direct Info target without SeekHead when corrected duration is followed by a trailing child at the exact Info boundary', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-info-trailing-child-corrective.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        trailingInfoChildBytes: 1_100_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-info-trailing-child-corrective.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('clears stale Matroska/WebM duration from a direct Info prefix without SeekHead when the remaining Info payload is trailing padding beyond the head window', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-info-trailing-padding-clear-duration.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        malformedDuration: true,
+        trailingInfoBytes: 1_100_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-info-trailing-padding-clear-duration.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(mkvNode).not.toHaveProperty('media_duration_seconds')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('clears stale Matroska/WebM duration from a direct Info prefix without SeekHead when Duration is omitted before trailing padding beyond the head window', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-info-trailing-padding-omit-duration.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        omitDuration: true,
+        trailingInfoBytes: 1_100_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-info-trailing-padding-omit-duration.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(mkvNode).not.toHaveProperty('media_duration_seconds')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('clears stale Matroska/WebM duration from a direct Info prefix without SeekHead when Duration is omitted before a trailing metadata child beyond the head window', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-info-trailing-child-omit-duration.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        omitDuration: true,
+        trailingInfoChildBytes: 1_100_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-info-trailing-child-omit-duration.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(mkvNode).not.toHaveProperty('media_duration_seconds')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('clears stale Matroska/WebM duration from a direct Info prefix without SeekHead when Duration is malformed before a trailing metadata child beyond the head window', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-info-trailing-child-invalid-duration.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        malformedDuration: true,
+        trailingInfoChildBytes: 1_100_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-info-trailing-child-invalid-duration.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(mkvNode).not.toHaveProperty('media_duration_seconds')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps stale Matroska/WebM duration from a direct Info prefix without SeekHead when malformed Duration is followed by an overrun trailing metadata child', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-info-trailing-child-invalid-overrun-stale.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        malformedDuration: true,
+        malformedTrailingInfoChildBytes: 1_100_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-info-trailing-child-invalid-overrun-stale.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 1.5,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps stale Matroska/WebM duration from a direct Info prefix without SeekHead when malformed Duration is followed by a truncated trailing metadata child header', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-info-trailing-child-invalid-truncated-stale.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        malformedDuration: true,
+        truncatedTrailingInfoChildHeader: true,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-info-trailing-child-invalid-truncated-stale.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 1.5,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps stale Matroska/WebM duration from a direct Info prefix without SeekHead when an omitted-Duration trailing metadata child overruns the Info boundary', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-info-trailing-child-overrun-stale.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        omitDuration: true,
+        malformedTrailingInfoChildBytes: 1_100_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-info-trailing-child-overrun-stale.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 1.5,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps stale Matroska/WebM duration from a direct Info prefix without SeekHead when an omitted-Duration trailing metadata child header is truncated', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-info-trailing-child-omitted-truncated-stale.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        omitDuration: true,
+        truncatedTrailingInfoChildHeader: true,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-info-trailing-child-omitted-truncated-stale.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 1.5,
         layer: 'base',
         provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
       })
@@ -3784,6 +4403,267 @@ describe('extract', () => {
         layer: 'base',
         provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
       })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('replaces stale Matroska/WebM track metadata from a direct Tracks prefix without SeekHead when the remaining Tracks payload is trailing padding beyond the head window', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-tracks-trailing-padding-corrective.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        trailingTracksBytes: 1_100_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-tracks-trailing-padding-corrective.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('replaces stale Matroska/WebM track metadata from a direct Tracks prefix without SeekHead when a trailing child reaches the exact Tracks boundary', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-tracks-trailing-child-corrective.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        trailingTracksChildBytes: 1_100_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-tracks-trailing-child-corrective.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps stale Matroska/WebM track metadata without SeekHead when a later direct Tracks target is unreadable on bounded reread', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-tracks-unreadable-stale.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        prefixedTracksBytes: 1_100_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-tracks-unreadable-stale.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 8_000,
+        audio_channel_count: 1,
+        video_width_px: 5,
+        video_height_px: 2,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('clears stale Matroska/WebM audio-track metadata from a direct Tracks prefix without SeekHead when the remaining Tracks payload is trailing padding beyond the head window', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-tracks-trailing-padding-clear-audio.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: false,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        trailingTracksBytes: 1_100_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-tracks-trailing-padding-clear-audio.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(mkvNode).not.toHaveProperty('audio_sample_rate_hz')
+      expect(mkvNode).not.toHaveProperty('audio_channel_count')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('clears stale Matroska/WebM audio-track metadata from a direct Tracks prefix without SeekHead when a trailing child reaches the exact Tracks boundary', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-tracks-trailing-child-clear-audio.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: false,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        trailingTracksChildBytes: 1_100_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-tracks-trailing-child-clear-audio.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(mkvNode).not.toHaveProperty('audio_sample_rate_hz')
+      expect(mkvNode).not.toHaveProperty('audio_channel_count')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('clears stale Matroska/WebM video-dimension metadata from a direct Tracks prefix without SeekHead when the remaining Tracks payload is trailing padding beyond the head window', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-tracks-trailing-padding-clear-dimensions.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        finalTracksAudioOnly: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        trailingTracksBytes: 1_100_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-tracks-trailing-padding-clear-dimensions.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(mkvNode).not.toHaveProperty('video_width_px')
+      expect(mkvNode).not.toHaveProperty('video_height_px')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('clears stale Matroska/WebM video-dimension metadata from a direct Tracks prefix without SeekHead when a trailing child reaches the exact Tracks boundary', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-tracks-trailing-child-clear-dimensions.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        finalTracksAudioOnly: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        trailingTracksChildBytes: 1_100_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-tracks-trailing-child-clear-dimensions.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(mkvNode).not.toHaveProperty('video_width_px')
+      expect(mkvNode).not.toHaveProperty('video_height_px')
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -3961,6 +4841,192 @@ describe('extract', () => {
       })
       expect(mkvNode).not.toHaveProperty('audio_sample_rate_hz')
       expect(mkvNode).not.toHaveProperty('audio_channel_count')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('clears stale Matroska/WebM duration metadata without SeekHead when the later direct Info element starts inside the head window but its payload is truncated', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-info-clear-duration.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        malformedDuration: true,
+        prefixedInfoBytes: 600_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-info-clear-duration.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(mkvNode).not.toHaveProperty('media_duration_seconds')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('clears stale Matroska/WebM audio-track metadata without SeekHead when the later direct Tracks element starts inside the head window but its payload is truncated', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-tracks-clear-audio.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: false,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        prefixedTracksBytes: 600_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-tracks-clear-audio.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(mkvNode).not.toHaveProperty('audio_sample_rate_hz')
+      expect(mkvNode).not.toHaveProperty('audio_channel_count')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('clears stale Matroska/WebM video-dimension metadata without SeekHead when the later direct Tracks element starts inside the head window but its payload is truncated', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-tracks-clear-dimensions.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        finalTracksAudioOnly: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        prefixedTracksBytes: 600_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-tracks-clear-dimensions.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(mkvNode).not.toHaveProperty('video_width_px')
+      expect(mkvNode).not.toHaveProperty('video_height_px')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps stale Matroska/WebM track metadata without SeekHead when a later direct Tracks prefix is followed by a truncated trailing child header', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-tracks-trailing-child-truncated-stale.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        finalTracksAudioOnly: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        truncatedTrailingTracksChildHeader: true,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-tracks-trailing-child-truncated-stale.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        video_width_px: 5,
+        video_height_px: 2,
+        audio_sample_rate_hz: 8_000,
+        audio_channel_count: 1,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps stale Matroska/WebM track metadata without SeekHead when a later direct Tracks prefix is followed by an overrun trailing child', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-tracks-trailing-child-overrun-stale.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        finalTracksAudioOnly: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        malformedTrailingTracksChildBytes: 1_100_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const result = extract([mkvPath])
+      const mkvNode = result.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-tracks-trailing-child-overrun-stale.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        video_width_px: 5,
+        video_height_px: 2,
+        audio_sample_rate_hz: 8_000,
+        audio_channel_count: 1,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -7019,6 +8085,435 @@ describe('extract', () => {
 
       const recovered = extract([mkvPath])
       const mkvNode = recovered.nodes.find((node) => node.file_type === 'video' && node.label === 'seekhead-tracks-unreadable.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        video_width_px: 5,
+        video_height_px: 2,
+        audio_sample_rate_hz: 8_000,
+        audio_channel_count: 1,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-matroska-unreadable-info-stale-direct cache version', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-info-unreadable-stale.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        prefixedInfoBytes: 1_100_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(mkvPath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 36,
+          nodes: [{
+            id: 'stale_matroska_unreadable_info_stale_direct',
+            label: 'direct-info-unreadable-stale.mkv',
+            file_type: 'video',
+            source_file: mkvPath,
+          }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([mkvPath])
+      const mkvNode = recovered.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-info-unreadable-stale.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 1.5,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-matroska-direct-tracks-prefix-stale cache version', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-tracks-trailing-padding-corrective.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        trailingTracksBytes: 1_100_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(mkvPath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 37,
+          nodes: [{
+            id: 'stale_matroska_direct_tracks_prefix_stale',
+            label: 'direct-tracks-trailing-padding-corrective.mkv',
+            file_type: 'video',
+            source_file: mkvPath,
+            media_duration_seconds: 4.25,
+            video_width_px: 5,
+            video_height_px: 2,
+            audio_sample_rate_hz: 8_000,
+            audio_channel_count: 1,
+          }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([mkvPath])
+      const mkvNode = recovered.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-tracks-trailing-padding-corrective.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 4.25,
+        audio_sample_rate_hz: 48000,
+        audio_channel_count: 2,
+        video_width_px: 1280,
+        video_height_px: 720,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-matroska-direct-info-prefix-clear cache version', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-info-trailing-padding-clear-duration.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        malformedDuration: true,
+        trailingInfoBytes: 1_100_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(mkvPath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 38,
+          nodes: [{
+            id: 'stale_matroska_direct_info_prefix_clear',
+            label: 'direct-info-trailing-padding-clear-duration.mkv',
+            file_type: 'video',
+            source_file: mkvPath,
+            media_duration_seconds: 1.5,
+          }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([mkvPath])
+      const mkvNode = recovered.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-info-trailing-padding-clear-duration.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(mkvNode).not.toHaveProperty('media_duration_seconds')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-matroska-direct-info-prefix-omit cache version', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-info-trailing-padding-omit-duration.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        omitDuration: true,
+        trailingInfoBytes: 1_100_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(mkvPath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 39,
+          nodes: [{
+            id: 'stale_matroska_direct_info_prefix_omit',
+            label: 'direct-info-trailing-padding-omit-duration.mkv',
+            file_type: 'video',
+            source_file: mkvPath,
+            media_duration_seconds: 1.5,
+          }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([mkvPath])
+      const mkvNode = recovered.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-info-trailing-padding-omit-duration.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(mkvNode).not.toHaveProperty('media_duration_seconds')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-matroska-direct-info-prefix-tail cache version', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-info-trailing-child-omit-duration.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        omitDuration: true,
+        trailingInfoChildBytes: 1_100_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(mkvPath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 40,
+          nodes: [{
+            id: 'stale_matroska_direct_info_prefix_tail',
+            label: 'direct-info-trailing-child-omit-duration.mkv',
+            file_type: 'video',
+            source_file: mkvPath,
+            media_duration_seconds: 1.5,
+          }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([mkvPath])
+      const mkvNode = recovered.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-info-trailing-child-omit-duration.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+      expect(mkvNode).not.toHaveProperty('media_duration_seconds')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-matroska-direct-info-prefix-tail-overrun cache version', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-info-trailing-child-overrun-stale.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        omitDuration: true,
+        malformedTrailingInfoChildBytes: 1_100_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(mkvPath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 41,
+          nodes: [{
+            id: 'stale_matroska_direct_info_prefix_tail_overrun',
+            label: 'direct-info-trailing-child-overrun-stale.mkv',
+            file_type: 'video',
+            source_file: mkvPath,
+          }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([mkvPath])
+      const mkvNode = recovered.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-info-trailing-child-overrun-stale.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 1.5,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-matroska-direct-info-prefix-tail-invalid-overrun cache version', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-info-trailing-child-invalid-overrun-stale.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        malformedDuration: true,
+        malformedTrailingInfoChildBytes: 1_100_000,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(mkvPath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 42,
+          nodes: [{
+            id: 'stale_matroska_direct_info_prefix_tail_invalid_overrun',
+            label: 'direct-info-trailing-child-invalid-overrun-stale.mkv',
+            file_type: 'video',
+            source_file: mkvPath,
+          }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([mkvPath])
+      const mkvNode = recovered.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-info-trailing-child-invalid-overrun-stale.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 1.5,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-matroska-direct-info-prefix-tail-invalid-truncated cache version', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-info-trailing-child-invalid-truncated-stale.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        staleFirstInfoMetadata: {
+          durationSeconds: 1.5,
+        },
+        malformedDuration: true,
+        truncatedTrailingInfoChildHeader: true,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(mkvPath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 43,
+          nodes: [{
+            id: 'stale_matroska_direct_info_prefix_tail_invalid_truncated',
+            label: 'direct-info-trailing-child-invalid-truncated-stale.mkv',
+            file_type: 'video',
+            source_file: mkvPath,
+          }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([mkvPath])
+      const mkvNode = recovered.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-info-trailing-child-invalid-truncated-stale.mkv')
+
+      expect(mkvNode).toMatchObject({
+        content_type: 'video/x-matroska',
+        file_bytes: mkvBuffer.length,
+        media_duration_seconds: 1.5,
+        layer: 'base',
+        provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached media extractions from the pre-matroska-direct-tracks-prefix-tail-truncated cache version', () => {
+    const root = createTempRoot()
+    try {
+      const mkvPath = join(root, 'direct-tracks-trailing-child-truncated-stale.mkv')
+      const mkvBuffer = createTestMatroskaBuffer({
+        docType: 'matroska',
+        audioTrackFirst: false,
+        includeAudioTrackMetadata: true,
+        finalTracksAudioOnly: true,
+        staleFirstTracksMetadata: {
+          width: 5,
+          height: 2,
+          audioSampleRate: 8_000,
+          audioChannelCount: 1,
+        },
+        truncatedTrailingTracksChildHeader: true,
+      })
+      writeFileSync(mkvPath, mkvBuffer)
+
+      const cachePath = join(cacheDir(), `${fileHash(mkvPath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 44,
+          nodes: [{
+            id: 'stale_matroska_direct_tracks_prefix_tail_truncated',
+            label: 'direct-tracks-trailing-child-truncated-stale.mkv',
+            file_type: 'video',
+            source_file: mkvPath,
+          }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([mkvPath])
+      const mkvNode = recovered.nodes.find((node) => node.file_type === 'video' && node.label === 'direct-tracks-trailing-child-truncated-stale.mkv')
 
       expect(mkvNode).toMatchObject({
         content_type: 'video/x-matroska',
