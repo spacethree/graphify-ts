@@ -1,7 +1,15 @@
-import { bfs, loadGraph } from '../runtime/serve.js'
+import { loadGraph } from '../runtime/serve.js'
 import { KnowledgeGraph } from '../contracts/graph.js'
+import { graphStructureMetrics, type GraphStructureMetrics } from '../pipeline/analyze.js'
+import {
+  evaluateBenchmarkQuestion,
+  querySubgraphTokens,
+  type BenchmarkMissingExpectedLabels,
+  type BenchmarkQuestionInput,
+  type BenchmarkQuestionResult,
+} from './benchmark/questions.js'
 
-const CHARS_PER_TOKEN = 4
+export { querySubgraphTokens, type BenchmarkQuestionInput } from './benchmark/questions.js'
 
 export const SAMPLE_QUESTIONS = [
   'how does authentication work',
@@ -11,17 +19,18 @@ export const SAMPLE_QUESTIONS = [
   'what are the core abstractions',
 ]
 
-export interface BenchmarkQuestionResult {
-  question: string
-  query_tokens: number
-  reduction: number
-}
-
 export interface BenchmarkSuccessResult {
   corpus_tokens: number
   corpus_words: number
   nodes: number
   edges: number
+  structure_signals: GraphStructureMetrics | null
+  question_count: number
+  matched_question_count: number
+  unmatched_questions: string[]
+  expected_label_count: number
+  matched_expected_label_count: number
+  missing_expected_labels: BenchmarkMissingExpectedLabels[]
   avg_query_tokens: number
   reduction_ratio: number
   per_question: BenchmarkQuestionResult[]
@@ -33,72 +42,38 @@ export interface BenchmarkErrorResult {
 
 export type BenchmarkResult = BenchmarkSuccessResult | BenchmarkErrorResult
 
-function estimateTokens(text: string): number {
-  return Math.max(1, Math.floor(text.length / CHARS_PER_TOKEN))
-}
-
 function loadBenchmarkGraph(graphPath: string): KnowledgeGraph {
   return loadGraph(graphPath)
 }
 
-export function querySubgraphTokens(graph: KnowledgeGraph, question: string, depth = 3): number {
-  const terms = question
-    .split(/\s+/)
-    .map((term) => term.toLowerCase())
-    .filter((term) => term.length > 2)
-  const scored = graph
-    .nodeEntries()
-    .map(([nodeId, attributes]) => {
-      const label = String(attributes.label ?? '').toLowerCase()
-      const score = terms.reduce((total, term) => total + (label.includes(term) ? 1 : 0), 0)
-      return [score, nodeId] as [number, string]
-    })
-    .filter(([score]) => score > 0)
-    .sort((left, right) => right[0] - left[0] || left[1].localeCompare(right[1]))
-
-  const startNodes = scored.slice(0, 3).map(([, nodeId]) => nodeId)
-  if (startNodes.length === 0) {
-    return 0
-  }
-
-  const { visited, edges } = bfs(graph, startNodes, depth)
-  const lines: string[] = []
-  for (const nodeId of visited) {
-    const attributes = graph.nodeAttributes(nodeId)
-    lines.push(`NODE ${String(attributes.label ?? nodeId)} src=${String(attributes.source_file ?? '')} loc=${String(attributes.source_location ?? '')}`)
-  }
-  for (const [source, target] of edges) {
-    if (!visited.has(source) || !visited.has(target)) {
-      continue
-    }
-    const attributes = graph.edgeAttributes(source, target)
-    lines.push(
-      `EDGE ${String(graph.nodeAttributes(source).label ?? source)} --${String(attributes.relation ?? '')}--> ${String(graph.nodeAttributes(target).label ?? target)}`,
-    )
-  }
-
-  return estimateTokens(lines.join('\n'))
+function hasStructureSignalProvenance(graph: KnowledgeGraph): boolean {
+  return graph.nodeEntries().every(([, attributes]) => String(attributes.source_file ?? '').length > 0)
 }
 
-export function runBenchmark(graphPath = 'graphify-out/graph.json', corpusWords?: number | null, questions?: string[]): BenchmarkResult {
+export function runBenchmark(graphPath = 'graphify-out/graph.json', corpusWords?: number | null, questions?: BenchmarkQuestionInput[]): BenchmarkResult {
   const graph = loadBenchmarkGraph(graphPath)
+  const structureSignals = hasStructureSignalProvenance(graph) ? graphStructureMetrics(graph) : null
   const effectiveCorpusWords = corpusWords ?? graph.numberOfNodes() * 50
   const corpusTokens = Math.floor((effectiveCorpusWords * 100) / 75)
   const benchmarkQuestions = questions ?? SAMPLE_QUESTIONS
-
-  const perQuestion = benchmarkQuestions
-    .map((question) => {
-      const queryTokens = querySubgraphTokens(graph, question)
-      if (queryTokens <= 0) {
-        return null
-      }
-      return {
-        question,
-        query_tokens: queryTokens,
-        reduction: Number((corpusTokens / queryTokens).toFixed(1)),
-      } satisfies BenchmarkQuestionResult
-    })
-    .filter((entry): entry is BenchmarkQuestionResult => entry !== null)
+  const perQuestion: BenchmarkQuestionResult[] = []
+  const unmatchedQuestions: string[] = []
+  const missingExpectedLabels: BenchmarkMissingExpectedLabels[] = []
+  let expectedLabelCount = 0
+  let matchedExpectedLabelCount = 0
+  for (const question of benchmarkQuestions) {
+    const evaluation = evaluateBenchmarkQuestion(graph, question, corpusTokens)
+    expectedLabelCount += evaluation.expected_label_count
+    matchedExpectedLabelCount += evaluation.matched_expected_label_count
+    if (evaluation.missing_expected_labels) {
+      missingExpectedLabels.push(evaluation.missing_expected_labels)
+    }
+    if (!evaluation.result) {
+      unmatchedQuestions.push(evaluation.question)
+      continue
+    }
+    perQuestion.push(evaluation.result)
+  }
 
   if (perQuestion.length === 0) {
     return { error: 'No matching nodes found for sample questions. Build the graph first.' }
@@ -110,6 +85,13 @@ export function runBenchmark(graphPath = 'graphify-out/graph.json', corpusWords?
     corpus_words: effectiveCorpusWords,
     nodes: graph.numberOfNodes(),
     edges: graph.numberOfEdges(),
+    structure_signals: structureSignals,
+    question_count: benchmarkQuestions.length,
+    matched_question_count: perQuestion.length,
+    unmatched_questions: unmatchedQuestions,
+    expected_label_count: expectedLabelCount,
+    matched_expected_label_count: matchedExpectedLabelCount,
+    missing_expected_labels: missingExpectedLabels,
     avg_query_tokens: avgQueryTokens,
     reduction_ratio: avgQueryTokens > 0 ? Number((corpusTokens / avgQueryTokens).toFixed(1)) : 0,
     per_question: perQuestion,
@@ -126,6 +108,35 @@ export function printBenchmark(result: BenchmarkResult): void {
   console.log(`${'─'.repeat(50)}`)
   console.log(`  Corpus:          ${result.corpus_words.toLocaleString()} words → ~${result.corpus_tokens.toLocaleString()} tokens (naive)`)
   console.log(`  Graph:           ${result.nodes.toLocaleString()} nodes, ${result.edges.toLocaleString()} edges`)
+  console.log(`  Question coverage: ${result.matched_question_count}/${result.question_count} matched`)
+  if (result.unmatched_questions.length > 0) {
+    console.log(`    Unmatched: ${result.unmatched_questions.join(', ')}`)
+  }
+  if (result.expected_label_count > 0) {
+    console.log(`  Expected evidence: ${result.matched_expected_label_count}/${result.expected_label_count} labels found`)
+    for (const missing of result.missing_expected_labels) {
+      console.log(`    Missing evidence for ${missing.question}: ${missing.labels.join(', ')}`)
+    }
+  }
+  if (result.structure_signals) {
+    console.log('  Structure signals:')
+    console.log(
+      `    entity basis: ${result.structure_signals.total_nodes.toLocaleString()} nodes, ${result.structure_signals.total_edges.toLocaleString()} edges`,
+    )
+    console.log(
+      `    components: ${result.structure_signals.weakly_connected_components.toLocaleString()} weakly connected, ${result.structure_signals.singleton_components.toLocaleString()} singleton, ${result.structure_signals.isolated_nodes.toLocaleString()} isolated`,
+    )
+    console.log(
+      `    largest component: ${result.structure_signals.largest_component_nodes.toLocaleString()} nodes (${Math.round(result.structure_signals.largest_component_ratio * 100)}% of entity graph)`,
+    )
+    console.log(
+      result.structure_signals.low_cohesion_communities > 0
+        ? `    low cohesion: ${result.structure_signals.low_cohesion_communities.toLocaleString()} communities, largest ${result.structure_signals.largest_low_cohesion_community_nodes.toLocaleString()} nodes (cohesion ${result.structure_signals.largest_low_cohesion_community_score})`
+        : '    low cohesion: 0 communities, none on the entity basis',
+    )
+  } else {
+    console.log('  Structure signals: unavailable for graph artifacts without source_file provenance')
+  }
   console.log(`  Avg query cost:  ~${result.avg_query_tokens.toLocaleString()} tokens`)
   console.log(`  Reduction:       ${result.reduction_ratio}x fewer tokens per query`)
   console.log('\n  Per question:')

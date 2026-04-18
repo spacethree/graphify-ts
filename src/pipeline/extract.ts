@@ -9,9 +9,10 @@ import { loadCached, saveCached } from '../infrastructure/cache.js'
 import { builtinCapabilityRegistry } from '../infrastructure/capabilities.js'
 import { CODE_EXTENSIONS, FileType, classifyFile, detect } from './detect.js'
 import { mergeExtractionFragments, resolveSourceNodeReferences } from './extract/combine.js'
-import { resolveCrossFilePythonImports } from './extract/cross-file.js'
+import { resolveCrossFilePythonImports, resolveCrossFileRelativeJsImports } from './extract/cross-file.js'
 import { dispatchSingleFileExtraction, type ExtractionFragment, type ExtractorHandlerMap } from './extract/dispatch.js'
 import { _makeId, addEdge, addNode, addUniqueEdge, createEdge, createFileNode, createNode, indentationLevel, normalizeLabel, stripHashComment } from './extract/core.js'
+import { unparenthesizeExpression } from './extract/typescript-utils.js'
 import {
   extractAudioFile as extractAudioFragment,
   createCodeFileOnlyExtraction as createTextFallbackExtraction,
@@ -28,7 +29,7 @@ import { createTreeSitterWasmParser, treeSitterWasmError, type TreeSitterNode } 
 
 export { _makeId } from './extract/core.js'
 
-const EXTRACTOR_CACHE_VERSION = 59
+export const EXTRACTOR_CACHE_VERSION = 60
 const PYTHON_KEYWORDS = new Set(['if', 'elif', 'else', 'for', 'while', 'return', 'class', 'def', 'lambda', 'with', 'print', 'sum'])
 const GENERIC_CODE_EXTENSIONS = new Set(['.go', '.rs', '.java', '.kt', '.kts', '.scala', '.cs', '.c', '.cc', '.cpp', '.cxx', '.h', '.hpp', '.swift', '.php', '.zig'])
 const GENERIC_CONTROL_KEYWORDS = new Set(['if', 'for', 'while', 'switch', 'catch', 'return', 'new', 'delete', 'throw', 'sizeof', 'case', 'do', 'else'])
@@ -4039,6 +4040,86 @@ export function extractJs(filePath: string): ExtractionFragment {
 
   addNode(nodes, seenIds, createNode(fileNodeId, basename(filePath), filePath, 1))
 
+  const defaultExportId = _makeId(stem, 'default')
+
+  const addTsFunctionNode = (functionId: string, label: string, line: number, body?: ts.ConciseBody): void => {
+    addNode(nodes, seenIds, createNode(functionId, label, filePath, line))
+    addEdge(edges, createEdge(fileNodeId, functionId, 'contains', filePath, line))
+    if (body) {
+      addTsCalls(body, functionId)
+      addNestedTsFunctions(body, functionId)
+    }
+  }
+
+  const addTsClassNode = (classId: string, label: string, line: number, node: ts.ClassDeclaration | ts.ClassExpression): void => {
+    addNode(nodes, seenIds, createNode(classId, label, filePath, line))
+    addEdge(edges, createEdge(fileNodeId, classId, 'contains', filePath, line))
+
+    for (const heritageClause of node.heritageClauses ?? []) {
+      for (const heritageType of heritageClause.types) {
+        const baseName = normalizeTypeName(heritageType.expression.getText(sourceFile))
+        if (!baseName) {
+          continue
+        }
+
+        const baseId = _makeId(stem, baseName)
+        addNode(nodes, seenIds, createNode(baseId, baseName, filePath, line))
+        addEdge(edges, createEdge(classId, baseId, 'inherits', filePath, line))
+      }
+    }
+
+    for (const member of node.members) {
+      if (!ts.isMethodDeclaration(member) && !ts.isConstructorDeclaration(member)) {
+        if (!ts.isPropertyDeclaration(member) || !member.name || !member.initializer) {
+          continue
+        }
+
+        if (!ts.isArrowFunction(member.initializer) && !ts.isFunctionExpression(member.initializer)) {
+          continue
+        }
+
+        const methodName = ts.isIdentifier(member.name)
+          ? member.name.text
+          : ts.isStringLiteral(member.name) || ts.isNumericLiteral(member.name)
+            ? member.name.text
+            : member.name.getText(sourceFile)
+        if (!methodName) {
+          continue
+        }
+
+        const methodLine = sourceFile.getLineAndCharacterOfPosition(member.name.getStart(sourceFile)).line + 1
+        const methodId = _makeId(classId, methodName)
+        addNode(nodes, seenIds, createNode(methodId, `.${methodName}()`, filePath, methodLine))
+        addEdge(edges, createEdge(classId, methodId, 'method', filePath, methodLine))
+        methodIdsByClass.set(`${classId}:${methodName.toLowerCase()}`, methodId)
+        addTsCalls(member.initializer.body, methodId, classId)
+        addNestedTsFunctions(member.initializer.body, methodId, classId)
+        continue
+      }
+
+      const methodName = ts.isConstructorDeclaration(member)
+        ? 'constructor'
+        : member.name && ts.isIdentifier(member.name)
+          ? member.name.text
+          : member.name
+            ? member.name.getText(sourceFile)
+            : null
+      if (!methodName) {
+        continue
+      }
+
+      const methodLine = sourceFile.getLineAndCharacterOfPosition(member.getStart(sourceFile)).line + 1
+      const methodId = _makeId(classId, methodName)
+      addNode(nodes, seenIds, createNode(methodId, `.${methodName}()`, filePath, methodLine))
+      addEdge(edges, createEdge(classId, methodId, 'method', filePath, methodLine))
+      methodIdsByClass.set(`${classId}:${methodName.toLowerCase()}`, methodId)
+      if (member.body) {
+        addTsCalls(member.body, methodId, classId)
+        addNestedTsFunctions(member.body, methodId, classId)
+      }
+    }
+  }
+
   const addTsCalls = (node: ts.Node, callerId: string, currentClassId?: string, isRoot = true): void => {
     if (
       !isRoot &&
@@ -4197,86 +4278,53 @@ export function extractJs(filePath: string): ExtractionFragment {
       const className = node.name.text
       const classId = _makeId(stem, className)
       const classLine = sourceFile.getLineAndCharacterOfPosition(node.name.getStart(sourceFile)).line + 1
-      addNode(nodes, seenIds, createNode(classId, className, filePath, classLine))
-      addEdge(edges, createEdge(fileNodeId, classId, 'contains', filePath, classLine))
-
-      for (const heritageClause of node.heritageClauses ?? []) {
-        for (const heritageType of heritageClause.types) {
-          const baseName = normalizeTypeName(heritageType.expression.getText(sourceFile))
-          if (!baseName) {
-            continue
-          }
-
-          const baseId = _makeId(stem, baseName)
-          addNode(nodes, seenIds, createNode(baseId, baseName, filePath, classLine))
-          addEdge(edges, createEdge(classId, baseId, 'inherits', filePath, classLine))
-        }
-      }
-
-      for (const member of node.members) {
-        if (!ts.isMethodDeclaration(member) && !ts.isConstructorDeclaration(member)) {
-          if (!ts.isPropertyDeclaration(member) || !member.name || !member.initializer) {
-            continue
-          }
-
-          if (!ts.isArrowFunction(member.initializer) && !ts.isFunctionExpression(member.initializer)) {
-            continue
-          }
-
-          const methodName = ts.isIdentifier(member.name)
-            ? member.name.text
-            : ts.isStringLiteral(member.name) || ts.isNumericLiteral(member.name)
-              ? member.name.text
-              : member.name.getText(sourceFile)
-          if (!methodName) {
-            continue
-          }
-
-          const methodLine = sourceFile.getLineAndCharacterOfPosition(member.name.getStart(sourceFile)).line + 1
-          const methodId = _makeId(classId, methodName)
-          addNode(nodes, seenIds, createNode(methodId, `.${methodName}()`, filePath, methodLine))
-          addEdge(edges, createEdge(classId, methodId, 'method', filePath, methodLine))
-          methodIdsByClass.set(`${classId}:${methodName.toLowerCase()}`, methodId)
-          addTsCalls(member.initializer.body, methodId, classId)
-          addNestedTsFunctions(member.initializer.body, methodId, classId)
-          continue
-        }
-
-        const methodName = ts.isConstructorDeclaration(member)
-          ? 'constructor'
-          : member.name && ts.isIdentifier(member.name)
-            ? member.name.text
-            : member.name
-              ? member.name.getText(sourceFile)
-              : null
-        if (!methodName) {
-          continue
-        }
-
-        const methodLine = sourceFile.getLineAndCharacterOfPosition(member.getStart(sourceFile)).line + 1
-        const methodId = _makeId(classId, methodName)
-        addNode(nodes, seenIds, createNode(methodId, `.${methodName}()`, filePath, methodLine))
-        addEdge(edges, createEdge(classId, methodId, 'method', filePath, methodLine))
-        methodIdsByClass.set(`${classId}:${methodName.toLowerCase()}`, methodId)
-        if (member.body) {
-          addTsCalls(member.body, methodId, classId)
-          addNestedTsFunctions(member.body, methodId, classId)
-        }
-      }
+      addTsClassNode(classId, className, classLine, node)
       return
+    }
+
+    if (ts.isClassDeclaration(node)) {
+      const modifiers = ts.canHaveModifiers(node) ? ts.getModifiers(node) : undefined
+      const isDefaultExport =
+        (modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) ?? false) &&
+        (modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword) ?? false)
+      if (isDefaultExport) {
+        const classLine = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1
+        addTsClassNode(defaultExportId, 'default', classLine, node)
+        return
+      }
     }
 
     if (ts.isFunctionDeclaration(node) && node.name) {
       const functionName = node.name.text
       const functionLine = sourceFile.getLineAndCharacterOfPosition(node.name.getStart(sourceFile)).line + 1
-      const functionId = _makeId(stem, functionName)
-      addNode(nodes, seenIds, createNode(functionId, `${functionName}()`, filePath, functionLine))
-      addEdge(edges, createEdge(fileNodeId, functionId, 'contains', filePath, functionLine))
-      if (node.body) {
-        addTsCalls(node.body, functionId)
-        addNestedTsFunctions(node.body, functionId)
-      }
+      addTsFunctionNode(_makeId(stem, functionName), `${functionName}()`, functionLine, node.body)
       return
+    }
+
+    if (ts.isFunctionDeclaration(node)) {
+      const modifiers = ts.canHaveModifiers(node) ? ts.getModifiers(node) : undefined
+      const isDefaultExport =
+        (modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) ?? false) &&
+        (modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword) ?? false)
+      if (isDefaultExport) {
+        const functionLine = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1
+        addTsFunctionNode(defaultExportId, 'default()', functionLine, node.body)
+        return
+      }
+    }
+
+    if (ts.isExportAssignment(node) && !node.isExportEquals) {
+      const exportLine = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1
+      const exportExpression = unparenthesizeExpression(node.expression)
+      if (ts.isArrowFunction(exportExpression) || ts.isFunctionExpression(exportExpression)) {
+        addTsFunctionNode(defaultExportId, 'default()', exportLine, exportExpression.body)
+        return
+      }
+
+      if (ts.isClassExpression(exportExpression)) {
+        addTsClassNode(defaultExportId, 'default', exportLine, exportExpression)
+        return
+      }
     }
 
     if (ts.isVariableStatement(node)) {
@@ -4405,6 +4453,10 @@ export function extract(files: string[], options: ExtractOptions = {}): Extracti
   combined = options.contextNodes
     ? resolveCrossFilePythonImports(files, combined, { contextNodes: options.contextNodes })
     : resolveCrossFilePythonImports(files, combined)
+
+  combined = options.contextNodes
+    ? resolveCrossFileRelativeJsImports(files, combined, { contextNodes: options.contextNodes })
+    : resolveCrossFileRelativeJsImports(files, combined)
 
   combined = options.contextNodes ? resolveSourceNodeReferences(combined, { contextNodes: options.contextNodes }) : resolveSourceNodeReferences(combined)
 

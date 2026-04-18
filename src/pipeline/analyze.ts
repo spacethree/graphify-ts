@@ -1,6 +1,6 @@
 import { KnowledgeGraph } from '../contracts/graph.js'
 import { AUDIO_EXTENSIONS, CODE_EXTENSIONS, DOC_EXTENSIONS, IMAGE_EXTENSIONS, PAPER_EXTENSIONS, VIDEO_EXTENSIONS } from './detect.js'
-import { cohesionScore, type Communities } from './cluster.js'
+import { cluster, cohesionScore, type Communities } from './cluster.js'
 
 export interface GodNode {
   id: string
@@ -42,8 +42,40 @@ export interface GraphDiffResult {
   summary: string
 }
 
+export interface GraphStructureMetrics {
+  total_nodes: number
+  total_edges: number
+  weakly_connected_components: number
+  singleton_components: number
+  isolated_nodes: number
+  largest_component_nodes: number
+  largest_component_ratio: number
+  low_cohesion_communities: number
+  largest_low_cohesion_community_nodes: number
+  largest_low_cohesion_community_score: number
+}
+
+export interface WorkspaceBridgeCommunity {
+  id: number
+  label: string
+  node_count: number
+}
+
+export interface WorkspaceBridge {
+  id: string
+  label: string
+  community_id: number | null
+  community_label: string
+  connected_communities: WorkspaceBridgeCommunity[]
+  degree: number
+  score: number
+  source_files: string[]
+}
+
 const MAX_BETWEENNESS_ANALYSIS_NODES = 2_000
 const MAX_SEMANTIC_ANOMALIES_PER_KIND = 3
+const LOW_COHESION_THRESHOLD = 0.15
+const LOW_COHESION_MIN_NODES = 5
 const nodeBetweennessCache = new WeakMap<KnowledgeGraph, Map<string, number>>()
 
 function edgeKey(left: string, right: string, relation: string, directed = false): string {
@@ -264,8 +296,98 @@ export function _fileCategory(path: string): 'code' | 'paper' | 'image' | 'audio
   return 'doc'
 }
 
+function analysisNodeIds(graph: KnowledgeGraph): string[] {
+  return graph.nodeIds().filter((nodeId) => isAnalysisEntityNode(graph, nodeId))
+}
+
+function analysisCommunityNodeIds(graph: KnowledgeGraph, nodeIds: string[]): string[] {
+  return nodeIds.filter((nodeId) => isAnalysisEntityNode(graph, nodeId))
+}
+
+function analysisGraph(graph: KnowledgeGraph): KnowledgeGraph {
+  const entityGraph = new KnowledgeGraph(graph.isDirected())
+  const nodeIds = analysisNodeIds(graph)
+  const nodeIdSet = new Set(nodeIds)
+  for (const nodeId of nodeIds) {
+    entityGraph.addNode(nodeId, graph.nodeAttributes(nodeId))
+  }
+  for (const [sourceNodeId, targetNodeId, attributes] of graph.edgeEntries()) {
+    if (!nodeIdSet.has(sourceNodeId) || !nodeIdSet.has(targetNodeId)) {
+      continue
+    }
+    entityGraph.addEdge(sourceNodeId, targetNodeId, attributes)
+  }
+  return entityGraph
+}
+
+function lowCohesionCommunities(
+  graph: KnowledgeGraph,
+  communities: Communities,
+): Array<{ communityId: number; nodeIds: string[]; cohesion: number }> {
+  return Object.entries(communities)
+    .map(([communityIdRaw, nodeIds]) => {
+      const analysisNodes = analysisCommunityNodeIds(graph, nodeIds)
+      return {
+        communityId: Number(communityIdRaw),
+        nodeIds: analysisNodes,
+        cohesion: cohesionScore(graph, analysisNodes),
+      }
+    })
+    .filter(({ nodeIds, cohesion }) => nodeIds.length >= LOW_COHESION_MIN_NODES && cohesion < LOW_COHESION_THRESHOLD)
+    .sort(
+      (left, right) =>
+        right.nodeIds.length - left.nodeIds.length || left.cohesion - right.cohesion || left.communityId - right.communityId,
+    )
+}
+
+function lowCohesionEntityCommunities(graph: KnowledgeGraph): Array<{ communityId: number; nodeIds: string[]; cohesion: number }> {
+  const entityGraph = analysisGraph(graph)
+  return lowCohesionCommunities(entityGraph, cluster(entityGraph))
+}
+
+function overlapCommunityLabel(
+  nodeIds: string[],
+  communities: Communities,
+  communityLabels: Record<number, string>,
+  fallbackCommunityId: number,
+): string {
+  const nodeIdSet = new Set(nodeIds)
+  let bestCommunityId: number | null = null
+  let bestOverlap = 0
+  for (const [communityIdRaw, communityNodeIds] of Object.entries(communities)) {
+    const overlap = communityNodeIds.filter((nodeId) => nodeIdSet.has(nodeId)).length
+    if (overlap > bestOverlap) {
+      bestOverlap = overlap
+      bestCommunityId = Number(communityIdRaw)
+    }
+  }
+  if (bestCommunityId !== null) {
+    return communityLabels[bestCommunityId] ?? `Community ${bestCommunityId}`
+  }
+  return communityLabels[fallbackCommunityId] ?? `Community ${fallbackCommunityId}`
+}
+
 function topLevelDir(path: string): string {
   return path.includes('/') ? (path.split('/')[0] ?? path) : path
+}
+
+function isExplicitFileNode(graph: KnowledgeGraph, nodeId: string): boolean {
+  const attrs = graph.nodeAttributes(nodeId)
+  const label = String(attrs.label ?? '')
+  const sourceFile = String(attrs.source_file ?? '')
+  if (!label || !sourceFile) {
+    return false
+  }
+
+  return label === sourceFile.split('/').at(-1)
+}
+
+export function isAnalysisEntityNode(graph: KnowledgeGraph, nodeId: string): boolean {
+  return !isExplicitFileNode(graph, nodeId) && !_isConceptNode(graph, nodeId)
+}
+
+export function analysisEntityDegree(graph: KnowledgeGraph, nodeId: string): number {
+  return graph.incidentNeighbors(nodeId).filter((neighborId) => isAnalysisEntityNode(graph, neighborId)).length
 }
 
 export function _surpriseScore(
@@ -325,7 +447,7 @@ export function _surpriseScore(
 
 export function godNodes(graph: KnowledgeGraph, topN = 10): GodNode[] {
   return [...graph.nodeIds()]
-    .filter((nodeId) => !_isFileNode(graph, nodeId) && !_isConceptNode(graph, nodeId))
+    .filter((nodeId) => isAnalysisEntityNode(graph, nodeId))
     .sort((left, right) => graph.degree(right) - graph.degree(left) || nodeLabel(graph, left).localeCompare(nodeLabel(graph, right)))
     .slice(0, topN)
     .map((nodeId) => ({
@@ -333,6 +455,161 @@ export function godNodes(graph: KnowledgeGraph, topN = 10): GodNode[] {
       label: nodeLabel(graph, nodeId),
       edges: graph.degree(nodeId),
     }))
+}
+
+export function graphStructureMetrics(graph: KnowledgeGraph): GraphStructureMetrics {
+  const nodeIds = analysisNodeIds(graph)
+  const nodeIdSet = new Set(nodeIds)
+  if (nodeIds.length === 0) {
+    return {
+      total_nodes: 0,
+      total_edges: 0,
+      weakly_connected_components: 0,
+      singleton_components: 0,
+      isolated_nodes: 0,
+      largest_component_nodes: 0,
+      largest_component_ratio: 0,
+      low_cohesion_communities: 0,
+      largest_low_cohesion_community_nodes: 0,
+      largest_low_cohesion_community_score: 0,
+    }
+  }
+
+  const visited = new Set<string>()
+  const componentSizes: number[] = []
+
+  for (const startNodeId of nodeIds) {
+    if (visited.has(startNodeId)) {
+      continue
+    }
+
+    let size = 0
+    const queue = [startNodeId]
+    let queueIndex = 0
+    visited.add(startNodeId)
+
+    while (queueIndex < queue.length) {
+      const nodeId = queue[queueIndex]
+      queueIndex += 1
+      if (!nodeId) {
+        continue
+      }
+
+      size += 1
+      for (const neighborId of graph.incidentNeighbors(nodeId)) {
+        if (!nodeIdSet.has(neighborId)) {
+          continue
+        }
+        if (visited.has(neighborId)) {
+          continue
+        }
+        visited.add(neighborId)
+        queue.push(neighborId)
+      }
+    }
+
+    componentSizes.push(size)
+  }
+
+  const largestComponentNodes = Math.max(...componentSizes)
+  const entityEdges = graph
+    .edgeEntries()
+    .filter(([sourceNodeId, targetNodeId]) => nodeIdSet.has(sourceNodeId) && nodeIdSet.has(targetNodeId)).length
+  const lowCohesionSignals = lowCohesionEntityCommunities(graph)
+  const largestLowCohesionCommunity = lowCohesionSignals[0]
+  return {
+    total_nodes: nodeIds.length,
+    total_edges: entityEdges,
+    weakly_connected_components: componentSizes.length,
+    singleton_components: componentSizes.filter((size) => size === 1).length,
+    isolated_nodes: nodeIds.filter((nodeId) => analysisEntityDegree(graph, nodeId) === 0).length,
+    largest_component_nodes: largestComponentNodes,
+    largest_component_ratio: largestComponentNodes / nodeIds.length,
+    low_cohesion_communities: lowCohesionSignals.length,
+    largest_low_cohesion_community_nodes: largestLowCohesionCommunity?.nodeIds.length ?? 0,
+    largest_low_cohesion_community_score: largestLowCohesionCommunity?.cohesion ?? 0,
+  }
+}
+
+export function workspaceBridges(
+  graph: KnowledgeGraph,
+  communities: Communities,
+  communityLabels: Record<number, string> = {},
+  topN = 6,
+): WorkspaceBridge[] {
+  if (topN <= 0 || graph.numberOfEdges() === 0 || Object.keys(communities).length === 0) {
+    return []
+  }
+
+  const nodeCommunity = _nodeCommunityMap(communities)
+  const communitySizes = new Map(Object.entries(communities).map(([communityId, nodeIds]) => [Number(communityId), nodeIds.length]))
+  const centrality =
+    graph.numberOfNodes() <= MAX_BETWEENNESS_ANALYSIS_NODES ? nodeBetweenness(graph) : new Map<string, number>()
+
+  return graph
+    .nodeIds()
+    .filter((nodeId) => isAnalysisEntityNode(graph, nodeId))
+    .map((nodeId) => {
+      const homeCommunity = nodeCommunity[nodeId]
+      const neighborCommunityIds = new Set<number>()
+      const sourceFiles = new Set<string>()
+      const ownSourceFile = nodeSourceFile(graph, nodeId)
+      if (ownSourceFile) {
+        sourceFiles.add(ownSourceFile)
+      }
+
+      for (const neighborId of graph.incidentNeighbors(nodeId)) {
+        if (!isAnalysisEntityNode(graph, neighborId)) {
+          continue
+        }
+        const neighborCommunity = nodeCommunity[neighborId]
+        if (neighborCommunity !== undefined && neighborCommunity !== homeCommunity) {
+          neighborCommunityIds.add(neighborCommunity)
+        }
+        const neighborSourceFile = nodeSourceFile(graph, neighborId)
+        if (neighborSourceFile) {
+          sourceFiles.add(neighborSourceFile)
+        }
+      }
+
+      const degree = analysisEntityDegree(graph, nodeId)
+      if (neighborCommunityIds.size === 0) {
+        return null
+      }
+      if (homeCommunity !== undefined && neighborCommunityIds.size === 1 && degree <= 1) {
+        return null
+      }
+
+      const connectedCommunities = [...neighborCommunityIds]
+        .map((communityId) => ({
+          id: communityId,
+          label: communityLabels[communityId] ?? `Community ${communityId}`,
+          node_count: communitySizes.get(communityId) ?? 0,
+        }))
+        .sort((left, right) => left.label.localeCompare(right.label) || left.id - right.id)
+      const betweenness = centrality.get(nodeId) ?? 0
+      const score = Math.round((connectedCommunities.length * 10 + degree + betweenness) * 100) / 100
+
+      return {
+        id: nodeId,
+        label: nodeLabel(graph, nodeId),
+        community_id: homeCommunity ?? null,
+        community_label: homeCommunity !== undefined ? (communityLabels[homeCommunity] ?? `Community ${homeCommunity}`) : 'Unassigned',
+        connected_communities: connectedCommunities,
+        degree,
+        score,
+        source_files: [...sourceFiles].sort((left, right) => left.localeCompare(right)),
+      } satisfies WorkspaceBridge
+    })
+    .filter((bridge): bridge is WorkspaceBridge => bridge !== null)
+    .sort(
+      (left, right) =>
+        right.connected_communities.length - left.connected_communities.length ||
+        right.score - left.score ||
+        right.degree - left.degree ||
+        left.label.localeCompare(right.label),
+    )
+    .slice(0, topN)
 }
 
 function crossFileSurprises(graph: KnowledgeGraph, communities: Communities, topN: number): SurprisingConnection[] {
@@ -344,10 +621,7 @@ function crossFileSurprises(graph: KnowledgeGraph, communities: Communities, top
       if (relation === 'imports' || relation === 'imports_from' || relation === 'contains' || relation === 'method') {
         return null
       }
-      if (_isConceptNode(graph, sourceNodeId) || _isConceptNode(graph, targetNodeId)) {
-        return null
-      }
-      if (_isFileNode(graph, sourceNodeId) || _isFileNode(graph, targetNodeId)) {
+      if (!isAnalysisEntityNode(graph, sourceNodeId) || !isAnalysisEntityNode(graph, targetNodeId)) {
         return null
       }
 
@@ -418,7 +692,7 @@ function crossCommunitySurprises(graph: KnowledgeGraph, communities: Communities
     if (sourceCommunity === undefined || targetCommunity === undefined || sourceCommunity === targetCommunity) {
       continue
     }
-    if (_isFileNode(graph, sourceNodeId) || _isFileNode(graph, targetNodeId)) {
+    if (!isAnalysisEntityNode(graph, sourceNodeId) || !isAnalysisEntityNode(graph, targetNodeId)) {
       continue
     }
     if (relation === 'imports' || relation === 'imports_from' || relation === 'contains' || relation === 'method') {
@@ -496,7 +770,7 @@ export function semanticAnomalies(graph: KnowledgeGraph, communities: Communitie
 
   if (graph.numberOfEdges() > 0 && graph.numberOfNodes() <= MAX_BETWEENNESS_ANALYSIS_NODES) {
     const bridges = [...nodeBetweenness(graph).entries()]
-      .filter(([nodeId, score]) => !_isFileNode(graph, nodeId) && !_isConceptNode(graph, nodeId) && score > 0)
+      .filter(([nodeId, score]) => isAnalysisEntityNode(graph, nodeId) && score > 0)
       .sort((left, right) => right[1] - left[1] || nodeLabel(graph, left[0]).localeCompare(nodeLabel(graph, right[0])))
 
     for (const [nodeId, centrality] of bridges) {
@@ -527,15 +801,9 @@ export function semanticAnomalies(graph: KnowledgeGraph, communities: Communitie
     }
   }
 
-  for (const [communityIdRaw, nodeIds] of Object.entries(communities)) {
-    const communityId = Number(communityIdRaw)
-    const cohesion = cohesionScore(graph, nodeIds)
-    if (nodeIds.length < 5 || cohesion >= 0.15) {
-      continue
-    }
-
-    const label = communityLabels[communityId] ?? `Community ${communityId}`
-    const score = Math.round((0.15 - cohesion) * nodeIds.length * 10 * 100) / 100
+  for (const { communityId, nodeIds, cohesion } of lowCohesionEntityCommunities(graph)) {
+    const label = overlapCommunityLabel(nodeIds, communities, communityLabels, communityId)
+    const score = Math.round((LOW_COHESION_THRESHOLD - cohesion) * nodeIds.length * 10 * 100) / 100
     candidates.push({
       id: `low_cohesion_community:${communityId}`,
       kind: 'low_cohesion_community',
@@ -600,7 +868,7 @@ export function suggestQuestions(graph: KnowledgeGraph, communities: Communities
 
   if (graph.numberOfEdges() > 0 && graph.numberOfNodes() <= MAX_BETWEENNESS_ANALYSIS_NODES) {
     const bridges = [...nodeBetweenness(graph).entries()]
-      .filter(([nodeId, score]) => !_isFileNode(graph, nodeId) && !_isConceptNode(graph, nodeId) && score > 0)
+      .filter(([nodeId, score]) => isAnalysisEntityNode(graph, nodeId) && score > 0)
       .sort((left, right) => right[1] - left[1] || nodeLabel(graph, left[0]).localeCompare(nodeLabel(graph, right[0])))
       .slice(0, 3)
 
@@ -628,7 +896,7 @@ export function suggestQuestions(graph: KnowledgeGraph, communities: Communities
   }
 
   const topNodes = [...graph.nodeIds()]
-    .filter((nodeId) => !_isFileNode(graph, nodeId) && !_isConceptNode(graph, nodeId))
+    .filter((nodeId) => isAnalysisEntityNode(graph, nodeId))
     .sort((left, right) => graph.degree(right) - graph.degree(left) || nodeLabel(graph, left).localeCompare(nodeLabel(graph, right)))
     .slice(0, 5)
 
@@ -658,7 +926,9 @@ export function suggestQuestions(graph: KnowledgeGraph, communities: Communities
     })
   }
 
-  const isolated = graph.nodeIds().filter((nodeId) => graph.degree(nodeId) <= 1 && !_isFileNode(graph, nodeId) && !_isConceptNode(graph, nodeId))
+  const isolated = graph
+    .nodeIds()
+    .filter((nodeId) => isAnalysisEntityNode(graph, nodeId) && analysisEntityDegree(graph, nodeId) <= 1)
   if (isolated.length > 0) {
     const labels = isolated.slice(0, 3).map((nodeId) => `\`${nodeLabel(graph, nodeId)}\``)
     questions.push({
@@ -668,18 +938,12 @@ export function suggestQuestions(graph: KnowledgeGraph, communities: Communities
     })
   }
 
-  for (const [communityIdRaw, nodeIds] of Object.entries(communities)) {
-    const communityId = Number(communityIdRaw)
-    const score = cohesionScore(graph, nodeIds)
-    if (score >= 0.15 || nodeIds.length < 5) {
-      continue
-    }
-
-    const label = communityLabels[communityId] ?? `Community ${communityId}`
+  for (const { communityId, nodeIds, cohesion } of lowCohesionEntityCommunities(graph)) {
+    const label = overlapCommunityLabel(nodeIds, communities, communityLabels, communityId)
     questions.push({
       type: 'low_cohesion',
       question: `Should \`${label}\` be split into smaller, more focused modules?`,
-      why: `Cohesion score ${score} - nodes in this community are weakly interconnected.`,
+      why: `Cohesion score ${cohesion} across ${nodeIds.length} entity nodes - this community may mix unrelated responsibilities.`,
     })
   }
 

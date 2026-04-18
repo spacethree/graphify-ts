@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
+import { KnowledgeGraph } from '../../src/contracts/graph.js'
 import { godNodes, semanticAnomalies, suggestQuestions, surprisingConnections } from '../../src/pipeline/analyze.js'
 import { buildFromJson } from '../../src/pipeline/build.js'
 import { cluster, scoreAll } from '../../src/pipeline/cluster.js'
@@ -24,6 +25,55 @@ function makeInputs() {
   return { graph, communities, cohesion, labels, gods, surprises, anomalies, questions, detection, tokens }
 }
 
+function makeLowCohesionInputs() {
+  const graph = new KnowledgeGraph(true)
+  for (let index = 1; index <= 15; index += 1) {
+    const nodeId = `n${index}`
+    const nextNodeId = `n${index === 15 ? 1 : index + 1}`
+    graph.addNode(nodeId, { label: `Node ${index}`, source_file: `module-${index}.ts`, file_type: 'code' })
+    graph.addEdge(nodeId, nextNodeId, { relation: 'calls', confidence: 'EXTRACTED', source_file: `module-${index}.ts` })
+  }
+  graph.addNode('file', { label: 'module-1.ts', source_file: 'module-1.ts', file_type: 'code' })
+  graph.addEdge('file', 'n1', { relation: 'contains', confidence: 'EXTRACTED', source_file: 'module-1.ts' })
+
+  const communities = cluster(graph)
+  const cohesion = scoreAll(graph, communities)
+  const labels = Object.fromEntries(Object.keys(communities).map((communityId) => [Number(communityId), `Community ${communityId}`]))
+  const detection = { total_files: 15, total_words: 1500, needs_graph: true, warning: null }
+  const tokens = { input: 0, output: 0 }
+
+  return { graph, communities, cohesion, labels, detection, tokens }
+}
+
+function makeBridgeInputs() {
+  const graph = new KnowledgeGraph(true)
+  graph.addNode('api', { label: 'loginUser()', source_file: 'backend/api.ts', file_type: 'code' })
+  graph.addNode('web', { label: 'loadSession()', source_file: 'web-app/session.ts', file_type: 'code' })
+  graph.addNode('worker', { label: 'syncSession()', source_file: 'worker/jobs.ts', file_type: 'code' })
+  graph.addNode('shared', { label: 'createSession()', source_file: 'shared/auth.ts', file_type: 'code' })
+  graph.addEdge('api', 'shared', { relation: 'calls', confidence: 'EXTRACTED', source_file: 'backend/api.ts' })
+  graph.addEdge('web', 'shared', { relation: 'calls', confidence: 'EXTRACTED', source_file: 'web-app/session.ts' })
+  graph.addEdge('worker', 'shared', { relation: 'calls', confidence: 'EXTRACTED', source_file: 'worker/jobs.ts' })
+
+  const communities = {
+    0: ['api'],
+    1: ['web'],
+    2: ['worker'],
+    3: ['shared'],
+  }
+  const cohesion = scoreAll(graph, communities)
+  const labels = {
+    0: 'Backend API',
+    1: 'Web Session',
+    2: 'Worker Jobs',
+    3: 'Shared Auth',
+  }
+  const detection = { total_files: 4, total_words: 500, needs_graph: true, warning: null }
+  const tokens = { input: 0, output: 0 }
+
+  return { graph, communities, cohesion, labels, detection, tokens }
+}
+
 describe('report', () => {
   it('generates the expected report sections', () => {
     const { graph, communities, cohesion, labels, gods, surprises, anomalies, questions, detection, tokens } = makeInputs()
@@ -34,21 +84,47 @@ describe('report', () => {
     expect(report).toContain('## God Nodes')
     expect(report).toContain('## Surprising Connections')
     expect(report).toContain('## Semantic Anomalies')
+    expect(report).toContain('## Structure Signals')
+    expect(report).toContain('## Workspace Bridges')
+    expect(report).toContain('Entity graph basis')
+    expect(report).toContain('Weakly connected components')
+    expect(report).toContain('Largest component')
     expect(report).toContain('## Communities')
     expect(report).toContain('## Ambiguous Edges')
     expect(report).toContain('## Suggested Questions')
     expect(report).toContain('## Knowledge Gaps')
   })
 
-  it('shows token cost and raw cohesion values', () => {
+  it('shows token cost and entity-basis community cohesion values', () => {
     const { graph, communities, cohesion, labels, gods, surprises, anomalies, questions, detection, tokens } = makeInputs()
     const report = generate(graph, communities, cohesion, labels, gods, surprises, anomalies, detection, tokens, './project', questions)
 
     expect(report).toContain('Token cost')
     expect(report).toContain('1,200')
-    expect(report).toContain('Cohesion:')
+    expect(report).toContain('Cohesion (entity basis within full-graph community):')
     expect(report).not.toContain('✓')
     expect(report).not.toContain('⚠')
+  })
+
+  it('renders low-cohesion structure signals on the shared entity basis', () => {
+    const { graph, communities, cohesion, labels, detection, tokens } = makeLowCohesionInputs()
+    const report = generate(graph, communities, cohesion, labels, [], [], [], detection, tokens, './project', [])
+
+    expect(report).toContain('Low-cohesion communities: 1')
+    expect(report).toContain('Largest low-cohesion community: 15 node(s) (cohesion 0.14)')
+    expect(report).toContain('Cohesion (entity basis within full-graph community): 0.14')
+    expect(report).toContain('Cohesion (entity basis within full-graph community): n/a')
+  })
+
+  it('renders bridge-first navigation hints for mixed workspaces', () => {
+    const { graph, communities, cohesion, labels, detection, tokens } = makeBridgeInputs()
+    const report = generate(graph, communities, cohesion, labels, [], [], [], detection, tokens, './project', [])
+
+    expect(report).toContain('## Workspace Bridges')
+    expect(report).toContain('`createSession\\(\\)`')
+    expect(report).toContain('connects `Backend API`, `Web Session`, `Worker Jobs`')
+    expect(report).toContain('home: `Shared Auth`')
+    expect(report).toContain('source files: `backend/api.ts`, `shared/auth.ts`, `web-app/session.ts`, `worker/jobs.ts`')
   })
 
   it('renders no-signal suggestions as explanatory prose', () => {

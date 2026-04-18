@@ -859,12 +859,12 @@ export function parseHookArgs(args: string[]): HookCliOptions {
   const action = args[0]
   if (action === 'install' || action === 'uninstall' || action === 'status') {
     if (args.length > 1) {
-      throw new UsageError('Usage: graphify-ts hook [install|uninstall|status]')
+      throw new UsageError('Usage: graphify-ts hook <install|uninstall|status>')
     }
     return { action }
   }
 
-  throw new UsageError('Usage: graphify-ts hook [install|uninstall|status]')
+  throw new UsageError('Usage: graphify-ts hook <install|uninstall|status>')
 }
 
 export function parseInstallArgs(args: string[], defaultPlatform: InstallPlatform): InstallCliOptions {
@@ -908,5 +908,5 @@ export function parsePlatformActionArgs(command: string, args: string[]): Platfo
     return { action }
   }
 
-  throw new UsageError(`Usage: graphify-ts ${command} [install|uninstall]`)
+  throw new UsageError(`Usage: graphify-ts ${command} <install|uninstall>`)
 }

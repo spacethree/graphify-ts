@@ -8,10 +8,12 @@ import {
   _isConceptNode,
   _surpriseScore,
   godNodes,
+  graphStructureMetrics,
   graphDiff,
   semanticAnomalies,
   suggestQuestions,
   surprisingConnections,
+  workspaceBridges,
 } from '../../src/pipeline/analyze.js'
 import { cluster } from '../../src/pipeline/cluster.js'
 
@@ -45,6 +47,9 @@ function makeAnomalyGraph(): {
   for (const nodeId of ['b0', 'b1', 'b2', 'b3']) {
     graph.addNode(nodeId, { label: `Beta ${nodeId}`, source_file: 'beta.ts', file_type: 'code', community: 1 })
   }
+  for (let index = 0; index < 15; index += 1) {
+    graph.addNode(`c${index}`, { label: `Gamma ${index}`, source_file: `gamma-${index}.ts`, file_type: 'code', community: 3 })
+  }
   graph.addNode('bridge', { label: 'BridgeHub', source_file: 'shared.ts', file_type: 'code', community: 2 })
 
   for (const [source, target, relation, confidence, sourceFile] of [
@@ -56,6 +61,13 @@ function makeAnomalyGraph(): {
     ['bridge', 'a0', 'calls', 'EXTRACTED', 'shared.ts'],
     ['bridge', 'b0', 'calls', 'EXTRACTED', 'shared.ts'],
     ['a2', 'b2', 'references', 'INFERRED', 'shared.ts'],
+    ...Array.from({ length: 15 }, (_, index) => [
+      `c${index}`,
+      `c${index === 14 ? 0 : index + 1}`,
+      'calls',
+      'EXTRACTED',
+      `gamma-${index}.ts`,
+    ] as const),
   ] as const) {
     graph.addEdge(source, target, { relation, confidence, source_file: sourceFile })
   }
@@ -66,11 +78,13 @@ function makeAnomalyGraph(): {
       0: ['a0', 'a1', 'a2', 'a3', 'a4', 'a5'],
       1: ['b0', 'b1', 'b2', 'b3'],
       2: ['bridge'],
+      3: Array.from({ length: 15 }, (_, index) => `c${index}`),
     },
     labels: {
       0: 'Alpha Cluster',
       1: 'Beta Cluster',
       2: 'Shared Bridge',
+      3: 'Gamma Cycle',
     },
   }
 }
@@ -184,6 +198,108 @@ describe('analyze', () => {
     expect(_isConceptNode(graph, 'n1')).toBe(false)
   })
 
+  it('measures weakly connected fragmentation signals for workspace parity reporting', () => {
+    const graph = new KnowledgeGraph(true)
+    for (const nodeId of ['a', 'b', 'c', 'd', 'e']) {
+      graph.addNode(nodeId, { label: nodeId.toUpperCase(), source_file: `${nodeId}.ts`, file_type: 'code' })
+    }
+    graph.addNode('f', { label: 'toHtml()', source_file: 'f.ts', file_type: 'code' })
+    graph.addNode('file', { label: 'file.ts', source_file: 'file.ts', file_type: 'code' })
+    graph.addNode('concept', { label: 'Shared infra', source_file: '' })
+
+    graph.addEdge('a', 'b', { relation: 'calls', confidence: 'EXTRACTED', source_file: 'a.ts' })
+    graph.addEdge('b', 'c', { relation: 'calls', confidence: 'EXTRACTED', source_file: 'b.ts' })
+    graph.addEdge('d', 'e', { relation: 'calls', confidence: 'EXTRACTED', source_file: 'd.ts' })
+    graph.addEdge('f', 'concept', { relation: 'references', confidence: 'EXTRACTED', source_file: 'f.ts' })
+
+    expect(graphStructureMetrics(graph)).toEqual({
+      total_nodes: 6,
+      total_edges: 3,
+      weakly_connected_components: 3,
+      singleton_components: 1,
+      isolated_nodes: 1,
+      largest_component_nodes: 3,
+      largest_component_ratio: 0.5,
+      low_cohesion_communities: 0,
+      largest_low_cohesion_community_nodes: 0,
+      largest_low_cohesion_community_score: 0,
+    })
+  })
+
+  it('measures low-cohesion community signals on the shared entity basis', () => {
+    const graph = new KnowledgeGraph(true)
+    for (let index = 1; index <= 15; index += 1) {
+      const nodeId = `n${index}`
+      const nextNodeId = `n${index === 15 ? 1 : index + 1}`
+      graph.addNode(nodeId, { label: `Node ${index}`, source_file: `module-${index}.ts`, file_type: 'code' })
+      graph.addEdge(nodeId, nextNodeId, { relation: 'calls', confidence: 'EXTRACTED', source_file: `module-${index}.ts` })
+    }
+    graph.addNode('file', { label: 'module-1.ts', source_file: 'module-1.ts', file_type: 'code' })
+    graph.addEdge('file', 'n1', { relation: 'contains', confidence: 'EXTRACTED', source_file: 'module-1.ts' })
+
+    expect(graphStructureMetrics(graph)).toEqual({
+      total_nodes: 15,
+      total_edges: 15,
+      weakly_connected_components: 1,
+      singleton_components: 0,
+      isolated_nodes: 0,
+      largest_component_nodes: 15,
+      largest_component_ratio: 1,
+      low_cohesion_communities: 1,
+      largest_low_cohesion_community_nodes: 15,
+      largest_low_cohesion_community_score: 0.14,
+    })
+  })
+
+  it('ignores non-entity connectors when deriving low-cohesion communities', () => {
+    const graph = new KnowledgeGraph(true)
+    for (const prefix of ['a', 'b'] as const) {
+      for (let index = 1; index <= 8; index += 1) {
+        const nodeId = `${prefix}${index}`
+        const nextNodeId = `${prefix}${index === 8 ? 1 : index + 1}`
+        graph.addNode(nodeId, { label: `${prefix.toUpperCase()} Node ${index}`, source_file: `${nodeId}.ts`, file_type: 'code' })
+        graph.addEdge(nodeId, nextNodeId, { relation: 'calls', confidence: 'EXTRACTED', source_file: `${nodeId}.ts` })
+      }
+    }
+    graph.addNode('file', { label: 'shared.ts', source_file: 'shared.ts', file_type: 'code' })
+    for (const nodeId of ['a1', 'a2', 'b1', 'b2']) {
+      graph.addEdge('file', nodeId, { relation: 'contains', confidence: 'EXTRACTED', source_file: 'shared.ts' })
+    }
+
+    expect(graphStructureMetrics(graph)).toEqual({
+      total_nodes: 16,
+      total_edges: 16,
+      weakly_connected_components: 2,
+      singleton_components: 0,
+      isolated_nodes: 0,
+      largest_component_nodes: 8,
+      largest_component_ratio: 0.5,
+      low_cohesion_communities: 0,
+      largest_low_cohesion_community_nodes: 0,
+      largest_low_cohesion_community_score: 0,
+    })
+  })
+
+  it('returns zeroed structure metrics when only file and concept nodes exist', () => {
+    const graph = new KnowledgeGraph(true)
+    graph.addNode('file', { label: 'file.ts', source_file: 'file.ts', file_type: 'code' })
+    graph.addNode('concept', { label: 'Shared infra', source_file: '' })
+    graph.addEdge('file', 'concept', { relation: 'contains', confidence: 'EXTRACTED', source_file: 'file.ts' })
+
+    expect(graphStructureMetrics(graph)).toEqual({
+      total_nodes: 0,
+      total_edges: 0,
+      weakly_connected_components: 0,
+      singleton_components: 0,
+      isolated_nodes: 0,
+      largest_component_nodes: 0,
+      largest_component_ratio: 0,
+      low_cohesion_communities: 0,
+      largest_low_cohesion_community_nodes: 0,
+      largest_low_cohesion_community_score: 0,
+    })
+  })
+
   it('reports graph diffs for nodes and edges', () => {
     const oldGraph = makeSimpleGraph(
       [
@@ -239,8 +355,28 @@ describe('analyze', () => {
     const anomalies = semanticAnomalies(graph, communities, labels, 10)
 
     expect(anomalies.map((anomaly) => anomaly.kind)).toEqual(expect.arrayContaining(['bridge_node', 'cross_boundary_edge', 'low_cohesion_community']))
+    expect(anomalies.find((anomaly) => anomaly.kind === 'low_cohesion_community')?.summary).toContain('Gamma Cycle')
     expect(anomalies.every((anomaly) => anomaly.summary.length > 0 && anomaly.why.length > 0)).toBe(true)
     expect(anomalies.every((anomaly) => ['HIGH', 'MEDIUM', 'LOW'].includes(anomaly.severity))).toBe(true)
+  })
+
+  it('ranks workspace bridges by cross-community reach', () => {
+    const { graph, communities, labels } = makeAnomalyGraph()
+
+    const bridges = workspaceBridges(graph, communities, labels, 3)
+
+    expect(bridges[0]).toEqual(
+      expect.objectContaining({
+        id: 'bridge',
+        label: 'BridgeHub',
+        community_id: 2,
+        community_label: 'Shared Bridge',
+        degree: 2,
+      }),
+    )
+    expect(bridges[0]?.connected_communities.map((community) => community.label)).toEqual(['Alpha Cluster', 'Beta Cluster'])
+    expect(bridges[0]?.source_files).toEqual(['alpha.ts', 'beta.ts', 'shared.ts'])
+    expect(bridges.every((bridge) => bridge.connected_communities.length > 0)).toBe(true)
   })
 
   it('sorts semantic anomalies by score and respects the requested limit', () => {
@@ -334,7 +470,34 @@ describe('analyze', () => {
     expect(questionTypes.has('bridge_node')).toBe(true)
     expect(questionTypes.has('verify_inferred')).toBe(true)
     expect(questionTypes.has('isolated_nodes')).toBe(true)
-    expect(questionTypes.has('low_cohesion')).toBe(true)
+  })
+
+  it('generates low-cohesion questions from sparse entity-only communities', () => {
+    const graph = new KnowledgeGraph()
+    for (let index = 0; index < 15; index += 1) {
+      const nodeId = `n${index}`
+      const nextNodeId = `n${index === 14 ? 0 : index + 1}`
+      graph.addNode(nodeId, { label: `Cycle ${index}`, source_file: `cycle-${index}.ts`, file_type: 'code' })
+      graph.addEdge(nodeId, nextNodeId, { relation: 'calls', confidence: 'EXTRACTED', source_file: `cycle-${index}.ts` })
+    }
+    graph.addNode('file', { label: 'cycle-0.ts', source_file: 'cycle-0.ts', file_type: 'code' })
+    graph.addEdge('file', 'n0', { relation: 'contains', confidence: 'EXTRACTED', source_file: 'cycle-0.ts' })
+
+    const questions = suggestQuestions(
+      graph,
+      {
+        0: ['file'],
+        1: Array.from({ length: 15 }, (_, index) => `n${index}`),
+      },
+      {
+        0: 'File Wrapper',
+        1: 'Sparse Cycle',
+      },
+      10,
+    )
+
+    const lowCohesionQuestion = questions.find((question) => question.type === 'low_cohesion')
+    expect(lowCohesionQuestion?.question).toContain('Sparse Cycle')
   })
 
   it('returns a no-signal fallback when the graph is too clean', () => {

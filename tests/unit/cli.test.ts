@@ -60,9 +60,36 @@ function createDependencies(): CliDependencies {
       corpus_words: 750,
       nodes: 10,
       edges: 20,
+      structure_signals: {
+        total_nodes: 10,
+        total_edges: 20,
+        weakly_connected_components: 2,
+        singleton_components: 0,
+        isolated_nodes: 0,
+        largest_component_nodes: 9,
+        largest_component_ratio: 0.9,
+        low_cohesion_communities: 1,
+        largest_low_cohesion_community_nodes: 10,
+        largest_low_cohesion_community_score: 0.12,
+      },
+      question_count: 5,
+      matched_question_count: 5,
+      unmatched_questions: [],
+      expected_label_count: 0,
+      matched_expected_label_count: 0,
+      missing_expected_labels: [],
       avg_query_tokens: 100,
       reduction_ratio: 10,
-      per_question: [{ question: graphPath ?? 'graphify-out/graph.json', query_tokens: 100, reduction: 10 }],
+      per_question: [
+        {
+          question: graphPath ?? 'graphify-out/graph.json',
+          query_tokens: 100,
+          reduction: 10,
+          expected_labels: [],
+          matched_expected_labels: [],
+          missing_expected_labels: [],
+        },
+      ],
     }),
     printBenchmark: () => {},
     installHooks: () => 'hooks installed',
@@ -376,7 +403,7 @@ describe('cli parser', () => {
     expect(parseHookArgs(['install'])).toEqual({ action: 'install' })
     expect(parseHookArgs(['uninstall'])).toEqual({ action: 'uninstall' })
     expect(parseHookArgs(['status'])).toEqual({ action: 'status' })
-    expect(() => parseHookArgs([])).toThrow('Usage: graphify-ts hook')
+    expect(() => parseHookArgs([])).toThrow('Usage: graphify-ts hook <install|uninstall|status>')
   })
 
   it('parses install args and platform actions', () => {
@@ -395,7 +422,7 @@ describe('cli parser', () => {
     expect(parsePlatformActionArgs('copilot', ['uninstall'])).toEqual({ action: 'uninstall' })
     expect(parsePlatformActionArgs('cursor', ['uninstall'])).toEqual({ action: 'uninstall' })
     expect(parsePlatformActionArgs('codex', ['uninstall'])).toEqual({ action: 'uninstall' })
-    expect(() => parsePlatformActionArgs('trae', [])).toThrow('Usage: graphify-ts trae [install|uninstall]')
+    expect(() => parsePlatformActionArgs('trae', [])).toThrow('Usage: graphify-ts trae <install|uninstall>')
   })
 })
 
@@ -437,14 +464,15 @@ describe('cli main', () => {
     expect(help).toContain('add <url> [path]')
     expect(help).toContain('save-result')
     expect(help).toContain('benchmark [graph.json]')
-    expect(help).toContain('hook [action]')
+    expect(help).toContain('question coverage')
+    expect(help).toContain('hook <action>')
     expect(help).toContain('install [--platform P]')
-    expect(help).toContain('aider [install|uninstall]')
-    expect(help).toContain('claude [install|uninstall]')
-    expect(help).toContain('cursor [install|uninstall]')
-    expect(help).toContain('gemini [install|uninstall]')
-    expect(help).toContain('copilot [install|uninstall]')
-    expect(help).toContain('codex [install|uninstall]')
+    expect(help).toContain('aider <install|uninstall>')
+    expect(help).toContain('claude <install|uninstall>')
+    expect(help).toContain('cursor <install|uninstall>')
+    expect(help).toContain('gemini <install|uninstall>')
+    expect(help).toContain('copilot <install|uninstall>')
+    expect(help).toContain('codex <install|uninstall>')
   })
 
   it('executes query commands via injected dependencies', async () => {

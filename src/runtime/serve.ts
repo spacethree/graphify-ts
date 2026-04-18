@@ -1,6 +1,6 @@
 import { readFileSync, statSync } from 'node:fs'
 
-import { godNodes, semanticAnomalies, type SemanticAnomaly } from '../pipeline/analyze.js'
+import { godNodes, semanticAnomalies, workspaceBridges, type SemanticAnomaly, type WorkspaceBridge } from '../pipeline/analyze.js'
 import { buildFromJson } from '../pipeline/build.js'
 import { buildCommunityLabels } from '../pipeline/community-naming.js'
 import type { Communities } from '../pipeline/cluster.js'
@@ -27,6 +27,12 @@ export interface QueryGraphOptions {
   tokenBudget?: number
   rankBy?: QueryRankBy
   filters?: QueryFilters
+}
+
+export const QUERY_CHARS_PER_TOKEN = 3
+
+export function estimateQueryTokens(text: string): number {
+  return Math.max(1, Math.floor(text.length / QUERY_CHARS_PER_TOKEN))
 }
 
 function normalizeQueryFilters(filters?: QueryFilters): QueryFilters | undefined {
@@ -170,6 +176,24 @@ function storedSemanticAnomalies(rawAnomalies: unknown, topN: number): SemanticA
   return results
 }
 
+function communityLabelsFromGraph(graph: KnowledgeGraph, communities: Communities): Record<number, string> {
+  return {
+    ...buildCommunityLabels(graph, communities),
+    ...storedCommunityLabels(graph.graph.community_labels),
+  }
+}
+
+function bridgeSummaryLine(bridge: WorkspaceBridge): string {
+  const connected = bridge.connected_communities.map((community) => community.label).join(', ')
+  return `  - ${bridge.label}: connects ${connected}; home ${bridge.community_label}; degree ${bridge.degree}; score ${bridge.score}`
+}
+
+function workspaceBridgeMap(graph: KnowledgeGraph): Map<string, WorkspaceBridge> {
+  const communities = communitiesFromGraph(graph)
+  const communityLabels = communityLabelsFromGraph(graph, communities)
+  return new Map(workspaceBridges(graph, communities, communityLabels).map((bridge) => [bridge.id, bridge]))
+}
+
 export function loadGraph(graphPath: string): KnowledgeGraph {
   const safePath = validateGraphPath(graphPath)
   if (statSync(safePath).size > MAX_GRAPH_BYTES) {
@@ -198,7 +222,12 @@ export function loadGraph(graphPath: string): KnowledgeGraph {
     hyperedges: Array.isArray(parsed.hyperedges) ? parsed.hyperedges : [],
   }
 
-  return buildFromJson(extraction, { directed: extraction.directed, validateExtraction: false })
+  const graph = buildFromJson(extraction, { directed: extraction.directed, validateExtraction: false })
+  const communityLabels = storedCommunityLabels(parsed.community_labels)
+  if (Object.keys(communityLabels).length > 0) {
+    graph.graph.community_labels = communityLabels
+  }
+  return graph
 }
 
 export function communitiesFromGraph(graph: KnowledgeGraph): Communities {
@@ -345,7 +374,7 @@ export function subgraphToText(graph: KnowledgeGraph, nodes: Set<string>, edges:
     throw new Error('tokenBudget must be positive')
   }
 
-  const charBudget = tokenBudget * 3
+  const charBudget = tokenBudget * QUERY_CHARS_PER_TOKEN
   const lines: string[] = []
 
   const sortedNodes = [...nodes].filter((nodeId) => graph.hasNode(nodeId)).sort((left, right) => graph.degree(right) - graph.degree(left) || left.localeCompare(right))
@@ -417,7 +446,17 @@ export function queryGraph(graph: KnowledgeGraph, question: string, options: Que
     `Start: ${JSON.stringify(startLabels)}`,
     `${traversal.visited.size} nodes found`,
   ]
-  return `${summary.join(' | ')}\n\n${subgraphToText(graph, traversal.visited, traversal.edges, tokenBudget)}`
+  const bridgesById = workspaceBridgeMap(graph)
+  const bridgeContext = [...traversal.visited]
+    .map((nodeId) => bridgesById.get(nodeId))
+    .filter((bridge): bridge is WorkspaceBridge => bridge !== undefined)
+
+  const sections = [summary.join(' | ')]
+  if (bridgeContext.length > 0) {
+    sections.push(['Workspace bridges:', ...bridgeContext.map(bridgeSummaryLine)].join('\n'))
+  }
+  sections.push(subgraphToText(graph, traversal.visited, traversal.edges, tokenBudget))
+  return sections.join('\n\n')
 }
 
 export function getNode(graph: KnowledgeGraph, label: string): string {
@@ -427,14 +466,21 @@ export function getNode(graph: KnowledgeGraph, label: string): string {
   }
 
   const attributes = graph.nodeAttributes(match)
-  return [
+  const lines = [
     `Node: ${String(attributes.label ?? match)}`,
     `  ID: ${match}`,
     `  Source: ${String(attributes.source_file ?? '')} ${String(attributes.source_location ?? '')}`.trimEnd(),
     `  Type: ${String(attributes.file_type ?? '')}`,
     `  Community: ${String(attributes.community ?? '')}`,
     `  Degree: ${graph.degree(match)}`,
-  ].join('\n')
+  ]
+
+  const bridge = workspaceBridgeMap(graph).get(match)
+  if (bridge) {
+    lines.push(`  Workspace bridge: connects ${bridge.connected_communities.map((community) => community.label).join(', ')}; home ${bridge.community_label}`)
+  }
+
+  return lines.join('\n')
 }
 
 export function getNeighbors(graph: KnowledgeGraph, label: string, relationFilter = ''): string {

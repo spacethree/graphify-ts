@@ -1,6 +1,6 @@
 import { mkdtempSync, rmSync, symlinkSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
 
 import { _loadGraphifyignore, _isIgnored, classifyFile, countWords, detect, FileType } from '../../src/pipeline/detect.js'
 
@@ -85,7 +85,8 @@ describe('detect', () => {
     const result = detect(FIXTURES_DIR)
     for (const files of Object.values(result.files)) {
       for (const filePath of files) {
-        expect(filePath.includes('/.')).toBe(false)
+        const fixtureRelativePath = relative(FIXTURES_DIR, filePath)
+        expect(fixtureRelativePath.split(/[\\/]/).some((part) => part.startsWith('.'))).toBe(false)
       }
     }
   })

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
 import { KnowledgeGraph } from '../contracts/graph.js'
@@ -9,7 +9,7 @@ import { cluster, scoreAll } from '../pipeline/cluster.js'
 import { buildCommunityLabels } from '../pipeline/community-naming.js'
 import { type DetectResult, detect, detectIncremental, FileType, saveManifest } from '../pipeline/detect.js'
 import { toCypher, toGraphml, toHtml, toJson, toObsidian, toSvg } from '../pipeline/export.js'
-import { extract } from '../pipeline/extract.js'
+import { extract, EXTRACTOR_CACHE_VERSION } from '../pipeline/extract.js'
 import { generate as generateReport } from '../pipeline/report.js'
 import { toWiki } from '../pipeline/wiki.js'
 import { loadGraph } from '../runtime/serve.js'
@@ -185,6 +185,20 @@ function missingCodeExtractionMessage(totalFiles: number): string {
   return 'No graph nodes could be generated from the detected corpus. The current TypeScript extractor supports Python, JavaScript/TypeScript, documents, text-like papers, and image assets, but some detected formats still have shallow coverage.'
 }
 
+function loadGraphExtractorVersion(graphPath: string): number | null {
+  try {
+    const parsed = JSON.parse(readFileSync(graphPath, 'utf8')) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return null
+    }
+
+    const extractorVersion = (parsed as { extractor_version?: unknown }).extractor_version
+    return typeof extractorVersion === 'number' && Number.isFinite(extractorVersion) ? extractorVersion : null
+  } catch {
+    return null
+  }
+}
+
 export function generateGraph(rootPath = '.', options: GenerateGraphOptions = {}): GenerateGraphResult {
   if (options.update && options.clusterOnly) {
     throw new Error('--update and --cluster-only cannot be used together')
@@ -236,11 +250,21 @@ export function generateGraph(rootPath = '.', options: GenerateGraphOptions = {}
   const codeFiles = detected.files[FileType.CODE]
   const extractableFiles = collectExtractableFiles(detected.files)
   const existingGraph = options.clusterOnly || (options.update && existsSync(graphPath)) ? loadGraph(graphPath) : null
+  const existingGraphExtractorVersion = options.update && existsSync(graphPath) ? loadGraphExtractorVersion(graphPath) : null
   const directed = options.directed === true || existingGraph?.isDirected() === true
   const graph = options.clusterOnly
     ? existingGraph
     : options.update && existingGraph && isIncrementalDetectResult(detected)
       ? (() => {
+          if (existingGraphExtractorVersion == null || existingGraphExtractorVersion !== EXTRACTOR_CACHE_VERSION) {
+            notes.push(
+              existingGraphExtractorVersion == null
+                ? 'Existing graph predates extractor version metadata, so --update rebuilt the full graph.'
+                : `Existing graph uses extractor version ${existingGraphExtractorVersion}, so --update rebuilt the full graph.`,
+            )
+            return extractableFiles.length > 0 ? buildFromJson(extract(extractableFiles), { directed }) : null
+          }
+
           const changedExtractableFiles = collectExtractableFiles(detected.new_files)
           const removedSourceFiles = new Set([...changedExtractableFiles, ...detected.deleted_files].map((filePath) => resolve(filePath)))
 
@@ -300,7 +324,7 @@ export function generateGraph(rootPath = '.', options: GenerateGraphOptions = {}
   )
 
   writeFileSync(reportPath, `${report}\n`, 'utf8')
-  toJson(graph, communities, graphPath, communityLabels, semanticAnomalyList)
+  toJson(graph, communities, graphPath, communityLabels, semanticAnomalyList, EXTRACTOR_CACHE_VERSION)
   if (!options.noHtml) {
     const htmlResult = toHtml(graph, communities, htmlPath, communityLabels, {
       mode: options.htmlMode ?? 'auto',

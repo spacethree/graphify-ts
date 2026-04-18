@@ -1,5 +1,7 @@
 # graphify-ts Upstream Parity and Beyond Roadmap
 
+> **Status:** Obsolete for active planning. This document is kept as historical context only. The active roadmap is now [`2026-04-18-workspace-scale-parity-roadmap.md`](./2026-04-18-workspace-scale-parity-roadmap.md).
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Make `graphify-ts` surpass upstream `graphify` in multimodal coverage, semantic graph quality, AST-backed language breadth, and operational maturity without losing the project’s strongest advantages: local-first execution, deterministic base extraction, and a Node/TypeScript-native runtime.

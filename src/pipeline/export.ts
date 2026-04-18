@@ -5,6 +5,9 @@ import { KnowledgeGraph } from '../contracts/graph.js'
 import { validateUrl } from '../shared/security.js'
 import { _nodeCommunityMap, type SemanticAnomaly } from './analyze.js'
 import type { Communities } from './cluster.js'
+import { buildOverviewBridgeSummaries, nodeAnchorId, type OverviewBridgeSummary } from './export/overview-bridges.js'
+import { buildCommunitySummaryData } from './export/community-summary.js'
+import { buildOverviewSearchIndex, buildOverviewTopNodes, type OverviewSearchIndexEntry, type OverviewTopNode } from './export/overview-navigation.js'
 
 const COMMUNITY_COLORS = ['#4E79A7', '#F28E2B', '#E15759', '#76B7B2', '#59A14F', '#EDC948', '#B07AA1', '#FF9DA7', '#9C755F', '#BAB0AC']
 
@@ -127,12 +130,7 @@ interface OverviewCommunitySummary {
   cohesion: number | null
   href: string
   pageMode: 'interactive' | 'summary'
-  topNodes: Array<{
-    id: string
-    label: string
-    degree: number
-    href: string
-  }>
+  topNodes: OverviewTopNode[]
 }
 
 function escapeHtml(value: string): string {
@@ -332,11 +330,13 @@ export function toJson(
   outputPath: string,
   communityLabels: Record<number, string> = {},
   semanticAnomalies: SemanticAnomaly[] = [],
+  extractorVersion?: number,
 ): void {
   const nodeCommunity = _nodeCommunityMap(communities)
   const data = {
     schema_version: graph.graph.schema_version === 2 ? 2 : 1,
     directed: graph.isDirected(),
+    ...(typeof extractorVersion === 'number' ? { extractor_version: extractorVersion } : {}),
     nodes: graph.nodeEntries().map(([id, attributes]) => ({
       id,
       ...attributes,
@@ -406,10 +406,6 @@ function resolveHtmlExportMode(payload: HtmlPayload, requestedMode: HtmlExportOp
   return shouldUseOverview
     ? { mode: 'overview', communityPageCount: payload.legend.length, reason: 'graph exceeded inline HTML thresholds' }
     : { mode: 'inline', communityPageCount: 0, reason: 'graph fits inline HTML thresholds' }
-}
-
-function nodeAnchorId(nodeId: string): string {
-  return `node-${Buffer.from(nodeId, 'utf8').toString('base64url')}`
 }
 
 function buildInteractiveHtml(payload: HtmlPayload, isDirected: boolean, options: InteractiveHtmlPageOptions = {}): string {
@@ -1044,26 +1040,7 @@ function buildCommunitySummaryHtml(payload: HtmlPayload, options: InteractiveHtm
       ? `<p class="muted" style="margin-bottom:10px;"><a class="back-link" href="${escapeHtml(options.backLinkHref)}">${escapeHtml(options.backLinkLabel ?? '← Back')}</a></p>`
       : ''
 
-  const sortedNodes = [...payload.nodes].sort((left, right) => right.degree - left.degree || left.label.localeCompare(right.label))
-  const summaryNodes = sortedNodes.map((node) => ({
-    anchor_id: nodeAnchorId(node.id),
-    label: node.label,
-    source_file: node.source_file,
-    source_location: node.source_location,
-    safe_source_url: node.safe_source_url,
-    file_type: node.file_type,
-    degree: node.degree,
-    confidence: node.confidence,
-    search_text: `${node.label} ${node.source_file} ${node.source_location} ${node.file_type}`.toLowerCase(),
-  }))
-  const topNodes = summaryNodes.slice(0, 12)
-  const topFiles = [...sortedNodes.reduce((counts, node) => {
-    const sourceFile = node.source_file || '(unknown source)'
-    counts.set(sourceFile, (counts.get(sourceFile) ?? 0) + 1)
-    return counts
-  }, new Map<string, number>()).entries()]
-    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
-    .slice(0, 12)
+  const { summaryNodes, topNodes, topFiles } = buildCommunitySummaryData(payload.nodes)
 
   const topNodesMarkup =
     topNodes.length === 0
@@ -1396,8 +1373,9 @@ renderFromHash();
 
 function buildOverviewHtml(
   stats: HtmlStats,
-  searchIndex: Array<{ label: string; source_file: string; community_name: string; href: string }>,
+  searchIndex: OverviewSearchIndexEntry[],
   communities: OverviewCommunitySummary[],
+  bridges: OverviewBridgeSummary[],
 ): string {
   return `<!DOCTYPE html>
 <html lang="en">
@@ -1479,7 +1457,8 @@ function buildOverviewHtml(
     gap: 10px;
   }
   .community-card,
-  .match-link {
+  .match-link,
+  .bridge-card {
     display: block;
     border: 1px solid #d7dce5;
     border-radius: 12px;
@@ -1489,11 +1468,13 @@ function buildOverviewHtml(
     text-decoration: none;
   }
   .community-card:hover,
-  .match-link:hover {
+  .match-link:hover,
+  .bridge-card:hover {
     border-color: var(--accent);
   }
   .community-meta,
-  .match-meta {
+  .match-meta,
+  .bridge-meta {
     color: var(--text-muted);
     font-size: 0.85rem;
     margin-top: 4px;
@@ -1526,6 +1507,12 @@ function buildOverviewHtml(
   </section>
 
   <section class="panel">
+    <h2>Workspace Bridges</h2>
+    <p class="lede">Start with nodes that connect otherwise separate communities.</p>
+    <div id="bridges" class="list"></div>
+  </section>
+
+  <section class="panel">
     <h2>Communities</h2>
     <p class="lede">Open a focused community page for interactive rendering, or a summary page when one community is still too large to draw safely.</p>
     <div id="communities" class="list"></div>
@@ -1535,12 +1522,14 @@ function buildOverviewHtml(
 const STATS = ${serializeForInlineScript(stats)};
 const SEARCH_INDEX = ${serializeForInlineScript(searchIndex)};
 const COMMUNITIES = ${serializeForInlineScript(communities)};
+const BRIDGES = ${serializeForInlineScript(bridges)};
 
 const elements = {
   stats: document.getElementById('stats'),
   search: document.getElementById('search'),
   matches: document.getElementById('matches'),
   communities: document.getElementById('communities'),
+  bridges: document.getElementById('bridges'),
 };
 
 function renderStats() {
@@ -1642,9 +1631,39 @@ function renderMatches(query) {
   });
 }
 
+function renderBridges() {
+  elements.bridges.replaceChildren();
+  if (BRIDGES.length === 0) {
+    const hint = document.createElement('p');
+    hint.className = 'empty';
+    hint.textContent = 'No bridge nodes detected across communities yet.';
+    elements.bridges.appendChild(hint);
+    return;
+  }
+
+  BRIDGES.forEach((bridge) => {
+    const link = document.createElement('a');
+    link.className = 'bridge-card';
+    link.href = bridge.href;
+
+    const title = document.createElement('strong');
+    title.textContent = bridge.label;
+    const meta = document.createElement('div');
+    meta.className = 'bridge-meta';
+    meta.textContent = bridge.connection_summary + ' · home ' + bridge.community_name + ' · degree ' + bridge.degree;
+    const files = document.createElement('div');
+    files.className = 'top-nodes';
+    files.textContent = 'Source files: ' + (bridge.source_files.join(', ') || 'n/a');
+
+    link.append(title, meta, files);
+    elements.bridges.appendChild(link);
+  });
+}
+
 renderStats();
 renderCommunities('');
 renderMatches('');
+renderBridges();
 
 elements.search.addEventListener('input', (event) => {
   const value = event.target.value || '';
@@ -1857,17 +1876,7 @@ export function toHtml(
         'utf8',
       )
 
-      const topNodes = [...nodeIds]
-        .map((nodeId) => ({
-          id: nodeId,
-          label: String(graph.nodeAttributes(nodeId).label ?? nodeId),
-          degree: graph.degree(nodeId),
-          href: `${COMMUNITY_PAGES_DIRNAME}/community-${communityId}.html#${
-            pageMode === 'summary' ? nodeAnchorId(nodeId) : encodeURIComponent(nodeId)
-          }`,
-        }))
-        .sort((left, right) => right.degree - left.degree || left.label.localeCompare(right.label))
-        .slice(0, 4)
+      const topNodes = buildOverviewTopNodes(graph, nodeIds, communityId, pageMode, COMMUNITY_PAGES_DIRNAME)
 
       return {
         id: communityId,
@@ -1882,20 +1891,16 @@ export function toHtml(
     .sort((left, right) => right.count - left.count || left.label.localeCompare(right.label))
 
   const communityPageModes = new Map(communitySummaries.map((community) => [community.id, community.pageMode]))
-  const searchIndex = payload.nodes
-    .map((node) => ({
-      label: node.label,
-      source_file: node.source_file,
-      community_name: node.community_name,
-      href: `${COMMUNITY_PAGES_DIRNAME}/community-${node.community}.html#${
-        communityPageModes.get(node.community) === 'summary'
-          ? nodeAnchorId(node.id)
-          : encodeURIComponent(node.id)
-      }`,
-    }))
-    .sort((left, right) => left.label.localeCompare(right.label))
+  const bridgeSummaries: OverviewBridgeSummary[] = buildOverviewBridgeSummaries(
+    graph,
+    communities,
+    communityLabels,
+    communityPageModes,
+    COMMUNITY_PAGES_DIRNAME,
+  )
+  const searchIndex = buildOverviewSearchIndex(payload.nodes, communityPageModes, COMMUNITY_PAGES_DIRNAME)
 
-  writeFileSync(outputPath, buildOverviewHtml(payload.stats, searchIndex, communitySummaries), 'utf8')
+  writeFileSync(outputPath, buildOverviewHtml(payload.stats, searchIndex, communitySummaries, bridgeSummaries), 'utf8')
   return {
     ...htmlResult,
     communityPageCount: communitySummaries.length,
