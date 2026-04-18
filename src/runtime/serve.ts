@@ -198,7 +198,7 @@ export function loadGraph(graphPath: string): KnowledgeGraph {
     hyperedges: Array.isArray(parsed.hyperedges) ? parsed.hyperedges : [],
   }
 
-  return buildFromJson(extraction, { directed: extraction.directed })
+  return buildFromJson(extraction, { directed: extraction.directed, validateExtraction: false })
 }
 
 export function communitiesFromGraph(graph: KnowledgeGraph): Communities {

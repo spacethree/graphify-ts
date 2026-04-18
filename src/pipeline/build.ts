@@ -23,6 +23,7 @@ function mergeSchemaVersion(current: ExtractionData['schema_version'], next: Ext
 
 export interface BuildGraphOptions {
   directed?: boolean
+  validateExtraction?: boolean
 }
 
 export function buildFromJson(extraction: unknown, options: BuildGraphOptions = {}): KnowledgeGraph {
@@ -31,19 +32,23 @@ export function buildFromJson(extraction: unknown, options: BuildGraphOptions = 
     return graph
   }
 
-  const errors = validateExtraction(extraction)
-  const nonDanglingErrors = errors.filter((error) => !error.includes('does not match any node id'))
-
-  if (nonDanglingErrors.length > 0) {
-    console.warn(`[graphify-ts] Extraction warning (${nonDanglingErrors.length} issues): ${nonDanglingErrors[0]}`)
-  }
-
   const normalized = normalizeExtractionData(extraction)
-  const normalizedErrors = validateExtraction(normalized)
-  const postNormalizationErrors = normalizedErrors.filter((error) => !errors.includes(error)).filter((error) => !error.includes('does not match any node id'))
+  if (options.validateExtraction !== false) {
+    const errors = validateExtraction(extraction)
+    const nonDanglingErrors = errors.filter((error) => !error.includes('does not match any node id'))
 
-  if (postNormalizationErrors.length > 0) {
-    console.warn(`[graphify-ts] Normalization warning (${postNormalizationErrors.length} issues): ${postNormalizationErrors[0]}`)
+    if (nonDanglingErrors.length > 0) {
+      console.warn(`[graphify-ts] Extraction warning (${nonDanglingErrors.length} issues): ${nonDanglingErrors[0]}`)
+    }
+
+    const normalizedErrors = validateExtraction(normalized)
+    const postNormalizationErrors = normalizedErrors
+      .filter((error) => !errors.includes(error))
+      .filter((error) => !error.includes('does not match any node id'))
+
+    if (postNormalizationErrors.length > 0) {
+      console.warn(`[graphify-ts] Normalization warning (${postNormalizationErrors.length} issues): ${postNormalizationErrors[0]}`)
+    }
   }
 
   const nodes = normalized.nodes

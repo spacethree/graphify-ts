@@ -66,6 +66,27 @@ describe('runBenchmark', () => {
       expect(result).toEqual(expect.objectContaining({ error: expect.stringMatching(/no matching nodes/i) }))
     })
   })
+
+  test('does not emit extraction warnings for exported graph json nodes without source_file', () => {
+    withTempDir((tempDir) => {
+      const graphPath = join(tempDir, 'graphify-out', 'graph.json')
+      mkdirSync(join(tempDir, 'graphify-out'), { recursive: true })
+
+      const graph = new KnowledgeGraph()
+      graph.addNode('n1', { label: 'authentication', file_type: 'code', community: 0 })
+      graph.addNode('n2', { label: 'api_handler', file_type: 'code', community: 0 })
+      graph.addEdge('n1', 'n2', { relation: 'calls', confidence: 'EXTRACTED' })
+      toJson(graph, { 0: ['n1', 'n2'] }, graphPath)
+
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+      const result = runBenchmark(graphPath, 1_000, ['how does authentication work'])
+
+      expect('reduction_ratio' in result).toBe(true)
+      expect(warnSpy).not.toHaveBeenCalled()
+
+      warnSpy.mockRestore()
+    })
+  })
 })
 
 describe('printBenchmark', () => {

@@ -1,9 +1,4 @@
-import { readFileSync } from 'node:fs'
-
-import { buildFromJson } from '../pipeline/build.js'
-import { bfs } from '../runtime/serve.js'
-import { isRecord } from '../shared/guards.js'
-import { validateGraphPath } from '../shared/security.js'
+import { bfs, loadGraph } from '../runtime/serve.js'
 import { KnowledgeGraph } from '../contracts/graph.js'
 
 const CHARS_PER_TOKEN = 4
@@ -43,17 +38,7 @@ function estimateTokens(text: string): number {
 }
 
 function loadBenchmarkGraph(graphPath: string): KnowledgeGraph {
-  const safePath = validateGraphPath(graphPath)
-  const parsed = JSON.parse(readFileSync(safePath, 'utf8')) as unknown
-  if (!isRecord(parsed)) {
-    return new KnowledgeGraph()
-  }
-
-  return buildFromJson({
-    nodes: Array.isArray(parsed.nodes) ? parsed.nodes : [],
-    edges: Array.isArray(parsed.links) ? parsed.links : Array.isArray(parsed.edges) ? parsed.edges : [],
-    hyperedges: Array.isArray(parsed.hyperedges) ? parsed.hyperedges : [],
-  })
+  return loadGraph(graphPath)
 }
 
 export function querySubgraphTokens(graph: KnowledgeGraph, question: string, depth = 3): number {
