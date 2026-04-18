@@ -205,6 +205,45 @@ describe('export', () => {
     })
   })
 
+  it('writes overview-first html with bridge-first starting points', () => {
+    const graph = buildFromJson(
+      {
+        nodes: [
+          { id: 'api', label: 'loginUser()', file_type: 'code', source_file: '/repo/backend/api.ts' },
+          { id: 'web', label: 'loadSession()', file_type: 'code', source_file: '/repo/web-app/session.ts' },
+          { id: 'worker', label: 'syncSession()', file_type: 'code', source_file: '/repo/worker/jobs.ts' },
+          { id: 'shared', label: 'createSession()', file_type: 'code', source_file: '/repo/shared/auth.ts' },
+        ],
+        edges: [
+          { source: 'api', target: 'shared', relation: 'calls', confidence: 'EXTRACTED', source_file: '/repo/backend/api.ts' },
+          { source: 'web', target: 'shared', relation: 'calls', confidence: 'EXTRACTED', source_file: '/repo/web-app/session.ts' },
+          { source: 'worker', target: 'shared', relation: 'calls', confidence: 'EXTRACTED', source_file: '/repo/worker/jobs.ts' },
+        ],
+      },
+      { directed: true },
+    )
+
+    withTempDir((tempDir) => {
+      const outputPath = join(tempDir, 'graph.html')
+      const result = toHtml(
+        graph,
+        { 0: ['api'], 1: ['web'], 2: ['worker'], 3: ['shared'] },
+        outputPath,
+        { 0: 'Backend API', 1: 'Web Session', 2: 'Worker Jobs', 3: 'Shared Auth' },
+        { mode: 'overview' },
+      )
+
+      const overview = readFileSync(outputPath, 'utf8')
+
+      expect(result.mode).toBe('overview')
+      expect(overview).toContain('Workspace Bridges')
+      expect(overview).toContain('Start with nodes that connect otherwise separate communities.')
+      expect(overview).toContain('createSession()')
+      expect(overview).toContain('connects Backend API, Web Session, Worker Jobs')
+      expect(overview).toContain('graph-pages/community-3.html#shared')
+    })
+  })
+
   it('automatically switches to overview mode when the graph exceeds inline thresholds', () => {
     const graph = buildFromJson(
       {

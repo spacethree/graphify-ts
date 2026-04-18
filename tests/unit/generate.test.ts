@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -8,6 +8,8 @@ import { describe, expect, test, vi } from 'vitest'
 import { generateGraph } from '../../src/infrastructure/generate.js'
 import { loadGraph } from '../../src/runtime/serve.js'
 import { binaryIngestSidecarPath } from '../../src/shared/binary-ingest-sidecar.js'
+
+const FIXTURES_DIR = join(process.cwd(), 'tests', 'fixtures')
 
 function withTempDir<T>(callback: (tempDir: string) => T): T {
   const tempDir = mkdtempSync(join(tmpdir(), 'graphify-ts-generate-'))
@@ -25,6 +27,13 @@ async function withTempDirAsync<T>(callback: (tempDir: string) => Promise<T>): P
   } finally {
     rmSync(tempDir, { recursive: true, force: true })
   }
+}
+
+function copyFixtureCorpus(fixtureName: string, tempDir: string): string {
+  const fixtureRoot = join(FIXTURES_DIR, fixtureName)
+  const targetRoot = join(tempDir, fixtureName)
+  cpSync(fixtureRoot, targetRoot, { recursive: true })
+  return targetRoot
 }
 
 function createTestWavBuffer(durationSeconds: number, sampleRate: number = 4_000, channelCount: number = 2, bitsPerSample: number = 16): Buffer {
@@ -972,6 +981,36 @@ describe('generateGraph', () => {
       expect(result.notes.join('\n')).not.toContain('semantic extraction')
       expect(graphData.nodes.some((node) => node.file_type === 'document')).toBe(true)
       expect(Array.isArray(graphData.semantic_anomalies)).toBe(true)
+    })
+  })
+
+  test('builds graph artifacts with stitched relative workspace anonymous default-export barrel imports while keeping the worker isolated', () => {
+    withTempDir((tempDir) => {
+      const workspaceRoot = copyFixtureCorpus('workspace-parity', tempDir)
+      const result = generateGraph(workspaceRoot, { noHtml: true })
+      const graphData = JSON.parse(readFileSync(join(workspaceRoot, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+        links: Array<{ source: string; target: string; relation: string }>
+      }
+      const apiFileId = graphData.nodes.find((node) => node.label === 'api.ts')?.id
+      const sessionFileId = graphData.nodes.find((node) => node.label === 'session.ts')?.id
+      const loginId = graphData.nodes.find((node) => node.label === '.login()')?.id
+      const loginUserId = graphData.nodes.find((node) => node.label === 'loginUser()')?.id
+      const reindexId = graphData.nodes.find((node) => node.label === 'reindexWorkspace()')?.id
+      const createSessionId = graphData.nodes.find((node) => node.label === 'default()')?.id
+
+      expect(result.codeFiles).toBe(5)
+      expect(apiFileId).toBeTruthy()
+      expect(sessionFileId).toBeTruthy()
+      expect(loginId).toBeTruthy()
+      expect(loginUserId).toBeTruthy()
+      expect(reindexId).toBeTruthy()
+      expect(createSessionId).toBeTruthy()
+      expect(graphData.links.some((edge) => edge.source === apiFileId && edge.target === createSessionId && edge.relation === 'imports_from')).toBe(true)
+      expect(graphData.links.some((edge) => edge.source === sessionFileId && edge.target === createSessionId && edge.relation === 'imports_from')).toBe(true)
+      expect(graphData.links.some((edge) => edge.source === loginId && edge.target === createSessionId && edge.relation === 'calls')).toBe(true)
+      expect(graphData.links.some((edge) => edge.source === loginUserId && edge.target === createSessionId && edge.relation === 'calls')).toBe(true)
+      expect(graphData.links.some((edge) => edge.source === reindexId && edge.target === createSessionId)).toBe(false)
     })
   })
 
@@ -4298,6 +4337,128 @@ describe('generateGraph', () => {
       expect(result.changedFiles).toBeGreaterThan(0)
       expect(result.deletedFiles).toBe(0)
       expect(existsSync(join(tempDir, 'graphify-out', 'manifest.json'))).toBe(true)
+    })
+  })
+
+  test('rebuilds incremental updates from full extraction when the existing graph predates anonymous default-export targets', async () => {
+    await withTempDirAsync(async (tempDir) => {
+      const backendDir = join(tempDir, 'backend')
+      const sharedDir = join(tempDir, 'shared')
+      mkdirSync(backendDir, { recursive: true })
+      mkdirSync(sharedDir, { recursive: true })
+
+      writeFileSync(
+        join(backendDir, 'api.ts'),
+        [
+          "import createSession from '../shared/auth.js'",
+          '',
+          'export function loginUser() {',
+          '  return createSession()',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(
+        join(sharedDir, 'auth.ts'),
+        [
+          'export default function () {',
+          "  return 'session'",
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const initial = generateGraph(tempDir, { noHtml: true })
+      const staleGraphData = JSON.parse(readFileSync(initial.graphPath, 'utf8')) as {
+        extractor_version?: number
+        nodes: Array<Record<string, unknown>>
+        links: Array<Record<string, unknown>>
+      }
+
+      staleGraphData.extractor_version = 59
+      staleGraphData.nodes = staleGraphData.nodes.filter((node) => node.label !== 'default()')
+      staleGraphData.links = staleGraphData.links.filter((edge) => edge.target !== 'auth_default')
+      writeFileSync(initial.graphPath, `${JSON.stringify(staleGraphData, null, 2)}\n`, 'utf8')
+
+      const updated = generateGraph(tempDir, { update: true, noHtml: true })
+      const updatedGraphData = JSON.parse(readFileSync(updated.graphPath, 'utf8')) as {
+        extractor_version?: number
+        nodes: Array<Record<string, unknown>>
+        links: Array<{ source: string; target: string; relation: string }>
+      }
+      const apiFileId = updatedGraphData.nodes.find((node) => node.label === 'api.ts')?.id
+      const loginUserId = updatedGraphData.nodes.find((node) => node.label === 'loginUser()')?.id
+      const defaultExportId = updatedGraphData.nodes.find((node) => node.label === 'default()' && String(node.source_file).endsWith('/shared/auth.ts'))?.id
+
+      expect(updated.changedFiles).toBe(0)
+      expect(updated.notes.join('\n')).toContain('Existing graph uses extractor version 59, so --update rebuilt the full graph.')
+      expect(updatedGraphData.extractor_version).not.toBe(59)
+      expect(apiFileId).toBeTruthy()
+      expect(loginUserId).toBeTruthy()
+      expect(defaultExportId).toBeTruthy()
+      expect(updatedGraphData.links.some((edge) => edge.source === apiFileId && edge.target === defaultExportId && edge.relation === 'imports_from')).toBe(true)
+      expect(updatedGraphData.links.some((edge) => edge.source === loginUserId && edge.target === defaultExportId && edge.relation === 'calls')).toBe(true)
+    })
+  })
+
+  test('rebuilds incremental updates from full extraction when the existing graph lacks extractor version metadata', async () => {
+    await withTempDirAsync(async (tempDir) => {
+      const backendDir = join(tempDir, 'backend')
+      const sharedDir = join(tempDir, 'shared')
+      mkdirSync(backendDir, { recursive: true })
+      mkdirSync(sharedDir, { recursive: true })
+
+      writeFileSync(
+        join(backendDir, 'api.ts'),
+        [
+          "import createSession from '../shared/auth.js'",
+          '',
+          'export function loginUser() {',
+          '  return createSession()',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(
+        join(sharedDir, 'auth.ts'),
+        [
+          'export default function () {',
+          "  return 'session'",
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const initial = generateGraph(tempDir, { noHtml: true })
+      const staleGraphData = JSON.parse(readFileSync(initial.graphPath, 'utf8')) as {
+        extractor_version?: number
+        nodes: Array<Record<string, unknown>>
+        links: Array<Record<string, unknown>>
+      }
+
+      delete staleGraphData.extractor_version
+      staleGraphData.nodes = staleGraphData.nodes.filter((node) => node.label !== 'default()')
+      staleGraphData.links = staleGraphData.links.filter((edge) => edge.target !== 'auth_default')
+      writeFileSync(initial.graphPath, `${JSON.stringify(staleGraphData, null, 2)}\n`, 'utf8')
+
+      const updated = generateGraph(tempDir, { update: true, noHtml: true })
+      const updatedGraphData = JSON.parse(readFileSync(updated.graphPath, 'utf8')) as {
+        extractor_version?: number
+        nodes: Array<Record<string, unknown>>
+        links: Array<{ source: string; target: string; relation: string }>
+      }
+      const apiFileId = updatedGraphData.nodes.find((node) => node.label === 'api.ts')?.id
+      const loginUserId = updatedGraphData.nodes.find((node) => node.label === 'loginUser()')?.id
+      const defaultExportId = updatedGraphData.nodes.find((node) => node.label === 'default()' && String(node.source_file).endsWith('/shared/auth.ts'))?.id
+
+      expect(updated.changedFiles).toBe(0)
+      expect(updated.notes.join('\n')).toContain('Existing graph predates extractor version metadata, so --update rebuilt the full graph.')
+      expect(typeof updatedGraphData.extractor_version).toBe('number')
+      expect(apiFileId).toBeTruthy()
+      expect(loginUserId).toBeTruthy()
+      expect(defaultExportId).toBeTruthy()
+      expect(updatedGraphData.links.some((edge) => edge.source === apiFileId && edge.target === defaultExportId && edge.relation === 'imports_from')).toBe(true)
+      expect(updatedGraphData.links.some((edge) => edge.source === loginUserId && edge.target === defaultExportId && edge.relation === 'calls')).toBe(true)
     })
   })
 

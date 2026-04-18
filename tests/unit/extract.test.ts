@@ -1,6 +1,6 @@
 import { existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, join, relative } from 'node:path'
 
 import { strToU8, zipSync } from 'fflate'
 
@@ -3595,6 +3595,1448 @@ describe('extract', () => {
       expect(labels).toContain('.start()')
       expect(labels).toContain('.stop()')
       expect(calls.has('.start()->.stop()')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('stitches relative js/ts workspace imports onto real shared targets without pulling in unrelated roots', () => {
+    const root = createTempRoot()
+    try {
+      const backendDir = join(root, 'backend')
+      const sharedDir = join(root, 'shared')
+      const webAppDir = join(root, 'web-app')
+      const workerDir = join(root, 'worker')
+      mkdirSync(backendDir, { recursive: true })
+      mkdirSync(sharedDir, { recursive: true })
+      mkdirSync(webAppDir, { recursive: true })
+      mkdirSync(workerDir, { recursive: true })
+
+      const apiPath = join(backendDir, 'api.ts')
+      const authPath = join(sharedDir, 'auth.ts')
+      const sessionPath = join(webAppDir, 'session.ts')
+      const jobsPath = join(workerDir, 'jobs.ts')
+
+      writeFileSync(
+        apiPath,
+        [
+          "import { createSession } from '../shared/auth.js'",
+          '',
+          'export class ApiHandler {',
+          '  login(userId: string) {',
+          '    return createSession(userId)',
+          '  }',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(
+        authPath,
+        [
+          'export function createSession(userId: string) {',
+          '  return `${userId}-session`',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(
+        sessionPath,
+        [
+          "import { createSession } from '../shared/auth.js'",
+          '',
+          'export function loginUser(userId: string) {',
+          '  return createSession(userId)',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(
+        jobsPath,
+        [
+          'export function reindexWorkspace() {',
+          "  return 'queued'",
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([apiPath, authPath, sessionPath, jobsPath])
+      const apiFileId = result.nodes.find((node) => node.label === 'api.ts')?.id
+      const sessionFileId = result.nodes.find((node) => node.label === 'session.ts')?.id
+      const loginId = result.nodes.find((node) => node.label === '.login()')?.id
+      const loginUserId = result.nodes.find((node) => node.label === 'loginUser()')?.id
+      const reindexId = result.nodes.find((node) => node.label === 'reindexWorkspace()')?.id
+      const createSessionId = result.nodes.find((node) => node.label === 'createSession()' && node.source_file === authPath)?.id
+
+      expect(apiFileId).toBeTruthy()
+      expect(sessionFileId).toBeTruthy()
+      expect(loginId).toBeTruthy()
+      expect(loginUserId).toBeTruthy()
+      expect(reindexId).toBeTruthy()
+      expect(createSessionId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === apiFileId && edge.target === createSessionId && edge.relation === 'imports_from')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === sessionFileId && edge.target === createSessionId && edge.relation === 'imports_from')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === loginId && edge.target === createSessionId && edge.relation === 'calls')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === loginUserId && edge.target === createSessionId && edge.relation === 'calls')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === reindexId && edge.target === createSessionId)).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('stitches relative js/ts imports through a local barrel re-export onto the real shared target', () => {
+    const root = createTempRoot()
+    try {
+      const backendDir = join(root, 'backend')
+      const sharedDir = join(root, 'shared')
+      mkdirSync(backendDir, { recursive: true })
+      mkdirSync(sharedDir, { recursive: true })
+
+      const apiPath = join(backendDir, 'api.ts')
+      const indexPath = join(sharedDir, 'index.ts')
+      const authPath = join(sharedDir, 'auth.ts')
+
+      writeFileSync(
+        apiPath,
+        [
+          "import { createSession } from '../shared/index.js'",
+          '',
+          'export function loginUser(userId: string) {',
+          '  return createSession(userId)',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(indexPath, "export { createSession } from './auth.js'\n", 'utf8')
+      writeFileSync(
+        authPath,
+        [
+          'export function createSession(userId: string) {',
+          '  return `${userId}-session`',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([apiPath, indexPath, authPath])
+      const apiFileId = result.nodes.find((node) => node.label === 'api.ts')?.id
+      const loginUserId = result.nodes.find((node) => node.label === 'loginUser()')?.id
+      const createSessionId = result.nodes.find((node) => node.label === 'createSession()' && node.source_file === authPath)?.id
+
+      expect(apiFileId).toBeTruthy()
+      expect(loginUserId).toBeTruthy()
+      expect(createSessionId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === apiFileId && edge.target === createSessionId && edge.relation === 'imports_from')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === loginUserId && edge.target === createSessionId && edge.relation === 'calls')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('stitches relative js/ts imports through a local imported-binding barrel re-export onto the real shared target', () => {
+    const root = createTempRoot()
+    try {
+      const backendDir = join(root, 'backend')
+      const sharedDir = join(root, 'shared')
+      mkdirSync(backendDir, { recursive: true })
+      mkdirSync(sharedDir, { recursive: true })
+
+      const apiPath = join(backendDir, 'api.ts')
+      const indexPath = join(sharedDir, 'index.ts')
+      const authPath = join(sharedDir, 'auth.ts')
+
+      writeFileSync(
+        apiPath,
+        [
+          "import { createSession } from '../shared/index.js'",
+          '',
+          'export function loginUser(userId: string) {',
+          '  return createSession(userId)',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(
+        indexPath,
+        [
+          "import { createSession } from './auth.js'",
+          'export { createSession }',
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(
+        authPath,
+        [
+          'export function createSession(userId: string) {',
+          '  return `${userId}-session`',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([apiPath, indexPath, authPath])
+      const apiFileId = result.nodes.find((node) => node.label === 'api.ts')?.id
+      const loginUserId = result.nodes.find((node) => node.label === 'loginUser()')?.id
+      const createSessionId = result.nodes.find((node) => node.label === 'createSession()' && node.source_file === authPath)?.id
+
+      expect(apiFileId).toBeTruthy()
+      expect(loginUserId).toBeTruthy()
+      expect(createSessionId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === apiFileId && edge.target === createSessionId && edge.relation === 'imports_from')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === loginUserId && edge.target === createSessionId && edge.relation === 'calls')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('stitches relative js/ts imports through a local export-star barrel onto the real shared target', () => {
+    const root = createTempRoot()
+    try {
+      const backendDir = join(root, 'backend')
+      const sharedDir = join(root, 'shared')
+      mkdirSync(backendDir, { recursive: true })
+      mkdirSync(sharedDir, { recursive: true })
+
+      const apiPath = join(backendDir, 'api.ts')
+      const indexPath = join(sharedDir, 'index.ts')
+      const authPath = join(sharedDir, 'auth.ts')
+
+      writeFileSync(
+        apiPath,
+        [
+          "import { createSession } from '../shared/index.js'",
+          '',
+          'export function loginUser(userId: string) {',
+          '  return createSession(userId)',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(indexPath, "export * from './auth.js'\n", 'utf8')
+      writeFileSync(
+        authPath,
+        [
+          'export function createSession(userId: string) {',
+          '  return `${userId}-session`',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([apiPath, indexPath, authPath])
+      const apiFileId = result.nodes.find((node) => node.label === 'api.ts')?.id
+      const loginUserId = result.nodes.find((node) => node.label === 'loginUser()')?.id
+      const createSessionId = result.nodes.find((node) => node.label === 'createSession()' && node.source_file === authPath)?.id
+
+      expect(apiFileId).toBeTruthy()
+      expect(loginUserId).toBeTruthy()
+      expect(createSessionId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === apiFileId && edge.target === createSessionId && edge.relation === 'imports_from')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === loginUserId && edge.target === createSessionId && edge.relation === 'calls')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('does not stitch explicit-extension js/ts imports onto unrelated source file types', () => {
+    const root = createTempRoot()
+    try {
+      const backendDir = join(root, 'backend')
+      const sharedDir = join(root, 'shared')
+      mkdirSync(backendDir, { recursive: true })
+      mkdirSync(sharedDir, { recursive: true })
+
+      const apiPath = join(backendDir, 'api.ts')
+      const authPath = join(sharedDir, 'auth.ts')
+
+      writeFileSync(
+        apiPath,
+        [
+          "import { createSession } from '../shared/auth.cjs'",
+          '',
+          'export function loginUser(userId: string) {',
+          '  return createSession(userId)',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(
+        authPath,
+        [
+          'export function createSession(userId: string) {',
+          '  return `${userId}-session`',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([apiPath, authPath])
+      const apiFileId = result.nodes.find((node) => node.label === 'api.ts')?.id
+      const loginUserId = result.nodes.find((node) => node.label === 'loginUser()')?.id
+      const createSessionId = result.nodes.find((node) => node.label === 'createSession()' && node.source_file === authPath)?.id
+
+      expect(apiFileId).toBeTruthy()
+      expect(loginUserId).toBeTruthy()
+      expect(createSessionId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === apiFileId && edge.target === createSessionId && edge.relation === 'imports_from')).toBe(false)
+      expect(result.edges.some((edge) => edge.source === loginUserId && edge.target === createSessionId && edge.relation === 'calls')).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('prefers explicit js/ts barrel re-exports over conflicting local export-star sources', () => {
+    const root = createTempRoot()
+    try {
+      const backendDir = join(root, 'backend')
+      const sharedDir = join(root, 'shared')
+      mkdirSync(backendDir, { recursive: true })
+      mkdirSync(sharedDir, { recursive: true })
+
+      const apiPath = join(backendDir, 'api.ts')
+      const indexPath = join(sharedDir, 'index.ts')
+      const authPath = join(sharedDir, 'auth.ts')
+      const legacyPath = join(sharedDir, 'legacy.ts')
+
+      writeFileSync(
+        apiPath,
+        [
+          "import { createSession } from '../shared/index.js'",
+          '',
+          'export function loginUser(userId: string) {',
+          '  return createSession(userId)',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(
+        indexPath,
+        [
+          "export { createSession } from './auth.js'",
+          "export * from './legacy.js'",
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(
+        authPath,
+        [
+          'export function createSession(userId: string) {',
+          '  return `${userId}-session`',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(
+        legacyPath,
+        [
+          'export function createSession(userId: string) {',
+          '  return `${userId}-legacy-session`',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([apiPath, indexPath, authPath, legacyPath])
+      const apiFileId = result.nodes.find((node) => node.label === 'api.ts')?.id
+      const loginUserId = result.nodes.find((node) => node.label === 'loginUser()')?.id
+      const authCreateSessionId = result.nodes.find((node) => node.label === 'createSession()' && node.source_file === authPath)?.id
+      const legacyCreateSessionId = result.nodes.find((node) => node.label === 'createSession()' && node.source_file === legacyPath)?.id
+
+      expect(apiFileId).toBeTruthy()
+      expect(loginUserId).toBeTruthy()
+      expect(authCreateSessionId).toBeTruthy()
+      expect(legacyCreateSessionId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === apiFileId && edge.target === authCreateSessionId && edge.relation === 'imports_from')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === loginUserId && edge.target === authCreateSessionId && edge.relation === 'calls')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === apiFileId && edge.target === legacyCreateSessionId && edge.relation === 'imports_from')).toBe(false)
+      expect(result.edges.some((edge) => edge.source === loginUserId && edge.target === legacyCreateSessionId && edge.relation === 'calls')).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('does not let local export-star barrels backfill unresolved explicit re-export names', () => {
+    const root = createTempRoot()
+    try {
+      const backendDir = join(root, 'backend')
+      const sharedDir = join(root, 'shared')
+      mkdirSync(backendDir, { recursive: true })
+      mkdirSync(sharedDir, { recursive: true })
+
+      const apiPath = join(backendDir, 'api.ts')
+      const indexPath = join(sharedDir, 'index.ts')
+      const authPath = join(sharedDir, 'auth.ts')
+      const legacyPath = join(sharedDir, 'legacy.ts')
+
+      writeFileSync(
+        apiPath,
+        [
+          "import { createSession } from '../shared/index.js'",
+          '',
+          'export function loginUser(userId: string) {',
+          '  return createSession(userId)',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(
+        indexPath,
+        [
+          "export { createSession } from './auth.js'",
+          "export * from './legacy.js'",
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(authPath, 'export const somethingElse = true\n', 'utf8')
+      writeFileSync(
+        legacyPath,
+        [
+          'export function createSession(userId: string) {',
+          '  return `${userId}-legacy-session`',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([apiPath, indexPath, authPath, legacyPath])
+      const apiFileId = result.nodes.find((node) => node.label === 'api.ts')?.id
+      const loginUserId = result.nodes.find((node) => node.label === 'loginUser()')?.id
+      const legacyCreateSessionId = result.nodes.find((node) => node.label === 'createSession()' && node.source_file === legacyPath)?.id
+
+      expect(apiFileId).toBeTruthy()
+      expect(loginUserId).toBeTruthy()
+      expect(legacyCreateSessionId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === apiFileId && edge.target === legacyCreateSessionId && edge.relation === 'imports_from')).toBe(false)
+      expect(result.edges.some((edge) => edge.source === loginUserId && edge.target === legacyCreateSessionId && edge.relation === 'calls')).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('stitches relative js/ts imports through local export-star barrel cycles once a real shared target is exported', () => {
+    const root = createTempRoot()
+    try {
+      const backendDir = join(root, 'backend')
+      const sharedDir = join(root, 'shared')
+      mkdirSync(backendDir, { recursive: true })
+      mkdirSync(sharedDir, { recursive: true })
+
+      const apiPath = join(backendDir, 'api.ts')
+      const indexPath = join(sharedDir, 'index.ts')
+      const bridgePath = join(sharedDir, 'bridge.ts')
+
+      writeFileSync(
+        apiPath,
+        [
+          "import { createSession } from '../shared/bridge.js'",
+          '',
+          'export function loginUser(userId: string) {',
+          '  return createSession(userId)',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(
+        indexPath,
+        [
+          "export * from './bridge.js'",
+          '',
+          'export function createSession(userId: string) {',
+          '  return `${userId}-session`',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(bridgePath, "export * from './index.js'\n", 'utf8')
+
+      const result = extract([apiPath, indexPath, bridgePath])
+      const apiFileId = result.nodes.find((node) => node.label === 'api.ts')?.id
+      const loginUserId = result.nodes.find((node) => node.label === 'loginUser()')?.id
+      const createSessionId = result.nodes.find((node) => node.label === 'createSession()' && node.source_file === indexPath)?.id
+
+      expect(apiFileId).toBeTruthy()
+      expect(loginUserId).toBeTruthy()
+      expect(createSessionId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === apiFileId && edge.target === createSessionId && edge.relation === 'imports_from')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === loginUserId && edge.target === createSessionId && edge.relation === 'calls')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('stitches relative js/ts imports during incremental extraction when the shared target is only present in context nodes', () => {
+    const root = createTempRoot()
+    try {
+      const backendDir = join(root, 'backend')
+      const sharedDir = join(root, 'shared')
+      mkdirSync(backendDir, { recursive: true })
+      mkdirSync(sharedDir, { recursive: true })
+
+      const apiPath = join(backendDir, 'api.ts')
+      const authPath = join(sharedDir, 'auth.ts')
+
+      writeFileSync(
+        apiPath,
+        [
+          "import { createSession } from '../shared/auth.js'",
+          '',
+          'export function loginUser(userId: string) {',
+          '  return createSession(userId)',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(
+        authPath,
+        [
+          'export function createSession(userId: string) {',
+          '  return `${userId}-session`',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const unchangedTarget = extract([authPath])
+      const result = extract([apiPath], { contextNodes: unchangedTarget.nodes })
+      const apiFileId = result.nodes.find((node) => node.label === 'api.ts')?.id
+      const loginUserId = result.nodes.find((node) => node.label === 'loginUser()')?.id
+      const createSessionId = unchangedTarget.nodes.find((node) => node.label === 'createSession()')?.id
+
+      expect(apiFileId).toBeTruthy()
+      expect(loginUserId).toBeTruthy()
+      expect(createSessionId).toBeTruthy()
+      expect(result.nodes.some((node) => node.id === createSessionId)).toBe(false)
+      expect(result.edges.some((edge) => edge.source === apiFileId && edge.target === createSessionId && edge.relation === 'imports_from')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === loginUserId && edge.target === createSessionId && edge.relation === 'calls')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('does not stitch relative js/ts imports onto non-exported target internals', () => {
+    const root = createTempRoot()
+    try {
+      const backendDir = join(root, 'backend')
+      const sharedDir = join(root, 'shared')
+      mkdirSync(backendDir, { recursive: true })
+      mkdirSync(sharedDir, { recursive: true })
+
+      const apiPath = join(backendDir, 'api.ts')
+      const authPath = join(sharedDir, 'auth.ts')
+
+      writeFileSync(
+        apiPath,
+        [
+          "import { secretHelper } from '../shared/auth.js'",
+          '',
+          'export function loginUser(userId: string) {',
+          '  return secretHelper(userId)',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(
+        authPath,
+        [
+          'function secretHelper(userId: string) {',
+          '  return `${userId}-secret`',
+          '}',
+          '',
+          'export function createSession(userId: string) {',
+          '  return secretHelper(userId)',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([apiPath, authPath])
+      const apiFileId = result.nodes.find((node) => node.label === 'api.ts')?.id
+      const loginUserId = result.nodes.find((node) => node.label === 'loginUser()')?.id
+      const secretHelperId = result.nodes.find((node) => node.label === 'secretHelper()')?.id
+
+      expect(apiFileId).toBeTruthy()
+      expect(loginUserId).toBeTruthy()
+      expect(secretHelperId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === apiFileId && edge.target === secretHelperId && edge.relation === 'imports_from')).toBe(false)
+      expect(result.edges.some((edge) => edge.source === loginUserId && edge.target === secretHelperId && edge.relation === 'calls')).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('does not stitch cross-file js/ts calls when an imported name is shadowed by a local binding', () => {
+    const root = createTempRoot()
+    try {
+      const backendDir = join(root, 'backend')
+      const sharedDir = join(root, 'shared')
+      mkdirSync(backendDir, { recursive: true })
+      mkdirSync(sharedDir, { recursive: true })
+
+      const apiPath = join(backendDir, 'api.ts')
+      const authPath = join(sharedDir, 'auth.ts')
+
+      writeFileSync(
+        apiPath,
+        [
+          "import { createSession } from '../shared/auth.js'",
+          '',
+          'export function loginUser(userId: string, createSession: (id: string) => string) {',
+          '  return createSession(userId)',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(
+        authPath,
+        [
+          'export function createSession(userId: string) {',
+          '  return `${userId}-session`',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([apiPath, authPath])
+      const apiFileId = result.nodes.find((node) => node.label === 'api.ts')?.id
+      const loginUserId = result.nodes.find((node) => node.label === 'loginUser()')?.id
+      const createSessionId = result.nodes.find((node) => node.label === 'createSession()' && node.source_file === authPath)?.id
+
+      expect(apiFileId).toBeTruthy()
+      expect(loginUserId).toBeTruthy()
+      expect(createSessionId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === apiFileId && edge.target === createSessionId && edge.relation === 'imports_from')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === loginUserId && edge.target === createSessionId && edge.relation === 'calls')).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('does not stitch cross-file js/ts calls when a same-scope local binding is declared later in the block', () => {
+    const root = createTempRoot()
+    try {
+      const backendDir = join(root, 'backend')
+      const sharedDir = join(root, 'shared')
+      mkdirSync(backendDir, { recursive: true })
+      mkdirSync(sharedDir, { recursive: true })
+
+      const apiPath = join(backendDir, 'api.ts')
+      const authPath = join(sharedDir, 'auth.ts')
+
+      writeFileSync(
+        apiPath,
+        [
+          "import { createSession } from '../shared/auth.js'",
+          '',
+          'export function loginUser(userId: string) {',
+          '  createSession(userId)',
+          '  const createSession = (value: string) => `${value}-local`',
+          '  return userId',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(
+        authPath,
+        [
+          'export function createSession(userId: string) {',
+          '  return `${userId}-session`',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([apiPath, authPath])
+      const loginUserId = result.nodes.find((node) => node.label === 'loginUser()')?.id
+      const createSessionId = result.nodes.find((node) => node.label === 'createSession()' && node.source_file === authPath)?.id
+
+      expect(loginUserId).toBeTruthy()
+      expect(createSessionId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === loginUserId && edge.target === createSessionId && edge.relation === 'calls')).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('does not stitch cross-file js/ts calls when a var binding is hoisted from a nested block', () => {
+    const root = createTempRoot()
+    try {
+      const backendDir = join(root, 'backend')
+      const sharedDir = join(root, 'shared')
+      mkdirSync(backendDir, { recursive: true })
+      mkdirSync(sharedDir, { recursive: true })
+
+      const apiPath = join(backendDir, 'api.ts')
+      const authPath = join(sharedDir, 'auth.ts')
+
+      writeFileSync(
+        apiPath,
+        [
+          "import { createSession } from '../shared/auth.js'",
+          '',
+          'export function loginUser(userId: string) {',
+          '  if (userId) {',
+          '    var createSession = (value: string) => `${value}-local`',
+          '  }',
+          '  return createSession(userId)',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(
+        authPath,
+        [
+          'export function createSession(userId: string) {',
+          '  return `${userId}-session`',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([apiPath, authPath])
+      const loginUserId = result.nodes.find((node) => node.label === 'loginUser()')?.id
+      const createSessionId = result.nodes.find((node) => node.label === 'createSession()' && node.source_file === authPath)?.id
+
+      expect(loginUserId).toBeTruthy()
+      expect(createSessionId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === loginUserId && edge.target === createSessionId && edge.relation === 'calls')).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('does not stitch cross-file js/ts calls before a later nested-block var declaration in the same function', () => {
+    const root = createTempRoot()
+    try {
+      const backendDir = join(root, 'backend')
+      const sharedDir = join(root, 'shared')
+      mkdirSync(backendDir, { recursive: true })
+      mkdirSync(sharedDir, { recursive: true })
+
+      const apiPath = join(backendDir, 'api.ts')
+      const authPath = join(sharedDir, 'auth.ts')
+
+      writeFileSync(
+        apiPath,
+        [
+          "import { createSession } from '../shared/auth.js'",
+          '',
+          'export function loginUser(userId: string) {',
+          '  createSession(userId)',
+          '  if (userId) {',
+          '    var createSession = (value: string) => `${value}-local`',
+          '  }',
+          '  return userId',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(
+        authPath,
+        [
+          'export function createSession(userId: string) {',
+          '  return `${userId}-session`',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([apiPath, authPath])
+      const loginUserId = result.nodes.find((node) => node.label === 'loginUser()')?.id
+      const createSessionId = result.nodes.find((node) => node.label === 'createSession()' && node.source_file === authPath)?.id
+
+      expect(loginUserId).toBeTruthy()
+      expect(createSessionId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === loginUserId && edge.target === createSessionId && edge.relation === 'calls')).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('does not stitch cross-file js/ts calls before a later var loop-header binding in the same function', () => {
+    const root = createTempRoot()
+    try {
+      const backendDir = join(root, 'backend')
+      const sharedDir = join(root, 'shared')
+      mkdirSync(backendDir, { recursive: true })
+      mkdirSync(sharedDir, { recursive: true })
+
+      const apiPath = join(backendDir, 'api.ts')
+      const indexPath = join(sharedDir, 'index.ts')
+      const authPath = join(sharedDir, 'auth.ts')
+
+      writeFileSync(
+        apiPath,
+        [
+          "import { createSession } from '../shared/index.js'",
+          '',
+          'export function loginUser(userId: string) {',
+          '  createSession(userId)',
+          '  for (var createSession of [(value: string) => `${value}-local`]) {',
+          '    return createSession(userId)',
+          '  }',
+          '  return userId',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(indexPath, "export { createSession } from './auth.js'\n", 'utf8')
+      writeFileSync(
+        authPath,
+        [
+          'export function createSession(userId: string) {',
+          '  return `${userId}-session`',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([apiPath, indexPath, authPath])
+      const loginUserId = result.nodes.find((node) => node.label === 'loginUser()')?.id
+      const createSessionId = result.nodes.find((node) => node.label === 'createSession()' && node.source_file === authPath)?.id
+
+      expect(loginUserId).toBeTruthy()
+      expect(createSessionId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === loginUserId && edge.target === createSessionId && edge.relation === 'calls')).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('attributes stitched cross-file js/ts calls inside constructors to the constructor method node', () => {
+    const root = createTempRoot()
+    try {
+      const backendDir = join(root, 'backend')
+      const sharedDir = join(root, 'shared')
+      mkdirSync(backendDir, { recursive: true })
+      mkdirSync(sharedDir, { recursive: true })
+
+      const apiPath = join(backendDir, 'api.ts')
+      const indexPath = join(sharedDir, 'index.ts')
+      const authPath = join(sharedDir, 'auth.ts')
+
+      writeFileSync(
+        apiPath,
+        [
+          "import { createSession } from '../shared/index.js'",
+          '',
+          'export class ApiHandler {',
+          '  constructor(userId: string) {',
+          '    createSession(userId)',
+          '  }',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(indexPath, "export { createSession } from './auth.js'\n", 'utf8')
+      writeFileSync(
+        authPath,
+        [
+          'export function createSession(userId: string) {',
+          '  return `${userId}-session`',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([apiPath, indexPath, authPath])
+      const apiHandlerId = result.nodes.find((node) => node.label === 'ApiHandler')?.id
+      const constructorId = result.nodes.find((node) => node.label === '.constructor()')?.id
+      const createSessionId = result.nodes.find((node) => node.label === 'createSession()' && node.source_file === authPath)?.id
+
+      expect(apiHandlerId).toBeTruthy()
+      expect(constructorId).toBeTruthy()
+      expect(createSessionId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === constructorId && edge.target === createSessionId && edge.relation === 'calls')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === apiHandlerId && edge.target === createSessionId && edge.relation === 'calls')).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('does not stitch cross-file js/ts calls when an inline callback parameter shadows the imported name', () => {
+    const root = createTempRoot()
+    try {
+      const backendDir = join(root, 'backend')
+      const sharedDir = join(root, 'shared')
+      mkdirSync(backendDir, { recursive: true })
+      mkdirSync(sharedDir, { recursive: true })
+
+      const apiPath = join(backendDir, 'api.ts')
+      const indexPath = join(sharedDir, 'index.ts')
+      const authPath = join(sharedDir, 'auth.ts')
+
+      writeFileSync(
+        apiPath,
+        [
+          "import { createSession } from '../shared/index.js'",
+          '',
+          'export function loginUser(userId: string) {',
+          '  return [(value: string) => `${value}-local`].map((createSession) => createSession(userId)).join(":")',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(indexPath, "export { createSession } from './auth.js'\n", 'utf8')
+      writeFileSync(
+        authPath,
+        [
+          'export function createSession(userId: string) {',
+          '  return `${userId}-session`',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([apiPath, indexPath, authPath])
+      const loginUserId = result.nodes.find((node) => node.label === 'loginUser()')?.id
+      const createSessionId = result.nodes.find((node) => node.label === 'createSession()' && node.source_file === authPath)?.id
+
+      expect(loginUserId).toBeTruthy()
+      expect(createSessionId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === loginUserId && edge.target === createSessionId && edge.relation === 'calls')).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('attributes stitched cross-file js/ts calls to nested helper owners instead of their outer method', () => {
+    const root = createTempRoot()
+    try {
+      const backendDir = join(root, 'backend')
+      const sharedDir = join(root, 'shared')
+      mkdirSync(backendDir, { recursive: true })
+      mkdirSync(sharedDir, { recursive: true })
+
+      const apiPath = join(backendDir, 'api.ts')
+      const authPath = join(sharedDir, 'auth.ts')
+
+      writeFileSync(
+        apiPath,
+        [
+          "import { createSession } from '../shared/auth.js'",
+          '',
+          'export class ApiHandler {',
+          '  login(userId: string) {',
+          '    const buildSession = (value: string) => {',
+          '      return createSession(value)',
+          '    }',
+          '    return buildSession(userId)',
+          '  }',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(
+        authPath,
+        [
+          'export function createSession(userId: string) {',
+          '  return `${userId}-session`',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([apiPath, authPath])
+      const loginId = result.nodes.find((node) => node.label === '.login()')?.id
+      const buildSessionId = result.nodes.find((node) => node.label === 'buildSession()')?.id
+      const createSessionId = result.nodes.find((node) => node.label === 'createSession()')?.id
+
+      expect(loginId).toBeTruthy()
+      expect(buildSessionId).toBeTruthy()
+      expect(createSessionId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === buildSessionId && edge.target === createSessionId && edge.relation === 'calls')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === loginId && edge.target === createSessionId && edge.relation === 'calls')).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('does not stitch cross-file js/ts calls when a named function expression refers to its own local name', () => {
+    const root = createTempRoot()
+    try {
+      const backendDir = join(root, 'backend')
+      const sharedDir = join(root, 'shared')
+      mkdirSync(backendDir, { recursive: true })
+      mkdirSync(sharedDir, { recursive: true })
+
+      const apiPath = join(backendDir, 'api.ts')
+      const authPath = join(sharedDir, 'auth.ts')
+
+      writeFileSync(
+        apiPath,
+        [
+          "import { createSession } from '../shared/auth.js'",
+          '',
+          'export const loginUser = function createSession(userId: string) {',
+          '  return createSession(userId)',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(
+        authPath,
+        [
+          'export function createSession(userId: string) {',
+          '  return `${userId}-session`',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([apiPath, authPath])
+      const loginUserId = result.nodes.find((node) => node.label === 'loginUser()')?.id
+      const createSessionId = result.nodes.find((node) => node.label === 'createSession()' && node.source_file === authPath)?.id
+
+      expect(loginUserId).toBeTruthy()
+      expect(createSessionId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === loginUserId && edge.target === createSessionId && edge.relation === 'calls')).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('does not stitch cross-file js/ts calls when a loop binding shadows the imported name', () => {
+    const root = createTempRoot()
+    try {
+      const backendDir = join(root, 'backend')
+      const sharedDir = join(root, 'shared')
+      mkdirSync(backendDir, { recursive: true })
+      mkdirSync(sharedDir, { recursive: true })
+
+      const apiPath = join(backendDir, 'api.ts')
+      const indexPath = join(sharedDir, 'index.ts')
+      const authPath = join(sharedDir, 'auth.ts')
+
+      writeFileSync(
+        apiPath,
+        [
+          "import { createSession } from '../shared/index.js'",
+          '',
+          'export function loginUser(userId: string) {',
+          '  for (const createSession of [(value: string) => `${value}-local`]) {',
+          '    return createSession(userId)',
+          '  }',
+          '  return userId',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(indexPath, "export { createSession } from './auth.js'\n", 'utf8')
+      writeFileSync(
+        authPath,
+        [
+          'export function createSession(userId: string) {',
+          '  return `${userId}-session`',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([apiPath, indexPath, authPath])
+      const loginUserId = result.nodes.find((node) => node.label === 'loginUser()')?.id
+      const createSessionId = result.nodes.find((node) => node.label === 'createSession()' && node.source_file === authPath)?.id
+
+      expect(loginUserId).toBeTruthy()
+      expect(createSessionId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === loginUserId && edge.target === createSessionId && edge.relation === 'calls')).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('does not stitch cross-file js/ts calls when a catch binding shadows the imported name', () => {
+    const root = createTempRoot()
+    try {
+      const backendDir = join(root, 'backend')
+      const sharedDir = join(root, 'shared')
+      mkdirSync(backendDir, { recursive: true })
+      mkdirSync(sharedDir, { recursive: true })
+
+      const apiPath = join(backendDir, 'api.ts')
+      const indexPath = join(sharedDir, 'index.ts')
+      const authPath = join(sharedDir, 'auth.ts')
+
+      writeFileSync(
+        apiPath,
+        [
+          "import { createSession } from '../shared/index.js'",
+          '',
+          'export function loginUser(userId: string) {',
+          '  try {',
+          "    throw (value: string) => `${value}-local`",
+          '  } catch (createSession) {',
+          '    return createSession(userId)',
+          '  }',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(indexPath, "export { createSession } from './auth.js'\n", 'utf8')
+      writeFileSync(
+        authPath,
+        [
+          'export function createSession(userId: string) {',
+          '  return `${userId}-session`',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([apiPath, indexPath, authPath])
+      const loginUserId = result.nodes.find((node) => node.label === 'loginUser()')?.id
+      const createSessionId = result.nodes.find((node) => node.label === 'createSession()' && node.source_file === authPath)?.id
+
+      expect(loginUserId).toBeTruthy()
+      expect(createSessionId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === loginUserId && edge.target === createSessionId && edge.relation === 'calls')).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('stitches relative js/ts default imports onto default-exported shared targets', () => {
+    const root = createTempRoot()
+    try {
+      const backendDir = join(root, 'backend')
+      const sharedDir = join(root, 'shared')
+      mkdirSync(backendDir, { recursive: true })
+      mkdirSync(sharedDir, { recursive: true })
+
+      const apiPath = join(backendDir, 'api.ts')
+      const authPath = join(sharedDir, 'auth.ts')
+
+      writeFileSync(
+        apiPath,
+        [
+          "import createSession from '../shared/auth.js'",
+          '',
+          'export function loginUser(userId: string) {',
+          '  return createSession(userId)',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(
+        authPath,
+        [
+          'export default function createSession(userId: string) {',
+          '  return `${userId}-session`',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([apiPath, authPath])
+      const apiFileId = result.nodes.find((node) => node.label === 'api.ts')?.id
+      const loginUserId = result.nodes.find((node) => node.label === 'loginUser()')?.id
+      const createSessionId = result.nodes.find((node) => node.label === 'createSession()')?.id
+
+      expect(apiFileId).toBeTruthy()
+      expect(loginUserId).toBeTruthy()
+      expect(createSessionId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === apiFileId && edge.target === createSessionId && edge.relation === 'imports_from')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === loginUserId && edge.target === createSessionId && edge.relation === 'calls')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('stitches relative js/ts default imports onto anonymous default-exported shared targets', () => {
+    const root = createTempRoot()
+    try {
+      const backendDir = join(root, 'backend')
+      const sharedDir = join(root, 'shared')
+      mkdirSync(backendDir, { recursive: true })
+      mkdirSync(sharedDir, { recursive: true })
+
+      const apiPath = join(backendDir, 'api.ts')
+      const authPath = join(sharedDir, 'auth.ts')
+
+      writeFileSync(
+        apiPath,
+        [
+          "import createSession from '../shared/auth.js'",
+          '',
+          'export function loginUser(userId: string) {',
+          '  return createSession(userId)',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(
+        authPath,
+        [
+          'export default function (userId: string) {',
+          '  return `${userId}-session`',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([apiPath, authPath])
+      const apiFileId = result.nodes.find((node) => node.label === 'api.ts')?.id
+      const loginUserId = result.nodes.find((node) => node.label === 'loginUser()')?.id
+      const defaultExportId = result.nodes.find((node) => node.label === 'default()' && node.source_file === authPath)?.id
+
+      expect(apiFileId).toBeTruthy()
+      expect(loginUserId).toBeTruthy()
+      expect(defaultExportId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === apiFileId && edge.target === defaultExportId && edge.relation === 'imports_from')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === loginUserId && edge.target === defaultExportId && edge.relation === 'calls')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('stitches relative js/ts default imports through a local barrel onto anonymous default-exported shared targets', () => {
+    const root = createTempRoot()
+    try {
+      const backendDir = join(root, 'backend')
+      const sharedDir = join(root, 'shared')
+      mkdirSync(backendDir, { recursive: true })
+      mkdirSync(sharedDir, { recursive: true })
+
+      const apiPath = join(backendDir, 'api.ts')
+      const indexPath = join(sharedDir, 'index.ts')
+      const authPath = join(sharedDir, 'auth.ts')
+
+      writeFileSync(
+        apiPath,
+        [
+          "import createSession from '../shared/index.js'",
+          '',
+          'export function loginUser(userId: string) {',
+          '  return createSession(userId)',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(indexPath, "export { default } from './auth.js'\n", 'utf8')
+      writeFileSync(
+        authPath,
+        [
+          'export default function (userId: string) {',
+          '  return `${userId}-session`',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([apiPath, indexPath, authPath])
+      const apiFileId = result.nodes.find((node) => node.label === 'api.ts')?.id
+      const loginUserId = result.nodes.find((node) => node.label === 'loginUser()')?.id
+      const defaultExportId = result.nodes.find((node) => node.label === 'default()' && node.source_file === authPath)?.id
+
+      expect(apiFileId).toBeTruthy()
+      expect(loginUserId).toBeTruthy()
+      expect(defaultExportId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === apiFileId && edge.target === defaultExportId && edge.relation === 'imports_from')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === loginUserId && edge.target === defaultExportId && edge.relation === 'calls')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('stitches relative js/ts default imports through a local imported-binding default barrel onto anonymous default-exported shared targets', () => {
+    const root = createTempRoot()
+    try {
+      const backendDir = join(root, 'backend')
+      const sharedDir = join(root, 'shared')
+      mkdirSync(backendDir, { recursive: true })
+      mkdirSync(sharedDir, { recursive: true })
+
+      const apiPath = join(backendDir, 'api.ts')
+      const indexPath = join(sharedDir, 'index.ts')
+      const authPath = join(sharedDir, 'auth.ts')
+
+      writeFileSync(
+        apiPath,
+        [
+          "import createSession from '../shared/index.js'",
+          '',
+          'export function loginUser(userId: string) {',
+          '  return createSession(userId)',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(
+        indexPath,
+        [
+          "import createSession from './auth.js'",
+          'export default createSession',
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(
+        authPath,
+        [
+          'export default function (userId: string) {',
+          '  return `${userId}-session`',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([apiPath, indexPath, authPath])
+      const apiFileId = result.nodes.find((node) => node.label === 'api.ts')?.id
+      const loginUserId = result.nodes.find((node) => node.label === 'loginUser()')?.id
+      const defaultExportId = result.nodes.find((node) => node.label === 'default()' && node.source_file === authPath)?.id
+
+      expect(apiFileId).toBeTruthy()
+      expect(loginUserId).toBeTruthy()
+      expect(defaultExportId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === apiFileId && edge.target === defaultExportId && edge.relation === 'imports_from')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === loginUserId && edge.target === defaultExportId && edge.relation === 'calls')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('stitches relative js/ts calls from anonymous default-exported shared targets onto imported helpers', () => {
+    const root = createTempRoot()
+    try {
+      const sharedDir = join(root, 'shared')
+      mkdirSync(sharedDir, { recursive: true })
+
+      const authPath = join(sharedDir, 'auth.ts')
+      const helperPath = join(sharedDir, 'helper.ts')
+
+      writeFileSync(
+        authPath,
+        [
+          "import helper from './helper.js'",
+          '',
+          'export default function () {',
+          '  return helper()',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(
+        helperPath,
+        [
+          'export default function helper() {',
+          "  return 'ready'",
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([authPath, helperPath])
+      const defaultExportId = result.nodes.find((node) => node.label === 'default()' && node.source_file === authPath)?.id
+      const helperId = result.nodes.find((node) => node.label === 'helper()' && node.source_file === helperPath)?.id
+
+      expect(defaultExportId).toBeTruthy()
+      expect(helperId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === defaultExportId && edge.target === helperId && edge.relation === 'calls')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('stitches relative js/ts imports and calls through parenthesized anonymous default-exported shared targets', () => {
+    const root = createTempRoot()
+    try {
+      const backendDir = join(root, 'backend')
+      const sharedDir = join(root, 'shared')
+      mkdirSync(backendDir, { recursive: true })
+      mkdirSync(sharedDir, { recursive: true })
+
+      const apiPath = join(backendDir, 'api.ts')
+      const authPath = join(sharedDir, 'auth.ts')
+      const helperPath = join(sharedDir, 'helper.ts')
+
+      writeFileSync(
+        apiPath,
+        [
+          "import createSession from '../shared/auth.js'",
+          '',
+          'export function loginUser() {',
+          '  return createSession()',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(
+        authPath,
+        [
+          "import helper from './helper.js'",
+          '',
+          'export default (() => helper())',
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(
+        helperPath,
+        [
+          'export default function helper() {',
+          "  return 'ready'",
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([apiPath, authPath, helperPath])
+      const apiFileId = result.nodes.find((node) => node.label === 'api.ts')?.id
+      const loginUserId = result.nodes.find((node) => node.label === 'loginUser()')?.id
+      const defaultExportId = result.nodes.find((node) => node.label === 'default()' && node.source_file === authPath)?.id
+      const helperId = result.nodes.find((node) => node.label === 'helper()' && node.source_file === helperPath)?.id
+
+      expect(apiFileId).toBeTruthy()
+      expect(loginUserId).toBeTruthy()
+      expect(defaultExportId).toBeTruthy()
+      expect(helperId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === apiFileId && edge.target === defaultExportId && edge.relation === 'imports_from')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === loginUserId && edge.target === defaultExportId && edge.relation === 'calls')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === defaultExportId && edge.target === helperId && edge.relation === 'calls')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('stitches relative js/ts namespace imports onto exported shared members that are actually called', () => {
+    const root = createTempRoot()
+    try {
+      const backendDir = join(root, 'backend')
+      const sharedDir = join(root, 'shared')
+      mkdirSync(backendDir, { recursive: true })
+      mkdirSync(sharedDir, { recursive: true })
+
+      const apiPath = join(backendDir, 'api.ts')
+      const authPath = join(sharedDir, 'auth.ts')
+
+      writeFileSync(
+        apiPath,
+        [
+          "import * as auth from '../shared/auth.js'",
+          '',
+          'export function loginUser(userId: string) {',
+          '  return auth.createSession(userId)',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+      writeFileSync(
+        authPath,
+        [
+          'export function createSession(userId: string) {',
+          '  return `${userId}-session`',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extract([apiPath, authPath])
+      const apiFileId = result.nodes.find((node) => node.label === 'api.ts')?.id
+      const loginUserId = result.nodes.find((node) => node.label === 'loginUser()')?.id
+      const createSessionId = result.nodes.find((node) => node.label === 'createSession()')?.id
+
+      expect(apiFileId).toBeTruthy()
+      expect(loginUserId).toBeTruthy()
+      expect(createSessionId).toBeTruthy()
+      expect(result.edges.some((edge) => edge.source === apiFileId && edge.target === createSessionId && edge.relation === 'imports_from')).toBe(true)
+      expect(result.edges.some((edge) => edge.source === loginUserId && edge.target === createSessionId && edge.relation === 'calls')).toBe(true)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -9067,7 +10509,8 @@ describe('extract', () => {
           '.jl',
         ].includes(filePath.slice(filePath.lastIndexOf('.'))),
       ).toBe(true)
-      expect(filePath.includes('/.')).toBe(false)
+      const fixtureRelativePath = relative(FIXTURES_DIR, filePath)
+      expect(fixtureRelativePath.split(/[\\/]/).some((part) => part.startsWith('.'))).toBe(false)
     }
   })
 
@@ -10506,6 +11949,43 @@ describe('extract', () => {
         layer: 'base',
         provenance: [expect.objectContaining({ capability_id: 'builtin:extract:video', stage: 'extract' })],
       })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores cached raw extractions from the pre-anonymous-default-export cache version', () => {
+    const root = createTempRoot()
+    try {
+      const authPath = join(root, 'auth.ts')
+      writeFileSync(
+        authPath,
+        [
+          'export default function (userId: string) {',
+          '  return `${userId}-session`',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const cachePath = join(cacheDir(), `${fileHash(authPath)}.json`)
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          __graphifyTsExtractorVersion: 59,
+          nodes: [{ id: 'auth', label: 'auth.ts', file_type: 'code', source_file: authPath }],
+          edges: [],
+        }),
+        'utf8',
+      )
+
+      const recovered = extract([authPath])
+      const fileNodeId = recovered.nodes.find((node) => node.label === 'auth.ts')?.id
+      const defaultExportId = recovered.nodes.find((node) => node.label === 'default()' && node.source_file === authPath)?.id
+
+      expect(fileNodeId).toBeTruthy()
+      expect(defaultExportId).toBeTruthy()
+      expect(recovered.edges.some((edge) => edge.source === fileNodeId && edge.target === defaultExportId && edge.relation === 'contains')).toBe(true)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

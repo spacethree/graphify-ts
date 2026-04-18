@@ -87,7 +87,7 @@ After a successful `generate` run, `graphify-ts` writes artifacts into `graphify
 ```text
 graphify-out/
 ├── graph.html       interactive graph explorer (or overview page for large graphs)
-├── GRAPH_REPORT.md  summary report with god nodes, semantic anomalies, and suggested questions
+├── GRAPH_REPORT.md  summary report with structure signals, god nodes, semantic anomalies, and suggested questions
 ├── graph.json       machine-readable graph for query/serve flows, community labels, and semantic anomalies
 ├── graph-pages/     focused community explorer pages, with summary-only fallbacks for oversized communities
 └── cache/           content-addressed extraction cache
@@ -95,7 +95,7 @@ graphify-out/
 
 Optional exports are also available for wiki, Obsidian, SVG, GraphML, and Neo4j workflows.
 
-For smaller graphs, `graph.html` stays self-contained and opens the full interactive explorer directly. For larger graphs, `graphify-ts` switches to an overview-first HTML mode that opens quickly, shows semantic community names, and links into focused per-community pages under `graph-pages/`. If one detected community is still too large to render safely as a single vis graph, its page becomes a summary/search view instead of a browser-freezing interactive canvas.
+For smaller graphs, `graph.html` stays self-contained and opens the full interactive explorer directly. For larger graphs, `graphify-ts` switches to an overview-first HTML mode that opens quickly, shows semantic community names, highlights workspace bridge nodes, and links into focused per-community pages under `graph-pages/`. If one detected community is still too large to render safely as a single vis graph, its page becomes a summary/search view instead of a browser-freezing interactive canvas. `GRAPH_REPORT.md` now also surfaces basic entity-level fragmentation signals such as weakly connected component count, singleton components, isolated nodes, largest-component share, and a `Workspace Bridges` section so mixed-workspace quality can be judged with concrete numbers and concrete starting points instead of screenshots alone. Runtime `query` output and `explain` node summaries also preserve generated community labels and call out bridge nodes when they appear in the answer, while `benchmark` can score expected evidence labels for question packs instead of only counting whether any subgraph was returned. Direct JS/TS relative imports that resolve to real top-level exports, plus local relative barrels that use explicit forwarding (`export { createSession } from './auth.js'`), imported-binding re-export shapes (`import { createSession } from './auth.js'; export { createSession }`), `export *` chains, anonymous default-export forwarding (`export { default } from './auth.js'`), or imported-binding default barrels (`import createSession from './auth.js'; export default createSession`), are now stitched onto shared target nodes during multi-file extraction, including call edges from anonymous default-export bodies, so mixed-workspace graphs can connect related app roots without merging unrelated folders heuristically.
 
 ## Common commands
 
@@ -110,7 +110,7 @@ For smaller graphs, `graph.html` stays self-contained and opens the full interac
 | `explain <label>` | Explain one node and its neighborhood |
 | `add <url> [path]` | Ingest a URL into a corpus and rebuild with `--update` |
 | `save-result` | Save a Q&A result into `graphify-out/memory/` |
-| `benchmark [graph.json]` | Measure token reduction vs a naive full-corpus approach |
+| `benchmark [graph.json]` | Measure token reduction, question coverage, expected-evidence coverage, and, when provenance is complete, entity-level workspace structure signals including low-cohesion community baselines |
 | `install` / `claude install` / `cursor install` / `copilot install` | Write local assistant/platform integration rules |
 
 For the full command surface, run:
@@ -196,7 +196,7 @@ This README stays end-user focused. The matrix below is the short version of wha
 For the detailed implementation status, limitations, and roadmap material, see:
 
 - [Current status](https://github.com/mohanagy/graphify-ts/blob/main/docs/plans/current-status.md)
-- [Upstream parity and beyond roadmap](https://github.com/mohanagy/graphify-ts/blob/main/docs/plans/2026-04-12-upstream-parity-and-beyond.md)
+- [Workspace-scale parity roadmap](https://github.com/mohanagy/graphify-ts/blob/main/docs/plans/2026-04-18-workspace-scale-parity-roadmap.md)
 
 ## Optional outputs and integrations
 

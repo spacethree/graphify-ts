@@ -1,0 +1,26 @@
+[
+  {
+    "question": "create session login",
+    "expected_labels": ["default()", "loginUser()", ".login()"]
+  },
+  {
+    "question": "login user session",
+    "expected_labels": ["loginUser()", "default()", "session.ts"]
+  },
+  {
+    "question": "shared auth helper",
+    "expected_labels": ["default()", "auth.ts", "index.ts"]
+  },
+  {
+    "question": "reindex workspace",
+    "expected_labels": ["reindexWorkspace()", "jobs.ts"]
+  },
+  {
+    "question": "workspace architecture docs",
+    "expected_labels": ["Workspace Architecture", "architecture.md"]
+  },
+  {
+    "question": "billing flow",
+    "expected_labels": []
+  }
+]

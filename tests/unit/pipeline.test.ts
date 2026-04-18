@@ -12,6 +12,10 @@ import { generate } from '../../src/pipeline/report.js'
 
 const FIXTURES_DIR = join(process.cwd(), 'tests', 'fixtures')
 
+function escapeMarkdownInline(value: string): string {
+  return value.replace(/\r?\n+/g, ' ').replace(/([\\`*_[\]()!])/g, '\\$1')
+}
+
 function withTempDir<T>(callback: (tempDir: string) => T): T {
   const tempDir = mkdtempSync(join(tmpdir(), 'graphify-ts-pipeline-'))
   try {
@@ -121,7 +125,7 @@ describe('pipeline', () => {
   it('mentions the top god node in the generated report', () => {
     withTempDir((tempDir) => {
       const result = runPipeline(tempDir)
-      expect(result.report).toContain(result.gods[0]?.label ?? '')
+      expect(result.report).toContain(`\`${escapeMarkdownInline(result.gods[0]?.label ?? '')}\``)
     })
   })
 

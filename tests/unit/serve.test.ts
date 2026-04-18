@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { describe, expect, test } from 'vitest'
 
 import { KnowledgeGraph } from '../../src/contracts/graph.js'
-import { bfs, communitiesFromGraph, dfs, loadGraph, queryGraph, scoreNodes, semanticAnomaliesSummary, subgraphToText } from '../../src/runtime/serve.js'
+import { bfs, communitiesFromGraph, dfs, getNode, loadGraph, queryGraph, scoreNodes, semanticAnomaliesSummary, subgraphToText } from '../../src/runtime/serve.js'
 
 function withTempDir(callback: (tempDir: string) => void): void {
   const tempDir = mkdtempSync(join(tmpdir(), 'graphify-ts-serve-'))
@@ -40,6 +40,21 @@ function makeRankedGraph(): KnowledgeGraph {
   graph.addEdge('hub', 'other1', { relation: 'calls', confidence: 'EXTRACTED' })
   graph.addEdge('hub', 'other2', { relation: 'calls', confidence: 'EXTRACTED' })
   graph.addEdge('leaf', 'guide', { relation: 'documents', confidence: 'EXTRACTED' })
+  return graph
+}
+
+function makeWorkspaceBridgeGraph(): KnowledgeGraph {
+  const graph = new KnowledgeGraph(true)
+  graph.addNode('api', { label: 'loginUser()', source_file: 'backend/api.ts', source_location: 'L4', file_type: 'code', community: 0 })
+  graph.addNode('web', { label: 'loadSession()', source_file: 'web/session.ts', source_location: 'L3', file_type: 'code', community: 1 })
+  graph.addNode('shared', { label: 'createSession()', source_file: 'shared/auth.ts', source_location: 'L1', file_type: 'code', community: 2 })
+  graph.addEdge('api', 'shared', { relation: 'calls', confidence: 'EXTRACTED', source_file: 'backend/api.ts' })
+  graph.addEdge('web', 'shared', { relation: 'calls', confidence: 'EXTRACTED', source_file: 'web/session.ts' })
+  graph.graph.community_labels = {
+    0: 'Backend API',
+    1: 'Web Session',
+    2: 'Shared Auth',
+  }
   return graph
 }
 
@@ -118,6 +133,22 @@ describe('queryGraph', () => {
 
     expect(result).toContain('No matching nodes found')
     expect(result).toContain('community=99')
+  })
+
+  test('surfaces workspace bridge context for broad mixed-workspace questions', () => {
+    const result = queryGraph(makeWorkspaceBridgeGraph(), 'login session', { depth: 1 })
+
+    expect(result).toContain('Workspace bridges:')
+    expect(result).toContain('createSession()')
+    expect(result).toContain('connects Backend API, Web Session')
+  })
+
+  test('includes workspace bridge context when explaining a bridge node', () => {
+    const result = getNode(makeWorkspaceBridgeGraph(), 'createSession')
+
+    expect(result).toContain('Node: createSession()')
+    expect(result).toContain('Workspace bridge:')
+    expect(result).toContain('connects Backend API, Web Session')
   })
 })
 
@@ -273,6 +304,38 @@ describe('loadGraph', () => {
       expect(graph.numberOfEdges()).toBe(1)
       expect(graph.neighbors('n1')).toEqual(['n2'])
       expect(graph.neighbors('n2')).toEqual([])
+    })
+  })
+
+  test('restores stored community labels for runtime bridge context', () => {
+    withTempDir((tempDir) => {
+      const outDir = join(tempDir, 'graphify-out')
+      const graphPath = join(outDir, 'graph.json')
+      mkdirSync(outDir, { recursive: true })
+      writeFileSync(
+        graphPath,
+        `${JSON.stringify({
+          directed: true,
+          community_labels: { '0': 'Backend API', '1': 'Web Session', '2': 'Shared Auth' },
+          nodes: [
+            { id: 'api', label: 'loginUser()', community: 0, source_file: 'backend/api.ts', file_type: 'code' },
+            { id: 'web', label: 'loadSession()', community: 1, source_file: 'web/session.ts', file_type: 'code' },
+            { id: 'shared', label: 'createSession()', community: 2, source_file: 'shared/auth.ts', file_type: 'code' },
+          ],
+          links: [
+            { source: 'api', target: 'shared', relation: 'calls', confidence: 'EXTRACTED', source_file: 'backend/api.ts' },
+            { source: 'web', target: 'shared', relation: 'calls', confidence: 'EXTRACTED', source_file: 'web/session.ts' },
+          ],
+          hyperedges: [],
+        })}\n`,
+        'utf8',
+      )
+
+      const graph = loadGraph(graphPath)
+      const result = queryGraph(graph, 'login session', { depth: 1 })
+
+      expect(result).toContain('Workspace bridges:')
+      expect(result).toContain('connects Backend API, Web Session')
     })
   })
 
