@@ -4,6 +4,24 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-04-18
+
+### Added
+
+- Workspace-scale parity baseline harness: reproducible mixed-workspace benchmark corpus, parity scorecard, and benchmark question coverage using shared `scoreNodes`, `queryGraph`, and `estimateQueryTokens` runtime paths
+- Cross-file relationship extraction covering import/export chains, type references, call graphs, and shared-module cohesion signals across multi-package workspaces
+- Fragmentation signals in `GRAPH_REPORT.md`: weakly-connected-component count, singleton-component count, isolated-node rate, largest-component share, and low-cohesion community count for workspace-scale diagnostics
+- Modular HTML export helpers for community summaries (`export/community-summary.ts`), overview bridge detection (`export/overview-bridges.ts`), and overview navigation links (`export/overview-navigation.ts`)
+- Stdio server MCP tool/resource definitions extracted into a dedicated `src/runtime/stdio/definitions.ts` module to reduce hotspot growth
+
+### Changed
+
+- `GRAPH_REPORT.md` now emits entity-level structure signals using shared analysis helpers instead of file-node heuristics, improving workspace-scale diagnostic accuracy
+- Benchmark prints entity-level structure signals when `source_file` provenance is available, with an explicit unavailable note otherwise
+- Enhanced `analyze.ts` cohesion and bridge-detection logic to cover cross-workspace import patterns and multi-service shared modules
+- Refactored `stdio-server.ts` to delegate definitions to the new dedicated module, reducing its size and isolating protocol-level changes
+- `generate --update` now preserves workspace-parity provenance contracts across incremental rebuilds
+
 ## [0.2.2] - 2026-04-17
 
 ### Fixed
