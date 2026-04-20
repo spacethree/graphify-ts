@@ -28,6 +28,7 @@ export interface ExtractionNode {
   citation_value?: string
   reference_index?: number
   rationale_kind?: 'docstring' | 'comment'
+  node_kind?: 'component' | 'function' | 'class' | 'method'
   virtual?: boolean
   [key: string]: unknown
 }

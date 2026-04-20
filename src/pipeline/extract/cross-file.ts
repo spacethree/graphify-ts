@@ -1028,3 +1028,57 @@ export function resolveCrossFileRelativeJsImports(
     edges,
   }
 }
+
+export function resolveJsxRendersProxies(extraction: ExtractionData): ExtractionData {
+  const proxyEdgeIndices: number[] = []
+  for (let i = 0; i < extraction.edges.length; i++) {
+    const edge = extraction.edges[i]
+    if (edge !== undefined && edge.relation === 'renders' && typeof edge.target === 'string' && edge.target.endsWith('__jsx_proxy')) {
+      proxyEdgeIndices.push(i)
+    }
+  }
+
+  if (proxyEdgeIndices.length === 0) {
+    return extraction
+  }
+
+  const edges: ExtractionData['edges'] = [...extraction.edges]
+
+  for (const idx of proxyEdgeIndices) {
+    const edge = edges[idx]
+    if (edge === undefined) continue
+    const proxyTarget = String(edge.target)
+    const componentName = proxyTarget.slice(0, -'__jsx_proxy'.length)
+
+    // Primary lookup: node with matching label and node_kind: 'component'
+    let realNode = extraction.nodes.find((n) => n.label === `${componentName}()` && n.node_kind === 'component')
+
+    // Fallback: any node whose id ends with /<componentName> and is a component
+    if (!realNode) {
+      realNode = extraction.nodes.find(
+        (n) => n.node_kind === 'component' && typeof n.id === 'string' && (n.id === componentName || n.id.endsWith(`/${componentName}`)),
+      )
+    }
+
+    if (realNode) {
+      edges[idx] = {
+        source: edge.source,
+        target: realNode.id,
+        relation: edge.relation,
+        confidence: edge.confidence,
+        source_file: edge.source_file,
+        ...(edge.source_location !== undefined ? { source_location: edge.source_location } : {}),
+        ...(edge.layer !== undefined ? { layer: edge.layer } : {}),
+        ...(edge.provenance !== undefined ? { provenance: edge.provenance } : {}),
+        ...(edge.weight !== undefined ? { weight: edge.weight } : {}),
+      }
+    }
+    // else: leave proxy edge as-is (best effort)
+  }
+
+  return {
+    ...extraction,
+    nodes: [...extraction.nodes],
+    edges,
+  }
+}

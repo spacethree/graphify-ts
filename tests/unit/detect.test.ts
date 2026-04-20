@@ -191,4 +191,165 @@ describe('detect', () => {
       rmSync(root, { recursive: true, force: true })
     }
   })
+
+  describe('noise filtering', () => {
+    const noiseDirs = [
+      '__tests__', 'tests', 'test', 'spec', 'specs',
+      'e2e', 'cypress', 'playwright',
+      'coverage', '.nyc_output',
+      '.storybook', 'storybook-static',
+      'fixtures', '__fixtures__', '__mocks__', 'mocks',
+    ]
+
+    for (const dir of noiseDirs) {
+      it(`skips directory named "${dir}"`, () => {
+        const root = createTempRoot()
+        try {
+          mkdirSync(join(root, dir), { recursive: true })
+          writeFileSync(join(root, dir, 'index.ts'), 'export {}', 'utf8')
+          writeFileSync(join(root, 'real.ts'), 'export {}', 'utf8')
+
+          const result = detect(root)
+
+          expect(result.files.code.some((f) => f.includes(`/${dir}/`))).toBe(false)
+          expect(result.files.code.some((f) => f.endsWith('real.ts'))).toBe(true)
+        } finally {
+          rmSync(root, { recursive: true, force: true })
+        }
+      })
+    }
+
+    it('excludes *.test.ts files even outside test dirs', () => {
+      const root = createTempRoot()
+      try {
+        writeFileSync(join(root, 'util.test.ts'), 'export {}', 'utf8')
+        writeFileSync(join(root, 'util.ts'), 'export {}', 'utf8')
+
+        const result = detect(root)
+
+        expect(result.files.code.some((f) => f.endsWith('util.test.ts'))).toBe(false)
+        expect(result.files.code.some((f) => f.endsWith('util.ts'))).toBe(true)
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    })
+
+    it('excludes *.spec.tsx files', () => {
+      const root = createTempRoot()
+      try {
+        writeFileSync(join(root, 'Button.spec.tsx'), 'export {}', 'utf8')
+        writeFileSync(join(root, 'Button.tsx'), 'export {}', 'utf8')
+
+        const result = detect(root)
+
+        expect(result.files.code.some((f) => f.endsWith('Button.spec.tsx'))).toBe(false)
+        expect(result.files.code.some((f) => f.endsWith('Button.tsx'))).toBe(true)
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    })
+
+    it('excludes *.stories.tsx files', () => {
+      const root = createTempRoot()
+      try {
+        writeFileSync(join(root, 'Button.stories.tsx'), 'export {}', 'utf8')
+        writeFileSync(join(root, 'Button.tsx'), 'export {}', 'utf8')
+
+        const result = detect(root)
+
+        expect(result.files.code.some((f) => f.endsWith('Button.stories.tsx'))).toBe(false)
+        expect(result.files.code.some((f) => f.endsWith('Button.tsx'))).toBe(true)
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    })
+
+    it('excludes vitest.config.ts', () => {
+      const root = createTempRoot()
+      try {
+        writeFileSync(join(root, 'vitest.config.ts'), 'export default {}', 'utf8')
+        writeFileSync(join(root, 'real.ts'), 'export {}', 'utf8')
+
+        const result = detect(root)
+
+        expect(result.files.code.some((f) => f.endsWith('vitest.config.ts'))).toBe(false)
+        expect(result.files.code.some((f) => f.endsWith('real.ts'))).toBe(true)
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    })
+
+    it('excludes jest.config.js', () => {
+      const root = createTempRoot()
+      try {
+        writeFileSync(join(root, 'jest.config.js'), 'module.exports = {}', 'utf8')
+        writeFileSync(join(root, 'real.ts'), 'export {}', 'utf8')
+
+        const result = detect(root)
+
+        expect(result.files.code.some((f) => f.endsWith('jest.config.js'))).toBe(false)
+        expect(result.files.code.some((f) => f.endsWith('real.ts'))).toBe(true)
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    })
+
+    it('does NOT exclude test-utils.ts (only name starts with test-, not test.)', () => {
+      const root = createTempRoot()
+      try {
+        writeFileSync(join(root, 'test-utils.ts'), 'export {}', 'utf8')
+
+        const result = detect(root)
+
+        expect(result.files.code.some((f) => f.endsWith('test-utils.ts'))).toBe(true)
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    })
+
+    it('excludes setupTests.ts', () => {
+      const root = createTempRoot()
+      try {
+        writeFileSync(join(root, 'setupTests.ts'), 'export {}', 'utf8')
+        writeFileSync(join(root, 'real.ts'), 'export {}', 'utf8')
+
+        const result = detect(root)
+
+        expect(result.files.code.some((f) => f.endsWith('setupTests.ts'))).toBe(false)
+        expect(result.files.code.some((f) => f.endsWith('real.ts'))).toBe(true)
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    })
+
+    it('excludes *.mock.ts files', () => {
+      const root = createTempRoot()
+      try {
+        writeFileSync(join(root, 'api.mock.ts'), 'export {}', 'utf8')
+        writeFileSync(join(root, 'api.ts'), 'export {}', 'utf8')
+
+        const result = detect(root)
+
+        expect(result.files.code.some((f) => f.endsWith('api.mock.ts'))).toBe(false)
+        expect(result.files.code.some((f) => f.endsWith('api.ts'))).toBe(true)
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    })
+
+    it('excludes jest.setup.ts', () => {
+      const root = createTempRoot()
+      try {
+        writeFileSync(join(root, 'jest.setup.ts'), 'export {}', 'utf8')
+        writeFileSync(join(root, 'real.ts'), 'export {}', 'utf8')
+
+        const result = detect(root)
+
+        expect(result.files.code.some((f) => f.endsWith('jest.setup.ts'))).toBe(false)
+        expect(result.files.code.some((f) => f.endsWith('real.ts'))).toBe(true)
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    })
+  })
 })

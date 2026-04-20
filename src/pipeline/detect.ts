@@ -119,7 +119,34 @@ const SKIP_DIRS = new Set([
   '.ruff_cache',
   '.tox',
   '.eggs',
+  'test',
+  'tests',
+  '__tests__',
+  'spec',
+  'specs',
+  'e2e',
+  'cypress',
+  'playwright',
+  'coverage',
+  'storybook-static',
+  'fixtures',
+  '__fixtures__',
+  '__mocks__',
+  'mocks',
 ])
+
+const NOISE_FILE_PATTERNS: RegExp[] = [
+  /\.(test|spec)\.(ts|tsx|js|jsx|mjs|cjs)$/i,
+  /\.stories\.(ts|tsx|js|jsx)$/i,
+  /\.mock\.(ts|tsx|js|jsx)$/i,
+  /^(vitest|jest|webpack|rollup|vite|babel)\.config\./i,
+  /^setupTests\.(ts|tsx|js|jsx)$/i,
+  /^jest\.setup\.(ts|tsx|js|jsx)$/i,
+]
+
+function isNoiseFile(name: string): boolean {
+  return NOISE_FILE_PATTERNS.some((pattern) => pattern.test(name))
+}
 
 function toPosixPath(path: string): string {
   return path.split(sep).join('/')
@@ -281,6 +308,10 @@ function visitDirectory(
     }
 
     if (_isIgnored(entryPath, root, ignorePatterns)) {
+      continue
+    }
+
+    if (isNoiseFile(entry.name)) {
       continue
     }
 
