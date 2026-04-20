@@ -12081,4 +12081,180 @@ describe('extract', () => {
       rmSync(root, { recursive: true, force: true })
     }
   })
+
+  describe('React component classification', () => {
+    it('tags uppercase JSX-returning function as node_kind: component in .tsx', () => {
+      const root = createTempRoot()
+      try {
+        const filePath = join(root, 'Button.tsx')
+        writeFileSync(
+          filePath,
+          ['function Button() {', '  return <div>click me</div>', '}'].join('\n'),
+          'utf8',
+        )
+        const result = extractJs(filePath)
+        const buttonNode = result.nodes.find((n) => n.label === 'Button()')
+        expect(buttonNode).toBeTruthy()
+        expect(buttonNode?.node_kind).toBe('component')
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    })
+
+    it('tags uppercase JSX-returning arrow function as node_kind: component in .tsx', () => {
+      const root = createTempRoot()
+      try {
+        const filePath = join(root, 'Card.tsx')
+        writeFileSync(
+          filePath,
+          ['const Card = () => {', '  return <span>card</span>', '}'].join('\n'),
+          'utf8',
+        )
+        const result = extractJs(filePath)
+        const cardNode = result.nodes.find((n) => n.label === 'Card()')
+        expect(cardNode).toBeTruthy()
+        expect(cardNode?.node_kind).toBe('component')
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    })
+
+    it('does NOT tag lowercase function as component even when it returns JSX', () => {
+      const root = createTempRoot()
+      try {
+        const filePath = join(root, 'helpers.tsx')
+        writeFileSync(
+          filePath,
+          ['function helper() {', '  return <div>hi</div>', '}'].join('\n'),
+          'utf8',
+        )
+        const result = extractJs(filePath)
+        const helperNode = result.nodes.find((n) => n.label === 'helper()')
+        expect(helperNode).toBeTruthy()
+        expect(helperNode?.node_kind).toBeUndefined()
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    })
+
+    it('does NOT tag non-JSX uppercase function as component', () => {
+      const root = createTempRoot()
+      try {
+        const filePath = join(root, 'MyHelper.tsx')
+        writeFileSync(
+          filePath,
+          ['function MyHelper() {', "  return 'hello'", '}'].join('\n'),
+          'utf8',
+        )
+        const result = extractJs(filePath)
+        const myHelperNode = result.nodes.find((n) => n.label === 'MyHelper()')
+        expect(myHelperNode).toBeTruthy()
+        expect(myHelperNode?.node_kind).toBeUndefined()
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    })
+
+    it('does NOT tag uppercase JSX-returning function as component in a plain .ts file', () => {
+      const root = createTempRoot()
+      try {
+        const filePath = join(root, 'Button.ts')
+        writeFileSync(
+          filePath,
+          ['function Button() {', "  return 'not jsx'", '}'].join('\n'),
+          'utf8',
+        )
+        const result = extractJs(filePath)
+        const buttonNode = result.nodes.find((n) => n.label === 'Button()')
+        expect(buttonNode).toBeTruthy()
+        expect(buttonNode?.node_kind).toBeUndefined()
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    })
+
+    it('emits renders edges for JSX component usage in .tsx', () => {
+      const root = createTempRoot()
+      try {
+        const filePath = join(root, 'App.tsx')
+        writeFileSync(
+          filePath,
+          ['function App() {', '  return <Button />', '}'].join('\n'),
+          'utf8',
+        )
+        const result = extractJs(filePath)
+        const appNode = result.nodes.find((n) => n.label === 'App()')
+        expect(appNode).toBeTruthy()
+        expect(appNode?.node_kind).toBe('component')
+        const rendersEdge = result.edges.find(
+          (e) => e.source === appNode?.id && e.target === 'Button__jsx_proxy' && e.relation === 'renders',
+        )
+        expect(rendersEdge).toBeTruthy()
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    })
+
+    it('emits renders edges for JSX element usage in .tsx', () => {
+      const root = createTempRoot()
+      try {
+        const filePath = join(root, 'App.tsx')
+        writeFileSync(
+          filePath,
+          ['function App() {', '  return <Header><Footer /></Header>', '}'].join('\n'),
+          'utf8',
+        )
+        const result = extractJs(filePath)
+        const appNode = result.nodes.find((n) => n.label === 'App()')
+        expect(appNode).toBeTruthy()
+        const rendersTargets = result.edges
+          .filter((e) => e.source === appNode?.id && e.relation === 'renders')
+          .map((e) => e.target)
+        expect(rendersTargets).toContain('Header__jsx_proxy')
+        expect(rendersTargets).toContain('Footer__jsx_proxy')
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    })
+
+    it('does NOT emit renders edges for DOM elements (lowercase tags)', () => {
+      const root = createTempRoot()
+      try {
+        const filePath = join(root, 'App.tsx')
+        writeFileSync(
+          filePath,
+          ['function App() {', '  return <div><span>hi</span></div>', '}'].join('\n'),
+          'utf8',
+        )
+        const result = extractJs(filePath)
+        const appNode = result.nodes.find((n) => n.label === 'App()')
+        expect(appNode).toBeTruthy()
+        const rendersEdges = result.edges.filter((e) => e.source === appNode?.id && e.relation === 'renders')
+        expect(rendersEdges).toHaveLength(0)
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    })
+
+    it('deduplicates renders edges when same component used multiple times', () => {
+      const root = createTempRoot()
+      try {
+        const filePath = join(root, 'App.tsx')
+        writeFileSync(
+          filePath,
+          ['function App() {', '  return <div><Button /><Button /></div>', '}'].join('\n'),
+          'utf8',
+        )
+        const result = extractJs(filePath)
+        const appNode = result.nodes.find((n) => n.label === 'App()')
+        expect(appNode).toBeTruthy()
+        const rendersEdges = result.edges.filter(
+          (e) => e.source === appNode?.id && e.relation === 'renders' && e.target === 'Button__jsx_proxy',
+        )
+        expect(rendersEdges).toHaveLength(1)
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    })
+  })
 })

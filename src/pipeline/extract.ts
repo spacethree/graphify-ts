@@ -9,7 +9,7 @@ import { loadCached, saveCached } from '../infrastructure/cache.js'
 import { builtinCapabilityRegistry } from '../infrastructure/capabilities.js'
 import { CODE_EXTENSIONS, FileType, classifyFile, detect } from './detect.js'
 import { mergeExtractionFragments, resolveSourceNodeReferences } from './extract/combine.js'
-import { resolveCrossFilePythonImports, resolveCrossFileRelativeJsImports } from './extract/cross-file.js'
+import { resolveCrossFilePythonImports, resolveCrossFileRelativeJsImports, resolveJsxRendersProxies } from './extract/cross-file.js'
 import { dispatchSingleFileExtraction, type ExtractionFragment, type ExtractorHandlerMap } from './extract/dispatch.js'
 import { _makeId, addEdge, addNode, addUniqueEdge, createEdge, createFileNode, createNode, indentationLevel, normalizeLabel, stripHashComment } from './extract/core.js'
 import { unparenthesizeExpression } from './extract/typescript-utils.js'
@@ -29,7 +29,7 @@ import { createTreeSitterWasmParser, treeSitterWasmError, type TreeSitterNode } 
 
 export { _makeId } from './extract/core.js'
 
-export const EXTRACTOR_CACHE_VERSION = 60
+export const EXTRACTOR_CACHE_VERSION = 61
 const PYTHON_KEYWORDS = new Set(['if', 'elif', 'else', 'for', 'while', 'return', 'class', 'def', 'lambda', 'with', 'print', 'sum'])
 const GENERIC_CODE_EXTENSIONS = new Set(['.go', '.rs', '.java', '.kt', '.kts', '.scala', '.cs', '.c', '.cc', '.cpp', '.cxx', '.h', '.hpp', '.swift', '.php', '.zig'])
 const GENERIC_CONTROL_KEYWORDS = new Set(['if', 'for', 'while', 'switch', 'catch', 'return', 'new', 'delete', 'throw', 'sizeof', 'case', 'do', 'else'])
@@ -4026,6 +4026,46 @@ function extractRustTreeSitter(filePath: string): ExtractionFragment | null {
   }
 }
 
+function bodyContainsJsx(body: ts.Node): boolean {
+  const jsxKinds = new Set([
+    ts.SyntaxKind.JsxElement,
+    ts.SyntaxKind.JsxSelfClosingElement,
+    ts.SyntaxKind.JsxFragment,
+    ts.SyntaxKind.JsxOpeningElement,
+  ])
+  let found = false
+  const visit = (n: ts.Node): void => {
+    if (found) return
+    if (jsxKinds.has(n.kind)) {
+      found = true
+      return
+    }
+    ts.forEachChild(n, visit)
+  }
+  visit(body)
+  return found
+}
+
+function collectJsxRenders(root: ts.Node, sourceFile: ts.SourceFile): string[] {
+  const names: string[] = []
+  const visit = (n: ts.Node): void => {
+    if (ts.isJsxElement(n)) {
+      const tagName = n.openingElement.tagName.getText(sourceFile)
+      if (tagName && /^[A-Z]/.test(tagName)) {
+        names.push(tagName)
+      }
+    } else if (ts.isJsxSelfClosingElement(n)) {
+      const tagName = n.tagName.getText(sourceFile)
+      if (tagName && /^[A-Z]/.test(tagName)) {
+        names.push(tagName)
+      }
+    }
+    ts.forEachChild(n, visit)
+  }
+  visit(root)
+  return [...new Set(names)]
+}
+
 export function extractJs(filePath: string): ExtractionFragment {
   const sourceText = readFileSync(filePath, 'utf8')
   const sourceFile = ts.createSourceFile(filePath, sourceText, ts.ScriptTarget.Latest, true, scriptKindForPath(filePath))
@@ -4037,10 +4077,21 @@ export function extractJs(filePath: string): ExtractionFragment {
   const seenImportEdges = new Set<string>()
   const methodIdsByClass = new Map<string, string>()
   const pendingCalls: PendingCall[] = []
+  const isJsxFile = filePath.endsWith('.tsx') || filePath.endsWith('.jsx')
 
   addNode(nodes, seenIds, createNode(fileNodeId, basename(filePath), filePath, 1))
 
   const defaultExportId = _makeId(stem, 'default')
+
+  const maybeMarkComponent = (functionId: string, functionName: string, body: ts.ConciseBody | undefined, line: number): void => {
+    if (!isJsxFile || !body || !/^[A-Z]/.test(functionName)) return
+    if (!bodyContainsJsx(body)) return
+    const componentNode = nodes.find((n) => n.id === functionId)
+    if (componentNode) componentNode.node_kind = 'component'
+    for (const tag of collectJsxRenders(body, sourceFile)) {
+      addEdge(edges, createEdge(functionId, `${tag}__jsx_proxy`, 'renders', filePath, line))
+    }
+  }
 
   const addTsFunctionNode = (functionId: string, label: string, line: number, body?: ts.ConciseBody): void => {
     addNode(nodes, seenIds, createNode(functionId, label, filePath, line))
@@ -4297,7 +4348,9 @@ export function extractJs(filePath: string): ExtractionFragment {
     if (ts.isFunctionDeclaration(node) && node.name) {
       const functionName = node.name.text
       const functionLine = sourceFile.getLineAndCharacterOfPosition(node.name.getStart(sourceFile)).line + 1
-      addTsFunctionNode(_makeId(stem, functionName), `${functionName}()`, functionLine, node.body)
+      const functionId = _makeId(stem, functionName)
+      addTsFunctionNode(functionId, `${functionName}()`, functionLine, node.body)
+      maybeMarkComponent(functionId, functionName, node.body, functionLine)
       return
     }
 
@@ -4355,6 +4408,7 @@ export function extractJs(filePath: string): ExtractionFragment {
         if (body) {
           addTsCalls(body, functionId)
           addNestedTsFunctions(body, functionId)
+          maybeMarkComponent(functionId, functionName, body, functionLine)
         }
       }
       return
@@ -4369,7 +4423,14 @@ export function extractJs(filePath: string): ExtractionFragment {
   const validNodeIds = new Set(nodes.map((node) => node.id))
   return {
     nodes,
-    edges: edges.filter((edge) => validNodeIds.has(edge.source) && (validNodeIds.has(edge.target) || edge.relation === 'imports' || edge.relation === 'imports_from')),
+    edges: edges.filter(
+      (edge) =>
+        validNodeIds.has(edge.source) &&
+        (validNodeIds.has(edge.target) ||
+          edge.relation === 'imports' ||
+          edge.relation === 'imports_from' ||
+          (edge.relation === 'renders' && typeof edge.target === 'string' && edge.target.endsWith('__jsx_proxy'))),
+    ),
   }
 }
 
@@ -4457,6 +4518,8 @@ export function extract(files: string[], options: ExtractOptions = {}): Extracti
   combined = options.contextNodes
     ? resolveCrossFileRelativeJsImports(files, combined, { contextNodes: options.contextNodes })
     : resolveCrossFileRelativeJsImports(files, combined)
+
+  combined = resolveJsxRendersProxies(combined)
 
   combined = options.contextNodes ? resolveSourceNodeReferences(combined, { contextNodes: options.contextNodes }) : resolveSourceNodeReferences(combined)
 
