@@ -1392,7 +1392,7 @@ function loadInteractiveGraph() {
   var data = JSON.parse(document.getElementById('graphData').textContent);
   var nodeCount = data.nodes.length;
   var msg = nodeCount > 300
-    ? '⚠️ This community has ' + nodeCount + ' nodes. Loading the full interactive graph may slow or freeze your browser.\n\nContinue anyway?'
+    ? '⚠️ This community has ' + nodeCount + ' nodes. Loading the full interactive graph may slow or freeze your browser.\\n\\nContinue anyway?'
     : 'Load the full interactive graph for this community (' + nodeCount + ' nodes)?';
   if (!confirm(msg)) return;
   var btn = document.getElementById('loadGraphBtn');
