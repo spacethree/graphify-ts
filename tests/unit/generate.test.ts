@@ -4745,4 +4745,42 @@ describe('generateGraph', () => {
       expect(graph.isDirected()).toBe(true)
     })
   })
+
+  test('resolves renders proxy edges to real component nodes across files', () => {
+    withTempDir((tempDir) => {
+      mkdirSync(join(tempDir, 'src'), { recursive: true })
+      writeFileSync(
+        join(tempDir, 'src', 'Button.tsx'),
+        ['export function Button() {', '  return <span>btn</span>', '}'].join('\n'),
+        'utf8',
+      )
+      writeFileSync(
+        join(tempDir, 'src', 'App.tsx'),
+        ["import { Button } from './Button'", 'export function App() {', '  return <Button />', '}'].join('\n'),
+        'utf8',
+      )
+
+      const result = generateGraph(tempDir, { noHtml: true })
+      const graphData = JSON.parse(readFileSync(result.graphPath, 'utf8')) as {
+        nodes: Array<{ id: string; label: string; node_kind?: string }>
+        links: Array<{ source: string; target: string; relation: string }>
+      }
+
+      const buttonNode = graphData.nodes.find((n) => n.label === 'Button()' && n.node_kind === 'component')
+      const appNode = graphData.nodes.find((n) => n.label === 'App()' && n.node_kind === 'component')
+
+      expect(buttonNode).toBeTruthy()
+      expect(appNode).toBeTruthy()
+
+      // The renders edge from App → Button should resolve to the real Button node (not proxy)
+      const rendersEdge = graphData.links.find(
+        (e) => e.source === appNode?.id && e.target === buttonNode?.id && e.relation === 'renders',
+      )
+      expect(rendersEdge).toBeTruthy()
+
+      // No proxy edges should remain
+      const proxyEdges = graphData.links.filter((e) => e.relation === 'renders' && e.target.endsWith('__jsx_proxy'))
+      expect(proxyEdges).toHaveLength(0)
+    })
+  })
 })
