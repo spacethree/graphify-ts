@@ -4,6 +4,12 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-04-20
+
+### Fixed
+
+- Moved `typescript` from `devDependencies` to `dependencies` so the TypeScript compiler API (used for JS/TS AST extraction) is available when the package is installed by end users who do not have TypeScript installed globally
+
 ## [0.4.1] - 2026-04-20
 
 ### Fixed

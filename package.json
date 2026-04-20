@@ -1,6 +1,6 @@
 {
     "name": "@mohammednagy/graphify-ts",
-    "version": "0.4.1",
+    "version": "0.4.2",
     "description": "Build local knowledge graphs from code, docs, and mixed project folders with a TypeScript CLI.",
     "license": "MIT",
     "author": "mohanagy",
@@ -52,13 +52,13 @@
     "devDependencies": {
         "@types/node": "^24.0.0",
         "@vitest/coverage-v8": "^3.2.4",
-        "typescript": "^5.8.3",
         "vitest": "^3.2.4"
     },
     "dependencies": {
         "@vscode/tree-sitter-wasm": "^0.3.1",
         "fflate": "^0.8.2",
         "neo4j-driver": "^6.0.1",
+        "typescript": "^5.8.3",
         "web-tree-sitter": "^0.26.8"
     }
 }
