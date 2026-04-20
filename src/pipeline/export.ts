@@ -1042,7 +1042,7 @@ function buildCommunitySummaryHtml(payload: HtmlPayload, options: InteractiveHtm
 
   const { summaryNodes, topNodes, topFiles } = buildCommunitySummaryData(payload.nodes)
 
-  const graphDataJson = JSON.stringify({
+  const graphDataJson = serializeForInlineScript({
     nodes: payload.nodes.map((n) => ({
       id: n.id,
       label: n.label,
@@ -1412,6 +1412,11 @@ function loadInteractiveGraph() {
         return { from: e.source, to: e.target, label: e.relation };
       }))
     }, { physics: { stabilization: { iterations: 100 } } });
+  };
+  s.onerror = function() {
+    btn.disabled = false;
+    btn.textContent = '⚡ Load interactive graph';
+    alert('Failed to load vis-network from CDN. Check your internet connection and try again.');
   };
   document.head.appendChild(s);
 }
