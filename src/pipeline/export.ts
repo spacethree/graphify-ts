@@ -1042,6 +1042,18 @@ function buildCommunitySummaryHtml(payload: HtmlPayload, options: InteractiveHtm
 
   const { summaryNodes, topNodes, topFiles } = buildCommunitySummaryData(payload.nodes)
 
+  const graphDataJson = JSON.stringify({
+    nodes: payload.nodes.map((n) => ({
+      id: n.id,
+      label: n.label,
+      file_type: n.file_type,
+      degree: n.degree,
+      community: n.community,
+      community_name: n.community_name,
+    })),
+    edges: payload.edges,
+  })
+
   const topNodesMarkup =
     topNodes.length === 0
       ? '<p class="empty">No node summary is available for this community.</p>'
@@ -1231,6 +1243,14 @@ function buildCommunitySummaryHtml(payload: HtmlPayload, options: InteractiveHtm
       <div class="stat"><div class="muted">Edges</div><strong>${payload.stats.edges}</strong></div>
       <div class="stat"><div class="muted">Communities</div><strong>${payload.stats.communities}</strong></div>
     </div>
+    <button id="loadGraphBtn" onclick="loadInteractiveGraph()" style="
+      margin-top:16px; padding:10px 18px; border-radius:10px;
+      border:none; background:#2553d8; color:white;
+      font-size:0.9rem; font-weight:600; cursor:pointer;">
+      ⚡ Load interactive graph
+    </button>
+    <div id="visContainer" style="display:none;height:600px;border-radius:14px;overflow:hidden;margin-top:16px;"></div>
+    <script id="graphData" type="application/json">${graphDataJson}</script>
   </section>
 
   <div class="split">
@@ -1366,6 +1386,35 @@ window.addEventListener('hashchange', renderFromHash);
 
 renderMatches('');
 renderFromHash();
+</script>
+<script>
+function loadInteractiveGraph() {
+  var data = JSON.parse(document.getElementById('graphData').textContent);
+  var nodeCount = data.nodes.length;
+  var msg = nodeCount > 300
+    ? '⚠️ This community has ' + nodeCount + ' nodes. Loading the full interactive graph may slow or freeze your browser.\n\nContinue anyway?'
+    : 'Load the full interactive graph for this community (' + nodeCount + ' nodes)?';
+  if (!confirm(msg)) return;
+  var btn = document.getElementById('loadGraphBtn');
+  btn.disabled = true;
+  btn.textContent = 'Loading…';
+  var s = document.createElement('script');
+  s.src = 'https://unpkg.com/vis-network/standalone/umd/vis-network.min.js';
+  s.onload = function() {
+    var container = document.getElementById('visContainer');
+    container.style.display = 'block';
+    btn.style.display = 'none';
+    new vis.Network(container, {
+      nodes: new vis.DataSet(data.nodes.map(function(n) {
+        return { id: n.id, label: n.label, title: n.file_type };
+      })),
+      edges: new vis.DataSet(data.edges.map(function(e) {
+        return { from: e.source, to: e.target, label: e.relation };
+      }))
+    }, { physics: { stabilization: { iterations: 100 } } });
+  };
+  document.head.appendChild(s);
+}
 </script>
 </body>
 </html>`

@@ -299,7 +299,8 @@ describe('export', () => {
       expect(communityPage).toContain('Search nodes by label or file')
       expect(communityPage).toContain('Selected node')
       expect(communityPage).toContain('const SUMMARY_NODES =')
-      expect(communityPage).not.toContain('vis-network')
+      // vis-network is referenced only in the opt-in loadInteractiveGraph function, not eagerly loaded
+      expect(communityPage).not.toContain('<script src="https://unpkg.com/vis-network')
       expect(communityPage).not.toContain('const RAW_EDGES =')
       expect(communityPage).not.toContain('<article id=')
     })
@@ -510,6 +511,72 @@ describe('export', () => {
 
       expect(content).not.toContain('</script><script>alert("xss")</script>')
       expect(content).toContain('\\u003c/script\\u003e\\u003cscript\\u003ealert')
+    })
+  })
+
+  describe('buildCommunitySummaryHtml interactive toggle', () => {
+    function makeLargeGraph() {
+      return buildFromJson(
+        {
+          nodes: Array.from({ length: 1300 }, (_, index) => ({
+            id: `node-${index}`,
+            label: `Node${index}`,
+            file_type: 'code',
+            source_file: `/repo/src/module-${index % 7}.ts`,
+          })),
+          edges: [
+            {
+              source: 'node-0',
+              target: 'node-1',
+              relation: 'calls',
+              confidence: 'EXTRACTED',
+              source_file: '/repo/src/module-0.ts',
+            },
+          ],
+        },
+        { directed: true },
+      )
+    }
+
+    it('includes a Load interactive graph button', () => {
+      const graph = makeLargeGraph()
+
+      withTempDir((tempDir) => {
+        const outputPath = join(tempDir, 'graph.html')
+        toHtml(graph, { 0: graph.nodeIds() }, outputPath, { 0: 'Large Community' })
+
+        const communityPage = readFileSync(join(tempDir, 'graph-pages', 'community-0.html'), 'utf8')
+
+        expect(communityPage).toContain('id="loadGraphBtn"')
+        expect(communityPage).toContain('Load interactive graph')
+      })
+    })
+
+    it('embeds node/edge data as JSON in a script tag', () => {
+      const graph = makeLargeGraph()
+
+      withTempDir((tempDir) => {
+        const outputPath = join(tempDir, 'graph.html')
+        toHtml(graph, { 0: graph.nodeIds() }, outputPath, { 0: 'Large Community' })
+
+        const communityPage = readFileSync(join(tempDir, 'graph-pages', 'community-0.html'), 'utf8')
+
+        expect(communityPage).toContain('id="graphData"')
+        expect(communityPage).toContain('"id":"node-0"')
+      })
+    })
+
+    it('includes the loadInteractiveGraph client-side function', () => {
+      const graph = makeLargeGraph()
+
+      withTempDir((tempDir) => {
+        const outputPath = join(tempDir, 'graph.html')
+        toHtml(graph, { 0: graph.nodeIds() }, outputPath, { 0: 'Large Community' })
+
+        const communityPage = readFileSync(join(tempDir, 'graph-pages', 'community-0.html'), 'utf8')
+
+        expect(communityPage).toContain('function loadInteractiveGraph(')
+      })
     })
   })
 })
