@@ -4,6 +4,24 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-04-20
+
+### Added
+
+- **Detection hygiene**: corpus traversal now skips common non-semantic directories (`test`, `tests`, `__tests__`, `spec`, `specs`, `e2e`, `cypress`, `playwright`, `coverage`, `storybook-static`, `fixtures`, `__fixtures__`, `__mocks__`, `mocks`) and noise file patterns (test/spec files, stories, mocks, framework config files, setup files) so those do not pollute the knowledge graph
+- **Interactive graph toggle for oversized communities**: summary-only community pages now include an opt-in "⚡ Load interactive graph" button that shows a performance warning dialog and lazy-loads vis-network from CDN on confirmation, with an error recovery handler for offline environments
+- **React component classification**: uppercase JSX-returning functions in `.tsx`/`.jsx` files are now tagged `node_kind: 'component'` so they are identifiable as React components in the graph
+- **JSX `renders` edges**: component functions now emit outgoing `renders` edges for every uppercase JSX tag they use (e.g. `<Button />` → edge to `Button`), enabling component-level usage graphs in React projects
+- **Cross-file `renders` stitching**: `renders` proxy edges are resolved across file boundaries onto real imported component nodes so the final graph shows concrete component-to-component relationships rather than unresolved proxies
+
+### Changed
+
+- `EXTRACTOR_CACHE_VERSION` bumped to 61 to invalidate stale pre-React-classification extraction payloads
+
+### Fixed
+
+- Graph data embedded in community summary HTML pages is now serialized with `serializeForInlineScript` (escaping `<`, `>`, `&`, line-separator characters) to prevent premature `</script>` tag termination on adversarially-named file paths
+
 ## [0.3.0] - 2026-04-18
 
 ### Added
