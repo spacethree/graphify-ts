@@ -4,6 +4,12 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-04-20
+
+### Fixed
+
+- Fixed `SyntaxError: Invalid or unexpected token` in community summary pages: the warning message string in the `loadInteractiveGraph` client function contained literal newlines (from the TypeScript template literal) which are invalid inside single-quoted JavaScript strings; escaped as `\n` sequences so the generated HTML is valid
+
 ## [0.4.0] - 2026-04-20
 
 ### Added
