@@ -8,6 +8,7 @@ import { buildCommunityLabels } from '../pipeline/community-naming.js'
 import { diffGraphs } from './diff.js'
 import { freshnessAnnotations, resourceFreshnessMetadata } from './freshness.js'
 import { MCP_PROMPTS, MCP_TOOLS, type McpPromptDefinition } from './stdio/definitions.js'
+import { communityDetailsAtZoom, communityDetailsMicro, type CommunityZoomLevel } from '../pipeline/community-details.js'
 import { analyzeImpact, callChains } from './impact.js'
 import { analyzePrImpact } from './pr-impact.js'
 import { retrieveContext } from './retrieve.js'
@@ -1061,6 +1062,27 @@ function handleToolCall(id: string | number | null, graphPath: string, params: u
         return failure(id, JSONRPC_INVALID_PARAMS, 'get_community requires a numeric community_id parameter >= 0')
       }
       return ok(id, textToolResult(getCommunity(graph, communitiesFromGraph(graph), communityId)))
+    }
+    case 'community_details': {
+      const detailCommunityId = numberParamAlias(toolArguments, ['community_id', 'communityId'], { min: 0 })
+      if (detailCommunityId === null) {
+        return failure(id, JSONRPC_INVALID_PARAMS, 'community_details requires a numeric community_id parameter >= 0')
+      }
+      const zoomRaw = stringParam(toolArguments, 'zoom') ?? 'mid'
+      const zoom: CommunityZoomLevel = zoomRaw === 'micro' || zoomRaw === 'mid' || zoomRaw === 'macro' ? zoomRaw : 'mid'
+      const detailCommunities = communitiesFromGraph(graph)
+      const detailLabels = { ...buildCommunityLabels(graph, detailCommunities), ...readStoredCommunityLabels(graphPath) }
+      const details = communityDetailsAtZoom(graph, detailCommunities, detailLabels, detailCommunityId, zoom)
+      if (!details) {
+        return failure(id, JSONRPC_INVALID_PARAMS, `Unknown community: ${detailCommunityId}`)
+      }
+      return ok(id, textToolResult(JSON.stringify(details)))
+    }
+    case 'community_overview': {
+      const overviewCommunities = communitiesFromGraph(graph)
+      const overviewLabels = { ...buildCommunityLabels(graph, overviewCommunities), ...readStoredCommunityLabels(graphPath) }
+      const overview = communityDetailsMicro(graph, overviewCommunities, overviewLabels)
+      return ok(id, textToolResult(JSON.stringify(overview)))
     }
     case 'impact': {
       const label = stringParam(toolArguments, 'label')

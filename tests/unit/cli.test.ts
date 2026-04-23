@@ -296,6 +296,7 @@ describe('cli parser', () => {
       neo4jPassword: null,
       neo4jDatabase: null,
       includeDocs: false,
+      docs: false,
     })
 
     expect(
@@ -344,6 +345,7 @@ describe('cli parser', () => {
       neo4jPassword: 'secret',
       neo4jDatabase: 'graphify',
       includeDocs: false,
+      docs: false,
     })
 
     expect(() => parseGenerateArgs(['src', 'other'])).toThrow('Usage: graphify-ts generate')
@@ -621,6 +623,7 @@ describe('cli main', () => {
       graphml: true,
       neo4j: true,
       includeDocs: false,
+      docs: false,
     })
   })
 

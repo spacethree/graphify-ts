@@ -120,6 +120,7 @@ export function formatHelp(binaryName = 'graphify-ts'): string {
     '    --follow-symlinks    include in-root symlink targets',
     '    --debounce S         watch debounce seconds (default 3)',
     '    --include-docs       include .md/.txt/.rst document files (excluded by default)',
+    '    --docs               generate module documentation in graphify-out/docs/',
     '    --no-html            skip graph.html generation',
     '    --wiki               also export a crawlable wiki to graphify-out/wiki',
     '    --obsidian           also export an Obsidian vault',
@@ -211,6 +212,7 @@ function isGenerateLikeArgument(argument: string): boolean {
     argument === '--obsidian-dir' ||
     argument === '--debounce' ||
     argument === '--include-docs' ||
+    argument === '--docs' ||
     argument.startsWith('--neo4j-push=') ||
     argument.startsWith('--neo4j-user=') ||
     argument.startsWith('--neo4j-password=') ||
@@ -264,6 +266,10 @@ function formatGenerateSummary(result: GenerateGraphResult): string {
 
   if (result.cypherPath) {
     lines.push(`- Neo4j Cypher: ${result.cypherPath}`)
+  }
+
+  if (result.docsPath) {
+    lines.push(`- Docs: ${result.docsPath}`)
   }
 
   if (result.changedFiles > 0 || result.deletedFiles > 0) {
@@ -326,6 +332,7 @@ export async function executeCli(argv: string[], io: CliIO = console, dependenci
         graphml: options.graphml,
         neo4j: options.neo4j,
         includeDocs: options.includeDocs,
+        docs: options.docs,
       })
       io.log(formatGenerateSummary(result))
 

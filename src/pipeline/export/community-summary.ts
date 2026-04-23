@@ -12,6 +12,7 @@ export interface CommunitySummarySourceNode {
 }
 
 export interface CommunitySummaryNode {
+  id: string
   anchor_id: string
   label: string
   source_file: string
@@ -32,6 +33,7 @@ export interface CommunitySummaryData {
 export function buildCommunitySummaryData(nodes: CommunitySummarySourceNode[]): CommunitySummaryData {
   const sortedNodes = [...nodes].sort((left, right) => right.degree - left.degree || left.label.localeCompare(right.label))
   const summaryNodes = sortedNodes.map((node) => ({
+    id: node.id,
     anchor_id: nodeAnchorId(node.id),
     label: node.label,
     source_file: node.source_file,

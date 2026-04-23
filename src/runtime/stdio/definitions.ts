@@ -137,6 +137,28 @@ export const MCP_TOOLS: McpToolDefinition[] = [
     },
   },
   {
+    name: 'community_details',
+    description:
+      'Get structured details about a community at different zoom levels. Micro: name + top 3 nodes. Mid: key nodes, entry/exit points, bridges. Macro: all nodes, edges, file distribution. Use with retrieve for token-efficient codebase exploration.',
+    inputSchema: {
+      type: 'object',
+      required: ['community_id'],
+      properties: {
+        community_id: { type: 'number', description: 'Community ID to get details for' },
+        zoom: { type: 'string', enum: ['micro', 'mid', 'macro'], description: 'Detail level (default: mid)' },
+      },
+    },
+  },
+  {
+    name: 'community_overview',
+    description:
+      'Get a micro-level overview of all communities — names, sizes, and top nodes. Use this first to understand the codebase structure before diving into specific communities.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
     name: 'impact',
     description:
       'Analyze the blast radius of changing a node. Returns direct dependents, transitive dependents, affected files, and affected communities. Use this before making changes to understand what could break.',

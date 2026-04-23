@@ -1271,6 +1271,8 @@ function buildCommunitySummaryHtml(payload: HtmlPayload, options: InteractiveHtm
         <div class="meta-row"><span>Confidence</span><span id="selectedConfidence"></span></div>
         <div class="meta-row"><span>Degree</span><span id="selectedDegree"></span></div>
         <div id="selectedSourceUrlRow" class="meta-row" hidden><span>Source URL</span><a id="selectedSourceUrl" target="_blank" rel="noreferrer noopener"></a></div>
+        <h4 style="margin-top:12px;">Related nodes</h4>
+        <div id="selectedNeighbors" class="list"></div>
       </div>
     </section>
 
@@ -1301,6 +1303,31 @@ const selectedDegree = document.getElementById('selectedDegree');
 const selectedSourceUrlRow = document.getElementById('selectedSourceUrlRow');
 const selectedSourceUrl = document.getElementById('selectedSourceUrl');
 const nodesByAnchor = new Map(SUMMARY_NODES.map((node) => [node.anchor_id, node]));
+const nodesById = new Map(SUMMARY_NODES.map((node) => [node.id, node]));
+const selectedNeighbors = document.getElementById('selectedNeighbors');
+
+function findNeighbors(nodeId) {
+  try {
+    var raw = document.getElementById('graphData');
+    if (!raw) return [];
+    var data = JSON.parse(raw.textContent || '{}');
+    if (!data.edges) return [];
+    var neighbors = [];
+    var seen = {};
+    data.edges.forEach(function(e) {
+      var neighborId = null;
+      var relation = e.label || 'related';
+      if (e.from === nodeId) neighborId = e.to;
+      else if (e.to === nodeId) neighborId = e.from;
+      if (neighborId && !seen[neighborId]) {
+        seen[neighborId] = true;
+        var n = nodesById.get(neighborId);
+        neighbors.push({ id: neighborId, label: n ? n.label : neighborId, relation: relation });
+      }
+    });
+    return neighbors.slice(0, 10);
+  } catch(ex) { return []; }
+}
 
 function renderSelection(anchorId) {
   const node = nodesByAnchor.get(anchorId);
@@ -1334,6 +1361,29 @@ function renderSelection(anchorId) {
     selectedSourceUrlRow.hidden = true;
     selectedSourceUrl.textContent = '';
     selectedSourceUrl.removeAttribute('href');
+  }
+
+  selectedNeighbors.replaceChildren();
+  var neighbors = findNeighbors(node.id);
+  if (neighbors.length === 0) {
+    var hint = document.createElement('p');
+    hint.className = 'empty';
+    hint.textContent = 'No related nodes found.';
+    selectedNeighbors.appendChild(hint);
+  } else {
+    neighbors.forEach(function(nb) {
+      var nbNode = nodesById.get(nb.id);
+      var link = document.createElement('a');
+      link.className = 'match-link';
+      link.href = nbNode ? '#' + nbNode.anchor_id : '#';
+      var title = document.createElement('strong');
+      title.textContent = nb.label;
+      var meta = document.createElement('div');
+      meta.className = 'match-meta';
+      meta.textContent = nb.relation;
+      link.append(title, meta);
+      selectedNeighbors.appendChild(link);
+    });
   }
 }
 
