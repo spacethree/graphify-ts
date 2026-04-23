@@ -4,6 +4,20 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-04-24
+
+### Added
+
+- **Blast radius analysis**: new `impact` MCP tool — analyzes what breaks if you change a node, with direct/transitive dependents, affected files, and affected communities
+- **Call chain tracing**: new `call_chain` MCP tool — finds all execution paths between two nodes filtered by edge type (calls, imports_from)
+- **PR impact analysis**: new `pr_impact` MCP tool — parses git diff, maps changed files to graph nodes, computes aggregate blast radius across all changes
+- **Hierarchical community data**: new `community_details` MCP tool with micro/mid/macro zoom levels for token-efficient codebase exploration
+- **Community overview**: new `community_overview` MCP tool for quick overview of all communities
+- **Multi-repo federation**: new `graphify-ts federate` command merges graphs from multiple repos into a single queryable super-graph with cross-repo edge inference
+- **Auto-generated docs**: new `--docs` flag generates per-community markdown documentation in `graphify-out/docs/` with key components, entry/exit points, bridges, and code snippets
+- **Related nodes panel**: selecting a node in the HTML community explorer now shows its neighbors with edge types
+- **README rewrite**: comprehensive documentation of all MCP tools, federation, and AI agent integration
+
 ## [0.5.3] - 2026-04-23
 
 ### Changed
