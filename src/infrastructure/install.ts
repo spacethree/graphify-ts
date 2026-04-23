@@ -442,11 +442,12 @@ function registerHomeClaudeSkill(homeDir: string): string {
   return hasCurrentSection ? `CLAUDE.md -> skill registration updated in ${claudeMdPath}` : `CLAUDE.md -> skill registered in ${claudeMdPath}`
 }
 
-type McpConfigTarget = 'claude' | 'cursor'
+type McpConfigTarget = 'claude' | 'cursor' | 'copilot'
 
 const MCP_CONFIG_PATHS: Record<McpConfigTarget, string> = {
   claude: '.mcp.json',
   cursor: join('.cursor', 'mcp.json'),
+  copilot: join('.vscode', 'mcp.json'),
 }
 
 function installMcpServer(projectDir: string, target: McpConfigTarget = 'claude'): string {
@@ -756,6 +757,10 @@ export function geminiUninstall(projectDir = '.', options: Pick<InstallSkillOpti
     messages.push(hookMessage)
   }
   return messages.join('\n')
+}
+
+export function installCopilotMcp(projectDir = '.'): string {
+  return installMcpServer(resolve(projectDir), 'copilot')
 }
 
 export function cursorInstall(projectDir = '.'): string {

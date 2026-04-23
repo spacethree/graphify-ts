@@ -4,6 +4,12 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-04-24
+
+### Added
+
+- **MCP server config for Cursor and Copilot**: `cursor install` now writes to `.cursor/mcp.json`, `copilot install` writes to `.vscode/mcp.json` — MCP tools work across all three platforms
+
 ## [0.6.1] - 2026-04-24
 
 ### Fixed

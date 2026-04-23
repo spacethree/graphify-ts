@@ -547,7 +547,14 @@ export async function executeCli(argv: string[], io: CliIO = console, dependenci
 
     if (command === 'copilot') {
       const options = parsePlatformActionArgs(command, args)
-      io.log(options.action === 'install' ? dependencies.installSkill('copilot') : dependencies.uninstallSkill('copilot'))
+      if (options.action === 'install') {
+        io.log(dependencies.installSkill('copilot'))
+        // Also install project-level MCP server for VS Code Copilot
+        const { installCopilotMcp } = await import('../infrastructure/install.js')
+        io.log(installCopilotMcp('.'))
+      } else {
+        io.log(dependencies.uninstallSkill('copilot'))
+      }
       return 0
     }
 
