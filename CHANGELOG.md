@@ -8,6 +8,16 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ### Added
 
+- **MCP server config for Cursor and Copilot**: `cursor install` writes `.cursor/mcp.json`, `copilot install` writes `.vscode/mcp.json` with correct VS Code schema (`servers` + `type: "stdio"`)
+- **Examples and benchmarks**: `examples/why-graphify.md` with real production numbers (384x compression, 656-node blast radius), `examples/mcp-tool-examples.md` with real MCP tool input/output, and `examples/quick-benchmark.sh` for quick evaluation
+- **README benchmarks section**: real numbers from a production NestJS + Next.js SaaS
+
+### Fixed
+
+- **VS Code MCP schema**: copilot install uses `servers` key with `type: "stdio"` instead of `mcpServers` which VS Code rejects
+
+### Added
+
 - **MCP server config for Cursor and Copilot**: `cursor install` now writes to `.cursor/mcp.json`, `copilot install` writes to `.vscode/mcp.json` — MCP tools work across all three platforms
 
 ## [0.6.1] - 2026-04-24

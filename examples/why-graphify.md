@@ -1,0 +1,132 @@
+# Why graphify-ts? Real Numbers from a Real Codebase
+
+These benchmarks were measured on [GoValidate](https://govalidate.app), a production NestJS + Next.js SaaS with 1,268 files and ~860,000 words of code.
+
+## The Problem
+
+You have a large codebase. Your AI agent (Claude, Copilot, Cursor) can read files, but:
+
+- **It can't fit everything in context** — 860K words ≈ 1.1M tokens. No context window holds that.
+- **It doesn't know what to read** — asking "how does auth work?" requires knowing which 15 of 1,268 files matter.
+- **It can't see structure** — who depends on what, what breaks if you change something, how modules connect.
+
+## What graphify-ts Does
+
+One command generates a knowledge graph:
+
+```bash
+graphify-ts generate .
+graphify-ts claude install   # or cursor, copilot
+```
+
+The agent gets 17 MCP tools. Here's what changes:
+
+---
+
+### 1. Token Efficiency — 384x Compression
+
+**Without graphify-ts:**
+Agent reads files one by one. To answer "How does the AI pipeline work?", it might read 20+ files (~50K tokens) and still miss connections.
+
+**With graphify-ts (retrieve tool):**
+```
+Question: "How does the AI pipeline process an idea from submission to report?"
+Tokens used: 2,988
+Corpus size: 1,146,953 tokens
+Compression: 384x
+```
+
+One MCP call returns 56 relevant nodes with code snippets, relationships, and community context — in 3K tokens instead of 1.1M.
+
+---
+
+### 2. Impact Analysis — Know What Breaks
+
+**Without graphify-ts:**
+Agent greps for `User` across files. Finds some imports. Misses transitive dependencies. You refactor and break 12 services you didn't know about.
+
+**With graphify-ts (impact tool):**
+```
+Target: User entity
+Direct dependents: 67 files
+Transitive dependents: 589 nodes
+Affected files: 318 (of 1,268)
+Affected communities: 42 modules
+```
+
+One call shows the full blast radius. The agent tells you: "This touches auth, billing, credits, domains, email, and 36 more modules. Recommend incremental migration."
+
+---
+
+### 3. Community Detection — See Module Boundaries
+
+**Without graphify-ts:**
+Agent reads folder structure. `src/modules/admin/` looks like one module, but actually contains 5 unrelated services with 0.1 cohesion.
+
+**With graphify-ts (community_details tool):**
+```
+10,474 nodes clustered into 2,244 communities via Louvain algorithm
+Low-cohesion warnings: WebSocketService (0.10), ProductOverview (0.07)
+God nodes: User (67 edges), Button (56), WebSocketService (42)
+```
+
+The graph reveals structural problems invisible from file paths alone.
+
+---
+
+### 4. Cross-Module Understanding
+
+**Without graphify-ts:**
+Agent can't see how the frontend auth flow connects to the backend session service without reading both codebases.
+
+**With graphify-ts (community_overview + retrieve):**
+The agent sees all 2,244 modules, their sizes, connections, and bridge nodes in one call. Then drills into specific modules with `community_details` at micro/mid/macro zoom levels.
+
+---
+
+### 5. Multi-Repo Federation
+
+**Without graphify-ts:**
+Each repo is a black box. Agent can't answer "which backend services does the frontend depend on?"
+
+**With graphify-ts (federate command):**
+```bash
+graphify-ts federate frontend/graphify-out/graph.json backend/graphify-out/graph.json
+```
+
+Merges graphs, infers cross-repo edges from shared types, and all MCP tools work on the unified graph.
+
+---
+
+## Benchmark Summary
+
+| Metric | GoValidate (production SaaS) |
+|--------|------------------------------|
+| Corpus | 1,268 files · ~860K words |
+| Graph | 10,474 nodes · 14,687 edges |
+| Communities | 2,244 (Louvain) |
+| Retrieve compression | **384x** (3K tokens vs 1.1M) |
+| Impact analysis (User entity) | 67 direct + 589 transitive dependents |
+| Generation time | ~30 seconds |
+| API keys required | **0** |
+| Cloud services required | **0** |
+
+## How to Run These Benchmarks
+
+```bash
+# Install
+npm install -g @mohammednagy/graphify-ts
+
+# Generate graph for your project
+graphify-ts generate .
+
+# Run the built-in benchmark
+graphify-ts benchmark graphify-out/graph.json
+
+# Set up your AI agent
+graphify-ts claude install    # writes .mcp.json with MCP server
+graphify-ts cursor install    # writes .cursor/mcp.json
+graphify-ts copilot install   # writes .vscode/mcp.json
+
+# Ask your agent a question — it will use retrieve, impact, etc. automatically
+```

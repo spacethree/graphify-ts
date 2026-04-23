@@ -159,6 +159,28 @@ graphify-ts generate . --docs          # per-community documentation
 graphify-ts generate . --include-docs  # include markdown/text files
 ```
 
+## Benchmarks — Real Numbers from a Production Codebase
+
+Measured on a production NestJS + Next.js SaaS (1,268 files, ~860K words):
+
+| Metric | Value |
+|--------|-------|
+| Retrieve compression | **384x** (3K tokens vs 1.1M corpus) |
+| Impact analysis (User entity) | 67 direct + 589 transitive dependents across 318 files |
+| Community detection | 10,474 nodes → 2,244 communities (Louvain) |
+| Generation time | ~30 seconds |
+| API keys required | **0** |
+
+See [`examples/why-graphify.md`](examples/why-graphify.md) for detailed benchmarks and [`examples/mcp-tool-examples.md`](examples/mcp-tool-examples.md) for real MCP tool input/output.
+
+Run the quick benchmark on your own project:
+
+```bash
+cd your-project
+npx @mohammednagy/graphify-ts generate .
+npx @mohammednagy/graphify-ts benchmark graphify-out/graph.json
+```
+
 ## Credit
 
 `graphify-ts` gives full credit to the original [`graphify`](https://github.com/safishamsi/graphify) project by [Safi Shamsi](https://github.com/safishamsi). This is a Node/TypeScript implementation of that vision, adapted for local graph workflows and AI agent integration.
