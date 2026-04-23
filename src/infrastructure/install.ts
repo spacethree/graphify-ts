@@ -454,13 +454,16 @@ function installMcpServer(projectDir: string, target: McpConfigTarget = 'claude'
   const mcpJsonPath = join(projectDir, MCP_CONFIG_PATHS[target])
   ensureParentDirectory(mcpJsonPath)
   const mcpConfig = readJsonObject(mcpJsonPath)
-  const mcpServers = ensureRecord(mcpConfig, 'mcpServers')
 
   const graphPath = join(projectDir, 'graphify-out', 'graph.json')
-  const serverConfig = {
-    command: 'npx',
-    args: ['graphify-ts', 'serve', '--stdio', graphPath],
-  }
+  const isVscode = target === 'copilot'
+  const serverConfig = isVscode
+    ? { type: 'stdio', command: 'npx', args: ['graphify-ts', 'serve', '--stdio', graphPath] }
+    : { command: 'npx', args: ['graphify-ts', 'serve', '--stdio', graphPath] }
+
+  // VS Code uses "servers" key, Claude/Cursor use "mcpServers"
+  const serversKey = isVscode ? 'servers' : 'mcpServers'
+  const mcpServers = ensureRecord(mcpConfig, serversKey)
 
   const existed = isRecord(mcpServers[SKILL_SLUG])
   mcpServers[SKILL_SLUG] = serverConfig
