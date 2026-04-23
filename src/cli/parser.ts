@@ -77,6 +77,7 @@ export interface GenerateCliOptions {
   neo4jUser: string | null
   neo4jPassword: string | null
   neo4jDatabase: string | null
+  includeDocs: boolean
 }
 
 export interface WatchCliOptions {
@@ -560,6 +561,7 @@ export function parseGenerateArgs(args: string[]): GenerateCliOptions {
   let neo4jUser: string | null = null
   let neo4jPassword: string | null = null
   let neo4jDatabase: string | null = null
+  let includeDocs = false
 
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index]
@@ -706,6 +708,11 @@ export function parseGenerateArgs(args: string[]): GenerateCliOptions {
       continue
     }
 
+    if (argument === '--include-docs') {
+      includeDocs = true
+      continue
+    }
+
     throw new UsageError(`error: unknown option for generate: ${argument}`)
   }
 
@@ -732,6 +739,7 @@ export function parseGenerateArgs(args: string[]): GenerateCliOptions {
     neo4jUser,
     neo4jPassword,
     neo4jDatabase,
+    includeDocs,
   }
 }
 

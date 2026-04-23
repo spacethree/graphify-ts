@@ -136,6 +136,21 @@ export const MCP_TOOLS: McpToolDefinition[] = [
       },
     },
   },
+  {
+    name: 'retrieve',
+    description:
+      'Retrieve relevant context from the knowledge graph for a natural language question. Returns matched nodes with code snippets, relationships, community context, and structural signals (god nodes, bridges). Use this as the primary tool for answering codebase questions.',
+    inputSchema: {
+      type: 'object',
+      required: ['question', 'budget'],
+      properties: {
+        question: { type: 'string', description: 'Natural language question about the codebase' },
+        budget: { type: 'number', description: 'Maximum tokens to return in the context bundle' },
+        community: { type: 'number', description: 'Optional: limit retrieval to one community id' },
+        file_type: { type: 'string', description: 'Optional: limit retrieval to one file type (e.g. code, document)' },
+      },
+    },
+  },
 ]
 
 export const MCP_PROMPTS: McpPromptDefinition[] = [

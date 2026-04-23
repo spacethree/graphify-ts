@@ -119,6 +119,7 @@ export function formatHelp(binaryName = 'graphify-ts'): string {
     '    --directed           preserve edge direction (source → target) in the built graph',
     '    --follow-symlinks    include in-root symlink targets',
     '    --debounce S         watch debounce seconds (default 3)',
+    '    --include-docs       include .md/.txt/.rst document files (excluded by default)',
     '    --no-html            skip graph.html generation',
     '    --wiki               also export a crawlable wiki to graphify-out/wiki',
     '    --obsidian           also export an Obsidian vault',
@@ -209,6 +210,7 @@ function isGenerateLikeArgument(argument: string): boolean {
     argument === '--neo4j-database' ||
     argument === '--obsidian-dir' ||
     argument === '--debounce' ||
+    argument === '--include-docs' ||
     argument.startsWith('--neo4j-push=') ||
     argument.startsWith('--neo4j-user=') ||
     argument.startsWith('--neo4j-password=') ||
@@ -323,6 +325,7 @@ export async function executeCli(argv: string[], io: CliIO = console, dependenci
         svg: options.svg,
         graphml: options.graphml,
         neo4j: options.neo4j,
+        includeDocs: options.includeDocs,
       })
       io.log(formatGenerateSummary(result))
 

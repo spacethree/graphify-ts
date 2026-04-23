@@ -8,6 +8,7 @@ import { buildCommunityLabels } from '../pipeline/community-naming.js'
 import { diffGraphs } from './diff.js'
 import { freshnessAnnotations, resourceFreshnessMetadata } from './freshness.js'
 import { MCP_PROMPTS, MCP_TOOLS, type McpPromptDefinition } from './stdio/definitions.js'
+import { retrieveContext } from './retrieve.js'
 import {
   communitiesFromGraph,
   getCommunity,
@@ -1058,6 +1059,25 @@ function handleToolCall(id: string | number | null, graphPath: string, params: u
         return failure(id, JSONRPC_INVALID_PARAMS, 'get_community requires a numeric community_id parameter >= 0')
       }
       return ok(id, textToolResult(getCommunity(graph, communitiesFromGraph(graph), communityId)))
+    }
+    case 'retrieve': {
+      const question = stringParam(toolArguments, 'question')
+      if (!question) {
+        return failure(id, JSONRPC_INVALID_PARAMS, `retrieve requires a string question parameter <= ${MAX_STDIO_TEXT_LENGTH} characters`)
+      }
+      const retrieveBudget = numberParamAlias(toolArguments, ['budget'], { min: 1, max: MAX_STDIO_TOKEN_BUDGET })
+      if (retrieveBudget === null) {
+        return failure(id, JSONRPC_INVALID_PARAMS, `retrieve requires a numeric budget parameter between 1 and ${MAX_STDIO_TOKEN_BUDGET}`)
+      }
+      const retrieveCommunity = numberParamAlias(toolArguments, ['community', 'community_id', 'communityId'], { min: 0 })
+      const retrieveFileType = stringParamAlias(toolArguments, ['file_type', 'fileType'])
+      const result = retrieveContext(graph, {
+        question,
+        budget: retrieveBudget,
+        ...(retrieveCommunity !== null ? { community: retrieveCommunity } : {}),
+        ...(retrieveFileType ? { fileType: retrieveFileType } : {}),
+      })
+      return ok(id, textToolResult(JSON.stringify(result)))
     }
     default:
       return failure(id, JSONRPC_INVALID_PARAMS, `Unknown tool: ${toolName}`)

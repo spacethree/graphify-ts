@@ -5,3 +5,4 @@ coverage/
 graphify-out/
 .env
 .worktrees/
+docs/plans/

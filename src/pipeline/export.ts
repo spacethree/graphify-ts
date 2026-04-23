@@ -1409,7 +1409,7 @@ function loadInteractiveGraph() {
         return { id: n.id, label: n.label, title: n.file_type };
       })),
       edges: new vis.DataSet(data.edges.map(function(e) {
-        return { from: e.source, to: e.target, label: e.relation };
+        return { from: e.from, to: e.to, label: e.label };
       }))
     }, { physics: { stabilization: { iterations: 100 } } });
   };

@@ -27,6 +27,7 @@ export interface GenerateGraphOptions {
   svg?: boolean
   graphml?: boolean
   neo4j?: boolean
+  includeDocs?: boolean
 }
 
 export interface GenerateGraphResult {
@@ -219,6 +220,14 @@ export function generateGraph(rootPath = '.', options: GenerateGraphOptions = {}
   mkdirSync(resolvedOutputDir, { recursive: true })
 
   const detected = options.update ? detectIncremental(resolvedRootPath, manifestPath, detectOptions(options)) : detect(resolvedRootPath, detectOptions(options))
+
+  if (options.includeDocs === false) {
+    detected.files[FileType.DOCUMENT] = []
+    if (isIncrementalDetectResult(detected)) {
+      detected.new_files[FileType.DOCUMENT] = []
+      detected.unchanged_files[FileType.DOCUMENT] = []
+    }
+  }
   const notes: string[] = []
   const mode: GenerateGraphResult['mode'] = options.clusterOnly ? 'cluster-only' : options.update ? 'update' : 'generate'
 

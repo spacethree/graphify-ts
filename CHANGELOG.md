@@ -4,6 +4,17 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-04-23
+
+### Added
+
+- **RAG retrieval tool**: new `retrieve` MCP tool that takes a natural language question and token budget, finds relevant nodes via token-based prefix matching, expands through graph neighbors, reads code snippets from disk, and returns a structured context bundle with matched nodes, relationships, community context, and structural signals (god nodes, bridge nodes)
+- **`--include-docs` flag**: document files (`.md`, `.txt`, `.rst`) are now excluded from graph generation by default to reduce noise; pass `--include-docs` to opt in
+
+### Fixed
+
+- **Summary-mode edge rendering**: fixed field name mismatch (`e.source`/`e.target`/`e.relation` to `e.from`/`e.to`/`e.label`) in the "Load interactive graph" button handler for oversized community pages, which caused edges to not render at all in summary mode
+
 ## [0.4.2] - 2026-04-20
 
 ### Fixed
