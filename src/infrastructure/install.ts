@@ -470,8 +470,11 @@ function installClaudeHook(projectDir: string): string {
   const hooks = ensureRecord(settings, 'hooks')
   const preToolUse = ensureArray(hooks, 'PreToolUse')
 
-  if (preToolUse.some((hook) => isRecord(hook) && hook.matcher === 'Glob|Grep' && JSON.stringify(hook).includes(SKILL_SLUG))) {
-    return '.claude/settings.json -> hook already registered (no change)'
+  const existingIndex = preToolUse.findIndex((hook) => isRecord(hook) && hook.matcher === 'Glob|Grep' && JSON.stringify(hook).includes(SKILL_SLUG))
+  if (existingIndex >= 0) {
+    preToolUse[existingIndex] = SETTINGS_HOOK
+    writeJson(settingsPath, settings)
+    return '.claude/settings.json -> hook updated'
   }
 
   preToolUse.push(SETTINGS_HOOK)
