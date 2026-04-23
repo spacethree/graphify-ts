@@ -6,3 +6,5 @@ graphify-out/
 .env
 .worktrees/
 docs/plans/
+CLAUDE.md
+.claude
