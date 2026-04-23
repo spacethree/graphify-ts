@@ -137,6 +137,55 @@ export const MCP_TOOLS: McpToolDefinition[] = [
     },
   },
   {
+    name: 'impact',
+    description:
+      'Analyze the blast radius of changing a node. Returns direct dependents, transitive dependents, affected files, and affected communities. Use this before making changes to understand what could break.',
+    inputSchema: {
+      type: 'object',
+      required: ['label'],
+      properties: {
+        label: { type: 'string', description: 'Label of the node to analyze impact for' },
+        depth: { type: 'number', description: 'Maximum traversal depth (default 3, max 5)' },
+        edge_types: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional: limit to specific edge types (e.g. ["calls", "imports_from"])',
+        },
+      },
+    },
+  },
+  {
+    name: 'call_chain',
+    description:
+      'Find all execution paths between two nodes filtered by call/import edges. Returns ordered chains showing how execution flows from source to target.',
+    inputSchema: {
+      type: 'object',
+      required: ['source', 'target'],
+      properties: {
+        source: { type: 'string', description: 'Starting node label' },
+        target: { type: 'string', description: 'Target node label' },
+        max_hops: { type: 'number', description: 'Maximum chain length (default 8)' },
+        edge_types: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Edge types to follow (default: ["calls", "imports_from"])',
+        },
+      },
+    },
+  },
+  {
+    name: 'pr_impact',
+    description:
+      'Analyze the impact of current git changes against the knowledge graph. Parses git diff, finds affected nodes, and computes blast radius across the codebase. Use before creating a PR to understand risk.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        base_branch: { type: 'string', description: 'Base branch to diff against (default: auto-detect main/master)' },
+        depth: { type: 'number', description: 'Blast radius depth (default 3)' },
+      },
+    },
+  },
+  {
     name: 'retrieve',
     description:
       'Retrieve relevant context from the knowledge graph for a natural language question. Returns matched nodes with code snippets, relationships, community context, and structural signals (god nodes, bridges). Use this as the primary tool for answering codebase questions.',
