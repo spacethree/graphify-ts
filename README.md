@@ -1,245 +1,171 @@
 # graphify-ts
 
-[![version 0.2.2](https://img.shields.io/badge/version-0.2.2-2563eb)](https://github.com/mohanagy/graphify-ts)
+[![npm](https://img.shields.io/npm/v/@mohammednagy/graphify-ts)](https://www.npmjs.com/package/@mohammednagy/graphify-ts)
 [![node >=20](https://img.shields.io/badge/node-%E2%89%A520-3c873a)](https://nodejs.org/)
 [![TypeScript 5.8](https://img.shields.io/badge/typescript-5.8-3178c6)](https://www.typescriptlang.org/)
 [![Vitest 3.2](https://img.shields.io/badge/tests-Vitest%203.2-6e9f18)](https://vitest.dev/)
 [![Local first](https://img.shields.io/badge/local--first-no%20cloud%20required-0f766e)](#what-this-package-is-best-at-today)
-[![HTTP + stdio runtime](https://img.shields.io/badge/runtime-HTTP%20%2B%20stdio-7c3aed)](#common-commands)
-[![HTML + JSON artifacts](https://img.shields.io/badge/artifacts-HTML%20%2B%20JSON-f59e0b)](#what-you-get)
-[![No Python runtime](https://img.shields.io/badge/runtime-no%20Python%20required-111827)](#install)
+[![No API keys](https://img.shields.io/badge/API%20keys-none%20required-111827)](#what-this-package-is-best-at-today)
 [![license MIT](https://img.shields.io/badge/license-MIT-16a34a)](https://github.com/mohanagy/graphify-ts/blob/main/LICENSE)
 
-`graphify-ts` is a local TypeScript CLI that turns a repository or mixed project folder into reusable graph artifacts. It generates `graph.json`, `GRAPH_REPORT.md`, and HTML views that you can inspect directly, query from the CLI, or serve to local tools.
+`graphify-ts` is a local TypeScript CLI that turns codebases and mixed project folders into queryable knowledge graphs. It generates graph artifacts that AI agents (Claude, Copilot, Cursor, Gemini) use to answer codebase questions with structural awareness — impact analysis, call chains, cross-repo connections — without sending your code anywhere.
 
-The package is strongest today as a **local graph generator and explorer for codebases**, especially JavaScript / TypeScript repositories. Broader extraction and ingest support exists, but it varies by extractor family and is documented more precisely in [the current status doc](https://github.com/mohanagy/graphify-ts/blob/main/docs/plans/current-status.md).
-
-The npm package name is `@mohammednagy/graphify-ts`, and the installed command is `graphify-ts`.
+**Zero cloud. Zero API keys. The agent you already have does the intelligence work.**
 
 ## What this package is best at today
 
-- **Generate local graph artifacts** for a repository or mixed project folder.
-- **Explore those artifacts** through HTML, reports, and CLI commands such as `query`, `explain`, `path`, and `diff`.
-- **Provide persistent repo context** for local automation and AI workflows without requiring a Python runtime or a hosted service.
-
-If you want one sentence: `graphify-ts` is best used as a **local-first codebase graph generator with practical explorer/query tooling around the generated artifacts**.
+- **Generate local graph artifacts** for a repository or mixed project folder
+- **Give AI agents structured codebase context** via MCP tools (`retrieve`, `impact`, `call_chain`, `pr_impact`)
+- **Explore the graph** through interactive HTML, reports, and CLI commands
+- **Analyze blast radius** before making changes — know what breaks across modules and repos
+- **Federate multiple repos** into a single queryable super-graph
 
 ## Install
 
-Prerequisites:
-
-- Node.js 20+
-- npm
-
-Install globally:
-
 ```bash
 npm install -g @mohammednagy/graphify-ts
-graphify-ts --help
 ```
-
-Or run it one-off with `npx`:
-
-```bash
-npx @mohammednagy/graphify-ts --help
-```
-
-If your shell still says `command not found: graphify-ts` immediately after the global install, open a new terminal and check where npm places global executables:
-
-```bash
-command -v graphify-ts
-npm prefix -g
-echo "$PATH"
-```
-
-On macOS with Homebrew-managed Node.js, the global executable is typically linked into `/opt/homebrew/bin/graphify-ts`. If `command -v graphify-ts` is empty, make sure `/opt/homebrew/bin` is on your `PATH`, then open a fresh terminal and try again.
 
 ## Quick start
 
-Generate graph artifacts for the current folder:
-
 ```bash
+# Generate the graph
 graphify-ts generate .
+
+# Set up your AI agent integration
+graphify-ts claude install    # or cursor, copilot, gemini
+
+# Now your agent can use retrieve, impact, call_chain, and other MCP tools
 ```
 
-Then inspect the outputs:
-
-- open `graphify-out/graph.html` in a browser
-- read `graphify-out/GRAPH_REPORT.md`
-- keep `graphify-out/graph.json` for CLI queries and serve flows
-
-Run a few common follow-up commands:
-
-```bash
-graphify-ts query "how does the auth flow work?" --graph graphify-out/graph.json
-graphify-ts explain "SomeNodeLabel" --graph graphify-out/graph.json
-graphify-ts path "SourceConcept" "TargetConcept" --graph graphify-out/graph.json
-graphify-ts diff previous-run/graph.json --graph graphify-out/graph.json
-graphify-ts serve graphify-out/graph.json
-```
-
-Replace `SomeNodeLabel`, `SourceConcept`, and `TargetConcept` with labels that actually exist in your generated graph.
-
-## What you get
-
-After a successful `generate` run, `graphify-ts` writes artifacts into `graphify-out/`:
+What you get in `graphify-out/`:
 
 ```text
 graphify-out/
-├── graph.html       interactive graph explorer (or overview page for large graphs)
-├── GRAPH_REPORT.md  summary report with structure signals, god nodes, semantic anomalies, and suggested questions
-├── graph.json       machine-readable graph for query/serve flows, community labels, and semantic anomalies
-├── graph-pages/     focused community explorer pages, with summary-only fallbacks for oversized communities
+├── graph.html       interactive explorer (overview + community pages)
+├── GRAPH_REPORT.md  structure signals, god nodes, anomalies, suggested questions
+├── graph.json       machine-readable graph for MCP tools and queries
+├── graph-pages/     per-community explorer pages
+├── docs/            auto-generated module documentation (with --docs)
 └── cache/           content-addressed extraction cache
 ```
 
-Optional exports are also available for wiki, Obsidian, SVG, GraphML, and Neo4j workflows.
+## MCP Tools for AI Agents
 
-For smaller graphs, `graph.html` stays self-contained and opens the full interactive explorer directly. For larger graphs, `graphify-ts` switches to an overview-first HTML mode that opens quickly, shows semantic community names, highlights workspace bridge nodes, and links into focused per-community pages under `graph-pages/`. If one detected community is still too large to render safely as a single vis graph, its page becomes a summary/search view instead of a browser-freezing interactive canvas. `GRAPH_REPORT.md` now also surfaces basic entity-level fragmentation signals such as weakly connected component count, singleton components, isolated nodes, largest-component share, and a `Workspace Bridges` section so mixed-workspace quality can be judged with concrete numbers and concrete starting points instead of screenshots alone. Runtime `query` output and `explain` node summaries also preserve generated community labels and call out bridge nodes when they appear in the answer, while `benchmark` can score expected evidence labels for question packs instead of only counting whether any subgraph was returned. Direct JS/TS relative imports that resolve to real top-level exports, plus local relative barrels that use explicit forwarding (`export { createSession } from './auth.js'`), imported-binding re-export shapes (`import { createSession } from './auth.js'; export { createSession }`), `export *` chains, anonymous default-export forwarding (`export { default } from './auth.js'`), or imported-binding default barrels (`import createSession from './auth.js'; export default createSession`), are now stitched onto shared target nodes during multi-file extraction, including call edges from anonymous default-export bodies, so mixed-workspace graphs can connect related app roots without merging unrelated folders heuristically.
+When an agent connects via `graphify-ts serve --stdio`, it gets these tools:
+
+| Tool | What it does |
+|------|-------------|
+| `retrieve` | One-call context retrieval — question + token budget → matched nodes with code snippets, relationships, community context |
+| `impact` | Blast radius analysis — "if I change X, what could break?" with direct/transitive dependents |
+| `call_chain` | Execution path tracing — all paths from A to B filtered by edge type |
+| `pr_impact` | PR risk analysis — git diff → affected nodes → aggregate blast radius |
+| `community_details` | Hierarchical community data at micro/mid/macro zoom levels |
+| `community_overview` | Quick overview of all communities — names, sizes, top nodes |
+| `query_graph` | Graph traversal for a natural language question |
+| `get_node` | Node details |
+| `explain_node` | Node + neighborhood summary |
+| `shortest_path` | Shortest path between two concepts |
+| `graph_diff` | Compare two graph snapshots |
+| `god_nodes` | Most connected non-file nodes |
+| `semantic_anomalies` | Structural anomalies and coupling signals |
+| `get_community` | Community members |
+
+The agent uses these tools to answer questions like:
+- "How does authentication work?" → `retrieve` returns relevant nodes with code snippets
+- "What breaks if I refactor SessionManager?" → `impact` shows 23 dependents across 4 communities
+- "How does a request flow from the API to the database?" → `call_chain` traces the execution path
+- "Is this PR safe to merge?" → `pr_impact` computes blast radius of all changes
+
+## Multi-Repo Federation
+
+For teams with multiple repos (microservices, frontend/backend splits):
+
+```bash
+graphify-ts federate \
+  frontend/graphify-out/graph.json \
+  backend/graphify-out/graph.json \
+  shared/graphify-out/graph.json \
+  --output federated-out
+```
+
+This merges graphs and infers cross-repo connections from shared types and function names. All MCP tools work on the federated graph.
 
 ## Common commands
 
 | Command | What it does |
 |---|---|
 | `generate [path]` | Build graph artifacts for a folder |
-| `watch [path]` | Build once, then watch supported files and refresh incrementally |
-| `serve [graph.json]` | Serve graph artifacts over HTTP or stdio |
-| `query "<question>"` | Traverse `graph.json` for a question |
-| `diff <baseline-graph.json>` | Compare two graph snapshots |
-| `path <source> <target>` | Find the shortest path between two concepts |
+| `generate [path] --docs` | Also generate per-community module documentation |
+| `generate [path] --include-docs` | Include .md/.txt/.rst files (excluded by default) |
+| `federate <g1> <g2> ...` | Merge graphs from multiple repos |
+| `watch [path]` | Build once, then watch for changes |
+| `serve [graph.json]` | Serve graph via HTTP or stdio (MCP) |
+| `query "<question>"` | Traverse the graph for a question |
+| `diff <baseline.json>` | Compare two graph snapshots |
+| `path <source> <target>` | Find shortest path between concepts |
 | `explain <label>` | Explain one node and its neighborhood |
-| `add <url> [path]` | Ingest a URL into a corpus and rebuild with `--update` |
-| `save-result` | Save a Q&A result into `graphify-out/memory/` |
-| `benchmark [graph.json]` | Measure token reduction, question coverage, expected-evidence coverage, and, when provenance is complete, entity-level workspace structure signals including low-cohesion community baselines |
-| `install` / `claude install` / `cursor install` / `copilot install` | Write local assistant/platform integration rules |
+| `add <url> [path]` | Ingest a URL and rebuild |
+| `benchmark [graph.json]` | Measure token reduction and structure signals |
+| `install --platform claude` | Install home-level Claude skill |
+| `claude install` | Install project-local Claude integration with MCP auto-start |
 
-For the full command surface, run:
+For the full command surface: `graphify-ts --help`
 
-```bash
-graphify-ts --help
-```
-
-For graph queries, you can also:
-
-- use `--rank-by degree` to prioritize more connected matches over plain-text relevance
-- use `--community <id>` to stay inside one detected community
-- use `--file-type <type>` to limit traversal to one node type such as `code` or `document`
-
-When you run `graphify-ts serve graphify-out/graph.json --mcp`, graph-aware prompt consumers also get prompt/resource/tool surfaces backed by the generated graph, including community summaries, diff support, anomaly surfacing, and freshness metadata for served artifacts.
-
-## Smoke test with bundled fixtures
-
-If you want a deterministic smoke test using the bundled fixture corpus in this repo, run:
+## AI Platform Integration
 
 ```bash
-graphify-ts generate tests/fixtures --no-html
-graphify-ts explain HttpClient --graph tests/fixtures/graphify-out/graph.json
-graphify-ts query "HttpClient buildHeaders" --graph tests/fixtures/graphify-out/graph.json
-```
-
-If you do not want a global install, replace `graphify-ts` with `npx @mohammednagy/graphify-ts` in the same commands.
-
-Expected result:
-
-- `generate` completes and writes `tests/fixtures/graphify-out/graph.json`
-- `explain` returns the `HttpClient` node plus its method neighbors
-- `query` returns a small traversal rooted around `HttpClient` and `buildHeaders()`
-
-If you want the interactive UI for the same smoke test, rerun without `--no-html` and open `tests/fixtures/graphify-out/graph.html`.
-
-## AI platforms and local integrations
-
-`graphify-ts` can also feed local tooling such as Claude Code, Cursor, Copilot, and other prompt consumers by pointing them at generated artifacts in `graphify-out/`.
-
-There are two different install surfaces:
-
-- `graphify-ts install --platform claude` installs the home-level Claude skill for your user account
-- `graphify-ts claude install` installs project-local Claude integration for the current repository
-
-Recommended Claude Code flow:
-
-```bash
-# once per machine
+# Once per machine
 npm install -g @mohammednagy/graphify-ts
-graphify-ts install --platform claude
+graphify-ts install --platform claude    # home-level skill
 
-# once per repository
-graphify-ts claude install
+# Once per repository
+graphify-ts claude install               # project-local rules + MCP server auto-start
 
-# rerun whenever you want fresh graph context
+# Regenerate whenever the code changes
 graphify-ts generate .
 ```
 
-Then inside Claude Code:
+`claude install` does three things:
+1. Writes rules to `CLAUDE.md` telling the agent to use `retrieve` for codebase questions
+2. Registers a PreToolUse hook that reminds the agent about the graph
+3. Configures the MCP server to auto-start in `.claude/settings.json`
 
-```text
-/graphify-ts .
-```
+Other platforms: `cursor install`, `copilot install`, `gemini install`, `aider install`
 
-You do **not** need to generate first for the install commands to succeed, but you do need generated artifacts before the integration has useful repo context to read.
+## Current scope
 
-## Current scope at a glance
-
-This README stays end-user focused. The matrix below is the short version of what is solid now versus broader support that exists but is more bounded or extractor-specific.
-
-| Area | Current shape | Notes |
+| Area | Status | Notes |
 |---|---|---|
-| Local graph generation and exploration | **Strong today** | Core `generate` / HTML / report / query / explain / path / diff workflow |
-| JavaScript / TypeScript extraction | **Strong today** | Uses the TypeScript compiler API |
-| Other code-language extraction | **Available, mixed depth** | Deeper AST-backed coverage for Python, Go, Java, Ruby, and a first Rust slice; lighter structural extraction elsewhere |
-| Documents, papers, and office files | **Available** | Markdown/text/PDF/DOCX/XLSX extraction with bounded metadata and citation lifting |
-| Images and local media metadata | **Available, bounded** | Deterministic image nodes plus bounded audio/video metadata extraction; no transcription yet |
-| URL ingest | **Available, route-specific** | Structured capture exists for several source families, with explicit fallback behavior when exact supported routes do not match |
-| Exports and integrations | **Available** | HTML/JSON by default, optional wiki/Obsidian/SVG/GraphML/Neo4j outputs, plus local assistant installers |
-| HTTP / stdio serving | **Available** | Lightweight local runtime around generated graph artifacts |
+| Graph generation + HTML explorer | Strong | Core workflow with Louvain community detection |
+| JavaScript / TypeScript extraction | Strong | TypeScript compiler API |
+| MCP tools for AI agents | Strong | 14 tools including retrieve, impact, call_chain |
+| Multi-repo federation | Available | Merges graphs with cross-repo edge inference |
+| Other languages | Available | Python, Go, Java, Ruby, Rust (tree-sitter), and more |
+| Documents and media | Available | PDF, DOCX, XLSX, images, audio/video metadata |
+| URL ingest | Available | GitHub, Reddit, HN, YouTube structured capture |
+| Exports | Available | HTML, JSON, wiki, Obsidian, SVG, GraphML, Neo4j |
 
-For the detailed implementation status, limitations, and roadmap material, see:
-
-- [Current status](https://github.com/mohanagy/graphify-ts/blob/main/docs/plans/current-status.md)
-- [Workspace-scale parity roadmap](https://github.com/mohanagy/graphify-ts/blob/main/docs/plans/2026-04-18-workspace-scale-parity-roadmap.md)
-
-## Optional outputs and integrations
-
-You can extend a `generate` run with flags such as:
-
-- `--wiki`
-- `--obsidian`
-- `--svg`
-- `--graphml`
-- `--neo4j`
-- `--neo4j-push <uri>`
-
-You can also use platform-specific installer commands to add local assistant rules or skills, for example:
+## Optional generate flags
 
 ```bash
-graphify-ts install --platform claude
-graphify-ts claude install
-graphify-ts cursor install
-graphify-ts copilot install
+graphify-ts generate . --wiki          # crawlable wiki
+graphify-ts generate . --obsidian      # Obsidian vault
+graphify-ts generate . --svg           # SVG export
+graphify-ts generate . --graphml       # GraphML for graph tools
+graphify-ts generate . --neo4j         # Cypher file for Neo4j
+graphify-ts generate . --neo4j-push bolt://localhost:7687  # direct push
+graphify-ts generate . --docs          # per-community documentation
+graphify-ts generate . --include-docs  # include markdown/text files
 ```
 
-## Credit to the original graphify
+## Credit
 
-`graphify-ts` gives full credit to the original [`graphify`](https://github.com/safishamsi/graphify) project by [Safi Shamsi](https://github.com/safishamsi). That project established the core idea and workflow of turning code, docs, and mixed project folders into a queryable knowledge graph for humans and AI coding assistants.
-
-This repository is a Node/TypeScript implementation of that vision, adapted for a Node-native CLI and local graph workflows. If you want the original Python-based project and its broader multimodal feature set, start with `graphify`.
+`graphify-ts` gives full credit to the original [`graphify`](https://github.com/safishamsi/graphify) project by [Safi Shamsi](https://github.com/safishamsi). This is a Node/TypeScript implementation of that vision, adapted for local graph workflows and AI agent integration.
 
 ## Contributing
 
-Contributions are welcome - especially parser fixes, fixture-backed regression coverage, docs improvements, install-flow polish, and graph-quality improvements.
-
-Before opening a pull request, please read:
+Contributions welcome — parser fixes, regression coverage, docs, install-flow polish, and graph-quality improvements.
 
 - [CONTRIBUTING.md](https://github.com/mohanagy/graphify-ts/blob/main/CONTRIBUTING.md)
 - [SECURITY.md](https://github.com/mohanagy/graphify-ts/blob/main/SECURITY.md)
-
-The repository now includes:
-
-- GitHub issue forms for bugs and feature requests
-- a pull request template
-- `CODEOWNERS`
-- a CI workflow for pull requests
-
-If you maintain the repository, apply the recommended GitHub branch protection and open-source safety settings from:
-
-- [docs/maintainers/repository-settings.md](https://github.com/mohanagy/graphify-ts/blob/main/docs/maintainers/repository-settings.md)

@@ -8,6 +8,9 @@ import { buildCommunityLabels } from '../pipeline/community-naming.js'
 import { diffGraphs } from './diff.js'
 import { freshnessAnnotations, resourceFreshnessMetadata } from './freshness.js'
 import { MCP_PROMPTS, MCP_TOOLS, type McpPromptDefinition } from './stdio/definitions.js'
+import { communityDetailsAtZoom, communityDetailsMicro, type CommunityZoomLevel } from '../pipeline/community-details.js'
+import { analyzeImpact, callChains } from './impact.js'
+import { analyzePrImpact } from './pr-impact.js'
 import { retrieveContext } from './retrieve.js'
 import {
   communitiesFromGraph,
@@ -1059,6 +1062,66 @@ function handleToolCall(id: string | number | null, graphPath: string, params: u
         return failure(id, JSONRPC_INVALID_PARAMS, 'get_community requires a numeric community_id parameter >= 0')
       }
       return ok(id, textToolResult(getCommunity(graph, communitiesFromGraph(graph), communityId)))
+    }
+    case 'community_details': {
+      const detailCommunityId = numberParamAlias(toolArguments, ['community_id', 'communityId'], { min: 0 })
+      if (detailCommunityId === null) {
+        return failure(id, JSONRPC_INVALID_PARAMS, 'community_details requires a numeric community_id parameter >= 0')
+      }
+      const zoomRaw = stringParam(toolArguments, 'zoom') ?? 'mid'
+      const zoom: CommunityZoomLevel = zoomRaw === 'micro' || zoomRaw === 'mid' || zoomRaw === 'macro' ? zoomRaw : 'mid'
+      const detailCommunities = communitiesFromGraph(graph)
+      const detailLabels = { ...buildCommunityLabels(graph, detailCommunities), ...readStoredCommunityLabels(graphPath) }
+      const details = communityDetailsAtZoom(graph, detailCommunities, detailLabels, detailCommunityId, zoom)
+      if (!details) {
+        return failure(id, JSONRPC_INVALID_PARAMS, `Unknown community: ${detailCommunityId}`)
+      }
+      return ok(id, textToolResult(JSON.stringify(details)))
+    }
+    case 'community_overview': {
+      const overviewCommunities = communitiesFromGraph(graph)
+      const overviewLabels = { ...buildCommunityLabels(graph, overviewCommunities), ...readStoredCommunityLabels(graphPath) }
+      const overview = communityDetailsMicro(graph, overviewCommunities, overviewLabels)
+      return ok(id, textToolResult(JSON.stringify(overview)))
+    }
+    case 'impact': {
+      const label = stringParam(toolArguments, 'label')
+      if (!label) {
+        return failure(id, JSONRPC_INVALID_PARAMS, `impact requires a string label parameter <= ${MAX_STDIO_TEXT_LENGTH} characters`)
+      }
+      const impactDepth = numberParamAlias(toolArguments, ['depth'], { min: 1, max: 5 })
+      const rawEdgeTypes = toolArguments.edge_types
+      const edgeTypes = Array.isArray(rawEdgeTypes) ? rawEdgeTypes.filter((t): t is string => typeof t === 'string') : undefined
+      const communityLabels = readStoredCommunityLabels(graphPath)
+      const impactResult = analyzeImpact(graph, communityLabels, {
+        label,
+        ...(impactDepth !== null ? { depth: impactDepth } : {}),
+        ...(edgeTypes && edgeTypes.length > 0 ? { edgeTypes } : {}),
+      })
+      return ok(id, textToolResult(JSON.stringify(impactResult)))
+    }
+    case 'call_chain': {
+      const chainSource = stringParam(toolArguments, 'source')
+      const chainTarget = stringParam(toolArguments, 'target')
+      if (!chainSource || !chainTarget) {
+        return failure(id, JSONRPC_INVALID_PARAMS, `call_chain requires string source and target parameters <= ${MAX_STDIO_TEXT_LENGTH} characters`)
+      }
+      const chainMaxHops = numberParamAlias(toolArguments, ['max_hops', 'maxHops'], { min: 1, max: MAX_STDIO_HOPS })
+      const rawChainEdgeTypes = toolArguments.edge_types
+      const chainEdgeTypes = Array.isArray(rawChainEdgeTypes) ? rawChainEdgeTypes.filter((t): t is string => typeof t === 'string') : undefined
+      const chains = callChains(graph, chainSource, chainTarget, chainMaxHops ?? 8, chainEdgeTypes)
+      return ok(id, textToolResult(JSON.stringify({ source: chainSource, target: chainTarget, chains, total: chains.length })))
+    }
+    case 'pr_impact': {
+      const prBaseBranch = stringParamAlias(toolArguments, ['base_branch', 'baseBranch'])
+      const prDepth = numberParamAlias(toolArguments, ['depth'], { min: 1, max: 5 })
+      const graphDir = dirname(validateGraphPath(graphPath))
+      const projectRoot = dirname(graphDir)
+      const prResult = analyzePrImpact(graph, projectRoot, {
+        ...(prBaseBranch ? { baseBranch: prBaseBranch } : {}),
+        ...(prDepth !== null ? { depth: prDepth } : {}),
+      })
+      return ok(id, textToolResult(JSON.stringify(prResult)))
     }
     case 'retrieve': {
       const question = stringParam(toolArguments, 'question')

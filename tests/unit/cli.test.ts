@@ -119,6 +119,7 @@ function createDependencies(): CliDependencies {
       svgPath: options.svg ? resolve(rootPath, 'graphify-out', 'graph.svg') : null,
       graphmlPath: options.graphml ? resolve(rootPath, 'graphify-out', 'graph.graphml') : null,
       cypherPath: options.neo4j ? resolve(rootPath, 'graphify-out', 'cypher.txt') : null,
+      docsPath: null,
       totalFiles: 3,
       codeFiles: 2,
       nonCodeFiles: 1,
@@ -296,6 +297,7 @@ describe('cli parser', () => {
       neo4jPassword: null,
       neo4jDatabase: null,
       includeDocs: false,
+      docs: false,
     })
 
     expect(
@@ -344,6 +346,7 @@ describe('cli parser', () => {
       neo4jPassword: 'secret',
       neo4jDatabase: 'graphify',
       includeDocs: false,
+      docs: false,
     })
 
     expect(() => parseGenerateArgs(['src', 'other'])).toThrow('Usage: graphify-ts generate')
@@ -586,6 +589,7 @@ describe('cli main', () => {
         svgPath: options.svg ? resolve(rootPath, 'graphify-out', 'graph.svg') : null,
         graphmlPath: options.graphml ? resolve(rootPath, 'graphify-out', 'graph.graphml') : null,
         cypherPath: options.neo4j ? resolve(rootPath, 'graphify-out', 'cypher.txt') : null,
+      docsPath: null,
         totalFiles: 3,
         codeFiles: 2,
         nonCodeFiles: 1,
@@ -621,6 +625,7 @@ describe('cli main', () => {
       graphml: true,
       neo4j: true,
       includeDocs: false,
+      docs: false,
     })
   })
 

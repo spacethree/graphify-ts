@@ -8,6 +8,7 @@ import { buildFromJson } from '../pipeline/build.js'
 import { cluster, scoreAll } from '../pipeline/cluster.js'
 import { buildCommunityLabels } from '../pipeline/community-naming.js'
 import { type DetectResult, detect, detectIncremental, FileType, saveManifest } from '../pipeline/detect.js'
+import { generateDocs as generateDocsArtifacts } from '../pipeline/docs.js'
 import { toCypher, toGraphml, toHtml, toJson, toObsidian, toSvg } from '../pipeline/export.js'
 import { extract, EXTRACTOR_CACHE_VERSION } from '../pipeline/extract.js'
 import { generate as generateReport } from '../pipeline/report.js'
@@ -28,6 +29,7 @@ export interface GenerateGraphOptions {
   graphml?: boolean
   neo4j?: boolean
   includeDocs?: boolean
+  docs?: boolean
 }
 
 export interface GenerateGraphResult {
@@ -42,6 +44,7 @@ export interface GenerateGraphResult {
   svgPath: string | null
   graphmlPath: string | null
   cypherPath: string | null
+  docsPath: string | null
   totalFiles: number
   codeFiles: number
   nonCodeFiles: number
@@ -364,6 +367,14 @@ export function generateGraph(rootPath = '.', options: GenerateGraphOptions = {}
   if (cypherPath) {
     toCypher(graph, cypherPath)
   }
+
+  let docsPath: string | null = null
+  if (options.docs) {
+    const docsResult = generateDocsArtifacts(graph, communities, communityLabels, resolvedOutputDir)
+    docsPath = docsResult.docsPath
+    notes.push(`${docsResult.fileCount} module doc(s) generated in ${docsPath}.`)
+  }
+
   saveManifest(detected.files, manifestPath)
 
   return {
@@ -378,6 +389,7 @@ export function generateGraph(rootPath = '.', options: GenerateGraphOptions = {}
     svgPath,
     graphmlPath,
     cypherPath,
+    docsPath,
     totalFiles: detected.total_files,
     codeFiles: codeFiles.length,
     nonCodeFiles,
