@@ -4,6 +4,19 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-04-23
+
+### Changed
+
+- **Louvain community detection**: replaced the bridge-edge-removal algorithm with proper Louvain modularity optimization, eliminating the mega-community problem where 79% of nodes collapsed into a single cluster; communities now have a max size of ~150 nodes with automatic hierarchical sub-clustering for oversized groups
+- **Install templates updated**: `graphify-ts claude install` (and other platforms) now instructs agents to use the `retrieve` MCP tool as the primary context source, falling back to `GRAPH_REPORT.md` when the MCP server is unavailable
+- **Postinstall reminder**: global installs now print a reminder to re-run platform install commands for the latest agent rules
+
+### Fixed
+
+- **Graph physics stabilization**: vis-network interactive graphs now freeze after layout stabilization instead of continuously bouncing; stabilization iterations increased from 100 to 300
+- **Graph container sizing**: summary-mode community pages now use `80vh` height instead of fixed `600px`, filling the viewport
+
 ## [0.5.0] - 2026-04-23
 
 ### Added

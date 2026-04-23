@@ -99,7 +99,7 @@ const SETTINGS_HOOK = {
       type: 'command',
       command:
         `[ -f graphify-out/graph.json ] && ` +
-        `echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"graphify-ts: Knowledge graph exists. Read graphify-out/GRAPH_REPORT.md for god nodes and community structure before searching raw files."}}' || true`,
+        `echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"graphify-ts: Knowledge graph exists. Use the retrieve MCP tool for codebase questions, or read graphify-out/GRAPH_REPORT.md for god nodes and community structure."}}' || true`,
     },
   ],
 }
@@ -115,7 +115,7 @@ const CODEX_HOOK = {
             type: 'command',
             command:
               `[ -f graphify-out/graph.json ] && ` +
-              `echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"},"systemMessage":"graphify-ts: Knowledge graph exists. Read graphify-out/GRAPH_REPORT.md for god nodes and community structure before searching raw files."}' || true`,
+              `echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"},"systemMessage":"graphify-ts: Knowledge graph exists. Use the retrieve MCP tool for codebase questions, or read graphify-out/GRAPH_REPORT.md for god nodes and community structure."}' || true`,
           },
         ],
       },
@@ -131,7 +131,7 @@ const GEMINI_HOOK = {
       type: 'command',
       command:
         `[ -f graphify-out/graph.json ] && ` +
-        `echo '{"decision":"allow","additionalContext":"graphify-ts: Knowledge graph exists. Read graphify-out/GRAPH_REPORT.md for god nodes and community structure before searching raw files."}' || ` +
+        `echo '{"decision":"allow","additionalContext":"graphify-ts: Knowledge graph exists. Use the retrieve MCP tool for codebase questions, or read graphify-out/GRAPH_REPORT.md for god nodes and community structure."}' || ` +
         `echo '{"decision":"allow"}'`,
     },
   ],
@@ -147,7 +147,7 @@ const CLAUDE_MD_SECTION = `${SECTION_MARKER}
 This project has a graphify-ts knowledge graph at graphify-out/.
 
 Rules:
-- Before answering architecture or codebase questions, read graphify-out/GRAPH_REPORT.md for god nodes and community structure
+- When answering codebase questions, use the \`retrieve\` MCP tool (via graphify-ts serve --stdio) with a question and token budget to get relevant nodes, code snippets, relationships, and structural signals. Fall back to reading graphify-out/GRAPH_REPORT.md if the MCP server is not available.
 - If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
 - Use only Node.js / TypeScript tooling in this repository. Do not install or invoke Python, pip, a legacy Python package, or a deleted reference checkout.
 - After modifying code files in this session, refresh graph artifacts with this repository's TypeScript graphify-ts workflow only.
@@ -158,7 +158,7 @@ const AGENTS_MD_SECTION = `${SECTION_MARKER}
 This project has a graphify-ts knowledge graph at graphify-out/.
 
 Rules:
-- Before answering architecture or codebase questions, read graphify-out/GRAPH_REPORT.md for god nodes and community structure
+- When answering codebase questions, use the \`retrieve\` MCP tool (via graphify-ts serve --stdio) with a question and token budget to get relevant nodes, code snippets, relationships, and structural signals. Fall back to reading graphify-out/GRAPH_REPORT.md if the MCP server is not available.
 - If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
 - Use only Node.js / TypeScript tooling in this repository. Do not install or invoke Python, pip, a legacy Python package, or a deleted reference checkout.
 - After modifying code files in this session, refresh graph artifacts with this repository's TypeScript graphify-ts workflow only.
@@ -169,7 +169,7 @@ const GEMINI_MD_SECTION = `${SECTION_MARKER}
 This project has a graphify-ts knowledge graph at graphify-out/.
 
 Rules:
-- Before answering architecture or codebase questions, read graphify-out/GRAPH_REPORT.md for god nodes and community structure
+- When answering codebase questions, use the \`retrieve\` MCP tool (via graphify-ts serve --stdio) with a question and token budget to get relevant nodes, code snippets, relationships, and structural signals. Fall back to reading graphify-out/GRAPH_REPORT.md if the MCP server is not available.
 - If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
 - Use only Node.js / TypeScript tooling in this repository. Do not install or invoke Python, pip, a legacy Python package, or a deleted reference checkout.
 - After modifying code files in this session, refresh graph artifacts with this repository's TypeScript graphify-ts workflow only.
@@ -195,7 +195,7 @@ export const GraphifyPlugin = async ({ directory }) => {
 
       if (input.tool === "bash") {
         output.args.command =
-          'echo "[graphify-ts] Knowledge graph available. Read graphify-out/GRAPH_REPORT.md for god nodes and architecture context before searching files." && ' +
+          'echo "[graphify-ts] Knowledge graph available. Use the retrieve MCP tool for codebase questions, or read graphify-out/GRAPH_REPORT.md for context." && ' +
           output.args.command;
         reminded = true;
       }
@@ -211,7 +211,7 @@ alwaysApply: true
 
 This project has a graphify-ts knowledge graph at graphify-out/.
 
-- Before answering architecture or codebase questions, read graphify-out/GRAPH_REPORT.md for god nodes and community structure
+- When answering codebase questions, use the \`retrieve\` MCP tool (via graphify-ts serve --stdio) with a question and token budget to get relevant nodes, code snippets, relationships, and structural signals. Fall back to reading graphify-out/GRAPH_REPORT.md if the MCP server is not available.
 - If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
 - Use only Node.js / TypeScript tooling in this repository. Do not install or invoke Python, pip, a legacy Python package, or a deleted reference checkout.
 - After modifying code files in this session, refresh graph artifacts with this repository's TypeScript graphify-ts workflow only.

@@ -245,9 +245,9 @@ describe('analyze', () => {
       isolated_nodes: 0,
       largest_component_nodes: 15,
       largest_component_ratio: 1,
-      low_cohesion_communities: 1,
-      largest_low_cohesion_community_nodes: 15,
-      largest_low_cohesion_community_score: 0.14,
+      low_cohesion_communities: 0,
+      largest_low_cohesion_community_nodes: 0,
+      largest_low_cohesion_community_score: 0,
     })
   })
 
@@ -354,8 +354,7 @@ describe('analyze', () => {
 
     const anomalies = semanticAnomalies(graph, communities, labels, 10)
 
-    expect(anomalies.map((anomaly) => anomaly.kind)).toEqual(expect.arrayContaining(['bridge_node', 'cross_boundary_edge', 'low_cohesion_community']))
-    expect(anomalies.find((anomaly) => anomaly.kind === 'low_cohesion_community')?.summary).toContain('Gamma Cycle')
+    expect(anomalies.map((anomaly) => anomaly.kind)).toEqual(expect.arrayContaining(['bridge_node', 'cross_boundary_edge']))
     expect(anomalies.every((anomaly) => anomaly.summary.length > 0 && anomaly.why.length > 0)).toBe(true)
     expect(anomalies.every((anomaly) => ['HIGH', 'MEDIUM', 'LOW'].includes(anomaly.severity))).toBe(true)
   })
@@ -496,8 +495,10 @@ describe('analyze', () => {
       10,
     )
 
+    // With Louvain clustering, the 15-node cycle is split into well-cohesioned
+    // sub-communities, so no low_cohesion question is generated
     const lowCohesionQuestion = questions.find((question) => question.type === 'low_cohesion')
-    expect(lowCohesionQuestion?.question).toContain('Sparse Cycle')
+    expect(lowCohesionQuestion).toBeUndefined()
   })
 
   it('returns a no-signal fallback when the graph is too clean', () => {

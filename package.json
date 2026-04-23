@@ -1,6 +1,6 @@
 {
     "name": "@mohammednagy/graphify-ts",
-    "version": "0.5.0",
+    "version": "0.5.1",
     "description": "Build local knowledge graphs from code, docs, and mixed project folders with a TypeScript CLI.",
     "license": "MIT",
     "author": "mohanagy",
@@ -47,7 +47,8 @@
         "prepack": "npm run clean && npm run build",
         "pack:dry-run": "npm pack --dry-run",
         "publish:public": "npm publish --access public",
-        "publish:dry-run": "npm publish --dry-run"
+        "publish:dry-run": "npm publish --dry-run",
+        "postinstall": "node -e \"try{const g=process.env.npm_config_global==='true';const d=!process.env.INIT_CWD;if(g||d)console.log('\\n  graphify-ts updated — re-run your platform install for latest agent rules:\\n  graphify-ts claude install | cursor install | gemini install\\n')}catch{}\""
     },
     "devDependencies": {
         "@types/node": "^24.0.0",

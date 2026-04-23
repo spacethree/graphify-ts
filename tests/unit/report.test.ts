@@ -110,10 +110,9 @@ describe('report', () => {
     const { graph, communities, cohesion, labels, detection, tokens } = makeLowCohesionInputs()
     const report = generate(graph, communities, cohesion, labels, [], [], [], detection, tokens, './project', [])
 
-    expect(report).toContain('Low-cohesion communities: 1')
-    expect(report).toContain('Largest low-cohesion community: 15 node(s) (cohesion 0.14)')
-    expect(report).toContain('Cohesion (entity basis within full-graph community): 0.14')
-    expect(report).toContain('Cohesion (entity basis within full-graph community): n/a')
+    // With Louvain clustering, the 15-node cycle is split into well-cohesioned
+    // sub-communities, so no low-cohesion signals appear
+    expect(report).toContain('Low-cohesion communities: 0')
   })
 
   it('renders bridge-first navigation hints for mixed workspaces', () => {

@@ -711,7 +711,7 @@ const network = new vis.Network(
   {
     autoResize: true,
     interaction: { hover: true, navigationButtons: true, keyboard: true },
-    physics: { stabilization: true, barnesHut: { gravitationalConstant: -4200, springLength: 120 } },
+    physics: { stabilization: { iterations: 300 }, barnesHut: { gravitationalConstant: -4200, springLength: 120 } },
     nodes: {
       borderWidth: 1.25,
       shape: 'dot',
@@ -726,6 +726,7 @@ const network = new vis.Network(
     },
   },
 );
+network.once('stabilizationIterationsDone', function() { network.setOptions({ physics: false }); });
 
 function createMeta(text, className) {
   const span = document.createElement('span');
@@ -1249,7 +1250,7 @@ function buildCommunitySummaryHtml(payload: HtmlPayload, options: InteractiveHtm
       font-size:0.9rem; font-weight:600; cursor:pointer;">
       ⚡ Load interactive graph
     </button>
-    <div id="visContainer" style="display:none;height:600px;border-radius:14px;overflow:hidden;margin-top:16px;"></div>
+    <div id="visContainer" style="display:none;height:80vh;min-height:600px;border-radius:14px;overflow:hidden;margin-top:16px;"></div>
     <script id="graphData" type="application/json">${graphDataJson}</script>
   </section>
 
@@ -1404,14 +1405,15 @@ function loadInteractiveGraph() {
     var container = document.getElementById('visContainer');
     container.style.display = 'block';
     btn.style.display = 'none';
-    new vis.Network(container, {
+    var net = new vis.Network(container, {
       nodes: new vis.DataSet(data.nodes.map(function(n) {
         return { id: n.id, label: n.label, title: n.file_type };
       })),
       edges: new vis.DataSet(data.edges.map(function(e) {
         return { from: e.from, to: e.to, label: e.label };
       }))
-    }, { physics: { stabilization: { iterations: 100 } } });
+    }, { physics: { stabilization: { iterations: 300 } } });
+    net.once('stabilizationIterationsDone', function() { net.setOptions({ physics: false }); });
   };
   s.onerror = function() {
     btn.disabled = false;
