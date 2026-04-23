@@ -217,7 +217,23 @@ export function buildCommunityLabels(graph: KnowledgeGraph, communities: Communi
 
     const duplicateCount = seen.get(label) ?? 0
     seen.set(label, duplicateCount + 1)
-    labels.set(communityId, duplicateCount === 0 ? label : `${label} (${communityId})`)
+
+    if (duplicateCount === 0) {
+      labels.set(communityId, label)
+    } else {
+      // Disambiguate using operation theme or representative node, not community ID
+      const operationTheme = dominantOperationTheme(nodeLabels)
+      const representative = representativeNodeLabel(graph, nodeIds)
+      const disambiguator = operationTheme && operationTheme !== label ? operationTheme : representative && representative !== label ? representative : null
+      let candidate = disambiguator ? `${label} — ${disambiguator}` : label
+      // If the disambiguated name is also taken, append a counter
+      const candidateCount = seen.get(candidate) ?? 0
+      seen.set(candidate, candidateCount + 1)
+      if (candidateCount > 0) {
+        candidate = `${candidate} (${candidateCount + 1})`
+      }
+      labels.set(communityId, candidate)
+    }
   }
 
   return Object.fromEntries(labels.entries())

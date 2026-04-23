@@ -442,6 +442,28 @@ function registerHomeClaudeSkill(homeDir: string): string {
   return hasCurrentSection ? `CLAUDE.md -> skill registration updated in ${claudeMdPath}` : `CLAUDE.md -> skill registered in ${claudeMdPath}`
 }
 
+function installMcpServer(projectDir: string): string {
+  const settingsPath = join(projectDir, '.claude', 'settings.json')
+  const settings = readJsonObject(settingsPath)
+  const mcpServers = ensureRecord(settings, 'mcpServers')
+
+  const graphPath = join(projectDir, 'graphify-out', 'graph.json')
+  const serverConfig = {
+    command: 'npx',
+    args: ['graphify-ts', 'serve', '--stdio', graphPath],
+  }
+
+  if (isRecord(mcpServers[SKILL_SLUG]) && JSON.stringify(mcpServers[SKILL_SLUG]).includes('graphify-ts')) {
+    mcpServers[SKILL_SLUG] = serverConfig
+    writeJson(settingsPath, settings)
+    return '.claude/settings.json -> MCP server updated'
+  }
+
+  mcpServers[SKILL_SLUG] = serverConfig
+  writeJson(settingsPath, settings)
+  return '.claude/settings.json -> MCP server registered'
+}
+
 function installClaudeHook(projectDir: string): string {
   const settingsPath = join(projectDir, '.claude', 'settings.json')
   const settings = readJsonObject(settingsPath)
@@ -740,8 +762,8 @@ export function cursorUninstall(projectDir = '.'): string {
 
 export function claudeInstall(projectDir = '.'): string {
   const resolvedProjectDir = resolve(projectDir)
-  const messages = [writeSection(join(resolvedProjectDir, 'CLAUDE.md'), CLAUDE_MD_SECTION), installClaudeHook(resolvedProjectDir)]
-  messages.push('', 'Claude Code will now check the knowledge graph before answering', 'codebase questions and rebuild it after code changes.')
+  const messages = [writeSection(join(resolvedProjectDir, 'CLAUDE.md'), CLAUDE_MD_SECTION), installClaudeHook(resolvedProjectDir), installMcpServer(resolvedProjectDir)]
+  messages.push('', 'Claude Code will now use the retrieve MCP tool for codebase questions', 'and check the knowledge graph before searching raw files.')
   return messages.join('\n')
 }
 
@@ -752,6 +774,17 @@ export function claudeUninstall(projectDir = '.'): string {
   if (hookMessage) {
     messages.push(hookMessage)
   }
+
+  const settingsPath = join(resolvedProjectDir, '.claude', 'settings.json')
+  if (existsSync(settingsPath)) {
+    const settings = readJsonObject(settingsPath)
+    if (isRecord(settings.mcpServers) && Object.hasOwn(settings.mcpServers, SKILL_SLUG)) {
+      delete (settings.mcpServers as Record<string, unknown>)[SKILL_SLUG]
+      writeJson(settingsPath, settings)
+      messages.push('.claude/settings.json -> MCP server removed')
+    }
+  }
+
   return messages.join('\n')
 }
 

@@ -4,6 +4,13 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-04-23
+
+### Changed
+
+- **Community naming disambiguation**: duplicate community names now use operation or node-based suffixes (e.g. `Pipeline Extract — Rust`, `Pipeline Extract — Python`) instead of raw community IDs (`Pipeline Extract (27)`)
+- **MCP server auto-start**: `graphify-ts claude install` now registers an `mcpServers` entry in `.claude/settings.json` so the MCP server starts automatically when Claude Code opens the project — no manual `serve --stdio` needed
+
 ## [0.5.2] - 2026-04-23
 
 ### Fixed

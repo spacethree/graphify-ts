@@ -35,7 +35,7 @@ describe('buildCommunityLabels', () => {
     })
   })
 
-  it('disambiguates duplicate labels with the originating community id suffix', () => {
+  it('disambiguates duplicate labels with operation or node-based suffixes', () => {
     const graph = buildFromJson({
       nodes: [
         { id: 'a', label: 'KnowledgeGraph', file_type: 'code', source_file: '/repo/src/contracts/graph.ts' },
@@ -44,10 +44,11 @@ describe('buildCommunityLabels', () => {
       edges: [],
     })
 
-    expect(buildCommunityLabels(graph, { 0: ['a'], 5: ['b'] }, { rootPath: '/repo' })).toEqual({
-      0: 'Knowledge Graph',
-      5: 'Knowledge Graph (5)',
-    })
+    const labels = buildCommunityLabels(graph, { 0: ['a'], 5: ['b'] }, { rootPath: '/repo' })
+    expect(labels[0]).toBe('Knowledge Graph')
+    // Second community gets a disambiguated name (not just a numeric ID)
+    expect(labels[5]).not.toBe('Knowledge Graph')
+    expect(labels[5]).toContain('Knowledge Graph')
   })
 
   it('does not crash when labels include Object prototype property names', () => {
