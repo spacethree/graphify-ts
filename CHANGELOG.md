@@ -4,6 +4,12 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-04-23
+
+### Fixed
+
+- **Install idempotency**: `graphify-ts claude install` (and other platforms) now updates the existing rules section instead of printing "already configured" and leaving stale instructions
+
 ## [0.5.1] - 2026-04-23
 
 ### Changed
