@@ -443,9 +443,9 @@ function registerHomeClaudeSkill(homeDir: string): string {
 }
 
 function installMcpServer(projectDir: string): string {
-  const settingsPath = join(projectDir, '.claude', 'settings.json')
-  const settings = readJsonObject(settingsPath)
-  const mcpServers = ensureRecord(settings, 'mcpServers')
+  const mcpJsonPath = join(projectDir, '.mcp.json')
+  const mcpConfig = readJsonObject(mcpJsonPath)
+  const mcpServers = ensureRecord(mcpConfig, 'mcpServers')
 
   const graphPath = join(projectDir, 'graphify-out', 'graph.json')
   const serverConfig = {
@@ -453,15 +453,21 @@ function installMcpServer(projectDir: string): string {
     args: ['graphify-ts', 'serve', '--stdio', graphPath],
   }
 
-  if (isRecord(mcpServers[SKILL_SLUG]) && JSON.stringify(mcpServers[SKILL_SLUG]).includes('graphify-ts')) {
-    mcpServers[SKILL_SLUG] = serverConfig
-    writeJson(settingsPath, settings)
-    return '.claude/settings.json -> MCP server updated'
+  const existed = isRecord(mcpServers[SKILL_SLUG])
+  mcpServers[SKILL_SLUG] = serverConfig
+  writeJson(mcpJsonPath, mcpConfig)
+
+  // Clean up legacy mcpServers from .claude/settings.json if present
+  const legacySettingsPath = join(projectDir, '.claude', 'settings.json')
+  if (existsSync(legacySettingsPath)) {
+    const legacySettings = readJsonObject(legacySettingsPath)
+    if (isRecord(legacySettings.mcpServers) && Object.hasOwn(legacySettings.mcpServers, SKILL_SLUG)) {
+      delete (legacySettings.mcpServers as Record<string, unknown>)[SKILL_SLUG]
+      writeJson(legacySettingsPath, legacySettings)
+    }
   }
 
-  mcpServers[SKILL_SLUG] = serverConfig
-  writeJson(settingsPath, settings)
-  return '.claude/settings.json -> MCP server registered'
+  return existed ? '.mcp.json -> MCP server updated' : '.mcp.json -> MCP server registered'
 }
 
 function installClaudeHook(projectDir: string): string {
@@ -778,13 +784,23 @@ export function claudeUninstall(projectDir = '.'): string {
     messages.push(hookMessage)
   }
 
+  const mcpJsonPath = join(resolvedProjectDir, '.mcp.json')
+  if (existsSync(mcpJsonPath)) {
+    const mcpConfig = readJsonObject(mcpJsonPath)
+    if (isRecord(mcpConfig.mcpServers) && Object.hasOwn(mcpConfig.mcpServers, SKILL_SLUG)) {
+      delete (mcpConfig.mcpServers as Record<string, unknown>)[SKILL_SLUG]
+      writeJson(mcpJsonPath, mcpConfig)
+      messages.push('.mcp.json -> MCP server removed')
+    }
+  }
+
+  // Clean up legacy location
   const settingsPath = join(resolvedProjectDir, '.claude', 'settings.json')
   if (existsSync(settingsPath)) {
     const settings = readJsonObject(settingsPath)
     if (isRecord(settings.mcpServers) && Object.hasOwn(settings.mcpServers, SKILL_SLUG)) {
       delete (settings.mcpServers as Record<string, unknown>)[SKILL_SLUG]
       writeJson(settingsPath, settings)
-      messages.push('.claude/settings.json -> MCP server removed')
     }
   }
 
