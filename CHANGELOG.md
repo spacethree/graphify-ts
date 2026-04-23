@@ -4,6 +4,13 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-04-24
+
+### Fixed
+
+- **MCP server config location**: `claude install` now writes MCP server config to `.mcp.json` (project root) instead of `.claude/settings.json`, which is the correct location for Claude Code project-level MCP servers; existing legacy entries are cleaned up automatically
+- **Hook update**: `claude install` now updates stale hook commands instead of skipping with "already registered"
+
 ## [0.6.0] - 2026-04-24
 
 ### Added
