@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs'
 
 import { type BenchmarkResult, printBenchmark, runBenchmark } from '../infrastructure/benchmark.js'
+import { federate } from '../pipeline/federate.js'
 import { generateGraph, type GenerateGraphResult } from '../infrastructure/generate.js'
 import { install as installHooks, status as hookStatus, uninstall as uninstallHooks } from '../infrastructure/hooks.js'
 import { ingest, saveQueryResult } from '../infrastructure/ingest.js'
@@ -132,6 +133,8 @@ export function formatHelp(binaryName = 'graphify-ts'): string {
     '    --neo4j-user USER    Neo4j username (defaults to NEO4J_USER or neo4j)',
     '    --neo4j-password PW  Neo4j password (or set NEO4J_PASSWORD/.env)',
     '    --neo4j-database DB  Neo4j database (defaults to NEO4J_DATABASE or neo4j)',
+    '  federate <g1> <g2>... merge graphs from multiple repos into one',
+    '    --output DIR         output directory (default graphify-out-federated)',
     '  watch [path]          build once, then watch for code/doc changes',
     '    --follow-symlinks    include in-root symlink targets',
     '    --debounce S         watch debounce seconds (default 3)',
@@ -370,6 +373,42 @@ export async function executeCli(argv: string[], io: CliIO = console, dependenci
         noHtml: options.noHtml,
         logger: io,
       })
+      return 0
+    }
+
+    if (command === 'federate') {
+      if (args.length === 0) {
+        throw new UsageError('Usage: graphify-ts federate <graph1.json> <graph2.json> ... [--output DIR]')
+      }
+
+      const graphPaths: string[] = []
+      let outputDir: string | undefined
+
+      for (let index = 0; index < args.length; index += 1) {
+        const argument = args[index]
+        if (!argument) {
+          continue
+        }
+        if (argument === '--output' || argument === '--output-dir') {
+          outputDir = args[index + 1]
+          index += 1
+          continue
+        }
+        if (argument.startsWith('--output=') || argument.startsWith('--output-dir=')) {
+          const [, value] = argument.split('=', 2)
+          outputDir = value
+          continue
+        }
+        graphPaths.push(argument)
+      }
+
+      const result = federate(graphPaths, { outputDir })
+      io.log([
+        `[graphify federate] merged ${result.repos.length} repos: ${result.repos.join(', ')}`,
+        `- Graph: ${result.totalNodes} nodes · ${result.totalEdges} edges · ${result.communityCount} communities`,
+        `- Cross-repo edges: ${result.crossRepoEdges} inferred connections`,
+        `- Outputs: ${result.graphPath}, ${result.reportPath}`,
+      ].join('\n'))
       return 0
     }
 
