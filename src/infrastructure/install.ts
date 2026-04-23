@@ -442,8 +442,16 @@ function registerHomeClaudeSkill(homeDir: string): string {
   return hasCurrentSection ? `CLAUDE.md -> skill registration updated in ${claudeMdPath}` : `CLAUDE.md -> skill registered in ${claudeMdPath}`
 }
 
-function installMcpServer(projectDir: string): string {
-  const mcpJsonPath = join(projectDir, '.mcp.json')
+type McpConfigTarget = 'claude' | 'cursor'
+
+const MCP_CONFIG_PATHS: Record<McpConfigTarget, string> = {
+  claude: '.mcp.json',
+  cursor: join('.cursor', 'mcp.json'),
+}
+
+function installMcpServer(projectDir: string, target: McpConfigTarget = 'claude'): string {
+  const mcpJsonPath = join(projectDir, MCP_CONFIG_PATHS[target])
+  ensureParentDirectory(mcpJsonPath)
   const mcpConfig = readJsonObject(mcpJsonPath)
   const mcpServers = ensureRecord(mcpConfig, 'mcpServers')
 
@@ -458,16 +466,19 @@ function installMcpServer(projectDir: string): string {
   writeJson(mcpJsonPath, mcpConfig)
 
   // Clean up legacy mcpServers from .claude/settings.json if present
-  const legacySettingsPath = join(projectDir, '.claude', 'settings.json')
-  if (existsSync(legacySettingsPath)) {
-    const legacySettings = readJsonObject(legacySettingsPath)
-    if (isRecord(legacySettings.mcpServers) && Object.hasOwn(legacySettings.mcpServers, SKILL_SLUG)) {
-      delete (legacySettings.mcpServers as Record<string, unknown>)[SKILL_SLUG]
-      writeJson(legacySettingsPath, legacySettings)
+  if (target === 'claude') {
+    const legacySettingsPath = join(projectDir, '.claude', 'settings.json')
+    if (existsSync(legacySettingsPath)) {
+      const legacySettings = readJsonObject(legacySettingsPath)
+      if (isRecord(legacySettings.mcpServers) && Object.hasOwn(legacySettings.mcpServers, SKILL_SLUG)) {
+        delete (legacySettings.mcpServers as Record<string, unknown>)[SKILL_SLUG]
+        writeJson(legacySettingsPath, legacySettings)
+      }
     }
   }
 
-  return existed ? '.mcp.json -> MCP server updated' : '.mcp.json -> MCP server registered'
+  const displayPath = MCP_CONFIG_PATHS[target]
+  return existed ? `${displayPath} -> MCP server updated` : `${displayPath} -> MCP server registered`
 }
 
 function installClaudeHook(projectDir: string): string {
@@ -748,25 +759,46 @@ export function geminiUninstall(projectDir = '.', options: Pick<InstallSkillOpti
 }
 
 export function cursorInstall(projectDir = '.'): string {
-  const rulePath = join(resolve(projectDir), CURSOR_RULE_RELATIVE_PATH)
+  const resolvedProjectDir = resolve(projectDir)
+  const rulePath = join(resolvedProjectDir, CURSOR_RULE_RELATIVE_PATH)
   ensureParentDirectory(rulePath)
 
+  const messages: string[] = []
+
   if (existsSync(rulePath)) {
-    return `graphify-ts Cursor rule already exists at ${rulePath} (no change)`
+    messages.push(`graphify-ts Cursor rule already exists at ${rulePath} (no change)`)
+  } else {
+    writeFileSync(rulePath, CURSOR_RULE, 'utf8')
+    messages.push(`graphify-ts Cursor rule written to ${rulePath}`)
   }
 
-  writeFileSync(rulePath, CURSOR_RULE, 'utf8')
-  return `graphify-ts Cursor rule written to ${rulePath}`
+  messages.push(installMcpServer(resolvedProjectDir, 'cursor'))
+  return messages.join('\n')
 }
 
 export function cursorUninstall(projectDir = '.'): string {
-  const rulePath = join(resolve(projectDir), CURSOR_RULE_RELATIVE_PATH)
-  if (!existsSync(rulePath)) {
-    return 'No graphify-ts Cursor rule found - nothing to do'
+  const resolvedProjectDir = resolve(projectDir)
+  const messages: string[] = []
+  const rulePath = join(resolvedProjectDir, CURSOR_RULE_RELATIVE_PATH)
+
+  if (existsSync(rulePath)) {
+    unlinkSync(rulePath)
+    messages.push(`graphify-ts Cursor rule removed from ${rulePath}`)
+  } else {
+    messages.push('No graphify-ts Cursor rule found - nothing to do')
   }
 
-  unlinkSync(rulePath)
-  return `graphify-ts Cursor rule removed from ${rulePath}`
+  const mcpJsonPath = join(resolvedProjectDir, MCP_CONFIG_PATHS.cursor)
+  if (existsSync(mcpJsonPath)) {
+    const mcpConfig = readJsonObject(mcpJsonPath)
+    if (isRecord(mcpConfig.mcpServers) && Object.hasOwn(mcpConfig.mcpServers, SKILL_SLUG)) {
+      delete (mcpConfig.mcpServers as Record<string, unknown>)[SKILL_SLUG]
+      writeJson(mcpJsonPath, mcpConfig)
+      messages.push('.cursor/mcp.json -> MCP server removed')
+    }
+  }
+
+  return messages.join('\n')
 }
 
 export function claudeInstall(projectDir = '.'): string {
