@@ -337,7 +337,7 @@ describe('install helpers', () => {
       expect(existsSync(join(projectDir, '.codex', 'hooks.json'))).toBe(true)
 
       const opencodeMessage = agentsInstall(projectDir, 'opencode')
-      expect(opencodeMessage).toMatch(/graphify-ts section written|graphify-ts already configured in AGENTS\.md/)
+      expect(opencodeMessage).toMatch(/graphify-ts section (written|updated) in/)
       expect(existsSync(join(projectDir, '.opencode', 'plugins', 'graphify-ts.js'))).toBe(true)
       expect(existsSync(join(projectDir, 'opencode.json'))).toBe(true)
     })

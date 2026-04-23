@@ -614,7 +614,10 @@ function writeSection(targetPath: string, section: string): string {
 
   const content = readFileSync(targetPath, 'utf8')
   if (content.includes(SECTION_MARKER)) {
-    return `graphify-ts already configured in ${fileLabel}`
+    const cleaned = removeSection(content).trimEnd()
+    const updated = cleaned.length > 0 ? `${cleaned}\n\n${section}` : section
+    writeFileSync(targetPath, updated, 'utf8')
+    return `graphify-ts section updated in ${targetPath}`
   }
 
   writeFileSync(targetPath, `${content.trimEnd()}\n\n${section}`, 'utf8')
