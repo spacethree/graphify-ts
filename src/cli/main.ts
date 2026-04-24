@@ -1,7 +1,9 @@
 import { existsSync } from 'node:fs'
+import { createInterface } from 'node:readline/promises'
 
 import { loadBenchmarkQuestions, type BenchmarkResult, printBenchmark, runBenchmark } from '../infrastructure/benchmark.js'
 import { evaluateRetrievalQuality, formatQualityReport } from '../infrastructure/benchmark/quality.js'
+import { runCompareCommand } from '../infrastructure/compare.js'
 import { federate } from '../pipeline/federate.js'
 import { generateGraph, type GenerateGraphResult, type ProgressStep } from '../infrastructure/generate.js'
 import { install as installHooks, status as hookStatus, uninstall as uninstallHooks } from '../infrastructure/hooks.js'
@@ -64,6 +66,7 @@ export interface CliDependencies {
   ingest: typeof ingest
   runBenchmark: typeof runBenchmark
   runCompare: (context: CompareCommandContext) => Promise<string | void> | string | void
+  confirm: (message: string) => Promise<boolean>
   printBenchmark: (result: BenchmarkResult) => void
   installHooks: typeof installHooks
   uninstallHooks: typeof uninstallHooks
@@ -85,8 +88,7 @@ export interface CliDependencies {
   agentsUninstall: typeof agentsUninstall
 }
 
-const COMPARE_EXPERIMENTAL_MESSAGE = 'compare is an experimental scaffold in Task 1; the runtime will land in Task 2/3.'
-const COMPARE_CONFIRMATION_UNAVAILABLE_MESSAGE = 'compare confirmation prompts are not implemented yet; rerun with --yes.'
+const COMPARE_WARNING_MESSAGE = 'compare will execute a baseline prompt and a graphify prompt for each question. This may consume paid model tokens.'
 
 const DEFAULT_DEPENDENCIES: CliDependencies = {
   loadGraph,
@@ -94,8 +96,31 @@ const DEFAULT_DEPENDENCIES: CliDependencies = {
   saveQueryResult,
   ingest,
   runBenchmark,
-  runCompare: async () => {
-    throw new Error(COMPARE_EXPERIMENTAL_MESSAGE)
+  runCompare: async ({ options }) => {
+    return await runCompareCommand({
+      graphPath: options.graphPath,
+      question: options.question,
+      questionsPath: options.questionsPath,
+      outputDir: options.outputDir,
+      execTemplate: options.execTemplate,
+      baselineMode: options.baselineMode,
+      limit: options.limit,
+    })
+  },
+  confirm: async (message) => {
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+      throw new UsageError('error: compare requires --yes in non-interactive mode.')
+    }
+    const readline = createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    })
+    try {
+      const answer = await readline.question(`${message} [y/N] `)
+      return /^y(?:es)?$/i.test(answer.trim())
+    } finally {
+      readline.close()
+    }
   },
   printBenchmark,
   installHooks,
@@ -199,14 +224,14 @@ export function formatHelp(binaryName = 'graphify-ts'): string {
     '    --questions PATH     load benchmark/eval questions from a JSON file',
     '  eval [graph.json]      measure retrieval quality: recall and MRR',
     '    --questions PATH     load benchmark/eval questions from a JSON file',
-    '  compare [question]    experimental scaffold only; runtime will land in Task 2/3',
+    '  compare [question]    run a real baseline vs graphify prompt comparison',
     '    --graph <path>        path to graph.json (default graphify-out/graph.json)',
-    '    --exec TEMPLATE       required command template; {prompt_file} is replaced with the prompt path',
+    '    --exec TEMPLATE       required command template; supports {prompt_file}, {question}, {mode}, and {output_file}',
     '    --questions PATH      load questions from a JSON file instead of a positional question',
     '    --output-dir DIR      compare output directory (default graphify-out/compare)',
     '    --baseline-mode MODE  choose full or bounded baseline context (default full)',
-    '    --yes                 skip confirmation before running the scaffold',
-    '    --limit N             cap processed prompts/questions for the scaffold run',
+    '    --yes                 skip confirmation before running the paid prompt comparison',
+    '    --limit N             cap processed prompts/questions for the comparison run',
     '  install [--platform P] install the platform skill or local graphify config',
     '    platforms            claude|windows|gemini|cursor|codex|opencode|aider|claw|droid|trae|trae-cn|copilot',
     '  hook <action>          manage git hooks for graphify rebuild reminders',
@@ -363,15 +388,18 @@ export async function executeCli(argv: string[], io: CliIO = console, dependenci
   try {
     if (command === 'compare') {
       const options = parseCompareArgs(args)
+      const confirm = async (message: string) => await dependencies.confirm(message)
+      if (!options.yes) {
+        io.log(`Warning: ${COMPARE_WARNING_MESSAGE}`)
+        if (!(await confirm(COMPARE_WARNING_MESSAGE))) {
+          io.log('Compare cancelled.')
+          return 1
+        }
+      }
       const output = await dependencies.runCompare({
         options,
         io,
-        confirm: async () => {
-          if (options.yes) {
-            return true
-          }
-          throw new Error(COMPARE_CONFIRMATION_UNAVAILABLE_MESSAGE)
-        },
+        confirm,
       })
       if (output !== undefined) {
         io.log(output)

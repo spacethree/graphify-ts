@@ -95,6 +95,7 @@ function createDependencies(): CliDependencies {
       ],
     }),
     runCompare: async () => 'compare command is not implemented yet',
+    confirm: async () => true,
     printBenchmark: () => {},
     installHooks: () => 'hooks installed',
     uninstallHooks: () => 'hooks removed',
@@ -564,15 +565,14 @@ describe('cli main', () => {
     expect(help).toContain('save-result')
     expect(help).toContain('benchmark [graph.json]')
     expect(help).toContain('--questions PATH')
-    expect(help).toContain('compare [question]    experimental scaffold')
-    expect(help).toContain('runtime will land in Task 2/3')
+    expect(help).toContain('compare [question]    run a real baseline vs graphify prompt comparison')
     expect(help).toContain('    --graph <path>        path to graph.json (default graphify-out/graph.json)')
-    expect(help).toContain('    --exec TEMPLATE       required command template; {prompt_file} is replaced with the prompt path')
+    expect(help).toContain('    --exec TEMPLATE       required command template; supports {prompt_file}, {question}, {mode}, and {output_file}')
     expect(help).toContain('    --questions PATH      load questions from a JSON file instead of a positional question')
     expect(help).toContain('    --output-dir DIR      compare output directory (default graphify-out/compare)')
     expect(help).toContain('    --baseline-mode MODE  choose full or bounded baseline context (default full)')
-    expect(help).toContain('    --yes                 skip confirmation before running the scaffold')
-    expect(help).toContain('    --limit N             cap processed prompts/questions for the scaffold run')
+    expect(help).toContain('    --yes                 skip confirmation before running the paid prompt comparison')
+    expect(help).toContain('    --limit N             cap processed prompts/questions for the comparison run')
     expect(help).toContain('question coverage')
     expect(help).toContain('hook <action>')
     expect(help).toContain('install [--platform P]')
@@ -588,10 +588,15 @@ describe('cli main', () => {
     const { io, logs, errors } = createIo()
     const dependencies = createDependencies()
     let capturedRequest: unknown
+    let confirmCalls = 0
 
     dependencies.runCompare = async (request) => {
       capturedRequest = request
       return 'compare result'
+    }
+    dependencies.confirm = async () => {
+      confirmCalls += 1
+      return true
     }
 
     const exitCode = await executeCli(
@@ -635,14 +640,47 @@ describe('cli main', () => {
     })
     expect(compareRequest.io).toBe(io)
     await expect(compareRequest.confirm('Proceed?')).resolves.toBe(true)
+    expect(confirmCalls).toBe(1)
   })
 
-  it('surfaces a not-yet-implemented confirmation hook when compare runs without --yes', async () => {
+  it('warns and confirms before running compare without --yes', async () => {
     const { io, logs, errors } = createIo()
     const dependencies = createDependencies()
+    const prompts: string[] = []
 
-    dependencies.runCompare = async ({ confirm }) => {
-      await confirm('Proceed?')
+    dependencies.confirm = async (message) => {
+      prompts.push(message)
+      return true
+    }
+    dependencies.runCompare = async () => {
+      return 'compare result'
+    }
+
+    const exitCode = await executeCli(
+      ['compare', 'how does login work', '--exec', 'claude -p "$(cat {prompt_file})"'],
+      io,
+      dependencies,
+    )
+
+    expect(exitCode).toBe(0)
+    expect(prompts).toEqual([
+      'compare will execute a baseline prompt and a graphify prompt for each question. This may consume paid model tokens.',
+    ])
+    expect(logs).toEqual([
+      'Warning: compare will execute a baseline prompt and a graphify prompt for each question. This may consume paid model tokens.',
+      'compare result',
+    ])
+    expect(errors).toEqual([])
+  })
+
+  it('cancels compare when confirmation is declined', async () => {
+    const { io, logs, errors } = createIo()
+    const dependencies = createDependencies()
+    let compareCalls = 0
+
+    dependencies.confirm = async () => false
+    dependencies.runCompare = async () => {
+      compareCalls += 1
       return 'compare result'
     }
 
@@ -653,8 +691,32 @@ describe('cli main', () => {
     )
 
     expect(exitCode).toBe(1)
-    expect(logs).toEqual([])
-    expect(errors).toEqual(['error: compare confirmation prompts are not implemented yet; rerun with --yes.'])
+    expect(compareCalls).toBe(0)
+    expect(logs).toEqual([
+      'Warning: compare will execute a baseline prompt and a graphify prompt for each question. This may consume paid model tokens.',
+      'Compare cancelled.',
+    ])
+    expect(errors).toEqual([])
+  })
+
+  it('fails fast when compare is run without --yes in non-interactive mode', async () => {
+    const { io, logs, errors } = createIo()
+    const stdinTty = process.stdin.isTTY
+    const stdoutTty = process.stdout.isTTY
+
+    Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: false })
+    Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: false })
+
+    try {
+      const exitCode = await executeCli(['compare', 'how does login work', '--exec', 'claude -p "$(cat {prompt_file})"'], io)
+
+      expect(exitCode).toBe(2)
+      expect(logs).toEqual(['Warning: compare will execute a baseline prompt and a graphify prompt for each question. This may consume paid model tokens.'])
+      expect(errors).toEqual(['error: compare requires --yes in non-interactive mode.'])
+    } finally {
+      Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: stdinTty })
+      Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: stdoutTty })
+    }
   })
 
   it('returns a usage error when compare args are incomplete', async () => {
@@ -665,18 +727,6 @@ describe('cli main', () => {
     expect(exitCode).toBe(2)
     expect(logs).toEqual([])
     expect(errors).toEqual(['Usage: graphify-ts compare [question] --exec TEMPLATE [--graph path] [--questions PATH] [--output-dir DIR] [--baseline-mode MODE] [--yes] [--limit N]'])
-  })
-
-  it('reports the scaffold message through the default compare dependency', async () => {
-    const { io, logs, errors } = createIo()
-
-    const exitCode = await executeCli(['compare', 'how does login work', '--exec', 'claude -p "$(cat {prompt_file})"'], io)
-
-    expect(exitCode).toBe(1)
-    expect(logs).toEqual([])
-    expect(errors).toEqual([
-      'error: compare is an experimental scaffold in Task 1; the runtime will land in Task 2/3.',
-    ])
   })
 
   it('prefers the explicit compare command over an implicit generate path match', async () => {
@@ -698,7 +748,7 @@ describe('cli main', () => {
       process.chdir(sandboxRoot)
 
       const exitCode = await executeCli(
-        ['compare', 'how does login work', '--exec', 'claude -p "$(cat {prompt_file})"'],
+        ['compare', 'how does login work', '--exec', 'claude -p "$(cat {prompt_file})"', '--yes'],
         io,
         dependencies,
       )

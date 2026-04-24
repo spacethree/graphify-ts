@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
@@ -11,6 +12,8 @@ import { sidecarAwareFileFingerprint } from '../shared/binary-ingest-sidecar.js'
 import { MAX_TEXT_BYTES, validateGraphOutputPath, validateGraphPath } from '../shared/security.js'
 
 export type CompareBaselineMode = 'full' | 'bounded'
+export type CompareRunMode = 'baseline' | 'graphify'
+export type CompareRunStatus = 'not_run' | 'succeeded' | 'failed'
 
 export interface ComparePromptPack {
   kind: 'baseline' | 'graphify'
@@ -39,6 +42,11 @@ export interface ComparePromptArtifactPaths {
   report: string
 }
 
+export interface CompareAnswerArtifactPaths {
+  baseline: string
+  graphify: string
+}
+
 export interface CompareExecCommandSummary {
   command: string | null
   placeholders: string[]
@@ -60,8 +68,17 @@ export interface ComparePromptReport {
     graphify: number
   }
   status: {
-    baseline: 'not_run'
-    graphify: 'not_run'
+    baseline: CompareRunStatus
+    graphify: CompareRunStatus
+  }
+  answer_paths: CompareAnswerArtifactPaths
+  exit_code: {
+    baseline: number | null
+    graphify: number | null
+  }
+  stderr: {
+    baseline: string | null
+    graphify: string | null
   }
   paths: ComparePromptArtifactPaths
 }
@@ -86,9 +103,37 @@ export interface GenerateCompareArtifactsResult {
   reports: ComparePromptReport[]
 }
 
+export interface CompareExecTemplateValues {
+  promptFile: string
+  question: string
+  mode: CompareRunMode
+  outputFile: string
+}
+
+export interface ComparePromptExecution {
+  mode: CompareRunMode
+  question: string
+  promptFile: string
+  outputFile: string
+  command: string
+}
+
+export interface ComparePromptRunnerResult {
+  exitCode: number
+  stdout: string
+  stderr: string
+  elapsedMs: number
+}
+
+export interface ExecuteCompareRunsDependencies {
+  runner?: (execution: ComparePromptExecution) => Promise<ComparePromptRunnerResult>
+  now?: () => Date
+}
+
 const DEFAULT_RETRIEVAL_BUDGET = 3_000
 const DEFAULT_BOUNDED_BASELINE_TOKENS = 4_000
 const EXEC_TEMPLATE_PLACEHOLDER_PATTERN = /\{[a-z_][a-z0-9_]*\}/gi
+const COMPARE_EXEC_PLACEHOLDERS = new Set(['{prompt_file}', '{question}', '{mode}', '{output_file}'])
 
 function timestampDirectoryName(date: Date): string {
   const iso = date.toISOString()
@@ -103,6 +148,136 @@ function summarizeExecTemplate(execTemplate: string): CompareExecCommandSummary 
     placeholders: [...new Set(placeholders)],
     redacted: true,
   }
+}
+
+function shellEscape(value: string, platform: NodeJS.Platform = process.platform): string {
+  if (platform === 'win32') {
+    return `'${value.replaceAll("'", "''")}'`
+  }
+  return `'${value.replaceAll("'", `'\"'\"'`)}'`
+}
+
+export function expandCompareExecTemplate(
+  template: string,
+  values: CompareExecTemplateValues,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  return template.replaceAll(EXEC_TEMPLATE_PLACEHOLDER_PATTERN, (placeholder) => {
+    const normalizedPlaceholder = placeholder.toLowerCase()
+    if (!COMPARE_EXEC_PLACEHOLDERS.has(normalizedPlaceholder)) {
+      throw new Error(`Unknown compare exec placeholder: ${placeholder}`)
+    }
+
+    if (normalizedPlaceholder === '{prompt_file}') {
+      return shellEscape(values.promptFile, platform)
+    }
+    if (normalizedPlaceholder === '{question}') {
+      return shellEscape(values.question, platform)
+    }
+    if (normalizedPlaceholder === '{mode}') {
+      return shellEscape(values.mode, platform)
+    }
+    return shellEscape(values.outputFile, platform)
+  })
+}
+
+function writeCompareReport(report: ComparePromptReport): void {
+  writeFileSync(
+    report.paths.report,
+    `${JSON.stringify(
+      {
+        ...report,
+        graph_path: portablePath(report.graph_path),
+        answer_paths: {
+          baseline: portablePath(report.answer_paths.baseline),
+          graphify: portablePath(report.answer_paths.graphify),
+        },
+        paths: {
+          output_dir: portablePath(report.paths.output_dir),
+          baseline_prompt: portablePath(report.paths.baseline_prompt),
+          graphify_prompt: portablePath(report.paths.graphify_prompt),
+          report: portablePath(report.paths.report),
+        },
+      },
+      null,
+      2,
+    )}\n`,
+    'utf8',
+  )
+}
+
+async function defaultComparePromptRunner(execution: ComparePromptExecution): Promise<ComparePromptRunnerResult> {
+  const startedAt = Date.now()
+
+  return await new Promise<ComparePromptRunnerResult>((resolveExecution, rejectExecution) => {
+    const command =
+      process.platform === 'win32'
+        ? {
+            file: 'powershell.exe',
+            args: ['-NoProfile', '-Command', execution.command],
+          }
+        : {
+            file: '/bin/sh',
+            args: ['-lc', execution.command],
+          }
+    const child = spawn(command.file, command.args, {
+      shell: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+
+    let stdout = ''
+    let stderr = ''
+
+    child.stdout?.on('data', (chunk: string | Buffer) => {
+      stdout += chunk.toString()
+    })
+    child.stderr?.on('data', (chunk: string | Buffer) => {
+      stderr += chunk.toString()
+    })
+    child.on('error', (error) => {
+      rejectExecution(error)
+    })
+    child.on('close', (code) => {
+      resolveExecution({
+        exitCode: code ?? 1,
+        stdout,
+        stderr,
+        elapsedMs: Date.now() - startedAt,
+      })
+    })
+  })
+}
+
+function answerFilePath(outputDir: string, mode: CompareRunMode): string {
+  return join(outputDir, `${mode}-answer.txt`)
+}
+
+function ensureCompareAnswerFile(filePath: string, stdout: string): void {
+  if (existsSync(filePath)) {
+    return
+  }
+  writeFileSync(filePath, stdout, 'utf8')
+}
+
+function sanitizeCompareStderr(stderr: string): string | null {
+  const trimmed = stderr.trim()
+  if (!trimmed) {
+    return null
+  }
+
+  const redacted = trimmed
+    .replaceAll(/\b([A-Z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD)[A-Z0-9_]*)=([^\s]+)/gi, '$1=[REDACTED]')
+    .replaceAll(/(Bearer)\s+[^\s]+/gi, '$1 [REDACTED]')
+  const maxLength = 2_000
+  return redacted.length > maxLength ? `${redacted.slice(0, maxLength).trimEnd()}\n…[truncated]` : redacted
+}
+
+function summarizeCompareRunnerStderr(stderr: string): string | null {
+  const sanitized = sanitizeCompareStderr(stderr)
+  if (sanitized === null) {
+    return null
+  }
+  return `stderr omitted for safety (${sanitized.length} chars captured)`
 }
 
 function createCompareOutputRoot(outputDir: string, date: Date): string {
@@ -513,6 +688,10 @@ export function generateCompareArtifacts(input: GenerateCompareArtifactsInput): 
       graphify_prompt: join(questionOutputDir, 'graphify-prompt.txt'),
       report: join(questionOutputDir, 'report.json'),
     }
+    const answerPaths: CompareAnswerArtifactPaths = {
+      baseline: answerFilePath(questionOutputDir, 'baseline'),
+      graphify: answerFilePath(questionOutputDir, 'graphify'),
+    }
 
     const baselinePromptText = baselinePrompt.prompt
     const graphifyPromptText = graphifyPrompt.prompt
@@ -541,23 +720,19 @@ export function generateCompareArtifacts(input: GenerateCompareArtifactsInput): 
         baseline: 'not_run',
         graphify: 'not_run',
       },
+      answer_paths: answerPaths,
+      exit_code: {
+        baseline: null,
+        graphify: null,
+      },
+      stderr: {
+        baseline: null,
+        graphify: null,
+      },
       paths,
     }
 
-    writeFileSync(
-      paths.report,
-      `${JSON.stringify({
-        ...report,
-        graph_path: portablePath(report.graph_path),
-        paths: {
-          output_dir: portablePath(report.paths.output_dir),
-          baseline_prompt: portablePath(report.paths.baseline_prompt),
-          graphify_prompt: portablePath(report.paths.graphify_prompt),
-          report: portablePath(report.paths.report),
-        },
-      }, null, 2)}\n`,
-      'utf8',
-    )
+    writeCompareReport(report)
     return report
   })
 
@@ -566,4 +741,103 @@ export function generateCompareArtifacts(input: GenerateCompareArtifactsInput): 
     output_root: resolve(outputRoot),
     reports,
   }
+}
+
+export async function executeCompareRuns(
+  input: GenerateCompareArtifactsInput,
+  dependencies: ExecuteCompareRunsDependencies = {},
+): Promise<GenerateCompareArtifactsResult> {
+  const result = generateCompareArtifacts(input)
+  const runPrompt = dependencies.runner ?? defaultComparePromptRunner
+  const now = dependencies.now ?? (() => new Date())
+
+  for (const report of result.reports) {
+    const executions: Array<{
+      mode: CompareRunMode
+      promptFile: string
+      outputFile: string
+    }> = [
+      {
+        mode: 'baseline',
+        promptFile: report.paths.baseline_prompt,
+        outputFile: report.answer_paths.baseline,
+      },
+      {
+        mode: 'graphify',
+        promptFile: report.paths.graphify_prompt,
+        outputFile: report.answer_paths.graphify,
+      },
+    ]
+
+    for (const execution of executions) {
+      try {
+        const command = expandCompareExecTemplate(input.execTemplate, {
+          promptFile: execution.promptFile,
+          question: report.question,
+          mode: execution.mode,
+          outputFile: execution.outputFile,
+        })
+        const executionResult = await runPrompt({
+          ...execution,
+          question: report.question,
+          command,
+        })
+        ensureCompareAnswerFile(execution.outputFile, executionResult.stdout)
+        report.status[execution.mode] = executionResult.exitCode === 0 ? 'succeeded' : 'failed'
+        report.elapsed_ms[execution.mode] = executionResult.elapsedMs
+        report.exit_code[execution.mode] = executionResult.exitCode
+        report.stderr[execution.mode] = summarizeCompareRunnerStderr(executionResult.stderr)
+      } catch (error) {
+        ensureCompareAnswerFile(execution.outputFile, '')
+        report.status[execution.mode] = 'failed'
+        report.elapsed_ms[execution.mode] = 0
+        report.exit_code[execution.mode] = null
+        report.stderr[execution.mode] = sanitizeCompareStderr(error instanceof Error ? error.message : String(error))
+      }
+
+      report.completed_at = now().toISOString()
+      writeCompareReport(report)
+    }
+  }
+
+  return result
+}
+
+function sumPromptTokens(reports: readonly ComparePromptReport[], mode: CompareRunMode): number {
+  return reports.reduce((total, report) => total + (mode === 'baseline' ? report.baseline_prompt_tokens : report.graphify_prompt_tokens), 0)
+}
+
+function countPromptRuns(reports: readonly ComparePromptReport[], status: Exclude<CompareRunStatus, 'not_run'>): number {
+  return reports.reduce((total, report) => {
+    const baseline = report.status.baseline === status ? 1 : 0
+    const graphify = report.status.graphify === status ? 1 : 0
+    return total + baseline + graphify
+  }, 0)
+}
+
+export function formatCompareSummary(result: GenerateCompareArtifactsResult): string {
+  const baselineTokens = sumPromptTokens(result.reports, 'baseline')
+  const graphifyTokens = sumPromptTokens(result.reports, 'graphify')
+  const reductionRatio = computeReductionRatio(baselineTokens, graphifyTokens)
+  const failedRuns = countPromptRuns(result.reports, 'failed')
+  const succeededRuns = countPromptRuns(result.reports, 'succeeded')
+
+  return [
+    `[graphify compare] completed ${result.reports.length} question(s)`,
+    `- Output: ${result.output_root}`,
+    `- Prompt tokens: baseline ${baselineTokens} · graphify ${graphifyTokens} · ${reductionRatio}x smaller`,
+    `- Prompt runs: ${succeededRuns} succeeded${failedRuns > 0 ? ` · ${failedRuns} failed` : ''}`,
+  ].join('\n')
+}
+
+export async function runCompareCommand(
+  input: GenerateCompareArtifactsInput,
+  dependencies: ExecuteCompareRunsDependencies = {},
+): Promise<string> {
+  const result = await executeCompareRuns(input, dependencies)
+  const failedRuns = countPromptRuns(result.reports, 'failed')
+  if (failedRuns > 0) {
+    throw new Error(`[graphify compare] ${failedRuns} prompt run(s) failed. Partial artifacts were saved under ${result.output_root}`)
+  }
+  return formatCompareSummary(result)
 }

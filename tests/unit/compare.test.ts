@@ -7,6 +7,8 @@ import { KnowledgeGraph } from '../../src/contracts/graph.js'
 import {
   buildBaselinePromptPack,
   buildGraphifyPromptPack,
+  executeCompareRuns,
+  expandCompareExecTemplate,
   generateCompareArtifacts,
   resolveCompareQuestions,
 } from '../../src/infrastructure/compare.js'
@@ -268,6 +270,32 @@ afterEach(() => {
 })
 
 describe('compare runtime', () => {
+  it('expands compare exec placeholders safely', () => {
+    expect(
+      expandCompareExecTemplate('runner --prompt {prompt_file} --question {question} --mode {mode} --out {output_file}', {
+        promptFile: '/tmp/prompt pack.txt',
+        question: 'how does login work?',
+        mode: 'baseline',
+        outputFile: '/tmp/output.txt',
+      }),
+    ).toBe("runner --prompt '/tmp/prompt pack.txt' --question 'how does login work?' --mode 'baseline' --out '/tmp/output.txt'")
+  })
+
+  it('expands compare exec placeholders safely for PowerShell on Windows', () => {
+    expect(
+      expandCompareExecTemplate(
+        'runner --question {question} --prompt {prompt_file}',
+        {
+          promptFile: 'C:\\Users\\Jane Doe\\prompt.txt',
+          question: "how's login work?",
+          mode: 'graphify',
+          outputFile: 'C:\\Users\\Jane Doe\\answer.txt',
+        },
+        'win32',
+      ),
+    ).toBe("runner --question 'how''s login work?' --prompt 'C:\\Users\\Jane Doe\\prompt.txt'")
+  })
+
   it('builds a baseline prompt pack from graph and corpus input', () => {
     const graph = makeGraph()
     const corpusText = makeCorpusText()
@@ -422,6 +450,233 @@ describe('compare runtime', () => {
     )
     expect(JSON.stringify(savedReport)).not.toContain('super-secret')
     expect(JSON.stringify(savedReport)).not.toContain(execTemplate)
+  })
+
+  it('runs compare prompts sequentially and saves answer artifacts', async () => {
+    const graph = makeGraph()
+    writeProjectFiles()
+    const graphPath = writeGraphFixture(graph)
+    const executions: Array<{
+      mode: 'baseline' | 'graphify'
+      command: string
+      promptFile: string
+      outputFile: string
+      question: string
+    }> = []
+
+    const result = await executeCompareRuns(
+      {
+        graphPath,
+        question: 'how does login create a session',
+        outputDir: COMPARE_OUTPUT_ROOT,
+        execTemplate: 'runner --prompt {prompt_file} --question {question} --mode {mode} --out {output_file}',
+        baselineMode: 'full',
+        now: new Date('2026-04-24T19:30:00.000Z'),
+      },
+      {
+        runner: async (execution) => {
+          executions.push(execution)
+          return {
+            exitCode: 0,
+            stdout: `${execution.mode} answer\n`,
+            stderr: '',
+            elapsedMs: execution.mode === 'baseline' ? 11 : 17,
+          }
+        },
+      },
+    )
+
+    const report = result.reports[0]!
+    expect(executions).toHaveLength(2)
+    expect(executions[0]).toEqual(
+      expect.objectContaining({
+        mode: 'baseline',
+        question: 'how does login create a session',
+        promptFile: report.paths.baseline_prompt,
+        outputFile: join(report.paths.output_dir, 'baseline-answer.txt'),
+      }),
+    )
+    expect(executions[1]).toEqual(
+      expect.objectContaining({
+        mode: 'graphify',
+        question: 'how does login create a session',
+        promptFile: report.paths.graphify_prompt,
+        outputFile: join(report.paths.output_dir, 'graphify-answer.txt'),
+      }),
+    )
+    expect(readFileSync(report.answer_paths.baseline, 'utf8')).toBe('baseline answer\n')
+    expect(readFileSync(report.answer_paths.graphify, 'utf8')).toBe('graphify answer\n')
+    expect(report.status).toEqual({
+      baseline: 'succeeded',
+      graphify: 'succeeded',
+    })
+    expect(report.exit_code).toEqual({
+      baseline: 0,
+      graphify: 0,
+    })
+    expect(report.stderr).toEqual({
+      baseline: null,
+      graphify: null,
+    })
+    expect(report.elapsed_ms).toEqual({
+      baseline: 11,
+      graphify: 17,
+    })
+
+    const savedReport = JSON.parse(readFileSync(report.paths.report, 'utf8')) as Record<string, unknown>
+    expect(savedReport).toEqual(
+      expect.objectContaining({
+        status: {
+          baseline: 'succeeded',
+          graphify: 'succeeded',
+        },
+        exit_code: {
+          baseline: 0,
+          graphify: 0,
+        },
+      }),
+    )
+  })
+
+  it('preserves partial compare results when one side fails', async () => {
+    const graph = makeGraph()
+    writeProjectFiles()
+    const graphPath = writeGraphFixture(graph)
+
+    const result = await executeCompareRuns(
+      {
+        graphPath,
+        question: 'how does login create a session',
+        outputDir: COMPARE_OUTPUT_ROOT,
+        execTemplate: 'runner --prompt {prompt_file} --mode {mode} --out {output_file}',
+        baselineMode: 'full',
+        now: new Date('2026-04-24T19:30:00.000Z'),
+      },
+      {
+        runner: async (execution) => ({
+          exitCode: execution.mode === 'baseline' ? 23 : 0,
+          stdout: execution.mode === 'baseline' ? 'baseline partial output\n' : 'graphify answer\n',
+          stderr: execution.mode === 'baseline' ? 'runner exited with a failure\n' : '',
+          elapsedMs: execution.mode === 'baseline' ? 5 : 9,
+        }),
+      },
+    )
+
+    const report = result.reports[0]!
+    expect(readFileSync(report.answer_paths.baseline, 'utf8')).toBe('baseline partial output\n')
+    expect(readFileSync(report.answer_paths.graphify, 'utf8')).toBe('graphify answer\n')
+    expect(report.status).toEqual({
+      baseline: 'failed',
+      graphify: 'succeeded',
+    })
+    expect(report.exit_code).toEqual({
+      baseline: 23,
+      graphify: 0,
+    })
+    expect(report.stderr).toEqual({
+      baseline: expect.stringContaining('stderr omitted for safety'),
+      graphify: null,
+    })
+
+    const savedReport = JSON.parse(readFileSync(report.paths.report, 'utf8')) as Record<string, unknown>
+    expect(savedReport).toEqual(
+      expect.objectContaining({
+        status: {
+          baseline: 'failed',
+          graphify: 'succeeded',
+        },
+        exit_code: {
+          baseline: 23,
+          graphify: 0,
+        },
+      }),
+    )
+  })
+
+  it('marks invalid compare placeholders as failed runs in persisted reports', async () => {
+    const graph = makeGraph()
+    writeProjectFiles()
+    const graphPath = writeGraphFixture(graph)
+    let runnerCalls = 0
+
+    const result = await executeCompareRuns(
+      {
+        graphPath,
+        question: 'how does login create a session',
+        outputDir: COMPARE_OUTPUT_ROOT,
+        execTemplate: 'runner --prompt {prompt_file} --out {output}',
+        baselineMode: 'full',
+        now: new Date('2026-04-24T19:30:00.000Z'),
+      },
+      {
+        runner: async () => {
+          runnerCalls += 1
+          return {
+            exitCode: 0,
+            stdout: 'unexpected\n',
+            stderr: '',
+            elapsedMs: 1,
+          }
+        },
+      },
+    )
+
+    const report = result.reports[0]!
+    expect(runnerCalls).toBe(0)
+    expect(report.status).toEqual({
+      baseline: 'failed',
+      graphify: 'failed',
+    })
+    expect(report.stderr.baseline).toContain('Unknown compare exec placeholder')
+    expect(report.stderr.graphify).toContain('Unknown compare exec placeholder')
+
+    const savedReport = JSON.parse(readFileSync(report.paths.report, 'utf8')) as Record<string, unknown>
+    expect(savedReport).toEqual(
+      expect.objectContaining({
+        status: {
+          baseline: 'failed',
+          graphify: 'failed',
+        },
+      }),
+    )
+  })
+
+  it('redacts persisted compare stderr summaries', async () => {
+    const graph = makeGraph()
+    writeProjectFiles()
+    const graphPath = writeGraphFixture(graph)
+
+    const result = await executeCompareRuns(
+      {
+        graphPath,
+        question: 'how does login create a session',
+        outputDir: COMPARE_OUTPUT_ROOT,
+        execTemplate: 'runner --prompt {prompt_file} --mode {mode} --out {output_file}',
+        baselineMode: 'full',
+        now: new Date('2026-04-24T19:30:00.000Z'),
+      },
+      {
+        runner: async (execution) => ({
+          exitCode: execution.mode === 'baseline' ? 1 : 0,
+          stdout: execution.mode === 'baseline' ? '' : 'graphify answer\n',
+          stderr:
+            execution.mode === 'baseline'
+              ? 'OPENAI_API_KEY=super-secret\nAuthorization: Bearer abc123\nStack trace follows\n'
+              : '',
+          elapsedMs: 3,
+        }),
+      },
+    )
+
+    const report = result.reports[0]!
+    expect(report.stderr.baseline).toContain('stderr omitted for safety')
+    expect(report.stderr.baseline).not.toContain('super-secret')
+    expect(report.stderr.baseline).not.toContain('abc123')
+
+    const savedReport = JSON.stringify(JSON.parse(readFileSync(report.paths.report, 'utf8')) as Record<string, unknown>)
+    expect(savedReport).toContain('stderr omitted for safety')
+    expect(savedReport).not.toContain('super-secret')
+    expect(savedReport).not.toContain('abc123')
   })
 
   it('loads graphify snippets when compare runs from outside the inferred project root', () => {
