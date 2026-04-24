@@ -199,6 +199,10 @@ function makeGraphBackedNonCodeFixture(kind: 'pdf' | 'docx' | 'xlsx'): {
   }
 }
 
+function makeLongGraphBackedExcerpt(kind: 'pdf' | 'docx' | 'xlsx'): string {
+  return `${kind.toUpperCase()} login flow creates a session token ${'and preserves long extracted context '.repeat(8)}`.trim()
+}
+
 function makeSingleSourceGraph(relativePath: string, nodeLabel: string, fileType: 'paper' | 'document'): KnowledgeGraph {
   const graph = new KnowledgeGraph()
   graph.addNode('graph_backed_source', {
@@ -352,6 +356,7 @@ describe('compare runtime', () => {
     const graph = makeGraph()
     writeProjectFiles()
     const graphPath = writeGraphFixture(graph)
+    const execTemplate = 'claude -p "$(cat {prompt_file})"'
     const questionsPath = join(GRAPH_FIXTURE_ROOT, 'compare-questions.json')
     writeFileSync(
       questionsPath,
@@ -363,7 +368,7 @@ describe('compare runtime', () => {
       graphPath,
       questionsPath,
       outputDir: COMPARE_OUTPUT_ROOT,
-      execTemplate: 'OPENAI_API_KEY=sk-test claude -p "$(cat {prompt_file})"',
+      execTemplate,
       baselineMode: 'full',
       limit: 1,
       now: new Date('2026-04-24T19:30:00Z'),
@@ -393,7 +398,7 @@ describe('compare runtime', () => {
     expect(savedReport).toEqual(
       expect.objectContaining({
         question: 'how does login create a session',
-        exec_command: 'external-template',
+        exec_command: execTemplate,
         graph_path: join('graphify-out', 'test-runtime', 'compare-runtime-project', 'graphify-out', 'graph.json'),
         baseline_prompt_tokens: estimateQueryTokens(baselinePrompt),
         graphify_prompt_tokens: estimateQueryTokens(graphifyPrompt),
@@ -424,7 +429,7 @@ describe('compare runtime', () => {
         graphPath,
         question: 'how does login create a session',
         outputDir: COMPARE_OUTPUT_ROOT,
-        execTemplate: 'OPENAI_API_KEY=sk-test claude -p "$(cat {prompt_file})"',
+        execTemplate: 'claude -p "$(cat {prompt_file})"',
         baselineMode: 'full',
         now: new Date('2026-04-24T19:30:00Z'),
       })
@@ -435,6 +440,137 @@ describe('compare runtime', () => {
       expect(existsSync(result.reports[0]!.paths.report)).toBe(true)
     },
   )
+
+  it.each(['pdf', 'docx', 'xlsx'] as const)(
+    'preserves long extracted lines from graph-backed %s sources when corpusText is omitted',
+    (kind) => {
+      const fixture = makeGraphBackedNonCodeFixture(kind)
+      const longExcerpt = makeLongGraphBackedExcerpt(kind)
+      const graph = makeSingleSourceGraph(fixture.relativePath, fixture.nodeLabel, fixture.fileType)
+      const absolutePath = join(PROJECT_FIXTURE_ROOT, fixture.relativePath)
+
+      mkdirSync(dirname(absolutePath), { recursive: true })
+      if (kind === 'pdf') {
+        writeFileSync(
+          absolutePath,
+          [
+            '%PDF-1.4',
+            '1 0 obj',
+            '<< /Title (Login Flow PDF) /Author (graphify-ts) /Subject (Authentication) >>',
+            'endobj',
+            'BT',
+            `(${longExcerpt}) Tj`,
+            'ET',
+          ].join('\n'),
+        )
+      } else if (kind === 'docx') {
+        writeFileSync(
+          absolutePath,
+          Buffer.from(
+            zipSync({
+              'word/document.xml': strToU8(
+                [
+                  '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">',
+                  '  <w:body>',
+                  `    <w:p><w:r><w:t>${longExcerpt}</w:t></w:r></w:p>`,
+                  '  </w:body>',
+                  '</w:document>',
+                ].join(''),
+              ),
+            }),
+          ),
+        )
+      } else {
+        writeFileSync(
+          absolutePath,
+          Buffer.from(
+            zipSync({
+              'xl/workbook.xml': strToU8(
+                [
+                  '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
+                  '  <sheets>',
+                  '    <sheet name="LoginFlow" sheetId="1" r:id="rId1" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>',
+                  '  </sheets>',
+                  '</workbook>',
+                ].join(''),
+              ),
+              'xl/sharedStrings.xml': strToU8(
+                [
+                  '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
+                  `  <si><t>${longExcerpt}</t></si>`,
+                  '</sst>',
+                ].join(''),
+              ),
+            }),
+          ),
+        )
+      }
+
+      const graphPath = writeGraphFixture(graph)
+
+      const result = generateCompareArtifacts({
+        graphPath,
+        question: 'how does login create a session',
+        outputDir: COMPARE_OUTPUT_ROOT,
+        execTemplate: 'claude -p "$(cat {prompt_file})"',
+        baselineMode: 'full',
+        now: new Date('2026-04-24T19:30:00Z'),
+      })
+
+      const baselinePrompt = readFileSync(result.reports[0]!.paths.baseline_prompt, 'utf8')
+      expect(longExcerpt.length).toBeGreaterThan(256)
+      expect(baselinePrompt).toContain(longExcerpt)
+    },
+  )
+
+  it('preserves long XLSX core metadata lines when corpusText is omitted', () => {
+    const longTitle = `Workbook title ${'preserves long extracted core metadata '.repeat(8)}`.trim()
+    const fixture = makeGraphBackedNonCodeFixture('xlsx')
+    const graph = makeSingleSourceGraph(fixture.relativePath, fixture.nodeLabel, fixture.fileType)
+    const absolutePath = join(PROJECT_FIXTURE_ROOT, fixture.relativePath)
+
+    mkdirSync(dirname(absolutePath), { recursive: true })
+    writeFileSync(
+      absolutePath,
+      Buffer.from(
+        zipSync({
+          'docProps/core.xml': strToU8(
+            `<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>${longTitle}</dc:title></cp:coreProperties>`,
+          ),
+          'xl/workbook.xml': strToU8(
+            [
+              '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
+              '  <sheets>',
+              '    <sheet name="LoginFlow" sheetId="1" r:id="rId1" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>',
+              '  </sheets>',
+              '</workbook>',
+            ].join(''),
+          ),
+          'xl/sharedStrings.xml': strToU8(
+            [
+              '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
+              '  <si><t>XLSX login flow creates a session token</t></si>',
+              '</sst>',
+            ].join(''),
+          ),
+        }),
+      ),
+    )
+
+    const graphPath = writeGraphFixture(graph)
+    const result = generateCompareArtifacts({
+      graphPath,
+      question: 'how does login create a session',
+      outputDir: COMPARE_OUTPUT_ROOT,
+      execTemplate: 'claude -p "$(cat {prompt_file})"',
+      baselineMode: 'full',
+      now: new Date('2026-04-24T19:30:00Z'),
+    })
+
+    const baselinePrompt = readFileSync(result.reports[0]!.paths.baseline_prompt, 'utf8')
+    expect(longTitle.length).toBeGreaterThan(256)
+    expect(baselinePrompt).toContain(longTitle)
+  })
 
   it('ignores manifest-only files when deriving the runtime baseline corpus', () => {
     const graph = makeGraph()
@@ -458,7 +594,7 @@ describe('compare runtime', () => {
       graphPath,
       question: 'how does login create a session',
       outputDir: COMPARE_OUTPUT_ROOT,
-      execTemplate: 'OPENAI_API_KEY=sk-test claude -p "$(cat {prompt_file})"',
+      execTemplate: 'claude -p "$(cat {prompt_file})"',
       baselineMode: 'full',
       now: new Date('2026-04-24T19:30:00Z'),
     })
@@ -479,7 +615,7 @@ describe('compare runtime', () => {
         graphPath,
         question: 'how does login create a session',
         outputDir: COMPARE_OUTPUT_ROOT,
-        execTemplate: 'OPENAI_API_KEY=sk-test claude -p "$(cat {prompt_file})"',
+        execTemplate: 'claude -p "$(cat {prompt_file})"',
         baselineMode: 'full',
         now: new Date('2026-04-24T19:30:00Z'),
       }),
@@ -498,7 +634,7 @@ describe('compare runtime', () => {
         graphPath,
         question: 'how does login create a session',
         outputDir: COMPARE_OUTPUT_ROOT,
-        execTemplate: 'OPENAI_API_KEY=sk-test claude -p "$(cat {prompt_file})"',
+        execTemplate: 'claude -p "$(cat {prompt_file})"',
         baselineMode: 'full',
         now: new Date('2026-04-24T19:30:00Z'),
       }),
@@ -516,7 +652,7 @@ describe('compare runtime', () => {
         graphPath,
         question: 'how does login create a session',
         outputDir: COMPARE_OUTPUT_ROOT,
-        execTemplate: 'OPENAI_API_KEY=sk-test claude -p "$(cat {prompt_file})"',
+        execTemplate: 'claude -p "$(cat {prompt_file})"',
         baselineMode: 'full',
         now: new Date('2026-04-24T19:30:00Z'),
       }),
@@ -533,7 +669,7 @@ describe('compare runtime', () => {
       graphPath,
       question: 'how does login create a session',
       outputDir: COMPARE_OUTPUT_ROOT,
-      execTemplate: 'OPENAI_API_KEY=sk-test claude -p "$(cat {prompt_file})"',
+      execTemplate: 'claude -p "$(cat {prompt_file})"',
       baselineMode: 'full',
       now: new Date('2026-04-24T19:30:00Z'),
     })

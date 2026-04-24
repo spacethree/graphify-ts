@@ -82,8 +82,6 @@ export interface GenerateCompareArtifactsResult {
 
 const DEFAULT_RETRIEVAL_BUDGET = 3_000
 const DEFAULT_BOUNDED_BASELINE_TOKENS = 4_000
-const SAFE_EXEC_COMMAND_LABEL = 'external-template'
-
 function timestampDirectoryName(date: Date): string {
   const iso = date.toISOString()
   return iso.slice(0, 19).replace(/:/g, '-')
@@ -410,7 +408,7 @@ export function generateCompareArtifacts(input: GenerateCompareArtifactsInput): 
     const report: ComparePromptReport = {
       question,
       graph_path: graphPath,
-      exec_command: SAFE_EXEC_COMMAND_LABEL,
+      exec_command: input.execTemplate,
       baseline_mode: input.baselineMode,
       baseline_prompt_tokens: baselinePromptTokens,
       graphify_prompt_tokens: graphifyPromptTokens,
