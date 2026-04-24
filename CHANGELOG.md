@@ -4,6 +4,26 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-04-24
+
+### Added
+
+- **`graphify-ts eval` command**: measures retrieval quality with recall, MRR, and compression ratio against a gold-standard question set
+- **Progress output during generate**: step-by-step feedback (detect → extract → build → cluster → analyze → export) so users know the tool isn't hanging
+- **Next-steps guidance after generate**: prints platform install commands (`claude install`, `cursor install`, etc.) after graph generation completes
+- **Pre-install validation**: warns if `graphify-out/graph.json` doesn't exist when running `claude install`, `cursor install`, `gemini install`, or `copilot install`
+
+### Improved
+
+- **Retrieve quality — multi-hop expansion**: expanded from 1-hop to 2-hop neighbor traversal with distance-decaying scores (hop1: 0.5x, hop2: 0.25x), improving recall from 90% to 95% on the built-in benchmark
+- **Retrieve quality — structural signal boosting**: bridge nodes get +0.3 score boost, god nodes get -0.2 penalty, same-community nodes get +0.1 boost
+- **Retrieve quality — TF-IDF token weighting**: rare query tokens now score higher than common ones, with a 0.1 floor to prevent exact matches from being erased
+
+### Fixed
+
+- **pr_impact missed uncommitted changes**: `gitDiffFiles` now checks unstaged and staged changes against HEAD in addition to branch-to-branch diffs
+- **pr_impact skipped all nodes**: the file-node filter used `node_kind !== ''` which excluded every node since `node_kind` is undefined in extracted graphs; replaced with a filename-pattern heuristic
+
 ## [0.6.4] - 2026-04-24
 
 ### Fixed

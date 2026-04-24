@@ -41,9 +41,9 @@ export interface PrImpactResult {
   }
 }
 
-function gitDiffFiles(projectDir: string, baseBranch: string): string[] {
+function gitDiffNameOnly(projectDir: string, gitArgs: string[]): string[] {
   try {
-    const output = execFileSync('git', ['diff', '--name-only', `${baseBranch}...HEAD`], {
+    const output = execFileSync('git', ['diff', '--name-only', ...gitArgs], {
       cwd: projectDir,
       maxBuffer: MAX_DIFF_BYTES,
       encoding: 'utf8',
@@ -54,10 +54,24 @@ function gitDiffFiles(projectDir: string, baseBranch: string): string[] {
       .split('\n')
       .map((line) => line.trim())
       .filter((line) => line.length > 0)
-      .slice(0, MAX_CHANGED_FILES)
   } catch {
     return []
   }
+}
+
+function gitDiffFiles(projectDir: string, baseBranch: string): string[] {
+  // 1. Check for uncommitted changes (staged + unstaged) against HEAD
+  const uncommitted = [
+    ...gitDiffNameOnly(projectDir, ['HEAD']),           // unstaged + staged vs last commit
+    ...gitDiffNameOnly(projectDir, ['--cached']),       // staged only (catches newly added files)
+  ]
+
+  // 2. Check for committed changes between branches
+  const branchChanges = gitDiffNameOnly(projectDir, [`${baseBranch}...HEAD`])
+
+  // Deduplicate and cap
+  const allFiles = [...new Set([...uncommitted, ...branchChanges])]
+  return allFiles.slice(0, MAX_CHANGED_FILES)
 }
 
 function gitDetectBaseBranch(projectDir: string): string {
@@ -144,8 +158,9 @@ export function analyzePrImpact(
     }
   }
 
-  // Deduplicate by label for impact analysis — skip file nodes
-  const uniqueLabels = [...new Set(changedNodes.filter((n) => n.node_kind !== '').map((n) => n.label))]
+  // Deduplicate by label for impact analysis — skip file-level nodes (e.g. "main.ts")
+  const isFileNode = (label: string) => /\.\w{1,5}$/.test(label)
+  const uniqueLabels = [...new Set(changedNodes.filter((n) => !isFileNode(n.label)).map((n) => n.label))]
 
   const perNodeImpact: PrImpactResult['per_node_impact'] = []
   const allAffectedFiles = new Set<string>()

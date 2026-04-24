@@ -611,7 +611,7 @@ describe('cli main', () => {
     )
 
     expect(exitCode).toBe(0)
-    expect(capturedOptions).toEqual({
+    expect(capturedOptions).toMatchObject({
       rootPath: 'src',
       update: false,
       clusterOnly: false,
@@ -627,6 +627,7 @@ describe('cli main', () => {
       includeDocs: false,
       docs: false,
     })
+    expect(typeof capturedOptions?.onProgress).toBe('function')
   })
 
   it('pushes the generated graph to neo4j when requested', async () => {
@@ -691,6 +692,17 @@ describe('cli main', () => {
 
     expect(exitCode).toBe(0)
     expect(printed).toBe(true)
+  })
+
+  it('executes eval command and routes output through io.log', async () => {
+    const { io, logs } = createIo()
+    const dependencies = createDependencies()
+
+    const exitCode = await executeCli(['eval'], io, dependencies)
+
+    expect(exitCode).toBe(0)
+    expect(logs.some((line) => line.includes('retrieval quality benchmark'))).toBe(true)
+    expect(logs.some((line) => line.includes('Recall:'))).toBe(true)
   })
 
   it('executes hook commands via injected dependencies', async () => {

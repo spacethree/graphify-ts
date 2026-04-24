@@ -107,6 +107,7 @@ This merges graphs and infers cross-repo connections from shared types and funct
 | `explain <label>` | Explain one node and its neighborhood |
 | `add <url> [path]` | Ingest a URL and rebuild |
 | `benchmark [graph.json]` | Measure token reduction and structure signals |
+| `eval [graph.json]` | Measure retrieval quality: recall and MRR |
 | `install --platform claude` | Install home-level Claude skill |
 | `claude install` | Install project-local Claude integration with MCP auto-start |
 

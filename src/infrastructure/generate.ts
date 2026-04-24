@@ -15,6 +15,14 @@ import { generate as generateReport } from '../pipeline/report.js'
 import { toWiki } from '../pipeline/wiki.js'
 import { loadGraph } from '../runtime/serve.js'
 
+export type ProgressStep =
+  | { step: 'detect'; message: string }
+  | { step: 'extract'; message: string; current?: number; total?: number }
+  | { step: 'build'; message: string }
+  | { step: 'cluster'; message: string }
+  | { step: 'analyze'; message: string }
+  | { step: 'export'; message: string }
+
 export interface GenerateGraphOptions {
   update?: boolean
   clusterOnly?: boolean
@@ -30,6 +38,7 @@ export interface GenerateGraphOptions {
   neo4j?: boolean
   includeDocs?: boolean
   docs?: boolean
+  onProgress?: (progress: ProgressStep) => void
 }
 
 export interface GenerateGraphResult {
@@ -221,7 +230,9 @@ export function generateGraph(rootPath = '.', options: GenerateGraphOptions = {}
   const manifestPath = join(resolvedOutputDir, 'manifest.json')
 
   mkdirSync(resolvedOutputDir, { recursive: true })
+  const progress = options.onProgress
 
+  progress?.({ step: 'detect', message: 'Scanning files...' })
   const detected = options.update ? detectIncremental(resolvedRootPath, manifestPath, detectOptions(options)) : detect(resolvedRootPath, detectOptions(options))
 
   if (options.includeDocs === false) {
@@ -261,9 +272,17 @@ export function generateGraph(rootPath = '.', options: GenerateGraphOptions = {}
 
   const codeFiles = detected.files[FileType.CODE]
   const extractableFiles = collectExtractableFiles(detected.files)
+
+  progress?.({ step: 'detect', message: `Found ${detected.total_files} files (~${detected.total_words.toLocaleString()} words)` })
+
   const existingGraph = options.clusterOnly || (options.update && existsSync(graphPath)) ? loadGraph(graphPath) : null
   const existingGraphExtractorVersion = options.update && existsSync(graphPath) ? loadGraphExtractorVersion(graphPath) : null
   const directed = options.directed === true || existingGraph?.isDirected() === true
+
+  if (!options.clusterOnly) {
+    progress?.({ step: 'extract', message: `Extracting ${extractableFiles.length} files...`, current: 0, total: extractableFiles.length })
+  }
+
   const graph = options.clusterOnly
     ? existingGraph
     : options.update && existingGraph && isIncrementalDetectResult(detected)
@@ -314,9 +333,15 @@ export function generateGraph(rootPath = '.', options: GenerateGraphOptions = {}
     throw new Error(missingCodeExtractionMessage(detected.total_files))
   }
 
+  progress?.({ step: 'build', message: `Built graph: ${graph.numberOfNodes()} nodes, ${graph.numberOfEdges()} edges` })
+
+  progress?.({ step: 'cluster', message: 'Clustering communities...' })
   const communities = cluster(graph)
   const cohesionScores = scoreAll(graph, communities)
   const communityLabels = buildCommunityLabels(graph, communities, { rootPath: resolvedRootPath })
+  progress?.({ step: 'cluster', message: `Found ${Object.keys(communities).length} communities` })
+
+  progress?.({ step: 'analyze', message: 'Analyzing structure...' })
   const godNodeList = godNodes(graph)
   const surpriseList = surprisingConnections(graph, communities)
   const semanticAnomalyList = semanticAnomalies(graph, communities, communityLabels)
@@ -335,6 +360,7 @@ export function generateGraph(rootPath = '.', options: GenerateGraphOptions = {}
     suggestedQuestions,
   )
 
+  progress?.({ step: 'export', message: 'Writing outputs...' })
   writeFileSync(reportPath, `${report}\n`, 'utf8')
   toJson(graph, communities, graphPath, communityLabels, semanticAnomalyList, EXTRACTOR_CACHE_VERSION)
   if (!options.noHtml) {

@@ -209,11 +209,22 @@ describe('retrieve', () => {
       const result = retrieveContext(graph, { question: 'auth', budget: 5000 })
 
       const authNode = result.matched_nodes.find((n) => n.label === 'authenticateUser')
-      const neighborNodes = result.matched_nodes.filter((n) => n.match_score === 0)
+      const otherNodes = result.matched_nodes.filter((n) => n.label !== 'authenticateUser')
 
       expect(authNode).toBeDefined()
       expect(authNode!.match_score).toBeGreaterThan(0)
-      expect(neighborNodes.length).toBeGreaterThan(0)
+      for (const other of otherNodes) {
+        expect(authNode!.match_score).toBeGreaterThanOrEqual(other.match_score)
+      }
+    })
+
+    it('returns matches even when a query token appears in every node', () => {
+      const graph = new KnowledgeGraph()
+      graph.addNode('auth_service', { label: 'AuthService', file_type: 'code', source_file: 'src/auth.ts', source_location: 'L1' })
+      const result = retrieveContext(graph, { question: 'auth', budget: 3000 })
+
+      expect(result.matched_nodes.length).toBeGreaterThan(0)
+      expect(result.matched_nodes[0]!.match_score).toBeGreaterThan(0)
     })
 
     it('returns snippet as null when source file does not exist', () => {

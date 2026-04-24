@@ -80,16 +80,42 @@ export function tokenizeLabel(label: string): string[] {
     .filter((token) => token.length > 1)
 }
 
-export function scoreNode(questionTokens: readonly string[], labelTokens: readonly string[]): number {
+export function scoreNode(questionTokens: readonly string[], labelTokens: readonly string[], tokenWeights?: ReadonlyMap<string, number>): number {
   let score = 0
   for (const qt of questionTokens) {
+    const weight = tokenWeights?.get(qt) ?? 1
     for (const lt of labelTokens) {
       if (lt.startsWith(qt) || qt.startsWith(lt)) {
-        score += 1
+        score += weight
       }
     }
   }
   return score
+}
+
+function buildTokenWeights(graph: KnowledgeGraph, questionTokens: readonly string[]): Map<string, number> {
+  const totalNodes = graph.numberOfNodes()
+  if (totalNodes === 0) return new Map()
+
+  const matchCounts = new Map<string, number>()
+  for (const qt of questionTokens) {
+    matchCounts.set(qt, 0)
+  }
+
+  for (const [, attributes] of graph.nodeEntries()) {
+    const labelTokens = tokenizeLabel(String(attributes.label ?? ''))
+    for (const qt of questionTokens) {
+      if (labelTokens.some((lt) => lt.startsWith(qt) || qt.startsWith(lt))) {
+        matchCounts.set(qt, (matchCounts.get(qt) ?? 0) + 1)
+      }
+    }
+  }
+
+  const weights = new Map<string, number>()
+  for (const [token, count] of matchCounts) {
+    weights.set(token, count > 0 ? Math.max(0.1, Math.log(totalNodes / count)) : 1)
+  }
+  return weights
 }
 
 function estimateTokens(text: string): number {
@@ -170,7 +196,8 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
     }
   }
 
-  // Step 1+2: Score all nodes
+  // Step 1+2: Score all nodes with TF-IDF-weighted tokens
+  const tokenWeights = buildTokenWeights(graph, questionTokens)
   const scored: ScoredNode[] = []
   for (const [id, attributes] of graph.nodeEntries()) {
     const community = parseCommunityId(attributes.community)
@@ -187,8 +214,8 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
     const labelTokens = tokenizeLabel(label)
     const sourceFile = String(attributes.source_file ?? '')
     const sourceTokens = tokenizeLabel(sourceFile)
-    const labelScore = scoreNode(questionTokens, labelTokens)
-    const sourceScore = scoreNode(questionTokens, sourceTokens) * 0.5
+    const labelScore = scoreNode(questionTokens, labelTokens, tokenWeights)
+    const sourceScore = scoreNode(questionTokens, sourceTokens, tokenWeights) * 0.5
     const totalScore = labelScore + sourceScore
 
     if (totalScore > 0) {
@@ -207,19 +234,35 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
 
   scored.sort((a, b) => b.score - a.score || graph.degree(b.id) - graph.degree(a.id))
 
-  // Step 3: Expand via graph — take top seeds, add their neighbors
+  // Step 3: Multi-hop expansion — take top seeds, expand 2 hops with decaying scores
   const seedCount = Math.min(scored.length, 10)
   const seedIds = new Set(scored.slice(0, seedCount).map((node) => node.id))
-  const expandedIds = new Set(seedIds)
+  const hopScores = new Map<string, number>()
 
+  // Hop 1: direct neighbors get 0.5x of best seed score
+  const bestSeedScore = scored.length > 0 ? scored[0]?.score ?? 0 : 0
   for (const seedId of seedIds) {
     for (const neighborId of graph.neighbors(seedId)) {
-      expandedIds.add(neighborId)
+      if (!seedIds.has(neighborId)) {
+        hopScores.set(neighborId, Math.max(hopScores.get(neighborId) ?? 0, bestSeedScore * 0.5))
+      }
     }
   }
 
-  // Add neighbor nodes not already scored
-  for (const nodeId of expandedIds) {
+  // Hop 2: neighbors-of-neighbors get 0.25x (skip if budget is tight)
+  if (budget >= 2000) {
+    const hop1Ids = new Set(hopScores.keys())
+    for (const hop1Id of hop1Ids) {
+      for (const hop2Id of graph.neighbors(hop1Id)) {
+        if (!seedIds.has(hop2Id) && !hop1Ids.has(hop2Id)) {
+          hopScores.set(hop2Id, Math.max(hopScores.get(hop2Id) ?? 0, bestSeedScore * 0.25))
+        }
+      }
+    }
+  }
+
+  // Add expanded nodes not already scored
+  for (const [nodeId, hopScore] of hopScores) {
     if (scored.some((s) => s.id === nodeId)) {
       continue
     }
@@ -243,8 +286,22 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
       nodeKind: String(attributes.node_kind ?? ''),
       fileType,
       community,
-      score: 0,
+      score: hopScore,
     })
+  }
+
+  // Apply structural signal boosts before final sort
+  const retrieveCommunities = communitiesFromGraph(graph)
+  const godNodeList = new Set(godNodes(graph, 20).map((entry) => entry.id))
+  const bridgeNodeList = new Set(workspaceBridges(graph, retrieveCommunities, {}, 20).map((entry) => entry.id))
+  const topSeed = scored.length > 0 ? scored[0] : undefined
+  const seedCommunity = topSeed?.community
+
+  for (const node of scored) {
+    if (node.score === 0) continue
+    if (bridgeNodeList.has(node.id)) node.score += 0.3
+    if (godNodeList.has(node.id)) node.score -= 0.2
+    if (seedCommunity !== undefined && node.community === seedCommunity && node.community !== -1) node.score += 0.1
   }
 
   // Re-sort: seeds first by score, then neighbors by degree
@@ -262,7 +319,7 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
   let tokenCount = 0
 
   for (const node of scored) {
-    if (!expandedIds.has(node.id)) {
+    if (!seedIds.has(node.id) && !hopScores.has(node.id)) {
       continue
     }
 

@@ -1,8 +1,9 @@
 import { existsSync } from 'node:fs'
 
 import { type BenchmarkResult, printBenchmark, runBenchmark } from '../infrastructure/benchmark.js'
+import { evaluateRetrievalQuality, formatQualityReport } from '../infrastructure/benchmark/quality.js'
 import { federate } from '../pipeline/federate.js'
-import { generateGraph, type GenerateGraphResult } from '../infrastructure/generate.js'
+import { generateGraph, type GenerateGraphResult, type ProgressStep } from '../infrastructure/generate.js'
 import { install as installHooks, status as hookStatus, uninstall as uninstallHooks } from '../infrastructure/hooks.js'
 import { ingest, saveQueryResult } from '../infrastructure/ingest.js'
 import {
@@ -106,6 +107,14 @@ function messageFromError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+function formatProgress(progress: ProgressStep): string {
+  const prefix = `[graphify ${progress.step}]`
+  if (progress.step === 'extract' && progress.current !== undefined && progress.total !== undefined && progress.total > 0) {
+    return `${prefix} ${progress.message} (${progress.current}/${progress.total})`
+  }
+  return `${prefix} ${progress.message}`
+}
+
 export function formatHelp(binaryName = 'graphify-ts'): string {
   return [
     `Usage: ${binaryName} <command>`,
@@ -172,6 +181,7 @@ export function formatHelp(binaryName = 'graphify-ts'): string {
     '    --nodes N1 N2 ...     source node labels cited in the answer',
     '    --memory-dir DIR      memory directory (default graphify-out/memory)',
     '  benchmark [graph.json] measure token reduction, question coverage, and structure signals',
+    '  eval [graph.json]      measure retrieval quality: recall and MRR',
     '  install [--platform P] install the platform skill or local graphify config',
     '    platforms            claude|windows|gemini|cursor|codex|opencode|aider|claw|droid|trae|trae-cn|copilot',
     '  hook <action>          manage git hooks for graphify rebuild reminders',
@@ -287,6 +297,13 @@ function formatGenerateSummary(result: GenerateGraphResult): string {
     lines.push(`- Note: ${note}`)
   }
 
+  lines.push('')
+  lines.push('Next: connect your AI assistant:')
+  lines.push('  graphify-ts claude install    # Claude Code')
+  lines.push('  graphify-ts cursor install    # Cursor')
+  lines.push('  graphify-ts copilot install   # GitHub Copilot')
+  lines.push('  graphify-ts gemini install    # Gemini CLI')
+
   return lines.join('\n')
 }
 
@@ -336,6 +353,7 @@ export async function executeCli(argv: string[], io: CliIO = console, dependenci
         neo4j: options.neo4j,
         includeDocs: options.includeDocs,
         docs: options.docs,
+        onProgress: (step) => io.log(formatProgress(step)),
       })
       io.log(formatGenerateSummary(result))
 
@@ -366,6 +384,7 @@ export async function executeCli(argv: string[], io: CliIO = console, dependenci
       const result = dependencies.generateGraph(options.path, {
         followSymlinks: options.followSymlinks,
         noHtml: options.noHtml,
+        onProgress: (step) => io.log(formatProgress(step)),
       })
       io.log(formatGenerateSummary(result))
       await dependencies.watchGraph(options.path, options.debounceSeconds, {
@@ -478,6 +497,7 @@ export async function executeCli(argv: string[], io: CliIO = console, dependenci
         update: true,
         followSymlinks: options.followSymlinks,
         noHtml: options.noHtml,
+        onProgress: (step) => io.log(formatProgress(step)),
       })
       io.log(`[graphify add] Saved ${assetPath}`)
       io.log(formatGenerateSummary(result))
@@ -498,6 +518,14 @@ export async function executeCli(argv: string[], io: CliIO = console, dependenci
       const options = parseBenchmarkArgs(args)
       const result = dependencies.runBenchmark(options.graphPath)
       dependencies.printBenchmark(result)
+      return 0
+    }
+
+    if (command === 'eval') {
+      const graphPath = args[0] ?? 'graphify-out/graph.json'
+      const graph = dependencies.loadGraph(graphPath)
+      const report = evaluateRetrievalQuality(graph)
+      io.log(formatQualityReport(report))
       return 0
     }
 
@@ -529,18 +557,27 @@ export async function executeCli(argv: string[], io: CliIO = console, dependenci
 
     if (command === 'claude') {
       const options = parsePlatformActionArgs(command, args)
+      if (options.action === 'install' && !existsSync('graphify-out/graph.json')) {
+        io.log("Warning: graphify-out/graph.json not found. Run 'graphify-ts generate .' first, then re-run this command.")
+      }
       io.log(options.action === 'install' ? dependencies.claudeInstall('.') : dependencies.claudeUninstall('.'))
       return 0
     }
 
     if (command === 'cursor') {
       const options = parsePlatformActionArgs(command, args)
+      if (options.action === 'install' && !existsSync('graphify-out/graph.json')) {
+        io.log("Warning: graphify-out/graph.json not found. Run 'graphify-ts generate .' first, then re-run this command.")
+      }
       io.log(options.action === 'install' ? dependencies.cursorInstall('.') : dependencies.cursorUninstall('.'))
       return 0
     }
 
     if (command === 'gemini') {
       const options = parsePlatformActionArgs(command, args)
+      if (options.action === 'install' && !existsSync('graphify-out/graph.json')) {
+        io.log("Warning: graphify-out/graph.json not found. Run 'graphify-ts generate .' first, then re-run this command.")
+      }
       io.log(options.action === 'install' ? dependencies.geminiInstall('.') : dependencies.geminiUninstall('.'))
       return 0
     }
@@ -548,6 +585,9 @@ export async function executeCli(argv: string[], io: CliIO = console, dependenci
     if (command === 'copilot') {
       const options = parsePlatformActionArgs(command, args)
       if (options.action === 'install') {
+        if (!existsSync('graphify-out/graph.json')) {
+          io.log("Warning: graphify-out/graph.json not found. Run 'graphify-ts generate .' first, then re-run this command.")
+        }
         io.log(dependencies.installSkill('copilot'))
         // Also install project-level MCP server for VS Code Copilot
         const { installCopilotMcp } = await import('../infrastructure/install.js')
