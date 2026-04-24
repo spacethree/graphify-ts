@@ -3219,15 +3219,23 @@ export function extractCompareBaselineNonCodeText(filePath: string): string | nu
   const extension = extname(filePath).toLowerCase()
   const extractedText =
     extension === '.pdf'
-      ? extractPdfPaperText(filePath)
+      ? extractCompareBaselinePdfText(filePath)
       : extension === '.docx'
-        ? extractDocxDocumentText(filePath)
+        ? extractCompareBaselineDocxText(filePath)
         : extension === '.xlsx'
-          ? extractXlsxDocumentText(filePath)
-          : ''
+          ? extractCompareBaselineXlsxText(filePath)
+          : null
+
+  if (extractedText === null) {
+    return null
+  }
 
   const normalizedText = extractedText.trimEnd()
-  return normalizedText ? normalizedText : null
+  if (!normalizedText) {
+    throw new Error(`Compare baseline could not extract text from graph-backed file: ${filePath}`)
+  }
+
+  return normalizedText
 }
 
 function isAllowedOfficeEntry(
@@ -3308,7 +3316,7 @@ function extractDocxDocument(filePath: string, allowedTargets: ReadonlySet<strin
     return finalize()
   }
   const coreXml = coreXmlBytes ? strFromU8(coreXmlBytes) : ''
-  const coreMetadata = extractCoreMetadata(coreXml, normalizeCompareBaselineTextLine)
+  const coreMetadata = extractCoreMetadata(coreXml)
   if (Object.keys(coreMetadata).length > 0) {
     nodes[0] = { ...fileNode, ...coreMetadata }
   }
@@ -3422,12 +3430,12 @@ function uniqueNonEmptyLines(lines: string[]): string {
   return uniqueLines.join('\n').trimEnd()
 }
 
-function extractDocxDocumentText(filePath: string): string {
+function extractCompareBaselineDocxText(filePath: string): string {
   let archive: Record<string, Uint8Array>
   try {
     const buffer = readFileSync(filePath)
     if (buffer.byteLength > MAX_TEXT_BYTES) {
-      return ''
+      throw new Error(`Compare baseline could not extract text from graph-backed file: ${filePath}`)
     }
     const selectedOriginalBytes = { value: 0 }
     archive = unzipSync(new Uint8Array(buffer), {
@@ -3441,8 +3449,11 @@ function extractDocxDocumentText(filePath: string): string {
           DOCX_MAX_TOTAL_ORIGINAL_BYTES,
         ),
     })
-  } catch {
-    return ''
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('Compare baseline could not extract text')) {
+      throw error
+    }
+    throw new Error(`Compare baseline failed to extract text from graph-backed file: ${filePath}`)
   }
 
   const lines: string[] = []
@@ -3458,7 +3469,7 @@ function extractDocxDocumentText(filePath: string): string {
 
   const documentXmlBytes = archive['word/document.xml']
   if (!documentXmlBytes || documentXmlBytes.byteLength > DOCX_MAX_ENTRY_ORIGINAL_BYTES) {
-    return uniqueNonEmptyLines(lines)
+    throw new Error(`Compare baseline failed to extract text from graph-backed file: ${filePath}`)
   }
 
   let paragraphCount = 0
@@ -3650,15 +3661,18 @@ function extractPdfPaper(filePath: string, allowedTargets: ReadonlySet<string>):
   return finalize()
 }
 
-function extractPdfPaperText(filePath: string): string {
+function extractCompareBaselinePdfText(filePath: string): string {
   let buffer: Buffer
   try {
     buffer = readFileSync(filePath)
     if (buffer.byteLength > MAX_TEXT_BYTES) {
-      return ''
+      throw new Error(`Compare baseline could not extract text from graph-backed file: ${filePath}`)
     }
-  } catch {
-    return ''
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('Compare baseline could not extract text')) {
+      throw error
+    }
+    throw new Error(`Compare baseline failed to extract text from graph-backed file: ${filePath}`)
   }
 
   const pdfText = buffer.toString('latin1')
@@ -3729,7 +3743,7 @@ function extractXlsxDocument(filePath: string, allowedTargets: ReadonlySet<strin
   }
 
   const coreXml = archive['docProps/core.xml'] ? strFromU8(archive['docProps/core.xml']!) : ''
-  const coreMetadata = extractCoreMetadata(coreXml, normalizeCompareBaselineTextLine)
+  const coreMetadata = extractCoreMetadata(coreXml)
   if (Object.keys(coreMetadata).length > 0) {
     nodes[0] = { ...fileNode, ...coreMetadata }
   }
@@ -3771,12 +3785,12 @@ function extractXlsxDocument(filePath: string, allowedTargets: ReadonlySet<strin
   return finalize()
 }
 
-function extractXlsxDocumentText(filePath: string): string {
+function extractCompareBaselineXlsxText(filePath: string): string {
   let archive: Record<string, Uint8Array>
   try {
     const buffer = readFileSync(filePath)
     if (buffer.byteLength > MAX_TEXT_BYTES) {
-      return ''
+      throw new Error(`Compare baseline could not extract text from graph-backed file: ${filePath}`)
     }
 
     const selectedOriginalBytes = { value: 0 }
@@ -3791,8 +3805,11 @@ function extractXlsxDocumentText(filePath: string): string {
           DOCX_MAX_TOTAL_ORIGINAL_BYTES,
         ),
     })
-  } catch {
-    return ''
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('Compare baseline could not extract text')) {
+      throw error
+    }
+    throw new Error(`Compare baseline failed to extract text from graph-backed file: ${filePath}`)
   }
 
   const lines: string[] = []

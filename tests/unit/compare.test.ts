@@ -413,6 +413,28 @@ describe('compare runtime', () => {
     )
   })
 
+  it('creates a collision-safe compare output directory for repeated runs at the same timestamp', () => {
+    const graph = makeGraph()
+    writeProjectFiles()
+    const graphPath = writeGraphFixture(graph)
+    const input = {
+      graphPath,
+      question: 'how does login create a session',
+      outputDir: COMPARE_OUTPUT_ROOT,
+      execTemplate: 'claude -p "$(cat {prompt_file})"',
+      baselineMode: 'full' as const,
+      now: new Date('2026-04-24T19:30:00.000Z'),
+    }
+
+    const firstResult = generateCompareArtifacts(input)
+    const secondResult = generateCompareArtifacts(input)
+
+    expect(firstResult.output_root).not.toBe(secondResult.output_root)
+    expect(firstResult.reports[0]?.paths.output_dir).not.toBe(secondResult.reports[0]?.paths.output_dir)
+    expect(existsSync(firstResult.reports[0]!.paths.baseline_prompt)).toBe(true)
+    expect(existsSync(secondResult.reports[0]!.paths.baseline_prompt)).toBe(true)
+  })
+
   it.each(['pdf', 'docx', 'xlsx'] as const)(
     'writes prompt artifacts from graph-backed %s sources when corpusText is omitted',
     (kind) => {
@@ -438,6 +460,52 @@ describe('compare runtime', () => {
       expect(baselinePrompt).toContain(fixture.expectedExcerpt)
       expect(existsSync(result.reports[0]!.paths.graphify_prompt)).toBe(true)
       expect(existsSync(result.reports[0]!.paths.report)).toBe(true)
+    },
+  )
+
+  it.each(['pdf', 'docx', 'xlsx'] as const)(
+    'fails explicitly when graph-backed %s baseline extraction cannot produce text',
+    (kind) => {
+      const fixture = makeGraphBackedNonCodeFixture(kind)
+      const graph = makeGraph()
+      graph.addNode(`broken_${kind}_source`, {
+        label: fixture.nodeLabel,
+        source_file: fixture.relativePath,
+        source_location: 'L1',
+        line_number: 1,
+        node_kind: 'document',
+        file_type: fixture.fileType,
+        community: 0,
+      })
+
+      writeProjectFiles()
+
+      const absolutePath = join(PROJECT_FIXTURE_ROOT, fixture.relativePath)
+      mkdirSync(dirname(absolutePath), { recursive: true })
+      writeFileSync(
+        absolutePath,
+        kind === 'pdf'
+          ? [
+              '%PDF-1.4',
+              '1 0 obj',
+              '<< /Producer (graphify-ts) >>',
+              'endobj',
+            ].join('\n')
+          : Buffer.from('not-a-zip-archive'),
+      )
+
+      const graphPath = writeGraphFixture(graph)
+
+      expect(() =>
+        generateCompareArtifacts({
+          graphPath,
+          question: 'how does login create a session',
+          outputDir: COMPARE_OUTPUT_ROOT,
+          execTemplate: 'claude -p "$(cat {prompt_file})"',
+          baselineMode: 'full',
+          now: new Date('2026-04-24T19:30:00.000Z'),
+        }),
+      ).toThrow(/could not extract text|failed to extract/i)
     },
   )
 

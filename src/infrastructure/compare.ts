@@ -87,6 +87,30 @@ function timestampDirectoryName(date: Date): string {
   return iso.slice(0, 19).replace(/:/g, '-')
 }
 
+function createCompareOutputRoot(outputDir: string, date: Date): string {
+  mkdirSync(outputDir, { recursive: true })
+
+  const timestampDirectory = timestampDirectoryName(date)
+  for (let suffix = 0; suffix < 10_000; suffix += 1) {
+    const candidate = join(
+      outputDir,
+      suffix === 0 ? timestampDirectory : `${timestampDirectory}-${String(suffix).padStart(3, '0')}`,
+    )
+
+    try {
+      mkdirSync(candidate)
+      return candidate
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+        continue
+      }
+      throw error
+    }
+  }
+
+  throw new Error(`Unable to create a unique compare output directory inside ${outputDir}`)
+}
+
 function renderBaselinePrompt(question: string, graph: KnowledgeGraph, corpusBody: string, mode: CompareBaselineMode): string {
   return [
     'Answer the question using only the provided project corpus.',
@@ -227,11 +251,7 @@ function readBaselineCorpusFile(filePath: string): string | null {
   }
 
   const nonCodeText = extractCompareBaselineNonCodeText(filePath)
-  if (nonCodeText !== null) {
-    return nonCodeText
-  }
-
-  return null
+  return nonCodeText
 }
 
 function deriveBaselineCorpusText(graphPath: string, graph: KnowledgeGraph): string {
@@ -274,15 +294,11 @@ function deriveBaselineCorpusText(graphPath: string, graph: KnowledgeGraph): str
       continue
     }
 
-    try {
-      const corpusText = readBaselineCorpusFile(absolutePath)
-      if (corpusText === null) {
-        continue
-      }
-      files.set(corpusPath, corpusText)
-    } catch {
+    const corpusText = readBaselineCorpusFile(absolutePath)
+    if (corpusText === null) {
       continue
     }
+    files.set(corpusPath, corpusText)
   }
 
   if (files.size === 0) {
@@ -369,8 +385,7 @@ export function generateCompareArtifacts(input: GenerateCompareArtifactsInput): 
   const questions = resolveCompareQuestions(input)
   const outputDir = validateGraphOutputPath(input.outputDir)
   const now = input.now ?? new Date()
-  const outputRoot = join(outputDir, timestampDirectoryName(now))
-  mkdirSync(outputRoot, { recursive: true })
+  const outputRoot = createCompareOutputRoot(outputDir, now)
 
   const reports = questions.map((question, index) => {
     const questionOutputDir = questions.length === 1 ? outputRoot : join(outputRoot, `question-${String(index + 1).padStart(3, '0')}`)
