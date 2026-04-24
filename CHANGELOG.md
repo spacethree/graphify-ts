@@ -4,6 +4,13 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-04-25
+
+### Fixed
+
+- **Compare exec templates**: `graphify-ts compare` now rejects shell command substitution around `{prompt_file}` so full-repo prompts do not get expanded into argv and fail with OS argument-length limits
+- **Compare docs and examples**: README and `examples/why-graphify.md` now use stdin-safe runner patterns like `cat {prompt_file} | claude -p` and explicitly warn against command-substitution forms
+
 ## [0.8.0] - 2026-04-25
 
 ### Added

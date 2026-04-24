@@ -135,7 +135,7 @@ The demo repo is intentionally tiny, so its token-reduction numbers are modest. 
 ```bash
 node dist/src/cli/bin.js compare "How does login create a session?" \
   --graph examples/demo-repo/graphify-out/graph.json \
-  --exec 'claude -p "$(cat {prompt_file})"' \
+  --exec 'cat {prompt_file} | claude -p' \
   --yes
 ```
 
@@ -146,7 +146,7 @@ What this gives you:
 - a saved proof bundle in `graphify-out/compare/<timestamp>/`
 - prompt-token counts and run statuses in `report.json`
 
-Important: `compare` may spend paid model tokens. It prints a warning before execution and requires `--yes` in non-interactive runs.
+Important: `compare` may spend paid model tokens. It prints a warning before execution and requires `--yes` in non-interactive runs. For large prompts, use stdin or file redirection with `{prompt_file}`; avoid shell command substitution around `{prompt_file}` (for example `$(cat {prompt_file})`) because shell argument expansion can fail on full-repo baselines.
 
 ## Run It on Your Own Codebase
 
@@ -164,7 +164,7 @@ graphify-ts benchmark graphify-out/graph.json
 graphify-ts eval graphify-out/graph.json --questions benchmark-questions.json
 
 # If you want a real same-model A/B proof run
-graphify-ts compare "How does auth work?" --exec 'claude -p "$(cat {prompt_file})"' --yes
+graphify-ts compare "How does auth work?" --exec 'cat {prompt_file} | claude -p' --yes
 
 # Set up your AI agent
 graphify-ts claude install    # writes .mcp.json with MCP server

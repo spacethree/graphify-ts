@@ -296,6 +296,49 @@ describe('compare runtime', () => {
     ).toBe("runner --question 'how''s login work?' --prompt 'C:\\Users\\Jane Doe\\prompt.txt'")
   })
 
+  it.each([
+    'claude -p "$(cat {prompt_file})"',
+    'claude -p "$(cat < {prompt_file})"',
+    'claude -p "$(sed -n 1p {prompt_file})"',
+    'claude -p `cat {prompt_file}`',
+  ] as const)('rejects command-substitution exec templates that expand prompt files into argv: %s', async (execTemplate) => {
+    const graph = makeGraph()
+    writeProjectFiles()
+    const graphPath = writeGraphFixture(graph)
+    let runnerCalls = 0
+
+    const result = await executeCompareRuns(
+      {
+        graphPath,
+        question: 'how does login create a session',
+        outputDir: COMPARE_OUTPUT_ROOT,
+        execTemplate,
+        baselineMode: 'full',
+        now: new Date('2026-04-24T19:30:00.000Z'),
+      },
+      {
+        runner: async () => {
+          runnerCalls += 1
+          return {
+            exitCode: 0,
+            stdout: 'unexpected\n',
+            stderr: '',
+            elapsedMs: 1,
+          }
+        },
+      },
+    )
+
+    const report = result.reports[0]!
+    expect(runnerCalls).toBe(0)
+    expect(report.status).toEqual({
+      baseline: 'failed',
+      graphify: 'failed',
+    })
+    expect(report.stderr.baseline).toContain('Use stdin or file redirection with {prompt_file}')
+    expect(report.stderr.graphify).toContain('Use stdin or file redirection with {prompt_file}')
+  })
+
   it('builds a baseline prompt pack from graph and corpus input', () => {
     const graph = makeGraph()
     const corpusText = makeCorpusText()

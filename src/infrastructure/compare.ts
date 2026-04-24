@@ -134,6 +134,10 @@ const DEFAULT_RETRIEVAL_BUDGET = 3_000
 const DEFAULT_BOUNDED_BASELINE_TOKENS = 4_000
 const EXEC_TEMPLATE_PLACEHOLDER_PATTERN = /\{[a-z_][a-z0-9_]*\}/gi
 const COMPARE_EXEC_PLACEHOLDERS = new Set(['{prompt_file}', '{question}', '{mode}', '{output_file}'])
+const PROMPT_FILE_COMMAND_SUBSTITUTION_PATTERNS = [
+  /\$\([^)]*\{prompt_file\}[^)]*\)/i,
+  /`[^`]*\{prompt_file\}[^`]*`/i,
+]
 
 function timestampDirectoryName(date: Date): string {
   const iso = date.toISOString()
@@ -147,6 +151,14 @@ function summarizeExecTemplate(execTemplate: string): CompareExecCommandSummary 
     command: null,
     placeholders: [...new Set(placeholders)],
     redacted: true,
+  }
+}
+
+function validateCompareExecTemplate(template: string): void {
+  if (PROMPT_FILE_COMMAND_SUBSTITUTION_PATTERNS.some((pattern) => pattern.test(template))) {
+    throw new Error(
+      'Exec templates must not expand {prompt_file} with shell command substitution. Use stdin or file redirection with {prompt_file}, for example: cat {prompt_file} | claude -p',
+    )
   }
 }
 
@@ -771,6 +783,7 @@ export async function executeCompareRuns(
 
     for (const execution of executions) {
       try {
+        validateCompareExecTemplate(input.execTemplate)
         const command = expandCompareExecTemplate(input.execTemplate, {
           promptFile: execution.promptFile,
           question: report.question,

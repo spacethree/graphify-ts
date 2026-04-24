@@ -1,6 +1,6 @@
 {
     "name": "@mohammednagy/graphify-ts",
-    "version": "0.8.0",
+    "version": "0.8.1",
     "description": "Build local knowledge graphs from code, docs, and mixed project folders with a TypeScript CLI.",
     "license": "AGPL-3.0-only",
     "author": "mohanagy",

@@ -73,7 +73,7 @@ Outputs land in `examples/demo-repo/graphify-out/`, which is ignored so you can 
 ```bash
 node dist/src/cli/bin.js compare "How does login create a session?" \
   --graph examples/demo-repo/graphify-out/graph.json \
-  --exec 'claude -p "$(cat {prompt_file})"' \
+  --exec 'cat {prompt_file} | claude -p' \
   --yes
 ```
 
@@ -81,6 +81,7 @@ What `compare` does:
 
 - Prints a warning before execution because it may consume paid model tokens. Use `--yes` for non-interactive runs and CI.
 - Expands runner placeholders: `{prompt_file}`, `{question}`, `{mode}`, and `{output_file}`.
+- For large prompts, pass `{prompt_file}` through stdin or file redirection. Avoid shell command substitution around `{prompt_file}` (for example `$(cat {prompt_file})`), which can hit OS argument-length limits.
 - Writes a proof bundle under `graphify-out/compare/<timestamp>/` with `baseline-prompt.txt`, `graphify-prompt.txt`, `baseline-answer.txt`, `graphify-answer.txt`, and `report.json`.
 - Preserves partial artifacts when one side fails, so you can still inspect the surviving prompt/answer/report output.
 
