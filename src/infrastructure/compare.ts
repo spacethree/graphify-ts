@@ -2,7 +2,8 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileS
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import { KnowledgeGraph } from '../contracts/graph.js'
-import { CODE_EXTENSIONS, DOC_EXTENSIONS, MANIFEST_METADATA_KEY } from '../pipeline/detect.js'
+import { CODE_EXTENSIONS, DOC_EXTENSIONS, MANIFEST_METADATA_KEY, OFFICE_EXTENSIONS, PAPER_EXTENSIONS } from '../pipeline/detect.js'
+import { extractCompareBaselineNonCodeText } from '../pipeline/extract/non-code.js'
 import { loadBenchmarkQuestions } from './benchmark/questions.js'
 import { retrieveContext, type RetrieveResult } from '../runtime/retrieve.js'
 import { QUERY_CHARS_PER_TOKEN, estimateQueryTokens, loadGraph } from '../runtime/serve.js'
@@ -202,7 +203,12 @@ function isPathWithinRoot(targetPath: string, rootPath: string): boolean {
 
 function isReadableCorpusPath(filePath: string): boolean {
   const extension = extname(filePath).toLowerCase()
-  return CODE_EXTENSIONS.has(extension) || DOC_EXTENSIONS.has(extension)
+  return (
+    CODE_EXTENSIONS.has(extension) ||
+    DOC_EXTENSIONS.has(extension) ||
+    PAPER_EXTENSIONS.has(extension) ||
+    OFFICE_EXTENSIONS.has(extension)
+  )
 }
 
 function collectGraphBackedCorpusFiles(graph: KnowledgeGraph, projectRoot: string): string[] {
@@ -220,6 +226,11 @@ function readBaselineCorpusFile(filePath: string): string | null {
       return null
     }
     return readFileSync(filePath, 'utf8').trimEnd()
+  }
+
+  const nonCodeText = extractCompareBaselineNonCodeText(filePath)
+  if (nonCodeText !== null) {
+    return nonCodeText
   }
 
   return null

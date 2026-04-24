@@ -1,6 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 
+import { strToU8, zipSync } from 'fflate'
+
 import { KnowledgeGraph } from '../../src/contracts/graph.js'
 import {
   buildBaselinePromptPack,
@@ -117,6 +119,98 @@ function makeCorpusText(): string {
     .flatMap(([path, content]) => [path, content, ''])
     .join('\n')
     .trimEnd()
+}
+
+function makeGraphBackedNonCodeFixture(kind: 'pdf' | 'docx' | 'xlsx'): {
+  relativePath: string
+  fileType: 'paper' | 'document'
+  nodeLabel: string
+  expectedExcerpt: string
+  content: Buffer | string
+} {
+  if (kind === 'pdf') {
+    return {
+      relativePath: 'docs/login-flow.pdf',
+      fileType: 'paper',
+      nodeLabel: 'Login Flow PDF',
+      expectedExcerpt: 'PDF login flow creates a session token',
+      content: [
+        '%PDF-1.4',
+        '1 0 obj',
+        '<< /Title (Login Flow PDF) /Author (graphify-ts) /Subject (Authentication) >>',
+        'endobj',
+        'BT',
+        '(PDF login flow creates a session token) Tj',
+        'ET',
+      ].join('\n'),
+    }
+  }
+
+  if (kind === 'docx') {
+    return {
+      relativePath: 'docs/login-flow.docx',
+      fileType: 'document',
+      nodeLabel: 'Login Flow Docx',
+      expectedExcerpt: 'DOCX login flow creates a session token',
+      content: Buffer.from(
+        zipSync({
+          'word/document.xml': strToU8(
+            [
+              '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">',
+              '  <w:body>',
+              '    <w:p><w:r><w:t>DOCX login flow creates a session token</w:t></w:r></w:p>',
+              '  </w:body>',
+              '</w:document>',
+            ].join(''),
+          ),
+          'docProps/core.xml': strToU8(
+            '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Login Flow Docx</dc:title></cp:coreProperties>',
+          ),
+        }),
+      ),
+    }
+  }
+
+  return {
+    relativePath: 'docs/login-flow.xlsx',
+    fileType: 'document',
+    nodeLabel: 'Login Flow Workbook',
+    expectedExcerpt: 'XLSX login flow creates a session token',
+    content: Buffer.from(
+      zipSync({
+        'xl/workbook.xml': strToU8(
+          [
+            '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
+            '  <sheets>',
+            '    <sheet name="LoginFlow" sheetId="1" r:id="rId1" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>',
+            '  </sheets>',
+            '</workbook>',
+          ].join(''),
+        ),
+        'xl/sharedStrings.xml': strToU8(
+          [
+            '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
+            '  <si><t>XLSX login flow creates a session token</t></si>',
+            '</sst>',
+          ].join(''),
+        ),
+      }),
+    ),
+  }
+}
+
+function makeSingleSourceGraph(relativePath: string, nodeLabel: string, fileType: 'paper' | 'document'): KnowledgeGraph {
+  const graph = new KnowledgeGraph()
+  graph.addNode('graph_backed_source', {
+    label: nodeLabel,
+    source_file: relativePath,
+    source_location: 'L1',
+    line_number: 1,
+    node_kind: 'document',
+    file_type: fileType,
+    community: 0,
+  })
+  return graph
 }
 
 function writeProjectFiles(projectRoot: string = PROJECT_FIXTURE_ROOT): void {
@@ -313,6 +407,34 @@ describe('compare runtime', () => {
       }),
     )
   })
+
+  it.each(['pdf', 'docx', 'xlsx'] as const)(
+    'writes prompt artifacts from graph-backed %s sources when corpusText is omitted',
+    (kind) => {
+      const fixture = makeGraphBackedNonCodeFixture(kind)
+      const graph = makeSingleSourceGraph(fixture.relativePath, fixture.nodeLabel, fixture.fileType)
+      const absolutePath = join(PROJECT_FIXTURE_ROOT, fixture.relativePath)
+
+      mkdirSync(dirname(absolutePath), { recursive: true })
+      writeFileSync(absolutePath, fixture.content)
+
+      const graphPath = writeGraphFixture(graph)
+
+      const result = generateCompareArtifacts({
+        graphPath,
+        question: 'how does login create a session',
+        outputDir: COMPARE_OUTPUT_ROOT,
+        execTemplate: 'OPENAI_API_KEY=sk-test claude -p "$(cat {prompt_file})"',
+        baselineMode: 'full',
+        now: new Date('2026-04-24T19:30:00Z'),
+      })
+
+      const baselinePrompt = readFileSync(result.reports[0]!.paths.baseline_prompt, 'utf8')
+      expect(baselinePrompt).toContain(fixture.expectedExcerpt)
+      expect(existsSync(result.reports[0]!.paths.graphify_prompt)).toBe(true)
+      expect(existsSync(result.reports[0]!.paths.report)).toBe(true)
+    },
+  )
 
   it('ignores manifest-only files when deriving the runtime baseline corpus', () => {
     const graph = makeGraph()

@@ -3213,6 +3213,21 @@ export function ensureTextFileWithinLimit(filePath: string): boolean {
   }
 }
 
+export function extractCompareBaselineNonCodeText(filePath: string): string | null {
+  const extension = extname(filePath).toLowerCase()
+  const extractedText =
+    extension === '.pdf'
+      ? extractPdfPaperText(filePath)
+      : extension === '.docx'
+        ? extractDocxDocumentText(filePath)
+        : extension === '.xlsx'
+          ? extractXlsxDocumentText(filePath)
+          : ''
+
+  const normalizedText = extractedText.trimEnd()
+  return normalizedText ? normalizedText : null
+}
+
 function isAllowedOfficeEntry(
   file: UnzipFileInfo,
   selectedOriginalBytes: { value: number },
