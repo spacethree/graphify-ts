@@ -1,4 +1,4 @@
-import { existsSync, realpathSync } from 'node:fs'
+import { existsSync, lstatSync, realpathSync } from 'node:fs'
 import { isIP } from 'node:net'
 import { dirname, relative, resolve, sep } from 'node:path'
 
@@ -76,7 +76,7 @@ export function validateGraphOutputPath(targetPath: string, base = 'graphify-out
 
   if (existsSync(resolvedBase)) {
     const realBase = realpathSync(resolvedBase)
-    if (resolvedBase !== realBase) {
+    if (lstatSync(resolvedBase).isSymbolicLink()) {
       throw new Error(`Path ${JSON.stringify(targetPath)} escapes the allowed directory ${resolvedBase}. Only paths inside graphify-out/ are permitted.`)
     }
     const existingAncestor = findNearestExistingAncestor(resolvedTarget)

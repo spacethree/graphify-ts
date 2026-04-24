@@ -189,6 +189,23 @@ describe('validateGraphOutputPath', () => {
       rmSync(sandboxRoot, { recursive: true, force: true })
     }
   })
+
+  test.runIf(process.platform !== 'win32')('allows graphify-out paths inside a symlinked checkout', () => {
+    const sandboxRoot = resolve('graphify-out', 'test-runtime', 'security-output-symlinked-checkout')
+    const realCheckout = resolve(sandboxRoot, 'real-checkout')
+    const symlinkCheckout = resolve(sandboxRoot, 'linked-checkout')
+    const base = resolve(symlinkCheckout, 'graphify-out')
+
+    rmSync(sandboxRoot, { recursive: true, force: true })
+    mkdirSync(resolve(realCheckout, 'graphify-out'), { recursive: true })
+    symlinkSync(realCheckout, symlinkCheckout, 'dir')
+
+    try {
+      expect(validateGraphOutputPath(resolve(base, 'compare'), base)).toBe(resolve(base, 'compare'))
+    } finally {
+      rmSync(sandboxRoot, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('sanitizeLabel', () => {
