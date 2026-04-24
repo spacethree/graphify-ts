@@ -729,6 +729,8 @@ export function parseCompareArgs(args: string[]): CompareCliOptions {
     throw new UsageError('error: --exec is required')
   }
 
+  outputDir = validateGraphOutputPath(outputDir)
+
   return { question, graphPath, execTemplate, questionsPath, outputDir, baselineMode, yes, limit }
 }
 

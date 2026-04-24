@@ -51,13 +51,19 @@ export interface CliIO {
   error(message?: string): void
 }
 
+export interface CompareCommandContext {
+  options: CompareCliOptions
+  io: CliIO
+  confirm(message: string): Promise<boolean>
+}
+
 export interface CliDependencies {
   loadGraph: typeof loadGraph
   queryGraph: typeof queryGraph
   saveQueryResult: typeof saveQueryResult
   ingest: typeof ingest
   runBenchmark: typeof runBenchmark
-  runCompare: (options: CompareCliOptions) => Promise<string> | string
+  runCompare: (context: CompareCommandContext) => Promise<string | void> | string | void
   printBenchmark: (result: BenchmarkResult) => void
   installHooks: typeof installHooks
   uninstallHooks: typeof uninstallHooks
@@ -80,6 +86,7 @@ export interface CliDependencies {
 }
 
 const COMPARE_EXPERIMENTAL_MESSAGE = 'compare is an experimental scaffold in Task 1; the runtime will land in Task 2/3.'
+const COMPARE_CONFIRMATION_UNAVAILABLE_MESSAGE = 'compare confirmation prompts are not implemented yet; rerun with --yes.'
 
 const DEFAULT_DEPENDENCIES: CliDependencies = {
   loadGraph,
@@ -356,7 +363,19 @@ export async function executeCli(argv: string[], io: CliIO = console, dependenci
   try {
     if (command === 'compare') {
       const options = parseCompareArgs(args)
-      io.log(await dependencies.runCompare(options))
+      const output = await dependencies.runCompare({
+        options,
+        io,
+        confirm: async () => {
+          if (options.yes) {
+            return true
+          }
+          throw new Error(COMPARE_CONFIRMATION_UNAVAILABLE_MESSAGE)
+        },
+      })
+      if (output !== undefined) {
+        io.log(output)
+      }
       return 0
     }
 

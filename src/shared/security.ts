@@ -1,6 +1,6 @@
 import { existsSync, realpathSync } from 'node:fs'
 import { isIP } from 'node:net'
-import { resolve, sep } from 'node:path'
+import { dirname, relative, resolve, sep } from 'node:path'
 
 const CONTROL_CHAR_RE = /[\x00-\x1f\x7f]/g
 const MAX_LABEL_LENGTH = 256
@@ -24,6 +24,20 @@ function inferGraphBase(graphPath: string): string {
   }
 
   return resolve('graphify-out')
+}
+
+function findNearestExistingAncestor(targetPath: string): string | null {
+  let currentPath = resolve(targetPath)
+
+  while (!existsSync(currentPath)) {
+    const parentPath = dirname(currentPath)
+    if (parentPath === currentPath) {
+      return null
+    }
+    currentPath = parentPath
+  }
+
+  return currentPath
 }
 
 export function validateGraphPath(graphPath: string, base?: string): string {
@@ -60,9 +74,15 @@ export function validateGraphOutputPath(targetPath: string, base = 'graphify-out
     throw new Error(`Path ${JSON.stringify(targetPath)} escapes the allowed directory ${resolvedBase}. Only paths inside graphify-out/ are permitted.`)
   }
 
-  if (existsSync(resolvedBase) && existsSync(resolvedTarget)) {
+  if (existsSync(resolvedBase)) {
     const realBase = realpathSync(resolvedBase)
-    const realTarget = realpathSync(resolvedTarget)
+    if (resolvedBase !== realBase) {
+      throw new Error(`Path ${JSON.stringify(targetPath)} escapes the allowed directory ${resolvedBase}. Only paths inside graphify-out/ are permitted.`)
+    }
+    const existingAncestor = findNearestExistingAncestor(resolvedTarget)
+    const realTarget = existingAncestor === null
+      ? resolvedTarget
+      : resolve(realpathSync(existingAncestor), relative(existingAncestor, resolvedTarget))
     const realBasePrefix = realBase.endsWith(sep) ? realBase : `${realBase}${sep}`
     if (realTarget !== realBase && !realTarget.startsWith(realBasePrefix)) {
       throw new Error(`Path ${JSON.stringify(targetPath)} escapes the allowed directory ${resolvedBase}. Only paths inside graphify-out/ are permitted.`)

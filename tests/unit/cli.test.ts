@@ -300,7 +300,7 @@ describe('cli parser', () => {
       graphPath: 'graphify-out/graph.json',
       execTemplate: 'claude -p "$(cat {prompt_file})"',
       questionsPath: null,
-      outputDir: 'graphify-out/compare',
+      outputDir: resolve('graphify-out/compare'),
       baselineMode: 'full',
       yes: false,
       limit: null,
@@ -311,7 +311,7 @@ describe('cli parser', () => {
       graphPath: 'graphify-out/graph.json',
       execTemplate: 'gemini -p "$(cat {prompt_file})"',
       questionsPath: 'benchmark-questions.json',
-      outputDir: 'graphify-out/compare',
+      outputDir: resolve('graphify-out/compare'),
       baselineMode: 'full',
       yes: false,
       limit: null,
@@ -339,7 +339,7 @@ describe('cli parser', () => {
       graphPath: 'custom.json',
       execTemplate: 'claude -p "$(cat {prompt_file})"',
       questionsPath: null,
-      outputDir: 'graphify-out/compare/custom',
+      outputDir: resolve('graphify-out/compare/custom'),
       baselineMode: 'bounded',
       yes: true,
       limit: 5,
@@ -362,6 +362,9 @@ describe('cli parser', () => {
     )
     expect(() => parseCompareArgs(['how does login work', '--exec', 'claude -p "$(cat {prompt_file})"', '--limit=5abc'])).toThrow(
       'error: --limit must be a positive integer',
+    )
+    expect(() => parseCompareArgs(['how does login work', '--exec', 'claude -p "$(cat {prompt_file})"', '--output-dir', '../outside'])).toThrow(
+      'Only paths inside graphify-out/ are permitted',
     )
     expect(() => parseCompareArgs(['   ', '--exec', 'claude -p "$(cat {prompt_file})"'])).toThrow('Usage: graphify-ts compare')
     expect(() => parseCompareArgs(['--exec', 'claude -p "$(cat {prompt_file})"'])).toThrow('Usage: graphify-ts compare')
@@ -584,10 +587,10 @@ describe('cli main', () => {
   it('routes compare through the injected dependency after parsing args', async () => {
     const { io, logs, errors } = createIo()
     const dependencies = createDependencies()
-    let capturedOptions: ReturnType<typeof parseCompareArgs> | undefined
+    let capturedRequest: unknown
 
-    dependencies.runCompare = async (options) => {
-      capturedOptions = options
+    dependencies.runCompare = async (request) => {
+      capturedRequest = request
       return 'compare result'
     }
 
@@ -615,16 +618,43 @@ describe('cli main', () => {
     expect(exitCode).toBe(0)
     expect(logs).toEqual(['compare result'])
     expect(errors).toEqual([])
-    expect(capturedOptions).toEqual({
+    const compareRequest = capturedRequest as {
+      options: ReturnType<typeof parseCompareArgs>
+      io: typeof io
+      confirm: (message: string) => Promise<boolean>
+    }
+    expect(compareRequest.options).toEqual({
       question: null,
       graphPath: 'custom.json',
       execTemplate: 'gemini -p "$(cat {prompt_file})"',
       questionsPath: 'benchmark-questions.json',
-      outputDir: 'graphify-out/compare/custom',
+      outputDir: resolve('graphify-out/compare/custom'),
       baselineMode: 'bounded',
       yes: true,
       limit: 5,
     })
+    expect(compareRequest.io).toBe(io)
+    await expect(compareRequest.confirm('Proceed?')).resolves.toBe(true)
+  })
+
+  it('surfaces a not-yet-implemented confirmation hook when compare runs without --yes', async () => {
+    const { io, logs, errors } = createIo()
+    const dependencies = createDependencies()
+
+    dependencies.runCompare = async ({ confirm }) => {
+      await confirm('Proceed?')
+      return 'compare result'
+    }
+
+    const exitCode = await executeCli(
+      ['compare', 'how does login work', '--exec', 'claude -p "$(cat {prompt_file})"'],
+      io,
+      dependencies,
+    )
+
+    expect(exitCode).toBe(1)
+    expect(logs).toEqual([])
+    expect(errors).toEqual(['error: compare confirmation prompts are not implemented yet; rerun with --yes.'])
   })
 
   it('returns a usage error when compare args are incomplete', async () => {

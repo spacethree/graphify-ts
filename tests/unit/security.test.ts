@@ -1,10 +1,19 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 
 import { afterEach, describe, expect, test, vi } from 'vitest'
 
-import { MAX_FETCH_BYTES, MAX_TEXT_BYTES, safeFetch, safeFetchText, sanitizeLabel, validateGraphPath, validateUrl } from '../../src/shared/security.js'
+import {
+  MAX_FETCH_BYTES,
+  MAX_TEXT_BYTES,
+  safeFetch,
+  safeFetchText,
+  sanitizeLabel,
+  validateGraphOutputPath,
+  validateGraphPath,
+  validateUrl,
+} from '../../src/shared/security.js'
 
 function withTempDir(callback: (tempDir: string) => void): void {
   const tempDir = mkdtempSync(join(tmpdir(), 'graphify-ts-security-'))
@@ -144,6 +153,41 @@ describe('validateGraphPath', () => {
       mkdirSync(base, { recursive: true })
       expect(() => validateGraphPath(join(base, 'missing.json'), base)).toThrow(/not found/i)
     })
+  })
+})
+
+describe('validateGraphOutputPath', () => {
+  test('blocks symlink ancestors that escape the base directory', () => {
+    const sandboxRoot = resolve('graphify-out', 'test-runtime', 'security-output-symlink')
+    const base = resolve(sandboxRoot, 'graphify-out')
+    const outside = resolve(sandboxRoot, 'outside')
+
+    rmSync(sandboxRoot, { recursive: true, force: true })
+    mkdirSync(base, { recursive: true })
+    mkdirSync(outside, { recursive: true })
+    symlinkSync(outside, resolve(base, 'link'), 'dir')
+
+    try {
+      expect(() => validateGraphOutputPath(resolve(base, 'link', 'new-run'), base)).toThrow(/escapes/i)
+    } finally {
+      rmSync(sandboxRoot, { recursive: true, force: true })
+    }
+  })
+
+  test('blocks symlinked base directories', () => {
+    const sandboxRoot = resolve('graphify-out', 'test-runtime', 'security-output-base-symlink')
+    const base = resolve(sandboxRoot, 'graphify-out')
+    const outside = resolve(sandboxRoot, 'outside')
+
+    rmSync(sandboxRoot, { recursive: true, force: true })
+    mkdirSync(outside, { recursive: true })
+    symlinkSync(outside, base, 'dir')
+
+    try {
+      expect(() => validateGraphOutputPath(resolve(base, 'compare'), base)).toThrow(/escapes/i)
+    } finally {
+      rmSync(sandboxRoot, { recursive: true, force: true })
+    }
   })
 })
 
