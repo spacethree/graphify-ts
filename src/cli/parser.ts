@@ -59,6 +59,17 @@ export interface BenchmarkCliOptions {
   questionsPath: string | null
 }
 
+export interface CompareCliOptions {
+  question: string | null
+  graphPath: string
+  execTemplate: string
+  questionsPath: string | null
+  outputDir: string
+  baselineMode: 'full' | 'bounded'
+  yes: boolean
+  limit: number | null
+}
+
 export interface GenerateCliOptions {
   path: string
   update: boolean
@@ -187,6 +198,14 @@ function parseQueryRankBy(value: string): QueryRankBy {
     return normalized
   }
   throw new UsageError('error: --rank-by must be one of relevance, degree')
+}
+
+function parseCompareBaselineMode(value: string): 'full' | 'bounded' {
+  const normalized = value.trim().toLowerCase()
+  if (normalized === 'full' || normalized === 'bounded') {
+    return normalized
+  }
+  throw new UsageError('error: --baseline-mode must be one of full, bounded')
 }
 
 function validateCliText(field: string, value: string): string {
@@ -574,6 +593,135 @@ export function parseBenchmarkArgs(args: string[], commandName = 'benchmark'): B
   }
 
   return { graphPath, questionsPath }
+}
+
+export function parseCompareArgs(args: string[]): CompareCliOptions {
+  let question: string | null = null
+  let graphPath = 'graphify-out/graph.json'
+  let execTemplate = ''
+  let questionsPath: string | null = null
+  let outputDir = 'graphify-out/compare'
+  let baselineMode: 'full' | 'bounded' = 'full'
+  let yes = false
+  let limit: number | null = null
+
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index]
+    if (!argument) {
+      continue
+    }
+
+    if (!argument.startsWith('--')) {
+      if (question !== null) {
+        throw new UsageError(
+          'Usage: graphify-ts compare [question] --exec TEMPLATE [--graph path] [--questions PATH] [--output-dir DIR] [--baseline-mode MODE] [--yes] [--limit N]',
+        )
+      }
+      const normalizedQuestion = argument.trim()
+      if (normalizedQuestion.length === 0) {
+        throw new UsageError(
+          'Usage: graphify-ts compare [question] --exec TEMPLATE [--graph path] [--questions PATH] [--output-dir DIR] [--baseline-mode MODE] [--yes] [--limit N]',
+        )
+      }
+      question = normalizedQuestion
+      continue
+    }
+
+    if (argument === '--graph') {
+      graphPath = requireOptionValue('--graph', args[index + 1])
+      index += 1
+      continue
+    }
+
+    if (argument.startsWith('--graph=')) {
+      const [, value] = argument.split('=', 2)
+      graphPath = requireOptionValue('--graph', value)
+      continue
+    }
+
+    if (argument === '--exec') {
+      execTemplate = requireOptionValue('--exec', args[index + 1])
+      index += 1
+      continue
+    }
+
+    if (argument.startsWith('--exec=')) {
+      const [, value] = argument.split('=', 2)
+      execTemplate = requireOptionValue('--exec', value)
+      continue
+    }
+
+    if (argument === '--questions') {
+      questionsPath = requireOptionValue('--questions', args[index + 1])
+      index += 1
+      continue
+    }
+
+    if (argument.startsWith('--questions=')) {
+      const [, value] = argument.split('=', 2)
+      questionsPath = requireOptionValue('--questions', value)
+      continue
+    }
+
+    if (argument === '--output-dir') {
+      outputDir = requireOptionValue('--output-dir', args[index + 1])
+      index += 1
+      continue
+    }
+
+    if (argument.startsWith('--output-dir=')) {
+      const [, value] = argument.split('=', 2)
+      outputDir = requireOptionValue('--output-dir', value)
+      continue
+    }
+
+    if (argument === '--baseline-mode') {
+      baselineMode = parseCompareBaselineMode(requireOptionValue('--baseline-mode', args[index + 1]))
+      index += 1
+      continue
+    }
+
+    if (argument.startsWith('--baseline-mode=')) {
+      const [, value] = argument.split('=', 2)
+      baselineMode = parseCompareBaselineMode(requireOptionValue('--baseline-mode', value))
+      continue
+    }
+
+    if (argument === '--yes') {
+      yes = true
+      continue
+    }
+
+    if (argument === '--limit') {
+      limit = parsePositiveInteger('--limit', requireOptionValue('--limit', args[index + 1]))
+      index += 1
+      continue
+    }
+
+    if (argument.startsWith('--limit=')) {
+      const [, value] = argument.split('=', 2)
+      limit = parsePositiveInteger('--limit', requireOptionValue('--limit', value))
+      continue
+    }
+
+    throw new UsageError(`error: unknown option for compare: ${argument}`)
+  }
+
+  if (question !== null && questionsPath !== null) {
+    throw new UsageError('error: compare accepts either a positional question or --questions, but not both')
+  }
+
+  if (question === null && questionsPath === null) {
+    throw new UsageError(
+      'Usage: graphify-ts compare [question] --exec TEMPLATE [--graph path] [--questions PATH] [--output-dir DIR] [--baseline-mode MODE] [--yes] [--limit N]',
+    )
+  }
+
+  if (execTemplate.length === 0) {
+    throw new UsageError('error: --exec is required')
+  }
+
+  return { question, graphPath, execTemplate, questionsPath, outputDir, baselineMode, yes, limit }
 }
 
 export function parseGenerateArgs(args: string[]): GenerateCliOptions {

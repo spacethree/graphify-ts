@@ -4,6 +4,7 @@ import { type CliDependencies, executeCli, formatHelp } from '../../src/cli/main
 import {
   parseAddArgs,
   parseBenchmarkArgs,
+  parseCompareArgs,
   parseDiffArgs,
   parseExplainArgs,
   parseGenerateArgs,
@@ -92,6 +93,7 @@ function createDependencies(): CliDependencies {
         },
       ],
     }),
+    runCompare: async () => 'compare command is not implemented yet',
     printBenchmark: () => {},
     installHooks: () => 'hooks installed',
     uninstallHooks: () => 'hooks removed',
@@ -285,6 +287,67 @@ describe('cli parser', () => {
     expect(() => parseBenchmarkArgs(['one.json', 'two.json'])).toThrow('Usage: graphify-ts benchmark')
     expect(() => parseBenchmarkArgs(['--questions', '--wat'])).toThrow('error: --questions requires a value')
     expect(() => parseBenchmarkArgs(['custom.json', '--wat'])).toThrow('error: unknown option for benchmark: --wat')
+  })
+
+  it('parses compare args with a question or question file', () => {
+    expect(parseCompareArgs(['how does login work', '--exec', 'claude -p "$(cat {prompt_file})"'])).toEqual({
+      question: 'how does login work',
+      graphPath: 'graphify-out/graph.json',
+      execTemplate: 'claude -p "$(cat {prompt_file})"',
+      questionsPath: null,
+      outputDir: 'graphify-out/compare',
+      baselineMode: 'full',
+      yes: false,
+      limit: null,
+    })
+
+    expect(parseCompareArgs(['--questions', 'benchmark-questions.json', '--exec', 'gemini -p "$(cat {prompt_file})"'])).toEqual({
+      question: null,
+      graphPath: 'graphify-out/graph.json',
+      execTemplate: 'gemini -p "$(cat {prompt_file})"',
+      questionsPath: 'benchmark-questions.json',
+      outputDir: 'graphify-out/compare',
+      baselineMode: 'full',
+      yes: false,
+      limit: null,
+    })
+  })
+
+  it('parses compare args with optional overrides', () => {
+    expect(
+      parseCompareArgs([
+        'how does login work',
+        '--exec',
+        'claude -p "$(cat {prompt_file})"',
+        '--graph',
+        'custom.json',
+        '--output-dir',
+        'graphify-out/compare/custom',
+        '--baseline-mode',
+        'bounded',
+        '--yes',
+        '--limit',
+        '5',
+      ]),
+    ).toEqual({
+      question: 'how does login work',
+      graphPath: 'custom.json',
+      execTemplate: 'claude -p "$(cat {prompt_file})"',
+      questionsPath: null,
+      outputDir: 'graphify-out/compare/custom',
+      baselineMode: 'bounded',
+      yes: true,
+      limit: 5,
+    })
+  })
+
+  it('rejects invalid compare args', () => {
+    expect(() => parseCompareArgs(['how does login work'])).toThrow('error: --exec is required')
+    expect(() => parseCompareArgs(['how does login work', '--questions', 'benchmark-questions.json', '--exec', 'claude -p "$(cat {prompt_file})"'])).toThrow(
+      'error: compare accepts either a positional question or --questions, but not both',
+    )
+    expect(() => parseCompareArgs(['   ', '--exec', 'claude -p "$(cat {prompt_file})"'])).toThrow('Usage: graphify-ts compare')
+    expect(() => parseCompareArgs(['--exec', 'claude -p "$(cat {prompt_file})"'])).toThrow('Usage: graphify-ts compare')
   })
 
   it('parses generate args', () => {
@@ -481,6 +544,7 @@ describe('cli main', () => {
     expect(help).toContain('save-result')
     expect(help).toContain('benchmark [graph.json]')
     expect(help).toContain('--questions PATH')
+    expect(help).toContain('compare [question]')
     expect(help).toContain('question coverage')
     expect(help).toContain('hook <action>')
     expect(help).toContain('install [--platform P]')

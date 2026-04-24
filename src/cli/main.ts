@@ -30,6 +30,7 @@ import { getNeighbors, getNode, loadGraph, queryGraph, shortestPath } from '../r
 import {
   parseBenchmarkArgs,
   parseAddArgs,
+  parseCompareArgs,
   parseDiffArgs,
   parseExplainArgs,
   parseGenerateArgs,
@@ -41,6 +42,7 @@ import {
   parseSaveResultArgs,
   parseServeArgs,
   parseWatchArgs,
+  type CompareCliOptions,
   UsageError,
 } from './parser.js'
 
@@ -55,6 +57,7 @@ export interface CliDependencies {
   saveQueryResult: typeof saveQueryResult
   ingest: typeof ingest
   runBenchmark: typeof runBenchmark
+  runCompare: (options: CompareCliOptions) => Promise<string> | string
   printBenchmark: (result: BenchmarkResult) => void
   installHooks: typeof installHooks
   uninstallHooks: typeof uninstallHooks
@@ -82,6 +85,9 @@ const DEFAULT_DEPENDENCIES: CliDependencies = {
   saveQueryResult,
   ingest,
   runBenchmark,
+  runCompare: async () => {
+    throw new Error('compare command is not implemented yet')
+  },
   printBenchmark,
   installHooks,
   uninstallHooks,
@@ -184,6 +190,14 @@ export function formatHelp(binaryName = 'graphify-ts'): string {
     '    --questions PATH     load benchmark/eval questions from a JSON file',
     '  eval [graph.json]      measure retrieval quality: recall and MRR',
     '    --questions PATH     load benchmark/eval questions from a JSON file',
+    '  compare [question]    compare graph retrieval against a baseline prompt workflow',
+    '    --exec TEMPLATE      baseline command template (use {prompt_file} for the prompt path)',
+    '    --questions PATH     load compare questions from a JSON file',
+    '    --graph <path>       path to graph.json (default graphify-out/graph.json)',
+    '    --output-dir DIR     output directory for compare artifacts (default graphify-out/compare)',
+    '    --baseline-mode MODE baseline prompt mode: full or bounded (default full)',
+    '    --yes                skip confirmation prompts',
+    '    --limit N            limit how many questions to process',
     '  install [--platform P] install the platform skill or local graphify config',
     '    platforms            claude|windows|gemini|cursor|codex|opencode|aider|claw|droid|trae|trae-cn|copilot',
     '  hook <action>          manage git hooks for graphify rebuild reminders',
@@ -530,6 +544,12 @@ export async function executeCli(argv: string[], io: CliIO = console, dependenci
       const questions = options.questionsPath ? loadBenchmarkQuestions(options.questionsPath) : undefined
       const report = evaluateRetrievalQuality(graph, questions, 3000, { graphPath: options.graphPath })
       io.log(formatQualityReport(report))
+      return 0
+    }
+
+    if (command === 'compare') {
+      const options = parseCompareArgs(args)
+      io.log(await dependencies.runCompare(options))
       return 0
     }
 
