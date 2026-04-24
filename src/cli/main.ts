@@ -79,7 +79,7 @@ export interface CliDependencies {
   agentsUninstall: typeof agentsUninstall
 }
 
-const COMPARE_EXPERIMENTAL_MESSAGE = 'error: compare is an experimental scaffold in Task 1; the runtime will land in Task 2/3.'
+const COMPARE_EXPERIMENTAL_MESSAGE = 'compare is an experimental scaffold in Task 1; the runtime will land in Task 2/3.'
 
 const DEFAULT_DEPENDENCIES: CliDependencies = {
   loadGraph,
@@ -87,7 +87,9 @@ const DEFAULT_DEPENDENCIES: CliDependencies = {
   saveQueryResult,
   ingest,
   runBenchmark,
-  runCompare: async () => COMPARE_EXPERIMENTAL_MESSAGE,
+  runCompare: async () => {
+    throw new Error(COMPARE_EXPERIMENTAL_MESSAGE)
+  },
   printBenchmark,
   installHooks,
   uninstallHooks,
@@ -191,6 +193,13 @@ export function formatHelp(binaryName = 'graphify-ts'): string {
     '  eval [graph.json]      measure retrieval quality: recall and MRR',
     '    --questions PATH     load benchmark/eval questions from a JSON file',
     '  compare [question]    experimental scaffold only; runtime will land in Task 2/3',
+    '    --graph <path>        path to graph.json (default graphify-out/graph.json)',
+    '    --exec TEMPLATE       required command template; {prompt_file} is replaced with the prompt path',
+    '    --questions PATH      load questions from a JSON file instead of a positional question',
+    '    --output-dir DIR      compare output directory (default graphify-out/compare)',
+    '    --baseline-mode MODE  choose full or bounded baseline context (default full)',
+    '    --yes                 skip confirmation before running the scaffold',
+    '    --limit N             cap processed prompts/questions for the scaffold run',
     '  install [--platform P] install the platform skill or local graphify config',
     '    platforms            claude|windows|gemini|cursor|codex|opencode|aider|claw|droid|trae|trae-cn|copilot',
     '  hook <action>          manage git hooks for graphify rebuild reminders',
@@ -346,8 +355,9 @@ export async function executeCli(argv: string[], io: CliIO = console, dependenci
 
   try {
     if (command === 'compare') {
-      io.error(COMPARE_EXPERIMENTAL_MESSAGE)
-      return 1
+      const options = parseCompareArgs(args)
+      io.log(await dependencies.runCompare(options))
+      return 0
     }
 
     if (command === 'generate' || (command !== undefined && !isAgentPlatform(command) && isImplicitGenerateCommand(command))) {

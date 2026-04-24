@@ -235,6 +235,8 @@ describe('cli parser', () => {
     expect(() => parseDiffArgs([])).toThrow('Usage: graphify-ts diff')
     expect(() => parseDiffArgs(['baseline.json', '--limit', '0'])).toThrow('error: --limit must be a positive integer')
     expect(() => parseDiffArgs(['baseline.json', '--limit', '1.5'])).toThrow('error: --limit must be a positive integer')
+    expect(() => parseDiffArgs(['baseline.json', '--limit', '1e2'])).toThrow('error: --limit must be a positive integer')
+    expect(() => parseDiffArgs(['baseline.json', '--limit=0x10'])).toThrow('error: --limit must be a positive integer')
     expect(() => parseDiffArgs(['baseline.json', '--limit=5abc'])).toThrow('error: --limit must be a positive integer')
     expect(() => parseDiffArgs([`/${'nested/'.repeat(700)}baseline.json`])).toThrow('error: baseline graph path exceeds maximum length')
     expect(() => parseDiffArgs(['baseline.json', '--wat'])).toThrow('error: unknown option for diff: --wat')
@@ -350,6 +352,12 @@ describe('cli parser', () => {
       'error: compare accepts either a positional question or --questions, but not both',
     )
     expect(() => parseCompareArgs(['how does login work', '--exec', 'claude -p "$(cat {prompt_file})"', '--limit', '1.5'])).toThrow(
+      'error: --limit must be a positive integer',
+    )
+    expect(() => parseCompareArgs(['how does login work', '--exec', 'claude -p "$(cat {prompt_file})"', '--limit', '1e2'])).toThrow(
+      'error: --limit must be a positive integer',
+    )
+    expect(() => parseCompareArgs(['how does login work', '--exec', 'claude -p "$(cat {prompt_file})"', '--limit=0x10'])).toThrow(
       'error: --limit must be a positive integer',
     )
     expect(() => parseCompareArgs(['how does login work', '--exec', 'claude -p "$(cat {prompt_file})"', '--limit=5abc'])).toThrow(
@@ -555,6 +563,13 @@ describe('cli main', () => {
     expect(help).toContain('--questions PATH')
     expect(help).toContain('compare [question]    experimental scaffold')
     expect(help).toContain('runtime will land in Task 2/3')
+    expect(help).toContain('    --graph <path>        path to graph.json (default graphify-out/graph.json)')
+    expect(help).toContain('    --exec TEMPLATE       required command template; {prompt_file} is replaced with the prompt path')
+    expect(help).toContain('    --questions PATH      load questions from a JSON file instead of a positional question')
+    expect(help).toContain('    --output-dir DIR      compare output directory (default graphify-out/compare)')
+    expect(help).toContain('    --baseline-mode MODE  choose full or bounded baseline context (default full)')
+    expect(help).toContain('    --yes                 skip confirmation before running the scaffold')
+    expect(help).toContain('    --limit N             cap processed prompts/questions for the scaffold run')
     expect(help).toContain('question coverage')
     expect(help).toContain('hook <action>')
     expect(help).toContain('install [--platform P]')
@@ -566,13 +581,13 @@ describe('cli main', () => {
     expect(help).toContain('codex <install|uninstall>')
   })
 
-  it('reports compare as an experimental scaffold until the runtime lands', async () => {
+  it('routes compare through the injected dependency after parsing args', async () => {
     const { io, logs, errors } = createIo()
     const dependencies = createDependencies()
-    let called = false
+    let capturedOptions: ReturnType<typeof parseCompareArgs> | undefined
 
-    dependencies.runCompare = async () => {
-      called = true
+    dependencies.runCompare = async (options) => {
+      capturedOptions = options
       return 'compare result'
     }
 
@@ -597,19 +612,36 @@ describe('cli main', () => {
       dependencies,
     )
 
-    expect(exitCode).toBe(1)
-    expect(logs).toEqual([])
-    expect(errors).toEqual([
-      'error: compare is an experimental scaffold in Task 1; the runtime will land in Task 2/3.',
-    ])
-    expect(called).toBe(false)
+    expect(exitCode).toBe(0)
+    expect(logs).toEqual(['compare result'])
+    expect(errors).toEqual([])
+    expect(capturedOptions).toEqual({
+      question: null,
+      graphPath: 'custom.json',
+      execTemplate: 'gemini -p "$(cat {prompt_file})"',
+      questionsPath: 'benchmark-questions.json',
+      outputDir: 'graphify-out/compare/custom',
+      baselineMode: 'bounded',
+      yes: true,
+      limit: 5,
+    })
   })
 
-  it('reports the compare scaffold message even when compare args are otherwise incomplete', async () => {
+  it('returns a usage error when compare args are incomplete', async () => {
     const { io, logs, errors } = createIo()
 
     const exitCode = await executeCli(['compare'], io, createDependencies())
 
+    expect(exitCode).toBe(2)
+    expect(logs).toEqual([])
+    expect(errors).toEqual(['Usage: graphify-ts compare [question] --exec TEMPLATE [--graph path] [--questions PATH] [--output-dir DIR] [--baseline-mode MODE] [--yes] [--limit N]'])
+  })
+
+  it('reports the scaffold message through the default compare dependency', async () => {
+    const { io, logs, errors } = createIo()
+
+    const exitCode = await executeCli(['compare', 'how does login work', '--exec', 'claude -p "$(cat {prompt_file})"'], io)
+
     expect(exitCode).toBe(1)
     expect(logs).toEqual([])
     expect(errors).toEqual([
@@ -617,24 +649,34 @@ describe('cli main', () => {
     ])
   })
 
-  it('reports the compare scaffold message even when a compare path exists in cwd', async () => {
+  it('prefers the explicit compare command over an implicit generate path match', async () => {
     const { io, logs, errors } = createIo()
     const originalCwd = process.cwd()
     const sandboxRoot = resolve('graphify-out', 'test-runtime', 'compare-shadow-command')
+    const dependencies = createDependencies()
+    let called = false
 
     rmSync(sandboxRoot, { recursive: true, force: true })
     mkdirSync(resolve(sandboxRoot, 'compare'), { recursive: true })
 
+    dependencies.runCompare = async () => {
+      called = true
+      return 'compare result from cwd shadow test'
+    }
+
     try {
       process.chdir(sandboxRoot)
 
-      const exitCode = await executeCli(['compare'], io, createDependencies())
+      const exitCode = await executeCli(
+        ['compare', 'how does login work', '--exec', 'claude -p "$(cat {prompt_file})"'],
+        io,
+        dependencies,
+      )
 
-      expect(exitCode).toBe(1)
-      expect(logs).toEqual([])
-      expect(errors).toEqual([
-        'error: compare is an experimental scaffold in Task 1; the runtime will land in Task 2/3.',
-      ])
+      expect(exitCode).toBe(0)
+      expect(logs).toEqual(['compare result from cwd shadow test'])
+      expect(errors).toEqual([])
+      expect(called).toBe(true)
     } finally {
       process.chdir(originalCwd)
       rmSync(sandboxRoot, { recursive: true, force: true })

@@ -151,6 +151,14 @@ function parsePositiveInteger(flag: string, value: string): number {
   return parsed
 }
 
+function parsePositiveDecimalInteger(flag: string, value: string): number {
+  const normalized = value.trim()
+  if (!/^\d+$/.test(normalized)) {
+    throw new UsageError(`error: ${flag} must be a positive integer`)
+  }
+  return parsePositiveInteger(flag, normalized)
+}
+
 function parseNonNegativeInteger(flag: string, value: string): number {
   const parsed = Number(value)
   if (!Number.isInteger(parsed) || parsed < 0) {
@@ -384,14 +392,14 @@ export function parseDiffArgs(args: string[]): DiffCliOptions {
     }
 
     if (argument === '--limit') {
-      limit = parsePositiveInteger('--limit', requireNonEmptyValue('--limit', args[index + 1]))
+      limit = parsePositiveDecimalInteger('--limit', requireNonEmptyValue('--limit', args[index + 1]))
       index += 1
       continue
     }
 
     if (argument.startsWith('--limit=')) {
       const [, value] = argument.split('=', 2)
-      limit = parsePositiveInteger('--limit', requireNonEmptyValue('--limit', value))
+      limit = parsePositiveDecimalInteger('--limit', requireNonEmptyValue('--limit', value))
       continue
     }
 
@@ -693,14 +701,14 @@ export function parseCompareArgs(args: string[]): CompareCliOptions {
     }
 
     if (argument === '--limit') {
-      limit = parsePositiveInteger('--limit', requireOptionValue('--limit', args[index + 1]))
+      limit = parsePositiveDecimalInteger('--limit', requireOptionValue('--limit', args[index + 1]))
       index += 1
       continue
     }
 
     if (argument.startsWith('--limit=')) {
       const [, value] = argument.split('=', 2)
-      limit = parsePositiveInteger('--limit', requireOptionValue('--limit', value))
+      limit = parsePositiveDecimalInteger('--limit', requireOptionValue('--limit', value))
       continue
     }
 
