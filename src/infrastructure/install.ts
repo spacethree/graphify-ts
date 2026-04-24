@@ -474,16 +474,21 @@ const MCP_CONFIG_PATHS: Record<McpConfigTarget, string> = {
   copilot: join('.vscode', 'mcp.json'),
 }
 
-function installMcpServer(projectDir: string, target: McpConfigTarget = 'claude'): string {
+function installMcpServer(projectDir: string, target: McpConfigTarget = 'claude', nodePlatform = process.platform): string {
   const mcpJsonPath = join(projectDir, MCP_CONFIG_PATHS[target])
   ensureParentDirectory(mcpJsonPath)
   const mcpConfig = readJsonObject(mcpJsonPath)
 
   const graphPath = join(projectDir, 'graphify-out', 'graph.json')
   const isVscode = target === 'copilot'
+  // Use npx.cmd on Windows so MCP server starts without a shell wrapper.
+  // --yes skips the interactive install prompt that hangs in stdio mode.
+  // Scoped name ensures npx resolves the package on first run.
+  const npxCommand = nodePlatform === 'win32' ? 'npx.cmd' : 'npx'
+  const npxArgs = ['--yes', '@mohammednagy/graphify-ts', 'serve', '--stdio', graphPath]
   const serverConfig = isVscode
-    ? { type: 'stdio', command: 'npx', args: ['graphify-ts', 'serve', '--stdio', graphPath] }
-    : { command: 'npx', args: ['graphify-ts', 'serve', '--stdio', graphPath] }
+    ? { type: 'stdio', command: npxCommand, args: npxArgs }
+    : { command: npxCommand, args: npxArgs }
 
   // VS Code uses "servers" key, Claude/Cursor use "mcpServers"
   const serversKey = isVscode ? 'servers' : 'mcpServers'
