@@ -66,6 +66,26 @@ Outputs land in `examples/demo-repo/graphify-out/`, which is ignored so you can 
 - `eval` proves retrieval quality on the same labeled questions: recall plus ranking quality (MRR). On the checked-in demo repo you should see `Recall: 100.0%`, `MRR: 1.000`, and about `2.7x` fewer tokens at query time.
 - The demo repo is intentionally tiny, so these ratios are lower than the production benchmark below. The point is that the proof is fully reproducible from this repo.
 
+## Real A/B compare (same question, same model)
+
+`benchmark` and `eval` are offline graph measurements. `compare` is the paid, real-world proof path: it builds a naive baseline prompt plus a graphify-guided prompt for the same question, runs both through your own terminal LLM command, and saves both answers.
+
+```bash
+node dist/src/cli/bin.js compare "How does login create a session?" \
+  --graph examples/demo-repo/graphify-out/graph.json \
+  --exec 'claude -p "$(cat {prompt_file})"' \
+  --yes
+```
+
+What `compare` does:
+
+- Prints a warning before execution because it may consume paid model tokens. Use `--yes` for non-interactive runs and CI.
+- Expands runner placeholders: `{prompt_file}`, `{question}`, `{mode}`, and `{output_file}`.
+- Writes a proof bundle under `graphify-out/compare/<timestamp>/` with `baseline-prompt.txt`, `graphify-prompt.txt`, `baseline-answer.txt`, `graphify-answer.txt`, and `report.json`.
+- Preserves partial artifacts when one side fails, so you can still inspect the surviving prompt/answer/report output.
+
+Use `compare` when you want a showcase or a customer-proof run. Use `benchmark` and `eval` when you want repeatable local measurements without calling a model.
+
 ## MCP Tools for AI Agents
 
 When an agent connects via `graphify-ts serve --stdio`, it gets these tools:
@@ -124,6 +144,7 @@ This merges graphs and infers cross-repo connections from shared types and funct
 | `add <url> [path]` | Ingest a URL and rebuild |
 | `benchmark [graph.json]` | Measure token reduction and structure signals |
 | `eval [graph.json]` | Measure retrieval quality: recall and MRR |
+| `compare [question]` | Run a real baseline-vs-graphify prompt comparison through your own terminal LLM command |
 | `install --platform claude` | Install home-level Claude skill |
 | `claude install` | Install project-local Claude integration with MCP auto-start |
 

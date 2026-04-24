@@ -4,6 +4,18 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-04-25
+
+### Added
+
+- **`graphify-ts compare` command**: runs a real baseline-vs-graphify A/B prompt comparison through a user-supplied terminal LLM command and saves prompt/answer proof bundles under `graphify-out/compare/`
+- **Compare proof artifacts**: each run now saves prompt files, answer files, and a structured `report.json` with prompt-token counts, statuses, timings, and output paths
+
+### Improved
+
+- **Compare runner safety**: added confirmation before paid prompt runs, clean `--yes` support for non-interactive usage, safer shell execution, and redacted failure reporting in persisted compare artifacts
+- **Compare docs**: README and `examples/why-graphify.md` now explain when to use `benchmark`, `eval`, and `compare`, including runner placeholders and saved proof outputs
+
 ## [0.7.3] - 2026-04-24
 
 ### Improved

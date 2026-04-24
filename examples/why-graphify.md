@@ -128,6 +128,26 @@ What each command proves:
 
 The demo repo is intentionally tiny, so its token-reduction numbers are modest. It exists to make the flow reproducible, not to maximize the headline ratio. Demo outputs land in `examples/demo-repo/graphify-out/`, which is ignored so you can rerun the flow locally without polluting git status.
 
+## Real A/B Proof with Your Own Model Command
+
+`benchmark` and `eval` prove graph quality offline. If you want a real "same question, same model, with and without graphify" run, use `compare`:
+
+```bash
+node dist/src/cli/bin.js compare "How does login create a session?" \
+  --graph examples/demo-repo/graphify-out/graph.json \
+  --exec 'claude -p "$(cat {prompt_file})"' \
+  --yes
+```
+
+What this gives you:
+
+- one baseline prompt and one graphify prompt for the same question
+- two real model answers from your own terminal runner
+- a saved proof bundle in `graphify-out/compare/<timestamp>/`
+- prompt-token counts and run statuses in `report.json`
+
+Important: `compare` may spend paid model tokens. It prints a warning before execution and requires `--yes` in non-interactive runs.
+
 ## Run It on Your Own Codebase
 
 ```bash
@@ -142,6 +162,9 @@ graphify-ts benchmark graphify-out/graph.json
 
 # If you have a labeled question set, also measure recall + MRR
 graphify-ts eval graphify-out/graph.json --questions benchmark-questions.json
+
+# If you want a real same-model A/B proof run
+graphify-ts compare "How does auth work?" --exec 'claude -p "$(cat {prompt_file})"' --yes
 
 # Set up your AI agent
 graphify-ts claude install    # writes .mcp.json with MCP server
