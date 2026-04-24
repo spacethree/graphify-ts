@@ -89,6 +89,8 @@ export interface GenerateCompareArtifactsResult {
 const DEFAULT_RETRIEVAL_BUDGET = 3_000
 const DEFAULT_BOUNDED_BASELINE_TOKENS = 4_000
 const EXEC_TEMPLATE_PLACEHOLDER_PATTERN = /\{[a-z_][a-z0-9_]*\}/gi
+const COMPARE_SNIPPET_HALF_WINDOW = 7
+const MAX_COMPARE_SNIPPET_LINE_LENGTH = 200
 
 function timestampDirectoryName(date: Date): string {
   const iso = date.toISOString()
@@ -258,6 +260,101 @@ function collectGraphBackedCorpusFiles(graph: KnowledgeGraph, projectRoot: strin
     .map((sourceFile) => resolve(projectRoot, sourceFile))
 }
 
+function collectBaselineCorpusFiles(graph: KnowledgeGraph, projectRoot: string, manifestFingerprints: ReadonlyMap<string, number>): string[] {
+  if (manifestFingerprints.size > 0) {
+    return [...manifestFingerprints.keys()]
+  }
+
+  return collectGraphBackedCorpusFiles(graph, projectRoot)
+}
+
+function resolveCompareSnippetPath(sourceFile: string, projectRoot: string): string | null {
+  if (sourceFile.length === 0) {
+    return null
+  }
+
+  const candidatePath = isAbsolute(sourceFile) ? sourceFile : resolve(projectRoot, sourceFile)
+  const normalizedPath = existsSync(candidatePath) ? realpathSync(candidatePath) : resolve(candidatePath)
+
+  if (isPathWithinRoot(normalizedPath, projectRoot)) {
+    return normalizedPath
+  }
+
+  return null
+}
+
+function readCompareSnippet(sourceFile: string, lineNumber: number, projectRoot: string): string | null {
+  if (!sourceFile || lineNumber <= 0) {
+    return null
+  }
+
+  try {
+    const snippetPath = resolveCompareSnippetPath(sourceFile, projectRoot)
+    if (!snippetPath || !existsSync(snippetPath)) {
+      return null
+    }
+
+    const content = readFileSync(snippetPath, 'utf8')
+    const lines = content.split(/\r?\n/)
+    const zeroIndex = lineNumber - 1
+    const start = Math.max(0, zeroIndex - COMPARE_SNIPPET_HALF_WINDOW)
+    const end = Math.min(lines.length, zeroIndex + COMPARE_SNIPPET_HALF_WINDOW + 1)
+
+    return lines
+      .slice(start, end)
+      .map((line) => (line.length > MAX_COMPARE_SNIPPET_LINE_LENGTH ? `${line.slice(0, MAX_COMPARE_SNIPPET_LINE_LENGTH)}...` : line))
+      .join('\n')
+  } catch {
+    return null
+  }
+}
+
+function addBaselineCorpusFile(
+  files: Map<string, string>,
+  candidatePath: string,
+  realProjectRoot: string,
+  manifestFingerprints: ReadonlyMap<string, number>,
+): void {
+  const expectsTextContent = isReadableCorpusPath(candidatePath)
+  const expectedFingerprint = manifestFingerprints.get(resolve(candidatePath))
+  let absolutePath: string
+  try {
+    absolutePath = realpathSync(candidatePath)
+  } catch {
+    if (expectsTextContent) {
+      throw new Error(`Compare baseline could not read graph-backed file: ${candidatePath}`)
+    }
+    return
+  }
+
+  if (!isPathWithinRoot(absolutePath, realProjectRoot)) {
+    return
+  }
+
+  if (!isReadableCorpusPath(absolutePath)) {
+    return
+  }
+
+  if (expectedFingerprint !== undefined) {
+    const modifiedAt = statSync(candidatePath).mtimeMs
+    if (sidecarAwareFileFingerprint(candidatePath, modifiedAt) !== expectedFingerprint) {
+      throw new Error(`Compare baseline graph-backed file is out of sync with the saved graph snapshot: ${candidatePath}`)
+    }
+  }
+
+  const corpusPath = relative(realProjectRoot, absolutePath).replaceAll(sep, '/')
+  if (files.has(corpusPath)) {
+    return
+  }
+
+  const corpusText = readBaselineCorpusFile(absolutePath)
+  if (corpusText === null) {
+    return
+  }
+
+  files.set(corpusPath, corpusText)
+}
+
 function readBaselineCorpusFile(filePath: string): string | null {
   const extension = extname(filePath).toLowerCase()
 
@@ -275,48 +372,12 @@ function readBaselineCorpusFile(filePath: string): string | null {
 function deriveBaselineCorpusText(graphPath: string, graph: KnowledgeGraph): string {
   const projectRoot = inferProjectRootFromGraphPath(graphPath)
   const realProjectRoot = realpathSync(projectRoot)
-  const candidateFiles = collectGraphBackedCorpusFiles(graph, projectRoot)
   const manifestFingerprints = loadGraphBackedManifestFingerprints(graphPath)
+  const candidateFiles = collectBaselineCorpusFiles(graph, projectRoot, manifestFingerprints)
   const files = new Map<string, string>()
 
   for (const candidatePath of candidateFiles) {
-    const expectsTextContent = isReadableCorpusPath(candidatePath)
-    const expectedFingerprint = manifestFingerprints.get(resolve(candidatePath))
-    let absolutePath: string
-    try {
-      absolutePath = realpathSync(candidatePath)
-    } catch {
-      if (expectsTextContent) {
-        throw new Error(`Compare baseline could not read graph-backed file: ${candidatePath}`)
-      }
-      continue
-    }
-
-    if (!isPathWithinRoot(absolutePath, realProjectRoot)) {
-      continue
-    }
-
-    if (!isReadableCorpusPath(absolutePath)) {
-      continue
-    }
-
-    if (expectedFingerprint !== undefined) {
-      const modifiedAt = statSync(candidatePath).mtimeMs
-      if (sidecarAwareFileFingerprint(candidatePath, modifiedAt) !== expectedFingerprint) {
-        throw new Error(`Compare baseline graph-backed file is out of sync with the saved graph snapshot: ${candidatePath}`)
-      }
-    }
-
-    const corpusPath = relative(realProjectRoot, absolutePath).replaceAll(sep, '/')
-    if (files.has(corpusPath)) {
-      continue
-    }
-
-    const corpusText = readBaselineCorpusFile(absolutePath)
-    if (corpusText === null) {
-      continue
-    }
-    files.set(corpusPath, corpusText)
+    addBaselineCorpusFile(files, candidatePath, realProjectRoot, manifestFingerprints)
   }
 
   if (files.size === 0) {
@@ -416,10 +477,12 @@ export function generateCompareArtifacts(input: GenerateCompareArtifactsInput): 
       mode: input.baselineMode,
       ...(input.baselineMaxTokens !== undefined ? { maxTokens: input.baselineMaxTokens } : {}),
     })
+    const projectRoot = realpathSync(inferProjectRootFromGraphPath(graphPath))
+    const retrievalBudget = input.retrievalBudget ?? DEFAULT_RETRIEVAL_BUDGET
     const retrieval = retrieveContext(graph, {
       question,
-      budget: input.retrievalBudget ?? DEFAULT_RETRIEVAL_BUDGET,
-      snippetRoot: inferProjectRootFromGraphPath(graphPath),
+      budget: retrievalBudget,
+      snippetLoader: (sourceFile, lineNumber) => readCompareSnippet(sourceFile, lineNumber, projectRoot),
     })
     const graphifyPrompt = buildGraphifyPromptPack({ question, retrieval })
 

@@ -1,5 +1,4 @@
-import { existsSync, readFileSync, realpathSync } from 'node:fs'
-import { isAbsolute, relative, resolve, sep } from 'node:path'
+import { existsSync, readFileSync } from 'node:fs'
 
 import { KnowledgeGraph } from '../contracts/graph.js'
 import { godNodes, workspaceBridges } from '../pipeline/analyze.js'
@@ -27,7 +26,7 @@ export interface RetrieveOptions {
   budget: number
   community?: number
   fileType?: string
-  snippetRoot?: string
+  snippetLoader?: (sourceFile: string, lineNumber: number) => string | null
 }
 
 export interface RetrieveMatchedNode {
@@ -124,39 +123,17 @@ function estimateTokens(text: string): number {
   return Math.max(1, Math.floor(text.length / CHARS_PER_TOKEN))
 }
 
-function isPathWithinRoot(targetPath: string, rootPath: string): boolean {
-  const relativePath = relative(rootPath, targetPath)
-  return relativePath !== '..' && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath)
-}
-
-function resolveSnippetPath(sourceFile: string, snippetRoot?: string): string | null {
-  if (!snippetRoot) {
-    return sourceFile
-  }
-
-  const realRoot = realpathSync(snippetRoot)
-  const candidatePath = isAbsolute(sourceFile) ? sourceFile : resolve(snippetRoot, sourceFile)
-  const normalizedPath = existsSync(candidatePath) ? realpathSync(candidatePath) : resolve(candidatePath)
-
-  if (!isPathWithinRoot(normalizedPath, realRoot)) {
-    return null
-  }
-
-  return normalizedPath
-}
-
-function readSnippet(sourceFile: string, lineNumber: number, snippetRoot?: string): string | null {
+function readSnippet(sourceFile: string, lineNumber: number): string | null {
   if (!sourceFile || lineNumber <= 0) {
     return null
   }
 
   try {
-    const snippetPath = resolveSnippetPath(sourceFile, snippetRoot)
-    if (!snippetPath || !existsSync(snippetPath)) {
+    if (!existsSync(sourceFile)) {
       return null
     }
 
-    const content = readFileSync(snippetPath, 'utf8')
+    const content = readFileSync(sourceFile, 'utf8')
     const lines = content.split(/\r?\n/)
     const zeroIndex = lineNumber - 1
     const start = Math.max(0, zeroIndex - SNIPPET_HALF_WINDOW)
@@ -357,7 +334,9 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
       continue
     }
 
-    const snippet = readSnippet(node.sourceFile, node.lineNumber, options.snippetRoot)
+    const snippet = options.snippetLoader
+      ? options.snippetLoader(node.sourceFile, node.lineNumber)
+      : readSnippet(node.sourceFile, node.lineNumber)
     const nodeText = `${node.label} ${node.sourceFile}:${node.lineNumber} ${snippet ?? ''}`
     const nodeTokens = estimateTokens(nodeText)
 

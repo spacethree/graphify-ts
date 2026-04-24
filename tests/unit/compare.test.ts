@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 
 import { strToU8, zipSync } from 'fflate'
@@ -232,18 +232,23 @@ function writeGraphFixture(graph: KnowledgeGraph, graphFixtureRoot: string = GRA
   return graphPath
 }
 
-function writeManifestFixture(projectRoot: string = PROJECT_FIXTURE_ROOT, graphFixtureRoot: string = GRAPH_FIXTURE_ROOT): string {
+function writeManifestFixture(
+  projectRoot: string = PROJECT_FIXTURE_ROOT,
+  graphFixtureRoot: string = GRAPH_FIXTURE_ROOT,
+  fileOverrides?: Partial<Record<'code' | 'document' | 'paper' | 'image' | 'audio' | 'video', string[]>>,
+): string {
   const manifestPath = join(graphFixtureRoot, 'manifest.json')
+  const defaultCodePaths = Object.keys(makeProjectFiles())
+    .filter((relativePath) => relativePath.endsWith('.ts'))
+    .map((relativePath) => join(projectRoot, relativePath))
   saveManifest(
     {
-      code: Object.keys(makeProjectFiles())
-        .filter((relativePath) => relativePath.endsWith('.ts'))
-        .map((relativePath) => join(projectRoot, relativePath)),
-      document: [],
-      paper: [],
-      image: [],
-      audio: [],
-      video: [],
+      code: fileOverrides?.code ?? defaultCodePaths,
+      document: fileOverrides?.document ?? [],
+      paper: fileOverrides?.paper ?? [],
+      image: fileOverrides?.image ?? [],
+      audio: fileOverrides?.audio ?? [],
+      video: fileOverrides?.video ?? [],
     },
     manifestPath,
   )
@@ -447,6 +452,27 @@ describe('compare runtime', () => {
       process.chdir(originalCwd)
       rmSync(join(alternateCwd, 'graphify-out'), { recursive: true, force: true })
     }
+  })
+
+  it('keeps compare-local snippet restoration within the retrieval budget', () => {
+    const graph = makeGraph()
+    writeProjectFiles()
+    const graphPath = writeGraphFixture(graph)
+
+    const result = generateCompareArtifacts({
+      graphPath,
+      question: 'how does login create a session',
+      outputDir: COMPARE_OUTPUT_ROOT,
+      execTemplate: 'claude -p "$(cat {prompt_file})"',
+      baselineMode: 'full',
+      retrievalBudget: 25,
+      now: new Date('2026-04-24T19:30:00.000Z'),
+    })
+
+    const graphifyPrompt = readFileSync(result.reports[0]!.paths.graphify_prompt, 'utf8')
+    expect(graphifyPrompt).toContain('SessionManager')
+    expect(graphifyPrompt).toContain('export class SessionManager')
+    expect(graphifyPrompt).not.toContain('export class SessionStore')
   })
 
   it('does not load graphify snippets from paths outside the inferred project root', () => {
@@ -710,23 +736,16 @@ describe('compare runtime', () => {
     expect(baselinePrompt).toContain(longTitle)
   })
 
-  it('ignores manifest-only files when deriving the runtime baseline corpus', () => {
+  it('includes manifest-only files when deriving the runtime baseline corpus', () => {
     const graph = makeGraph()
     writeProjectFiles()
     const graphPath = writeGraphFixture(graph)
-    const manifestOnlyDocPath = join(GRAPH_FIXTURE_ROOT, 'manifest.json')
-    mkdirSync(dirname(manifestOnlyDocPath), { recursive: true })
-    writeFileSync(
-      manifestOnlyDocPath,
-      JSON.stringify({
-        [join(PROJECT_FIXTURE_ROOT, 'docs', 'manifest-only.md')]:
-          123,
-      }, null, 2),
-      'utf8',
-    )
     const manifestOnlyDocFilePath = join(PROJECT_FIXTURE_ROOT, 'docs', 'manifest-only.md')
     mkdirSync(dirname(manifestOnlyDocFilePath), { recursive: true })
-    writeFileSync(manifestOnlyDocFilePath, 'manifest-only notes that should not appear in the compare baseline prompt\n', 'utf8')
+    writeFileSync(manifestOnlyDocFilePath, 'manifest-only notes that should appear in the compare baseline prompt\n', 'utf8')
+    writeManifestFixture(PROJECT_FIXTURE_ROOT, GRAPH_FIXTURE_ROOT, {
+      document: [manifestOnlyDocFilePath],
+    })
 
     const result = generateCompareArtifacts({
       graphPath,
@@ -739,7 +758,41 @@ describe('compare runtime', () => {
 
     const baselinePrompt = readFileSync(result.reports[0]!.paths.baseline_prompt, 'utf8')
     expect(baselinePrompt).toContain('return new SessionManager().createSession(credentials.userId)')
-    expect(baselinePrompt).not.toContain('manifest-only notes that should not appear in the compare baseline prompt')
+    expect(baselinePrompt).toContain('manifest-only notes that should appear in the compare baseline prompt')
+  })
+
+  it('keeps the manifest file set as the baseline boundary when it is present', () => {
+    const graph = makeGraph()
+    graph.addNode('graph_only_notes', {
+      label: 'GraphOnlyNotes',
+      source_file: 'docs/graph-only.md',
+      source_location: 'L1',
+      line_number: 1,
+      node_kind: 'document',
+      file_type: 'document',
+      community: 0,
+    })
+    writeProjectFiles()
+    const graphPath = writeGraphFixture(graph)
+    const graphOnlyPath = join(PROJECT_FIXTURE_ROOT, 'docs', 'graph-only.md')
+    mkdirSync(dirname(graphOnlyPath), { recursive: true })
+    writeFileSync(graphOnlyPath, 'graph-only notes should stay out of the compare baseline prompt\n', 'utf8')
+    writeManifestFixture(PROJECT_FIXTURE_ROOT, GRAPH_FIXTURE_ROOT, {
+      code: [join(PROJECT_FIXTURE_ROOT, 'src', 'auth.ts')],
+    })
+
+    const result = generateCompareArtifacts({
+      graphPath,
+      question: 'how does login create a session',
+      outputDir: COMPARE_OUTPUT_ROOT,
+      execTemplate: 'claude -p "$(cat {prompt_file})"',
+      baselineMode: 'full',
+      now: new Date('2026-04-24T19:30:00Z'),
+    })
+
+    const baselinePrompt = readFileSync(result.reports[0]!.paths.baseline_prompt, 'utf8')
+    expect(baselinePrompt).toContain('return new SessionManager().createSession(credentials.userId)')
+    expect(baselinePrompt).not.toContain('graph-only notes should stay out of the compare baseline prompt')
   })
 
   it('fails when a graph-backed text file is missing from the local runtime corpus', () => {
@@ -765,7 +818,9 @@ describe('compare runtime', () => {
     writeProjectFiles()
     const graphPath = writeGraphFixture(graph)
     writeManifestFixture()
-    writeFileSync(join(PROJECT_FIXTURE_ROOT, 'src', 'auth.ts'), 'export const drifted = true\n', 'utf8')
+    const driftedPath = join(PROJECT_FIXTURE_ROOT, 'src', 'auth.ts')
+    writeFileSync(driftedPath, 'export const drifted = true\n', 'utf8')
+    utimesSync(driftedPath, new Date('2026-04-24T19:30:01Z'), new Date('2026-04-24T19:30:01Z'))
 
     expect(() =>
       generateCompareArtifacts({
