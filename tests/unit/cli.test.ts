@@ -545,6 +545,11 @@ describe('cli main', () => {
     expect(help).toContain('benchmark [graph.json]')
     expect(help).toContain('--questions PATH')
     expect(help).toContain('compare [question]')
+    expect(help).toContain('--exec TEMPLATE')
+    expect(help).toContain('--output-dir DIR')
+    expect(help).toContain('--baseline-mode MODE')
+    expect(help).toContain('--yes')
+    expect(help).toContain('--limit N')
     expect(help).toContain('question coverage')
     expect(help).toContain('hook <action>')
     expect(help).toContain('install [--platform P]')
@@ -554,6 +559,51 @@ describe('cli main', () => {
     expect(help).toContain('gemini <install|uninstall>')
     expect(help).toContain('copilot <install|uninstall>')
     expect(help).toContain('codex <install|uninstall>')
+  })
+
+  it('executes compare commands via injected dependencies', async () => {
+    const { io, logs } = createIo()
+    const dependencies = createDependencies()
+    let capturedOptions: ReturnType<typeof parseCompareArgs> | undefined
+
+    dependencies.runCompare = async (options) => {
+      capturedOptions = options
+      return 'compare result'
+    }
+
+    const exitCode = await executeCli(
+      [
+        'compare',
+        '--questions',
+        'benchmark-questions.json',
+        '--exec',
+        'gemini -p "$(cat {prompt_file})"',
+        '--graph',
+        'custom.json',
+        '--output-dir',
+        'graphify-out/compare/custom',
+        '--baseline-mode',
+        'bounded',
+        '--yes',
+        '--limit',
+        '5',
+      ],
+      io,
+      dependencies,
+    )
+
+    expect(exitCode).toBe(0)
+    expect(logs).toEqual(['compare result'])
+    expect(capturedOptions).toEqual({
+      question: null,
+      graphPath: 'custom.json',
+      execTemplate: 'gemini -p "$(cat {prompt_file})"',
+      questionsPath: 'benchmark-questions.json',
+      outputDir: 'graphify-out/compare/custom',
+      baselineMode: 'bounded',
+      yes: true,
+      limit: 5,
+    })
   })
 
   it('executes query commands via injected dependencies', async () => {
