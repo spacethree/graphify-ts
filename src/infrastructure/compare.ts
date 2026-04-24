@@ -1,11 +1,14 @@
-import { mkdirSync, writeFileSync } from 'node:fs'
-import { join, relative, resolve } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import { KnowledgeGraph } from '../contracts/graph.js'
+import { CODE_EXTENSIONS, DOC_EXTENSIONS, OFFICE_EXTENSIONS, loadManifest } from '../pipeline/detect.js'
+import { extractDocumentText, extractPaperText } from '../pipeline/extract/non-code.js'
+import { sidecarAwareFileFingerprint } from '../shared/binary-ingest-sidecar.js'
 import { loadBenchmarkQuestions } from './benchmark/questions.js'
 import { retrieveContext, type RetrieveResult } from '../runtime/retrieve.js'
 import { QUERY_CHARS_PER_TOKEN, estimateQueryTokens, loadGraph } from '../runtime/serve.js'
-import { validateGraphOutputPath, validateGraphPath } from '../shared/security.js'
+import { MAX_TEXT_BYTES, validateGraphOutputPath, validateGraphPath } from '../shared/security.js'
 
 export type CompareBaselineMode = 'full' | 'bounded'
 
@@ -153,6 +156,163 @@ function portablePath(path: string): string {
   return relative(process.cwd(), path) || '.'
 }
 
+function inferProjectRootFromGraphPath(graphPath: string): string {
+  let currentPath = dirname(resolve(graphPath))
+
+  while (dirname(currentPath) !== currentPath) {
+    if (basename(currentPath) === 'graphify-out') {
+      return dirname(currentPath)
+    }
+    currentPath = dirname(currentPath)
+  }
+
+  return dirname(resolve(graphPath))
+}
+
+function inferGraphOutputRoot(graphPath: string): string {
+  let currentPath = dirname(resolve(graphPath))
+
+  while (dirname(currentPath) !== currentPath) {
+    if (basename(currentPath) === 'graphify-out') {
+      return currentPath
+    }
+    currentPath = dirname(currentPath)
+  }
+
+  return dirname(resolve(graphPath))
+}
+
+function isPathWithinRoot(targetPath: string, rootPath: string): boolean {
+  const relativePath = relative(rootPath, targetPath)
+  return relativePath !== '..' && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath)
+}
+
+function isReadableCorpusPath(filePath: string): boolean {
+  const extension = extname(filePath).toLowerCase()
+  return CODE_EXTENSIONS.has(extension) || DOC_EXTENSIONS.has(extension) || OFFICE_EXTENSIONS.has(extension) || extension === '.pdf'
+}
+
+interface ManifestCorpusEntry {
+  filePath: string
+  fingerprint: number
+}
+
+function collectManifestCorpusFiles(graphPath: string): ManifestCorpusEntry[] {
+  const manifestPath = join(inferGraphOutputRoot(graphPath), 'manifest.json')
+  return Object.entries(loadManifest(manifestPath)).map(([filePath, fingerprint]) => ({
+    filePath: resolve(filePath),
+    fingerprint,
+  }))
+}
+
+function collectGraphBackedCorpusFiles(graph: KnowledgeGraph, projectRoot: string): string[] {
+  return graph.nodeEntries()
+    .map(([, attributes]) => String(attributes.source_file ?? '').trim())
+    .filter((sourceFile) => sourceFile.length > 0)
+    .map((sourceFile) => resolve(projectRoot, sourceFile))
+}
+
+function readBaselineCorpusFile(filePath: string): string | null {
+  const extension = extname(filePath).toLowerCase()
+
+  if (CODE_EXTENSIONS.has(extension) || DOC_EXTENSIONS.has(extension)) {
+    if (statSync(filePath).size > MAX_TEXT_BYTES) {
+      return null
+    }
+    return readFileSync(filePath, 'utf8').trimEnd()
+  }
+
+  if (OFFICE_EXTENSIONS.has(extension)) {
+    const extractedText = extractDocumentText(filePath).trim()
+    return extractedText.length > 0 ? extractedText : null
+  }
+
+  if (extension === '.pdf') {
+    const extractedText = extractPaperText(filePath).trim()
+    return extractedText.length > 0 ? extractedText : null
+  }
+
+  return null
+}
+
+function deriveBaselineCorpusText(graphPath: string, graph: KnowledgeGraph): string {
+  const projectRoot = inferProjectRootFromGraphPath(graphPath)
+  const realProjectRoot = realpathSync(projectRoot)
+  const manifestEntries = collectManifestCorpusFiles(graphPath)
+  const candidateFiles = manifestEntries.length > 0 ? manifestEntries.map((entry) => entry.filePath) : collectGraphBackedCorpusFiles(graph, projectRoot)
+  const files = new Map<string, string>()
+  const manifestFingerprints = new Map(manifestEntries.map((entry) => [entry.filePath, entry.fingerprint]))
+
+  for (const candidatePath of candidateFiles) {
+    const expectedFingerprint = manifestFingerprints.get(candidatePath)
+    if (!existsSync(candidatePath)) {
+      if (expectedFingerprint !== undefined) {
+        throw new Error(`Manifest-backed corpus file is out of sync with the graph snapshot: ${candidatePath}. Re-run graphify generate.`)
+      }
+      continue
+    }
+
+    let absolutePath: string
+    try {
+      absolutePath = realpathSync(candidatePath)
+    } catch {
+      if (expectedFingerprint !== undefined) {
+        throw new Error(`Manifest-backed corpus file is out of sync with the graph snapshot: ${candidatePath}. Re-run graphify generate.`)
+      }
+      continue
+    }
+
+    if (!isPathWithinRoot(absolutePath, realProjectRoot)) {
+      continue
+    }
+
+    if (expectedFingerprint !== undefined && !isReadableCorpusPath(absolutePath)) {
+      throw new Error(`Compare baseline cannot derive text for manifest-backed non-text file: ${absolutePath}`)
+    }
+
+    if (!isReadableCorpusPath(absolutePath)) {
+      continue
+    }
+
+    if (expectedFingerprint !== undefined) {
+      const modifiedAt = statSync(candidatePath).mtimeMs
+      if (sidecarAwareFileFingerprint(candidatePath, modifiedAt) !== expectedFingerprint) {
+        throw new Error(`Manifest-backed corpus file is out of sync with the graph snapshot: ${candidatePath}. Re-run graphify generate.`)
+      }
+    }
+
+    const corpusPath = relative(realProjectRoot, absolutePath).replaceAll(sep, '/')
+    if (files.has(corpusPath)) {
+      continue
+    }
+
+    try {
+      const corpusText = readBaselineCorpusFile(absolutePath)
+      if (corpusText === null) {
+        if (expectedFingerprint !== undefined) {
+          throw new Error(`Compare baseline cannot derive text for manifest-backed non-text file: ${absolutePath}`)
+        }
+        continue
+      }
+      files.set(corpusPath, corpusText)
+    } catch {
+      if (expectedFingerprint !== undefined) {
+        throw new Error(`Compare baseline cannot derive text for manifest-backed non-text file: ${absolutePath}`)
+      }
+      continue
+    }
+  }
+
+  if (files.size === 0) {
+    throw new Error('Unable to derive a baseline corpus from graph-backed project files.')
+  }
+
+  return [...files.entries()]
+    .flatMap(([filePath, content]) => [filePath, content, ''])
+    .join('\n')
+    .trimEnd()
+}
+
 export function buildBaselinePromptPack(input: BuildBaselinePromptPackInput): ComparePromptPack {
   const corpusText = input.corpusText.trim()
   const corpusBody =
@@ -223,10 +383,7 @@ export function resolveCompareQuestions(options: Pick<GenerateCompareArtifactsIn
 export function generateCompareArtifacts(input: GenerateCompareArtifactsInput): GenerateCompareArtifactsResult {
   const graphPath = validateGraphPath(input.graphPath)
   const graph = loadGraph(graphPath)
-  const corpusText = input.corpusText
-  if (corpusText === undefined) {
-    throw new Error('Baseline corpus text is required to generate compare artifacts.')
-  }
+  const corpusText = input.corpusText ?? deriveBaselineCorpusText(graphPath, graph)
   const questions = resolveCompareQuestions(input)
   const outputDir = validateGraphOutputPath(input.outputDir)
   const now = input.now ?? new Date()

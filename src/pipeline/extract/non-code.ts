@@ -3385,6 +3385,82 @@ function extractDocxDocument(filePath: string, allowedTargets: ReadonlySet<strin
   return finalize()
 }
 
+function uniqueNonEmptyLines(lines: string[]): string {
+  const seen = new Set<string>()
+  const uniqueLines: string[] = []
+
+  for (const line of lines) {
+    const trimmed = sanitizeLabel(line).trim()
+    if (!trimmed || seen.has(trimmed)) {
+      continue
+    }
+    seen.add(trimmed)
+    uniqueLines.push(trimmed)
+  }
+
+  return uniqueLines.join('\n').trimEnd()
+}
+
+function extractDocxDocumentText(filePath: string): string {
+  let archive: Record<string, Uint8Array>
+  try {
+    const buffer = readFileSync(filePath)
+    if (buffer.byteLength > MAX_TEXT_BYTES) {
+      return ''
+    }
+    const selectedOriginalBytes = { value: 0 }
+    archive = unzipSync(new Uint8Array(buffer), {
+      filter: (file) =>
+        isAllowedOfficeEntry(
+          file,
+          selectedOriginalBytes,
+          new Set(['word/document.xml', 'docProps/core.xml']),
+          DOCX_MAX_COMPRESSED_ENTRY_BYTES,
+          DOCX_MAX_ENTRY_ORIGINAL_BYTES,
+          DOCX_MAX_TOTAL_ORIGINAL_BYTES,
+        ),
+    })
+  } catch {
+    return ''
+  }
+
+  const lines: string[] = []
+  const coreXmlBytes = archive['docProps/core.xml']
+  if (coreXmlBytes && coreXmlBytes.byteLength <= DOCX_MAX_ENTRY_ORIGINAL_BYTES) {
+    const coreMetadata = extractCoreMetadata(strFromU8(coreXmlBytes))
+    for (const value of [coreMetadata.title, coreMetadata.author, coreMetadata.subject, coreMetadata.description]) {
+      if (typeof value === 'string') {
+        lines.push(value)
+      }
+    }
+  }
+
+  const documentXmlBytes = archive['word/document.xml']
+  if (!documentXmlBytes || documentXmlBytes.byteLength > DOCX_MAX_ENTRY_ORIGINAL_BYTES) {
+    return uniqueNonEmptyLines(lines)
+  }
+
+  let paragraphCount = 0
+  for (const paragraph of strFromU8(documentXmlBytes).matchAll(DOCX_PARAGRAPH_PATTERN)) {
+    paragraphCount += 1
+    if (paragraphCount > DOCX_MAX_PARAGRAPHS) {
+      break
+    }
+
+    const paragraphXml = paragraph[0]
+    if (!paragraphXml || paragraphXml.length > DOCX_MAX_PARAGRAPH_TEXT_CHARS * 2) {
+      continue
+    }
+
+    const text = extractDocxParagraphText(paragraphXml)
+    if (text) {
+      lines.push(text)
+    }
+  }
+
+  return uniqueNonEmptyLines(lines)
+}
+
 function extractBinaryAsset(filePath: string, fileType: Extract<NonCodeFileType, 'image' | 'audio' | 'video'>): ExtractionFragment {
   return finalizeNonCodeFragment({
     nodes: [createBinaryMetadataAwareFileNode(filePath, fileType)],
@@ -3553,6 +3629,27 @@ function extractPdfPaper(filePath: string, allowedTargets: ReadonlySet<string>):
   return finalize()
 }
 
+function extractPdfPaperText(filePath: string): string {
+  let buffer: Buffer
+  try {
+    buffer = readFileSync(filePath)
+    if (buffer.byteLength > MAX_TEXT_BYTES) {
+      return ''
+    }
+  } catch {
+    return ''
+  }
+
+  const pdfText = buffer.toString('latin1')
+  const lines = [
+    decodePdfLiteral(pdfText.match(PDF_METADATA_TITLE_PATTERN)?.[1] ?? ''),
+    decodePdfLiteral(pdfText.match(PDF_METADATA_AUTHOR_PATTERN)?.[1] ?? ''),
+    decodePdfLiteral(pdfText.match(PDF_METADATA_SUBJECT_PATTERN)?.[1] ?? ''),
+    ...extractPdfTextOperations(pdfText),
+  ]
+  return uniqueNonEmptyLines(lines)
+}
+
 function extractXlsxSharedStringTexts(sharedStringsXml: string): string[] {
   const texts: string[] = []
   let count = 0
@@ -3650,6 +3747,54 @@ function extractXlsxDocument(filePath: string, allowedTargets: ReadonlySet<strin
   return finalize()
 }
 
+function extractXlsxDocumentText(filePath: string): string {
+  let archive: Record<string, Uint8Array>
+  try {
+    const buffer = readFileSync(filePath)
+    if (buffer.byteLength > MAX_TEXT_BYTES) {
+      return ''
+    }
+
+    const selectedOriginalBytes = { value: 0 }
+    archive = unzipSync(new Uint8Array(buffer), {
+      filter: (file) =>
+        isAllowedOfficeEntry(
+          file,
+          selectedOriginalBytes,
+          new Set(['xl/workbook.xml', 'xl/sharedStrings.xml', 'docProps/core.xml']),
+          DOCX_MAX_COMPRESSED_ENTRY_BYTES,
+          DOCX_MAX_ENTRY_ORIGINAL_BYTES,
+          DOCX_MAX_TOTAL_ORIGINAL_BYTES,
+        ),
+    })
+  } catch {
+    return ''
+  }
+
+  const lines: string[] = []
+  const coreXml = archive['docProps/core.xml'] ? strFromU8(archive['docProps/core.xml']!) : ''
+  const coreMetadata = extractCoreMetadata(coreXml)
+  for (const value of [coreMetadata.title, coreMetadata.author, coreMetadata.subject, coreMetadata.description]) {
+    if (typeof value === 'string') {
+      lines.push(value)
+    }
+  }
+
+  const workbookXmlBytes = archive['xl/workbook.xml']
+  if (workbookXmlBytes && workbookXmlBytes.byteLength <= DOCX_MAX_ENTRY_ORIGINAL_BYTES) {
+    const workbookXml = strFromU8(workbookXmlBytes)
+    for (const match of workbookXml.matchAll(XLSX_SHEET_PATTERN)) {
+      const sheetName = decodeXmlText(match[1] ?? '')
+      if (sheetName) {
+        lines.push(sheetName)
+      }
+    }
+  }
+
+  const sharedStringsXml = archive['xl/sharedStrings.xml'] ? strFromU8(archive['xl/sharedStrings.xml']!) : ''
+  return uniqueNonEmptyLines([...lines, ...extractXlsxSharedStringTexts(sharedStringsXml)])
+}
+
 export function extractPaper(filePath: string, allowedTargets: ReadonlySet<string>): ExtractionFragment {
   const extension = extname(filePath).toLowerCase()
   if (extension === '.pdf') {
@@ -3669,6 +3814,51 @@ export function extractDocument(filePath: string, allowedTargets: ReadonlySet<st
   }
 
   return extractStructuredText(filePath, 'document', allowedTargets)
+}
+
+export function extractPaperText(filePath: string): string {
+  const extension = extname(filePath).toLowerCase()
+  if (extension === '.pdf') {
+    return extractPdfPaperText(filePath)
+  }
+
+  try {
+    if (statSync(filePath).size > MAX_TEXT_BYTES) {
+      return ''
+    }
+  } catch {
+    return ''
+  }
+
+  try {
+    return readFileSync(filePath, 'utf8').trimEnd()
+  } catch {
+    return ''
+  }
+}
+
+export function extractDocumentText(filePath: string): string {
+  const extension = extname(filePath).toLowerCase()
+  if (extension === '.docx') {
+    return extractDocxDocumentText(filePath)
+  }
+  if (extension === '.xlsx') {
+    return extractXlsxDocumentText(filePath)
+  }
+
+  try {
+    if (statSync(filePath).size > MAX_TEXT_BYTES) {
+      return ''
+    }
+  } catch {
+    return ''
+  }
+
+  try {
+    return readFileSync(filePath, 'utf8').trimEnd()
+  } catch {
+    return ''
+  }
 }
 
 export function extractImageFile(filePath: string): ExtractionFragment {
