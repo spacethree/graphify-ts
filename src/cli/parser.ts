@@ -144,8 +144,8 @@ function requireOptionValue(flag: string, value: string | undefined): string {
 }
 
 function parsePositiveInteger(flag: string, value: string): number {
-  const parsed = Number.parseInt(value, 10)
-  if (!Number.isFinite(parsed) || parsed <= 0) {
+  const parsed = Number(value)
+  if (!Number.isInteger(parsed) || parsed <= 0) {
     throw new UsageError(`error: ${flag} must be a positive integer`)
   }
   return parsed
