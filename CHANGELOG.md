@@ -4,6 +4,15 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-04-24
+
+### Fixed
+
+- **Retrieve-first enforcement**: AI agents were bypassing the `retrieve` MCP tool by dispatching Explore subagents or using Bash/find instead — strengthen CLAUDE.md, AGENTS.md, GEMINI.md, and Cursor rules with blocking "MUST call retrieve FIRST" language
+- **Hook matcher too narrow**: widened from `Glob|Grep` to `Glob|Grep|Bash|Agent|Read` so the PreToolUse hook fires on all codebase exploration tools
+- **Cross-platform hooks**: replaced POSIX `[ -f ... ]` with `node -e` + base64 payloads — hooks now work on macOS, Linux, and Windows (PowerShell/CMD)
+- **Hook idempotency**: fixed hook detection to match on `graphify-out` marker instead of hardcoded old matcher string, preventing duplicate hooks on re-install
+
 ## [0.6.2] - 2026-04-24
 
 ### Added
