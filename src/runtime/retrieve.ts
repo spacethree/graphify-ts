@@ -196,7 +196,23 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
     }
   }
 
-  // Step 1+2: Score all nodes with TF-IDF-weighted tokens
+  // Pre-compute community label scores so nodes in matching communities get a boost
+  const communities = communitiesFromGraph(graph)
+  const communityLabels: Record<number, string> = {
+    ...buildCommunityLabels(graph, communities),
+    ...storedCommunityLabelsFromGraph(graph),
+  }
+  const communityBoost = new Map<number, number>()
+  for (const [idStr, label] of Object.entries(communityLabels)) {
+    const id = Number(idStr)
+    const communityTokens = tokenizeLabel(label)
+    const score = scoreNode(questionTokens, communityTokens)
+    if (score > 0) {
+      communityBoost.set(id, Math.min(score * 0.1, 0.3))
+    }
+  }
+
+  // Step 1+2: Score all nodes with TF-IDF-weighted tokens + community boost
   const tokenWeights = buildTokenWeights(graph, questionTokens)
   const scored: ScoredNode[] = []
   for (const [id, attributes] of graph.nodeEntries()) {
@@ -216,7 +232,8 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
     const sourceTokens = tokenizeLabel(sourceFile)
     const labelScore = scoreNode(questionTokens, labelTokens, tokenWeights)
     const sourceScore = scoreNode(questionTokens, sourceTokens, tokenWeights) * 0.5
-    const totalScore = labelScore + sourceScore
+    const comBoost = community !== null ? (communityBoost.get(community) ?? 0) : 0
+    const totalScore = labelScore + sourceScore + comBoost
 
     if (totalScore > 0) {
       scored.push({
@@ -291,9 +308,8 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
   }
 
   // Apply structural signal boosts before final sort
-  const retrieveCommunities = communitiesFromGraph(graph)
   const godNodeList = new Set(godNodes(graph, 20).map((entry) => entry.id))
-  const bridgeNodeList = new Set(workspaceBridges(graph, retrieveCommunities, {}, 20).map((entry) => entry.id))
+  const bridgeNodeList = new Set(workspaceBridges(graph, communities, {}, 20).map((entry) => entry.id))
   const topSeed = scored.length > 0 ? scored[0] : undefined
   const seedCommunity = topSeed?.community
 
@@ -308,12 +324,6 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
   scored.sort((a, b) => b.score - a.score || graph.degree(b.id) - graph.degree(a.id))
 
   // Step 4+5: Read snippets and assemble within budget
-  const communities = communitiesFromGraph(graph)
-  const communityLabels: Record<number, string> = {
-    ...buildCommunityLabels(graph, communities),
-    ...storedCommunityLabelsFromGraph(graph),
-  }
-
   const matchedNodes: RetrieveMatchedNode[] = []
   const includedIds = new Set<string>()
   let tokenCount = 0

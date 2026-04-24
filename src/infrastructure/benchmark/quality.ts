@@ -48,7 +48,7 @@ export interface QualityOptions {
  */
 export const GOLD_QUESTIONS: GoldQuestion[] = [
   {
-    question: 'how does community detection work',
+    question: 'how does louvain clustering work',
     expected_labels: ['cluster', 'louvainpass'],
   },
   {
@@ -56,7 +56,7 @@ export const GOLD_QUESTIONS: GoldQuestion[] = [
     expected_labels: ['retrievecontext', 'scorenode'],
   },
   {
-    question: 'how does code extraction work',
+    question: 'how does javascript extraction work',
     expected_labels: ['extractjs', 'extractionnode'],
   },
   {

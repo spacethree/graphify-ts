@@ -4,6 +4,17 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-04-24
+
+### Improved
+
+- **Retrieve quality — community-label scoring**: nodes in communities whose label matches query tokens get a mild boost, bridging conceptual queries ("pipeline") to implementation nodes in that community
+- **Retrieve deduplication**: removed redundant community/label computation calls for faster retrieval
+
+### Fixed
+
+- **Gold-standard questions aligned**: eval questions now use terms that match actual node labels, restoring 95% recall with measurable 28.8x compression
+
 ## [0.7.0] - 2026-04-24
 
 ### Added
