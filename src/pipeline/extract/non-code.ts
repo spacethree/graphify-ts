@@ -3816,51 +3816,6 @@ export function extractDocument(filePath: string, allowedTargets: ReadonlySet<st
   return extractStructuredText(filePath, 'document', allowedTargets)
 }
 
-export function extractPaperText(filePath: string): string {
-  const extension = extname(filePath).toLowerCase()
-  if (extension === '.pdf') {
-    return extractPdfPaperText(filePath)
-  }
-
-  try {
-    if (statSync(filePath).size > MAX_TEXT_BYTES) {
-      return ''
-    }
-  } catch {
-    return ''
-  }
-
-  try {
-    return readFileSync(filePath, 'utf8').trimEnd()
-  } catch {
-    return ''
-  }
-}
-
-export function extractDocumentText(filePath: string): string {
-  const extension = extname(filePath).toLowerCase()
-  if (extension === '.docx') {
-    return extractDocxDocumentText(filePath)
-  }
-  if (extension === '.xlsx') {
-    return extractXlsxDocumentText(filePath)
-  }
-
-  try {
-    if (statSync(filePath).size > MAX_TEXT_BYTES) {
-      return ''
-    }
-  } catch {
-    return ''
-  }
-
-  try {
-    return readFileSync(filePath, 'utf8').trimEnd()
-  } catch {
-    return ''
-  }
-}
-
 export function extractImageFile(filePath: string): ExtractionFragment {
   return extractBinaryAsset(filePath, 'image')
 }

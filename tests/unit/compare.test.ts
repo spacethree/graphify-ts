@@ -1,7 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
-
-import { strToU8, zipSync } from 'fflate'
 
 import { KnowledgeGraph } from '../../src/contracts/graph.js'
 import {
@@ -14,6 +12,7 @@ import { saveManifest } from '../../src/pipeline/manifest.js'
 import { toJson } from '../../src/pipeline/export.js'
 import { retrieveContext } from '../../src/runtime/retrieve.js'
 import { estimateQueryTokens } from '../../src/runtime/serve.js'
+import { MAX_TEXT_BYTES } from '../../src/shared/security.js'
 
 const PROJECT_FIXTURE_ROOT = resolve('graphify-out', 'test-runtime', 'compare-runtime-project')
 const GRAPH_FIXTURE_ROOT = join(PROJECT_FIXTURE_ROOT, 'graphify-out')
@@ -128,30 +127,6 @@ function writeProjectFiles(projectRoot: string = PROJECT_FIXTURE_ROOT): void {
   }
 }
 
-function writeManifestFixture(
-  projectRoot: string = PROJECT_FIXTURE_ROOT,
-  graphFixtureRoot: string = GRAPH_FIXTURE_ROOT,
-  extraPaths: string[] = [],
-): string {
-  const manifestPath = join(graphFixtureRoot, 'manifest.json')
-  const allPaths = [
-    ...Object.keys(makeProjectFiles()).map((relativePath) => join(projectRoot, relativePath)),
-    ...extraPaths,
-  ]
-  saveManifest(
-    {
-      code: allPaths.filter((path) => path.endsWith('.ts')),
-      document: allPaths.filter((path) => path.endsWith('.md') || path.endsWith('.txt') || path.endsWith('.docx') || path.endsWith('.xlsx')),
-      paper: allPaths.filter((path) => path.endsWith('.pdf')),
-      image: allPaths.filter((path) => path.endsWith('.png') || path.endsWith('.jpg') || path.endsWith('.jpeg') || path.endsWith('.gif') || path.endsWith('.webp') || path.endsWith('.svg')),
-      audio: allPaths.filter((path) => path.endsWith('.mp3') || path.endsWith('.wav') || path.endsWith('.ogg') || path.endsWith('.opus') || path.endsWith('.m4a') || path.endsWith('.flac') || path.endsWith('.aac')),
-      video: allPaths.filter((path) => path.endsWith('.mp4') || path.endsWith('.mov') || path.endsWith('.mkv') || path.endsWith('.avi') || path.endsWith('.webm') || path.endsWith('.m4v')),
-    },
-    manifestPath,
-  )
-  return manifestPath
-}
-
 function writeGraphFixture(graph: KnowledgeGraph, graphFixtureRoot: string = GRAPH_FIXTURE_ROOT): string {
   mkdirSync(graphFixtureRoot, { recursive: true })
   const graphPath = join(graphFixtureRoot, 'graph.json')
@@ -159,17 +134,22 @@ function writeGraphFixture(graph: KnowledgeGraph, graphFixtureRoot: string = GRA
   return graphPath
 }
 
-function writeDocxFixture(filePath: string, title: string, paragraph: string): void {
-  mkdirSync(dirname(filePath), { recursive: true })
-  const archive = zipSync({
-    'docProps/core.xml': strToU8(
-      `<?xml version="1.0" encoding="UTF-8"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>${title}</dc:title></cp:coreProperties>`,
-    ),
-    'word/document.xml': strToU8(
-      `<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:pPr><w:pStyle w:val="Heading1" /></w:pPr><w:r><w:t>${title}</w:t></w:r></w:p><w:p><w:pPr><w:pStyle w:val="Heading2" /></w:pPr><w:r><w:t>${paragraph}</w:t></w:r></w:p></w:body></w:document>`,
-    ),
-  })
-  writeFileSync(filePath, Buffer.from(archive))
+function writeManifestFixture(projectRoot: string = PROJECT_FIXTURE_ROOT, graphFixtureRoot: string = GRAPH_FIXTURE_ROOT): string {
+  const manifestPath = join(graphFixtureRoot, 'manifest.json')
+  saveManifest(
+    {
+      code: Object.keys(makeProjectFiles())
+        .filter((relativePath) => relativePath.endsWith('.ts'))
+        .map((relativePath) => join(projectRoot, relativePath)),
+      document: [],
+      paper: [],
+      image: [],
+      audio: [],
+      video: [],
+    },
+    manifestPath,
+  )
+  return manifestPath
 }
 
 beforeEach(() => {
@@ -274,11 +254,10 @@ describe('compare runtime', () => {
     expect(graphifyPack.token_count).toBe(estimateQueryTokens(graphifyPack.prompt))
   })
 
-  it('writes prompt artifacts and report with reduction ratio and saved file paths', () => {
+  it('writes prompt artifacts and report from graph-backed files when corpusText is omitted', () => {
     const graph = makeGraph()
     writeProjectFiles()
     const graphPath = writeGraphFixture(graph)
-    writeManifestFixture()
     const questionsPath = join(GRAPH_FIXTURE_ROOT, 'compare-questions.json')
     writeFileSync(
       questionsPath,
@@ -315,7 +294,7 @@ describe('compare runtime', () => {
 
     expect(baselinePrompt).toContain('Question:\nhow does login create a session')
     expect(baselinePrompt).toContain('return new SessionManager().createSession(credentials.userId)')
-    expect(baselinePrompt).toContain('The login flow starts in the HTTP route')
+    expect(baselinePrompt).toContain('export class SessionManager')
     expect(graphifyPrompt).toContain('Retrieved graph context:')
     expect(savedReport).toEqual(
       expect.objectContaining({
@@ -335,76 +314,57 @@ describe('compare runtime', () => {
     )
   })
 
-  it.runIf(process.platform !== 'win32')('derives manifest-backed corpus entries from a symlinked checkout path', () => {
-    const sandboxRoot = resolve('graphify-out', 'test-runtime', 'compare-runtime-symlinked-checkout')
-    const realProjectRoot = join(sandboxRoot, 'real-project')
-    const linkedProjectRoot = join(sandboxRoot, 'linked-project')
-    const linkedGraphRoot = join(linkedProjectRoot, 'graphify-out')
+  it('ignores manifest-only files when deriving the runtime baseline corpus', () => {
+    const graph = makeGraph()
+    writeProjectFiles()
+    const graphPath = writeGraphFixture(graph)
+    const manifestOnlyDocPath = join(GRAPH_FIXTURE_ROOT, 'manifest.json')
+    mkdirSync(dirname(manifestOnlyDocPath), { recursive: true })
+    writeFileSync(
+      manifestOnlyDocPath,
+      JSON.stringify({
+        [join(PROJECT_FIXTURE_ROOT, 'docs', 'manifest-only.md')]:
+          123,
+      }, null, 2),
+      'utf8',
+    )
+    const manifestOnlyDocFilePath = join(PROJECT_FIXTURE_ROOT, 'docs', 'manifest-only.md')
+    mkdirSync(dirname(manifestOnlyDocFilePath), { recursive: true })
+    writeFileSync(manifestOnlyDocFilePath, 'manifest-only notes that should not appear in the compare baseline prompt\n', 'utf8')
 
-    rmSync(sandboxRoot, { recursive: true, force: true })
-    mkdirSync(realProjectRoot, { recursive: true })
-    symlinkSync(realProjectRoot, linkedProjectRoot, 'dir')
+    const result = generateCompareArtifacts({
+      graphPath,
+      question: 'how does login create a session',
+      outputDir: COMPARE_OUTPUT_ROOT,
+      execTemplate: 'OPENAI_API_KEY=sk-test claude -p "$(cat {prompt_file})"',
+      baselineMode: 'full',
+      now: new Date('2026-04-24T19:30:00Z'),
+    })
 
-    try {
-      const graph = makeGraph()
-      writeProjectFiles(realProjectRoot)
-      const graphPath = writeGraphFixture(graph, linkedGraphRoot)
-      writeManifestFixture(linkedProjectRoot, linkedGraphRoot)
+    const baselinePrompt = readFileSync(result.reports[0]!.paths.baseline_prompt, 'utf8')
+    expect(baselinePrompt).toContain('return new SessionManager().createSession(credentials.userId)')
+    expect(baselinePrompt).not.toContain('manifest-only notes that should not appear in the compare baseline prompt')
+  })
 
-      const result = generateCompareArtifacts({
+  it('fails when a graph-backed text file is missing from the local runtime corpus', () => {
+    const graph = makeGraph()
+    writeProjectFiles()
+    const graphPath = writeGraphFixture(graph)
+    rmSync(join(PROJECT_FIXTURE_ROOT, 'src', 'session.ts'))
+
+    expect(() =>
+      generateCompareArtifacts({
         graphPath,
         question: 'how does login create a session',
         outputDir: COMPARE_OUTPUT_ROOT,
         execTemplate: 'OPENAI_API_KEY=sk-test claude -p "$(cat {prompt_file})"',
         baselineMode: 'full',
         now: new Date('2026-04-24T19:30:00Z'),
-      })
-
-      const baselinePrompt = readFileSync(result.reports[0]!.paths.baseline_prompt, 'utf8')
-      expect(baselinePrompt).toContain('The login flow starts in the HTTP route')
-    } finally {
-      rmSync(sandboxRoot, { recursive: true, force: true })
-    }
+      }),
+    ).toThrow(/graph-backed file/i)
   })
 
-  it.runIf(process.platform !== 'win32')('skips manifest symlinks that escape the project root', () => {
-    const sandboxRoot = resolve('graphify-out', 'test-runtime', 'compare-runtime-symlink-escape')
-    const projectRoot = join(sandboxRoot, 'project')
-    const graphRoot = join(projectRoot, 'graphify-out')
-    const outsideRoot = join(sandboxRoot, 'outside')
-    const outsideFile = join(outsideRoot, 'outside-secret.md')
-    const escapedLink = join(projectRoot, 'docs', 'outside-secret.md')
-
-    rmSync(sandboxRoot, { recursive: true, force: true })
-    mkdirSync(outsideRoot, { recursive: true })
-    writeFileSync(outsideFile, 'outside secret should never enter the baseline prompt\n', 'utf8')
-
-    try {
-      const graph = makeGraph()
-      writeProjectFiles(projectRoot)
-      const graphPath = writeGraphFixture(graph, graphRoot)
-      mkdirSync(dirname(escapedLink), { recursive: true })
-      symlinkSync(outsideFile, escapedLink, 'file')
-      writeManifestFixture(projectRoot, graphRoot, [escapedLink])
-
-      const result = generateCompareArtifacts({
-        graphPath,
-        question: 'how does login create a session',
-        outputDir: COMPARE_OUTPUT_ROOT,
-        execTemplate: 'OPENAI_API_KEY=sk-test claude -p "$(cat {prompt_file})"',
-        baselineMode: 'full',
-        now: new Date('2026-04-24T19:30:00Z'),
-      })
-
-      const baselinePrompt = readFileSync(result.reports[0]!.paths.baseline_prompt, 'utf8')
-      expect(baselinePrompt).toContain('return new SessionManager().createSession(credentials.userId)')
-      expect(baselinePrompt).not.toContain('outside secret should never enter the baseline prompt')
-    } finally {
-      rmSync(sandboxRoot, { recursive: true, force: true })
-    }
-  })
-
-  it('rejects manifest-backed corpus files that drift from the graph snapshot', () => {
+  it('fails when a graph-backed text file drifts from the saved graph snapshot manifest', () => {
     const graph = makeGraph()
     writeProjectFiles()
     const graphPath = writeGraphFixture(graph)
@@ -420,16 +380,32 @@ describe('compare runtime', () => {
         baselineMode: 'full',
         now: new Date('2026-04-24T19:30:00Z'),
       }),
-    ).toThrow(/out of sync|regenerate/i)
+    ).toThrow(/out of sync|graph-backed file/i)
   })
 
-  it('derives manifest-backed office documents through extracted text', () => {
+  it('fails when an adjacent manifest exists but is invalid', () => {
     const graph = makeGraph()
     writeProjectFiles()
     const graphPath = writeGraphFixture(graph)
-    const docxPath = join(PROJECT_FIXTURE_ROOT, 'docs', 'office-guide.docx')
-    writeDocxFixture(docxPath, 'Office Guide', 'Quarterly roadmap notes')
-    writeManifestFixture(PROJECT_FIXTURE_ROOT, GRAPH_FIXTURE_ROOT, [docxPath])
+    writeFileSync(join(GRAPH_FIXTURE_ROOT, 'manifest.json'), '{not valid json', 'utf8')
+
+    expect(() =>
+      generateCompareArtifacts({
+        graphPath,
+        question: 'how does login create a session',
+        outputDir: COMPARE_OUTPUT_ROOT,
+        execTemplate: 'OPENAI_API_KEY=sk-test claude -p "$(cat {prompt_file})"',
+        baselineMode: 'full',
+        now: new Date('2026-04-24T19:30:00Z'),
+      }),
+    ).toThrow(/manifest/i)
+  })
+
+  it('skips oversized graph-backed text files instead of aborting compare generation', () => {
+    const graph = makeGraph()
+    writeProjectFiles()
+    const graphPath = writeGraphFixture(graph)
+    writeFileSync(join(PROJECT_FIXTURE_ROOT, 'src', 'session.ts'), `${'a'.repeat(MAX_TEXT_BYTES + 1)}\n`, 'utf8')
 
     const result = generateCompareArtifacts({
       graphPath,
@@ -441,50 +417,8 @@ describe('compare runtime', () => {
     })
 
     const baselinePrompt = readFileSync(result.reports[0]!.paths.baseline_prompt, 'utf8')
-    expect(baselinePrompt).toContain('Office Guide')
-    expect(baselinePrompt).toContain('Quarterly roadmap notes')
-  })
-
-  it('rejects manifest-backed office documents when text extraction yields no corpus text', () => {
-    const graph = makeGraph()
-    writeProjectFiles()
-    const graphPath = writeGraphFixture(graph)
-    const docxPath = join(PROJECT_FIXTURE_ROOT, 'docs', 'broken-office-guide.docx')
-    mkdirSync(dirname(docxPath), { recursive: true })
-    writeFileSync(docxPath, Buffer.from('not-a-docx-archive'))
-    writeManifestFixture(PROJECT_FIXTURE_ROOT, GRAPH_FIXTURE_ROOT, [docxPath])
-
-    expect(() =>
-      generateCompareArtifacts({
-        graphPath,
-        question: 'how does login create a session',
-        outputDir: COMPARE_OUTPUT_ROOT,
-        execTemplate: 'OPENAI_API_KEY=sk-test claude -p "$(cat {prompt_file})"',
-        baselineMode: 'full',
-        now: new Date('2026-04-24T19:30:00Z'),
-      }),
-    ).toThrow(/non-text|baseline text|docx/i)
-  })
-
-  it('rejects manifest-backed binary corpus files without a baseline text representation', () => {
-    const graph = makeGraph()
-    writeProjectFiles()
-    const graphPath = writeGraphFixture(graph)
-    const imagePath = join(PROJECT_FIXTURE_ROOT, 'images', 'diagram.png')
-    mkdirSync(dirname(imagePath), { recursive: true })
-    writeFileSync(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]))
-    writeManifestFixture(PROJECT_FIXTURE_ROOT, GRAPH_FIXTURE_ROOT, [imagePath])
-
-    expect(() =>
-      generateCompareArtifacts({
-        graphPath,
-        question: 'how does login create a session',
-        outputDir: COMPARE_OUTPUT_ROOT,
-        execTemplate: 'OPENAI_API_KEY=sk-test claude -p "$(cat {prompt_file})"',
-        baselineMode: 'full',
-        now: new Date('2026-04-24T19:30:00Z'),
-      }),
-    ).toThrow(/non-text|png|baseline text/i)
+    expect(baselinePrompt).toContain('return new SessionManager().createSession(credentials.userId)')
+    expect(baselinePrompt).not.toContain('export class SessionManager')
   })
 
   it('rejects ambiguous question sources and invalid limits', () => {
