@@ -71,6 +71,11 @@ const CORPUS_WARN_THRESHOLD = 50_000
 const CORPUS_UPPER_THRESHOLD = 500_000
 const FILE_COUNT_UPPER = 200
 export const DEFAULT_MANIFEST_PATH = 'graphify-out/manifest.json'
+export const MANIFEST_METADATA_KEY = '__graphify_meta__'
+
+export interface ManifestMetadata {
+  total_words?: number
+}
 
 const SENSITIVE_PATTERNS = [
   /(^|[\\/])\.(env|envrc)(\.|$)/i,
@@ -470,21 +475,43 @@ export function detect(root: string, options: DetectOptions = {}): DetectResult 
   }
 }
 
-export function loadManifest(manifestPath: string = DEFAULT_MANIFEST_PATH): Record<string, number> {
+function loadManifestDocument(manifestPath: string): Record<string, unknown> {
   try {
     const parsed = JSON.parse(readFileSync(validateManifestPath(manifestPath), 'utf8')) as unknown
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       return {}
     }
 
-    return Object.fromEntries(Object.entries(parsed).filter((entry): entry is [string, number] => typeof entry[1] === 'number'))
+    return parsed as Record<string, unknown>
   } catch {
     return {}
   }
 }
 
-export function saveManifest(files: Record<string, string[]>, manifestPath: string = DEFAULT_MANIFEST_PATH): void {
-  const manifest: Record<string, number> = {}
+export function loadManifest(manifestPath: string = DEFAULT_MANIFEST_PATH): Record<string, number> {
+  return Object.fromEntries(
+    Object.entries(loadManifestDocument(manifestPath)).filter(
+      (entry): entry is [string, number] => entry[0] !== MANIFEST_METADATA_KEY && typeof entry[1] === 'number',
+    ),
+  )
+}
+
+export function loadManifestMetadata(manifestPath: string = DEFAULT_MANIFEST_PATH): ManifestMetadata {
+  const metadata = loadManifestDocument(manifestPath)[MANIFEST_METADATA_KEY]
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+    return {}
+  }
+
+  const totalWords = (metadata as { total_words?: unknown }).total_words
+  return typeof totalWords === 'number' && Number.isFinite(totalWords) && totalWords >= 0 ? { total_words: totalWords } : {}
+}
+
+export function saveManifest(
+  files: Record<string, string[]>,
+  manifestPath: string = DEFAULT_MANIFEST_PATH,
+  metadata: ManifestMetadata = {},
+): void {
+  const manifest: Record<string, number | ManifestMetadata> = {}
 
   for (const fileList of Object.values(files)) {
     for (const filePath of fileList) {
@@ -497,6 +524,10 @@ export function saveManifest(files: Record<string, string[]>, manifestPath: stri
         // Ignore files deleted between detect() and manifest write.
       }
     }
+  }
+
+  if (typeof metadata.total_words === 'number' && Number.isFinite(metadata.total_words) && metadata.total_words >= 0) {
+    manifest[MANIFEST_METADATA_KEY] = { total_words: metadata.total_words }
   }
 
   const safeManifestPath = validateManifestPath(manifestPath)

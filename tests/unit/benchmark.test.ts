@@ -1,16 +1,21 @@
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { execFileSync } from 'node:child_process'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { join, relative, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 
 import { describe, expect, test, vi } from 'vitest'
 
 import { KnowledgeGraph } from '../../src/contracts/graph.js'
 import { generateGraph } from '../../src/infrastructure/generate.js'
-import { runBenchmark, printBenchmark, querySubgraphTokens, type BenchmarkQuestionInput } from '../../src/infrastructure/benchmark.js'
+import { loadBenchmarkQuestions, runBenchmark, printBenchmark, querySubgraphTokens, type BenchmarkQuestionInput } from '../../src/infrastructure/benchmark.js'
+import { corpusTokensFromWords } from '../../src/infrastructure/benchmark/corpus.js'
+import { evaluateRetrievalQuality, formatQualityReport } from '../../src/infrastructure/benchmark/quality.js'
 import { toJson } from '../../src/pipeline/export.js'
-import { estimateQueryTokens, queryGraph } from '../../src/runtime/serve.js'
+import { estimateQueryTokens, loadGraph, queryGraph } from '../../src/runtime/serve.js'
 
 const FIXTURES_DIR = join(process.cwd(), 'tests', 'fixtures')
+const DEMO_REPO_DIR = join(process.cwd(), 'examples', 'demo-repo')
+const DEMO_QUESTIONS_PATH = join(DEMO_REPO_DIR, 'benchmark-questions.json')
 
 function withTempDir(callback: (tempDir: string) => void): void {
   const tempDir = mkdtempSync(join(tmpdir(), 'graphify-ts-benchmark-'))
@@ -28,8 +33,20 @@ function copyFixtureCorpus(fixtureName: string, tempDir: string): string {
   return targetRoot
 }
 
+function copyDemoRepo(tempDir: string): string {
+  const targetRoot = join(tempDir, 'demo-repo')
+  cpSync(DEMO_REPO_DIR, targetRoot, {
+    recursive: true,
+    filter: (source) => {
+      const relativePath = relative(DEMO_REPO_DIR, source)
+      return relativePath !== 'graphify-out' && !relativePath.startsWith(`graphify-out${sep}`)
+    },
+  })
+  return targetRoot
+}
+
 function readWorkspaceParityQuestions(): BenchmarkQuestionInput[] {
-  return JSON.parse(readFileSync(join(FIXTURES_DIR, 'workspace-parity-questions.json'), 'utf8')) as BenchmarkQuestionInput[]
+  return loadBenchmarkQuestions(join(FIXTURES_DIR, 'workspace-parity-questions.json'))
 }
 
 function makeGraph(): KnowledgeGraph {
@@ -80,6 +97,40 @@ describe('querySubgraphTokens', () => {
 })
 
 describe('runBenchmark', () => {
+  const expectedDemoQuestions: Exclude<BenchmarkQuestionInput, string>[] = [
+    {
+      question: 'how does password policy login create a tenant session',
+      expected_labels: ['AuthService', 'TenantContext', 'SessionStore', '.loginWithPassword()', '.createSession()'],
+    },
+    {
+      question: 'which module sends invoice receipt emails',
+      expected_labels: ['InvoiceService', 'EmailNotifier', '.sendInvoiceReceipt()', '.sendReceiptEmail()'],
+    },
+    {
+      question: 'what runs the monthly billing close',
+      expected_labels: ['runMonthlyCloseJob()', 'InvoiceService', 'RevenueReport'],
+    },
+    {
+      question: 'how is the monthly revenue report built',
+      expected_labels: ['RevenueReport', '.buildMonthlyRevenueReport()', 'revenue-report.ts'],
+    },
+    {
+      question: 'where is tenant context defined for billing and auth',
+      expected_labels: ['TenantContext', 'tenant-context.ts'],
+    },
+  ]
+
+  test('loads shared question files', () => {
+    expect(loadBenchmarkQuestions(join(FIXTURES_DIR, 'workspace-parity-questions.json'))).toEqual([
+      { question: 'create session login', expected_labels: ['default()', 'loginUser()', '.login()'] },
+      { question: 'login user session', expected_labels: ['loginUser()', 'default()', 'session.ts'] },
+      { question: 'shared auth helper', expected_labels: ['default()', 'auth.ts', 'index.ts'] },
+      { question: 'reindex workspace', expected_labels: ['reindexWorkspace()', 'jobs.ts'] },
+      { question: 'workspace architecture docs', expected_labels: ['Workspace Architecture', 'architecture.md'] },
+      { question: 'billing flow', expected_labels: [] },
+    ])
+  })
+
   test('returns reduction metrics', () => {
     withTempDir((tempDir) => {
       const graphPath = join(tempDir, 'graphify-out', 'graph.json')
@@ -102,6 +153,38 @@ describe('runBenchmark', () => {
       toJson(new KnowledgeGraph(), {}, graphPath)
       const result = runBenchmark(graphPath, 1_000)
       expect(result).toEqual(expect.objectContaining({ error: expect.stringMatching(/no matching nodes/i) }))
+    })
+  })
+
+  test('returns a specific error for an empty custom question set', () => {
+    withTempDir((tempDir) => {
+      const graphPath = join(tempDir, 'graphify-out', 'graph.json')
+      mkdirSync(join(tempDir, 'graphify-out'), { recursive: true })
+      toJson(makeGraph(), { 0: ['n1', 'n2'], 1: ['n3', 'n4'], 2: ['n5'] }, graphPath)
+
+      const result = runBenchmark(graphPath, 1_000, [])
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          error: 'Question file did not include any benchmark questions. Add at least one question or omit --questions to use the sample set.',
+        }),
+      )
+    })
+  })
+
+  test('returns a custom-question error when supplied questions do not match the graph', () => {
+    withTempDir((tempDir) => {
+      const graphPath = join(tempDir, 'graphify-out', 'graph.json')
+      mkdirSync(join(tempDir, 'graphify-out'), { recursive: true })
+      toJson(makeGraph(), { 0: ['n1', 'n2'], 1: ['n3', 'n4'], 2: ['n5'] }, graphPath)
+
+      const result = runBenchmark(graphPath, 1_000, ['quantum entanglement physics'])
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          error: 'No matching nodes found for the supplied questions. Check the graph path or question file.',
+        }),
+      )
     })
   })
 
@@ -244,6 +327,134 @@ describe('runBenchmark', () => {
       })
     })
   })
+
+  test('copies the demo repo without pre-generated graph artifacts', () => {
+    withTempDir((tempDir) => {
+      const workspaceRoot = copyDemoRepo(tempDir)
+
+      expect(existsSync(join(workspaceRoot, 'graphify-out'))).toBe(false)
+    })
+  })
+
+  test('keeps the checked-in demo repo free of pre-generated graph artifacts', () => {
+    expect(existsSync(DEMO_REPO_DIR)).toBe(true)
+    const trackedFiles = execFileSync('git', ['ls-files', '--', 'examples/demo-repo'], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+    })
+      .split(/\r?\n/)
+      .filter(Boolean)
+
+    expect(trackedFiles.some((file) => file === 'examples/demo-repo/graphify-out' || file.startsWith('examples/demo-repo/graphify-out/'))).toBe(false)
+  })
+
+  test('uses the checked-in demo repo as a reproducible benchmark and eval proof kit', () => {
+    expect(existsSync(DEMO_REPO_DIR)).toBe(true)
+    expect(existsSync(DEMO_QUESTIONS_PATH)).toBe(true)
+    expect(loadBenchmarkQuestions(DEMO_QUESTIONS_PATH)).toEqual(expectedDemoQuestions)
+
+    withTempDir((tempDir) => {
+      const workspaceRoot = copyDemoRepo(tempDir)
+      const generation = generateGraph(workspaceRoot, { noHtml: true })
+      const questions = loadBenchmarkQuestions(join(workspaceRoot, 'benchmark-questions.json'))
+      const graph = loadGraph(generation.graphPath)
+      const graphLabels = new Set(graph.nodeEntries().map(([, attributes]) => String(attributes.label ?? '')))
+      const benchmark = runBenchmark(generation.graphPath, null, questions)
+      const quality = evaluateRetrievalQuality(graph, questions, 3000, { graphPath: generation.graphPath })
+      const qualityReport = formatQualityReport(quality)
+
+      expect(generation.totalFiles).toBeGreaterThanOrEqual(10)
+      expect(generation.codeFiles).toBeGreaterThanOrEqual(10)
+      expect(questions.length).toBe(5)
+      expect(
+        expectedDemoQuestions.flatMap((question) => question.expected_labels ?? []).every((label) => graphLabels.has(label)),
+      ).toBe(true)
+      expect('reduction_ratio' in benchmark).toBe(true)
+      if (!('reduction_ratio' in benchmark)) {
+        return
+      }
+
+      expect(benchmark.question_count).toBe(questions.length)
+      expect(benchmark.corpus_source).toBe('manifest')
+      expect(benchmark.corpus_words).toBe(generation.totalWords)
+      expect(benchmark.corpus_tokens).toBe(corpusTokensFromWords(generation.totalWords))
+      expect(benchmark.matched_question_count).toBe(questions.length)
+      expect(benchmark.unmatched_questions).toEqual([])
+      expect(benchmark.expected_label_count).toBe(17)
+      expect(benchmark.matched_expected_label_count).toBe(benchmark.expected_label_count)
+      expect(benchmark.missing_expected_labels).toEqual([])
+      expect(benchmark.reduction_ratio).toBeGreaterThan(1)
+      expect(benchmark.per_question).toHaveLength(questions.length)
+      expect(
+        benchmark.per_question.map((entry) => ({
+          question: entry.question,
+          expected_labels: entry.expected_labels,
+          matched_expected_labels: entry.matched_expected_labels,
+          missing_expected_labels: entry.missing_expected_labels,
+        })),
+      ).toEqual(
+        expectedDemoQuestions.map((question) => ({
+          question: question.question,
+          expected_labels: question.expected_labels,
+          matched_expected_labels: question.expected_labels,
+          missing_expected_labels: [],
+        })),
+      )
+      expect(quality.total_questions).toBe(questions.length)
+      expect(quality.corpus_source).toBe('manifest')
+      expect(quality.corpus_tokens).toBe(corpusTokensFromWords(generation.totalWords))
+      expect(quality.questions_with_hits).toBe(questions.length)
+      expect(quality.avg_recall).toBe(1)
+      expect(quality.mrr).toBeGreaterThan(0.3)
+      expect(quality.avg_tokens_used).toBeGreaterThan(0)
+      expect(quality.compression_ratio).toBeGreaterThan(1)
+      expect(
+        quality.questions.map((entry) => ({
+          question: entry.question,
+          expected_labels: entry.expected_labels,
+          matched_labels: entry.matched_labels,
+          missing_labels: entry.missing_labels,
+          recall: entry.recall,
+        })),
+      ).toEqual(
+        expectedDemoQuestions.map((question) => ({
+          question: question.question,
+          expected_labels: question.expected_labels,
+          matched_labels: question.expected_labels,
+          missing_labels: [],
+          recall: 1,
+        })),
+      )
+      expect(qualityReport).toContain('retrieval quality benchmark')
+      expect(qualityReport).toContain('Per question:')
+      expect(qualityReport).toContain('which module sends invoice receipt emails')
+    })
+  })
+
+  test('normalizes expected labels for benchmark matching', () => {
+    withTempDir((tempDir) => {
+      const workspaceRoot = copyFixtureCorpus('workspace-parity', tempDir)
+      const generation = generateGraph(workspaceRoot, { noHtml: true })
+      const benchmark = runBenchmark(generation.graphPath, null, [
+        { question: 'shared auth helper', expected_labels: ['DEFAULT', 'auth ts', 'index-ts'] },
+      ])
+
+      expect('reduction_ratio' in benchmark).toBe(true)
+      if (!('reduction_ratio' in benchmark)) {
+        return
+      }
+
+      expect(benchmark.expected_label_count).toBe(3)
+      expect(benchmark.matched_expected_label_count).toBe(3)
+      expect(benchmark.missing_expected_labels).toEqual([])
+      expect(benchmark.per_question[0]).toMatchObject({
+        question: 'shared auth helper',
+        expected_labels: ['DEFAULT', 'auth ts', 'index-ts'],
+        matched_expected_labels: ['DEFAULT', 'auth ts', 'index-ts'],
+        missing_expected_labels: [],
+      })
+    })
+  })
 })
 
 describe('printBenchmark', () => {
@@ -252,6 +463,7 @@ describe('printBenchmark', () => {
     printBenchmark({
       corpus_tokens: 1000,
       corpus_words: 750,
+      corpus_source: 'manifest',
       nodes: 5,
       edges: 4,
       structure_signals: {
@@ -303,6 +515,7 @@ describe('printBenchmark', () => {
     printBenchmark({
       corpus_tokens: 1000,
       corpus_words: 750,
+      corpus_source: 'estimated',
       nodes: 5,
       edges: 4,
       structure_signals: null,
@@ -326,6 +539,7 @@ describe('printBenchmark', () => {
       ],
     })
     const output = spy.mock.calls.flat().join('\n')
+    expect(output).toContain('naive corpus (estimated from graph size)')
     expect(output).toContain('Structure signals: unavailable for graph artifacts without source_file provenance')
     spy.mockRestore()
   })
@@ -335,6 +549,7 @@ describe('printBenchmark', () => {
     printBenchmark({
       corpus_tokens: 1000,
       corpus_words: 750,
+      corpus_source: 'manifest',
       nodes: 5,
       edges: 4,
       structure_signals: {

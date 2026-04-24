@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+
 import { KnowledgeGraph } from '../../contracts/graph.js'
 import { bfs, estimateQueryTokens, queryGraph, scoreNodes } from '../../runtime/serve.js'
 
@@ -30,14 +32,46 @@ export interface BenchmarkQuestionEvaluation {
   missing_expected_labels: BenchmarkMissingExpectedLabels | null
 }
 
+export function normalizeExpectedLabel(label: string): string {
+  return label.toLowerCase().replace(/[^a-z0-9]/g, '')
+}
+
 export function normalizeBenchmarkQuestion(question: BenchmarkQuestionInput): BenchmarkQuestionSpec {
   if (typeof question === 'string') {
     return { question, expected_labels: [] }
   }
   return {
-    question: question.question,
+    question: question.question.trim(),
     expected_labels: Array.isArray(question.expected_labels) ? question.expected_labels.filter((label) => label.trim().length > 0) : [],
   }
+}
+
+export function loadBenchmarkQuestions(questionsPath: string): BenchmarkQuestionSpec[] {
+  const parsed = JSON.parse(readFileSync(questionsPath, 'utf8')) as unknown
+  if (!Array.isArray(parsed)) {
+    throw new Error(`Question file must contain an array of question objects: ${questionsPath}`)
+  }
+
+  return parsed.map((entry, index) => {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new Error(`Question file entry ${index + 1} must be an object with question and expected_labels`)
+    }
+
+    const question = 'question' in entry ? entry.question : undefined
+    if (typeof question !== 'string' || question.trim().length === 0) {
+      throw new Error(`Question file entry ${index + 1} must include a non-empty question string`)
+    }
+
+    const expectedLabels = 'expected_labels' in entry ? entry.expected_labels : undefined
+    if (expectedLabels !== undefined && (!Array.isArray(expectedLabels) || expectedLabels.some((label) => typeof label !== 'string'))) {
+      throw new Error(`Question file entry ${index + 1} expected_labels must be an array of strings`)
+    }
+
+    return normalizeBenchmarkQuestion({
+      question,
+      ...(expectedLabels !== undefined ? { expected_labels: expectedLabels as string[] } : {}),
+    })
+  })
 }
 
 function querySubgraphMatch(graph: KnowledgeGraph, question: string, depth = 2): { queryTokens: number; labels: Set<string> } | null {
@@ -59,7 +93,7 @@ function querySubgraphMatch(graph: KnowledgeGraph, question: string, depth = 2):
   const labels = new Set(
     [...traversal.visited]
       .filter((nodeId) => graph.hasNode(nodeId))
-      .map((nodeId) => String(graph.nodeAttributes(nodeId).label ?? nodeId).toLowerCase()),
+      .map((nodeId) => normalizeExpectedLabel(String(graph.nodeAttributes(nodeId).label ?? nodeId))),
   )
 
   return { queryTokens: estimateQueryTokens(output), labels }
@@ -83,8 +117,8 @@ export function evaluateBenchmarkQuestion(graph: KnowledgeGraph, question: Bench
     }
   }
 
-  const matchedExpectedLabels = expectedLabels.filter((label) => match.labels.has(label.toLowerCase()))
-  const missingLabels = expectedLabels.filter((label) => !match.labels.has(label.toLowerCase()))
+  const matchedExpectedLabels = expectedLabels.filter((label) => match.labels.has(normalizeExpectedLabel(label)))
+  const missingLabels = expectedLabels.filter((label) => !match.labels.has(normalizeExpectedLabel(label)))
   return {
     question: questionSpec.question,
     result: {

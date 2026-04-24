@@ -401,7 +401,7 @@ export function generateGraph(rootPath = '.', options: GenerateGraphOptions = {}
     notes.push(`${docsResult.fileCount} module doc(s) generated in ${docsPath}.`)
   }
 
-  saveManifest(detected.files, manifestPath)
+  saveManifest(detected.files, manifestPath, { total_words: detected.total_words })
 
   return {
     mode,

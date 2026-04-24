@@ -1,6 +1,7 @@
 import { loadGraph } from '../runtime/serve.js'
 import { KnowledgeGraph } from '../contracts/graph.js'
 import { graphStructureMetrics, type GraphStructureMetrics } from '../pipeline/analyze.js'
+import { formatTokenRatio, resolveCorpusBaseline, type CorpusBaselineSource } from './benchmark/corpus.js'
 import {
   evaluateBenchmarkQuestion,
   querySubgraphTokens,
@@ -9,7 +10,7 @@ import {
   type BenchmarkQuestionResult,
 } from './benchmark/questions.js'
 
-export { querySubgraphTokens, type BenchmarkQuestionInput } from './benchmark/questions.js'
+export { loadBenchmarkQuestions, querySubgraphTokens, type BenchmarkQuestionInput } from './benchmark/questions.js'
 
 export const SAMPLE_QUESTIONS = [
   'how does authentication work',
@@ -22,6 +23,7 @@ export const SAMPLE_QUESTIONS = [
 export interface BenchmarkSuccessResult {
   corpus_tokens: number
   corpus_words: number
+  corpus_source: CorpusBaselineSource
   nodes: number
   edges: number
   structure_signals: GraphStructureMetrics | null
@@ -53,16 +55,24 @@ function hasStructureSignalProvenance(graph: KnowledgeGraph): boolean {
 export function runBenchmark(graphPath = 'graphify-out/graph.json', corpusWords?: number | null, questions?: BenchmarkQuestionInput[]): BenchmarkResult {
   const graph = loadBenchmarkGraph(graphPath)
   const structureSignals = hasStructureSignalProvenance(graph) ? graphStructureMetrics(graph) : null
-  const effectiveCorpusWords = corpusWords ?? graph.numberOfNodes() * 50
-  const corpusTokens = Math.floor((effectiveCorpusWords * 100) / 75)
+  const baseline = resolveCorpusBaseline(graph.numberOfNodes(), { graphPath, corpusWords })
   const benchmarkQuestions = questions ?? SAMPLE_QUESTIONS
+  const usesSampleQuestions = questions === undefined
   const perQuestion: BenchmarkQuestionResult[] = []
   const unmatchedQuestions: string[] = []
   const missingExpectedLabels: BenchmarkMissingExpectedLabels[] = []
+  if (benchmarkQuestions.length === 0) {
+    return {
+      error: usesSampleQuestions
+        ? 'No sample questions are available for this benchmark run.'
+        : 'Question file did not include any benchmark questions. Add at least one question or omit --questions to use the sample set.',
+    }
+  }
+
   let expectedLabelCount = 0
   let matchedExpectedLabelCount = 0
   for (const question of benchmarkQuestions) {
-    const evaluation = evaluateBenchmarkQuestion(graph, question, corpusTokens)
+    const evaluation = evaluateBenchmarkQuestion(graph, question, baseline.tokens)
     expectedLabelCount += evaluation.expected_label_count
     matchedExpectedLabelCount += evaluation.matched_expected_label_count
     if (evaluation.missing_expected_labels) {
@@ -76,13 +86,18 @@ export function runBenchmark(graphPath = 'graphify-out/graph.json', corpusWords?
   }
 
   if (perQuestion.length === 0) {
-    return { error: 'No matching nodes found for sample questions. Build the graph first.' }
+    return {
+      error: usesSampleQuestions
+        ? 'No matching nodes found for sample questions. Build the graph first.'
+        : 'No matching nodes found for the supplied questions. Check the graph path or question file.',
+    }
   }
 
   const avgQueryTokens = Math.floor(perQuestion.reduce((sum, entry) => sum + entry.query_tokens, 0) / perQuestion.length)
   return {
-    corpus_tokens: corpusTokens,
-    corpus_words: effectiveCorpusWords,
+    corpus_tokens: baseline.tokens,
+    corpus_words: baseline.words,
+    corpus_source: baseline.source,
     nodes: graph.numberOfNodes(),
     edges: graph.numberOfEdges(),
     structure_signals: structureSignals,
@@ -93,7 +108,7 @@ export function runBenchmark(graphPath = 'graphify-out/graph.json', corpusWords?
     matched_expected_label_count: matchedExpectedLabelCount,
     missing_expected_labels: missingExpectedLabels,
     avg_query_tokens: avgQueryTokens,
-    reduction_ratio: avgQueryTokens > 0 ? Number((corpusTokens / avgQueryTokens).toFixed(1)) : 0,
+    reduction_ratio: avgQueryTokens > 0 ? Number((baseline.tokens / avgQueryTokens).toFixed(1)) : 0,
     per_question: perQuestion,
   }
 }
@@ -106,7 +121,14 @@ export function printBenchmark(result: BenchmarkResult): void {
 
   console.log('\ngraphify token reduction benchmark')
   console.log(`${'─'.repeat(50)}`)
-  console.log(`  Corpus:          ${result.corpus_words.toLocaleString()} words → ~${result.corpus_tokens.toLocaleString()} tokens (naive)`)
+  const corpusNote = result.corpus_source === 'estimated' ? ' (estimated from graph size)' : ''
+  const reductionSummary =
+    result.avg_query_tokens > 0
+      ? result.corpus_tokens >= result.avg_query_tokens
+        ? `${formatTokenRatio(result.corpus_tokens, result.avg_query_tokens)} tokens per query`
+        : `not achieved (${formatTokenRatio(result.corpus_tokens, result.avg_query_tokens)} tokens per query)`
+      : 'n/a'
+  console.log(`  Corpus:          ${result.corpus_words.toLocaleString()} words → ~${result.corpus_tokens.toLocaleString()} tokens (naive corpus${corpusNote})`)
   console.log(`  Graph:           ${result.nodes.toLocaleString()} nodes, ${result.edges.toLocaleString()} edges`)
   console.log(`  Question coverage: ${result.matched_question_count}/${result.question_count} matched`)
   if (result.unmatched_questions.length > 0) {
@@ -138,10 +160,10 @@ export function printBenchmark(result: BenchmarkResult): void {
     console.log('  Structure signals: unavailable for graph artifacts without source_file provenance')
   }
   console.log(`  Avg query cost:  ~${result.avg_query_tokens.toLocaleString()} tokens`)
-  console.log(`  Reduction:       ${result.reduction_ratio}x fewer tokens per query`)
+  console.log(`  Reduction:       ${reductionSummary}`)
   console.log('\n  Per question:')
   for (const entry of result.per_question) {
-    console.log(`    [${entry.reduction}x] ${entry.question.slice(0, 55)}`)
+    console.log(`    [${formatTokenRatio(result.corpus_tokens, entry.query_tokens)}] ${entry.question.slice(0, 55)}`)
   }
   console.log('')
 }

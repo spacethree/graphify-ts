@@ -967,6 +967,9 @@ describe('generateGraph', () => {
         nodes: Array<Record<string, unknown>>
         semantic_anomalies?: unknown
       }
+      const manifestData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'manifest.json'), 'utf8')) as {
+        __graphify_meta__?: { total_words?: number }
+      }
 
       expect(result.mode).toBe('generate')
       expect(result.nodeCount).toBeGreaterThan(0)
@@ -976,6 +979,7 @@ describe('generateGraph', () => {
       expect(existsSync(join(tempDir, 'graphify-out', 'GRAPH_REPORT.md'))).toBe(true)
       expect(existsSync(join(tempDir, 'graphify-out', 'graph.html'))).toBe(true)
       expect(existsSync(join(tempDir, 'graphify-out', 'manifest.json'))).toBe(true)
+      expect(manifestData.__graphify_meta__?.total_words).toBe(result.totalWords)
       expect(readFileSync(join(tempDir, 'graphify-out', 'GRAPH_REPORT.md'), 'utf8')).toContain('## God Nodes')
       expect(readFileSync(join(tempDir, 'graphify-out', 'GRAPH_REPORT.md'), 'utf8')).toContain('## Semantic Anomalies')
       expect(result.notes.join('\n')).not.toContain('semantic extraction')

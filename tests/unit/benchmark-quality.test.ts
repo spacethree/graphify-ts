@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs'
 
 import { KnowledgeGraph } from '../../src/contracts/graph.js'
 import { evaluateRetrievalQuality, formatQualityReport, GOLD_QUESTIONS, type GoldQuestion } from '../../src/infrastructure/benchmark/quality.js'
+import { type BenchmarkQuestionSpec } from '../../src/infrastructure/benchmark/questions.js'
 import { loadGraph } from '../../src/runtime/serve.js'
 
 function buildTestGraph(): KnowledgeGraph {
@@ -16,7 +17,11 @@ function buildTestGraph(): KnowledgeGraph {
   return graph
 }
 
+// @ts-expect-error GoldQuestion must require expected_labels for built-in eval sets.
+const invalidGoldQuestion: GoldQuestion = { question: 'missing labels' }
+
 describe('retrieval quality benchmark', () => {
+
   it('computes precision, recall, and MRR for gold questions with exact matching', () => {
     const graph = buildTestGraph()
     const questions: GoldQuestion[] = [
@@ -43,6 +48,19 @@ describe('retrieval quality benchmark', () => {
     const report = evaluateRetrievalQuality(graph, questions, 3000)
 
     expect(report.questions[0]!.recall).toBe(0)
+  })
+
+  it('matches normalized shared question labels while preserving original expected labels', () => {
+    const graph = buildTestGraph()
+    const questions: GoldQuestion[] = [
+      { question: 'how does authentication work', expected_labels: ['Auth Module', 'login-handler()'] },
+    ]
+
+    const report = evaluateRetrievalQuality(graph, questions, 3000)
+
+    expect(report.questions[0]!.recall).toBe(1)
+    expect(report.questions[0]!.matched_labels).toEqual(['Auth Module', 'login-handler()'])
+    expect(report.questions[0]!.missing_labels).toEqual([])
   })
 
   it('reports zero recall when no expected labels match', () => {
@@ -75,6 +93,39 @@ describe('retrieval quality benchmark', () => {
     expect(report.avg_precision).toBe(0)
     expect(report.avg_recall).toBe(0)
     expect(report.mrr).toBe(0)
+  })
+
+  it('skips unlabeled shared questions when computing eval metrics', () => {
+    const graph = buildTestGraph()
+    const questions: BenchmarkQuestionSpec[] = [
+      { question: 'how does authentication work', expected_labels: ['authmodule'] },
+      { question: 'benchmark-only prompt', expected_labels: [] },
+      { question: 'missing labels prompt' },
+    ]
+    const report = evaluateRetrievalQuality(
+      graph,
+      questions,
+      3000,
+    )
+
+    expect(report.total_questions).toBe(1)
+    expect(report.skipped_questions).toBe(2)
+    expect(report.questions).toHaveLength(1)
+    expect(report.questions[0]?.question).toBe('how does authentication work')
+  })
+
+  it('reports when unlabeled shared questions were skipped', () => {
+    const graph = buildTestGraph()
+    const report = evaluateRetrievalQuality(
+      graph,
+      [
+        { question: 'how does authentication work', expected_labels: ['authmodule'] },
+        { question: 'benchmark-only prompt' },
+      ],
+      3000,
+    )
+
+    expect(formatQualityReport(report)).toContain('Skipped:      1 unlabeled question(s) missing expected_labels')
   })
 
   it('formatQualityReport returns a string for io.log', () => {
