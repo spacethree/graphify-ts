@@ -26,7 +26,6 @@ export interface RetrieveOptions {
   budget: number
   community?: number
   fileType?: string
-  snippetLoader?: (sourceFile: string, lineNumber: number) => string | null
 }
 
 export interface RetrieveMatchedNode {
@@ -334,9 +333,7 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
       continue
     }
 
-    const snippet = options.snippetLoader
-      ? options.snippetLoader(node.sourceFile, node.lineNumber)
-      : readSnippet(node.sourceFile, node.lineNumber)
+    const snippet = readSnippet(node.sourceFile, node.lineNumber)
     const nodeText = `${node.label} ${node.sourceFile}:${node.lineNumber} ${snippet ?? ''}`
     const nodeTokens = estimateTokens(nodeText)
 

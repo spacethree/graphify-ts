@@ -3079,8 +3079,8 @@ function addReferenceNodeFromText(
   return referenceId
 }
 
-function decodeXmlText(text: string, normalize: (value: string) => string = sanitizeLabel): string {
-  return normalize(
+function decodeXmlText(text: string): string {
+  return sanitizeLabel(
     text
       .replace(/&amp;/g, '&')
       .replace(/&lt;/g, '<')
@@ -3092,11 +3092,11 @@ function decodeXmlText(text: string, normalize: (value: string) => string = sani
   )
 }
 
-function extractCoreMetadata(coreXml: string, normalize: (value: string) => string = sanitizeLabel): Record<string, unknown> {
-  const title = decodeXmlText(coreXml.match(OOXML_TITLE_PATTERN)?.[1] ?? '', normalize)
-  const author = decodeXmlText(coreXml.match(OOXML_CREATOR_PATTERN)?.[1] ?? '', normalize)
-  const subject = decodeXmlText(coreXml.match(OOXML_SUBJECT_PATTERN)?.[1] ?? '', normalize)
-  const description = decodeXmlText(coreXml.match(OOXML_DESCRIPTION_PATTERN)?.[1] ?? '', normalize)
+function extractCoreMetadata(coreXml: string): Record<string, unknown> {
+  const title = decodeXmlText(coreXml.match(OOXML_TITLE_PATTERN)?.[1] ?? '')
+  const author = decodeXmlText(coreXml.match(OOXML_CREATOR_PATTERN)?.[1] ?? '')
+  const subject = decodeXmlText(coreXml.match(OOXML_SUBJECT_PATTERN)?.[1] ?? '')
+  const description = decodeXmlText(coreXml.match(OOXML_DESCRIPTION_PATTERN)?.[1] ?? '')
 
   return {
     ...(title ? { title } : {}),
@@ -3258,7 +3258,7 @@ function isAllowedOfficeEntry(
   return selectedOriginalBytes.value <= maxTotalOriginalBytes
 }
 
-function extractDocxParagraphText(paragraphXml: string, normalize: (value: string) => string = sanitizeLabel): string {
+function extractDocxParagraphText(paragraphXml: string): string {
   let combined = ''
   let runCount = 0
 
@@ -3275,7 +3275,7 @@ function extractDocxParagraphText(paragraphXml: string, normalize: (value: strin
     }
   }
 
-  return decodeXmlText(combined.slice(0, DOCX_MAX_PARAGRAPH_TEXT_CHARS), normalize)
+  return decodeXmlText(combined.slice(0, DOCX_MAX_PARAGRAPH_TEXT_CHARS))
 }
 
 function extractDocxDocument(filePath: string, allowedTargets: ReadonlySet<string>): ExtractionFragment {
@@ -3414,6 +3414,53 @@ function normalizeCompareBaselineTextLine(line: string): string {
   return line.replace(BASELINE_TEXT_CONTROL_CHAR_RE, '')
 }
 
+function decodeCompareBaselineXmlText(text: string): string {
+  return normalizeCompareBaselineTextLine(
+    text
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'")
+      .replace(/\s+/g, ' ')
+      .trim(),
+  )
+}
+
+function extractCompareBaselineCoreMetadata(coreXml: string): Record<string, unknown> {
+  const title = decodeCompareBaselineXmlText(coreXml.match(OOXML_TITLE_PATTERN)?.[1] ?? '')
+  const author = decodeCompareBaselineXmlText(coreXml.match(OOXML_CREATOR_PATTERN)?.[1] ?? '')
+  const subject = decodeCompareBaselineXmlText(coreXml.match(OOXML_SUBJECT_PATTERN)?.[1] ?? '')
+  const description = decodeCompareBaselineXmlText(coreXml.match(OOXML_DESCRIPTION_PATTERN)?.[1] ?? '')
+
+  return {
+    ...(title ? { title } : {}),
+    ...(author ? { author } : {}),
+    ...(subject ? { subject } : {}),
+    ...(description ? { description } : {}),
+  }
+}
+
+function extractCompareBaselineDocxParagraphText(paragraphXml: string): string {
+  let combined = ''
+  let runCount = 0
+
+  for (const match of paragraphXml.matchAll(DOCX_TEXT_PATTERN)) {
+    const fragment = match[1] ?? ''
+    if (!fragment) {
+      continue
+    }
+
+    combined += fragment
+    runCount += 1
+    if (runCount >= DOCX_MAX_TEXT_RUNS_PER_PARAGRAPH || combined.length >= DOCX_MAX_PARAGRAPH_TEXT_CHARS) {
+      break
+    }
+  }
+
+  return decodeCompareBaselineXmlText(combined.slice(0, DOCX_MAX_PARAGRAPH_TEXT_CHARS))
+}
+
 function uniqueNonEmptyLines(lines: string[]): string {
   const seen = new Set<string>()
   const uniqueLines: string[] = []
@@ -3459,7 +3506,7 @@ function extractCompareBaselineDocxText(filePath: string): string {
   const lines: string[] = []
   const coreXmlBytes = archive['docProps/core.xml']
   if (coreXmlBytes && coreXmlBytes.byteLength <= DOCX_MAX_ENTRY_ORIGINAL_BYTES) {
-    const coreMetadata = extractCoreMetadata(strFromU8(coreXmlBytes), normalizeCompareBaselineTextLine)
+    const coreMetadata = extractCompareBaselineCoreMetadata(strFromU8(coreXmlBytes))
     for (const value of [coreMetadata.title, coreMetadata.author, coreMetadata.subject, coreMetadata.description]) {
       if (typeof value === 'string') {
         lines.push(value)
@@ -3484,7 +3531,7 @@ function extractCompareBaselineDocxText(filePath: string): string {
       continue
     }
 
-    const text = extractDocxParagraphText(paragraphXml, normalizeCompareBaselineTextLine)
+    const text = extractCompareBaselineDocxParagraphText(paragraphXml)
     if (text) {
       lines.push(text)
     }
@@ -3500,8 +3547,8 @@ function extractBinaryAsset(filePath: string, fileType: Extract<NonCodeFileType,
   })
 }
 
-function decodePdfLiteral(raw: string, normalize: (value: string) => string = sanitizeLabel): string {
-  return normalize(
+function decodePdfLiteral(raw: string): string {
+  return sanitizeLabel(
     raw
       .replace(/\\([()\\])/g, '$1')
       .replace(/\\r/g, ' ')
@@ -3511,17 +3558,17 @@ function decodePdfLiteral(raw: string, normalize: (value: string) => string = sa
   )
 }
 
-function extractPdfArrayText(raw: string, normalize: (value: string) => string = sanitizeLabel): string {
-  return normalize(
+function extractPdfArrayText(raw: string): string {
+  return sanitizeLabel(
     [...raw.matchAll(/\((?:\\.|[^()\\]){1,2000}\)/g)]
-      .map((match) => decodePdfLiteral(match[0].slice(1, -1), normalize))
+      .map((match) => decodePdfLiteral(match[0].slice(1, -1)))
       .join(' ')
       .replace(/\s+/g, ' ')
       .trim(),
   )
 }
 
-function extractPdfTextOperations(pdfText: string, normalize: (value: string) => string = sanitizeLabel): string[] {
+function extractPdfTextOperations(pdfText: string): string[] {
   const operations: Array<{ index: number; text: string }> = []
   const seenOperations = new Set<string>()
 
@@ -3542,7 +3589,7 @@ function extractPdfTextOperations(pdfText: string, normalize: (value: string) =>
       continue
     }
 
-    const text = decodePdfLiteral(raw.slice(1, endIndex), normalize)
+    const text = decodePdfLiteral(raw.slice(1, endIndex))
     if (!text) {
       continue
     }
@@ -3551,7 +3598,7 @@ function extractPdfTextOperations(pdfText: string, normalize: (value: string) =>
   }
 
   for (const match of pdfText.matchAll(PDF_TEXT_ARRAY_OPERATOR_PATTERN)) {
-    const text = extractPdfArrayText(match[1] ?? '', normalize)
+    const text = extractPdfArrayText(match[1] ?? '')
     if (!text) {
       continue
     }
@@ -3565,7 +3612,7 @@ function extractPdfTextOperations(pdfText: string, normalize: (value: string) =>
       const startIndex = line.indexOf('(')
       const endIndex = line.lastIndexOf(')')
       if (startIndex >= 0 && endIndex > startIndex && /^\)\s*Tj\b/.test(line.slice(endIndex))) {
-        const text = decodePdfLiteral(line.slice(startIndex + 1, endIndex), normalize)
+        const text = decodePdfLiteral(line.slice(startIndex + 1, endIndex))
         if (text) {
           addPdfTextOperation(lineOffset + startIndex, text)
         }
@@ -3661,6 +3708,84 @@ function extractPdfPaper(filePath: string, allowedTargets: ReadonlySet<string>):
   return finalize()
 }
 
+function decodeCompareBaselinePdfLiteral(raw: string): string {
+  return normalizeCompareBaselineTextLine(
+    raw
+      .replace(/\\([()\\])/g, '$1')
+      .replace(/\\r/g, ' ')
+      .replace(/\\n/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim(),
+  )
+}
+
+function extractCompareBaselinePdfArrayText(raw: string): string {
+  return normalizeCompareBaselineTextLine(
+    [...raw.matchAll(/\((?:\\.|[^()\\]){1,2000}\)/g)]
+      .map((match) => decodeCompareBaselinePdfLiteral(match[0].slice(1, -1)))
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim(),
+  )
+}
+
+function extractCompareBaselinePdfTextOperations(pdfText: string): string[] {
+  const operations: Array<{ index: number; text: string }> = []
+  const seenOperations = new Set<string>()
+
+  const addPdfTextOperation = (index: number, text: string): void => {
+    const key = `${index}\u0000${text}`
+    if (seenOperations.has(key)) {
+      return
+    }
+
+    seenOperations.add(key)
+    operations.push({ index, text })
+  }
+
+  for (const match of pdfText.matchAll(PDF_TEXT_OPERATOR_PATTERN)) {
+    const raw = match[0]
+    const endIndex = raw.lastIndexOf(') Tj')
+    if (endIndex <= 0) {
+      continue
+    }
+
+    const text = decodeCompareBaselinePdfLiteral(raw.slice(1, endIndex))
+    if (!text) {
+      continue
+    }
+
+    addPdfTextOperation(match.index ?? operations.length, text)
+  }
+
+  for (const match of pdfText.matchAll(PDF_TEXT_ARRAY_OPERATOR_PATTERN)) {
+    const text = extractCompareBaselinePdfArrayText(match[1] ?? '')
+    if (!text) {
+      continue
+    }
+
+    addPdfTextOperation(match.index ?? operations.length, text)
+  }
+
+  let lineOffset = 0
+  for (const line of pdfText.split('\n')) {
+    if (line.includes('Tj') && line.includes('(') && line.includes(')')) {
+      const startIndex = line.indexOf('(')
+      const endIndex = line.lastIndexOf(')')
+      if (startIndex >= 0 && endIndex > startIndex && /^\)\s*Tj\b/.test(line.slice(endIndex))) {
+        const text = decodeCompareBaselinePdfLiteral(line.slice(startIndex + 1, endIndex))
+        if (text) {
+          addPdfTextOperation(lineOffset + startIndex, text)
+        }
+      }
+    }
+
+    lineOffset += line.length + 1
+  }
+
+  return operations.sort((left, right) => left.index - right.index).map((entry) => entry.text)
+}
+
 function extractCompareBaselinePdfText(filePath: string): string {
   let buffer: Buffer
   try {
@@ -3677,23 +3802,40 @@ function extractCompareBaselinePdfText(filePath: string): string {
 
   const pdfText = buffer.toString('latin1')
   const lines = [
-    decodePdfLiteral(pdfText.match(PDF_METADATA_TITLE_PATTERN)?.[1] ?? '', normalizeCompareBaselineTextLine),
-    decodePdfLiteral(pdfText.match(PDF_METADATA_AUTHOR_PATTERN)?.[1] ?? '', normalizeCompareBaselineTextLine),
-    decodePdfLiteral(pdfText.match(PDF_METADATA_SUBJECT_PATTERN)?.[1] ?? '', normalizeCompareBaselineTextLine),
-    ...extractPdfTextOperations(pdfText, normalizeCompareBaselineTextLine),
+    decodeCompareBaselinePdfLiteral(pdfText.match(PDF_METADATA_TITLE_PATTERN)?.[1] ?? ''),
+    decodeCompareBaselinePdfLiteral(pdfText.match(PDF_METADATA_AUTHOR_PATTERN)?.[1] ?? ''),
+    decodeCompareBaselinePdfLiteral(pdfText.match(PDF_METADATA_SUBJECT_PATTERN)?.[1] ?? ''),
+    ...extractCompareBaselinePdfTextOperations(pdfText),
   ]
   return uniqueNonEmptyLines(lines)
 }
 
-function extractXlsxSharedStringTexts(
-  sharedStringsXml: string,
-  normalize: (value: string) => string = sanitizeLabel,
-): string[] {
+function extractCompareBaselineXlsxSharedStringTexts(sharedStringsXml: string): string[] {
   const texts: string[] = []
   let count = 0
 
   for (const item of sharedStringsXml.matchAll(XLSX_SHARED_STRING_ITEM_PATTERN)) {
-    const text = decodeXmlText([...(item[0] ?? '').matchAll(XLSX_TEXT_PATTERN)].map((match) => match[1] ?? '').join(' '), normalize)
+    const text = decodeCompareBaselineXmlText([...(item[0] ?? '').matchAll(XLSX_TEXT_PATTERN)].map((match) => match[1] ?? '').join(' '))
+    if (!text) {
+      continue
+    }
+
+    texts.push(text)
+    count += 1
+    if (count >= 128) {
+      break
+    }
+  }
+
+  return texts
+}
+
+function extractXlsxSharedStringTexts(sharedStringsXml: string): string[] {
+  const texts: string[] = []
+  let count = 0
+
+  for (const item of sharedStringsXml.matchAll(XLSX_SHARED_STRING_ITEM_PATTERN)) {
+    const text = decodeXmlText([...(item[0] ?? '').matchAll(XLSX_TEXT_PATTERN)].map((match) => match[1] ?? '').join(' '))
     if (!text) {
       continue
     }
@@ -3814,7 +3956,7 @@ function extractCompareBaselineXlsxText(filePath: string): string {
 
   const lines: string[] = []
   const coreXml = archive['docProps/core.xml'] ? strFromU8(archive['docProps/core.xml']!) : ''
-  const coreMetadata = extractCoreMetadata(coreXml, normalizeCompareBaselineTextLine)
+  const coreMetadata = extractCompareBaselineCoreMetadata(coreXml)
   for (const value of [coreMetadata.title, coreMetadata.author, coreMetadata.subject, coreMetadata.description]) {
     if (typeof value === 'string') {
       lines.push(value)
@@ -3825,7 +3967,7 @@ function extractCompareBaselineXlsxText(filePath: string): string {
   if (workbookXmlBytes && workbookXmlBytes.byteLength <= DOCX_MAX_ENTRY_ORIGINAL_BYTES) {
     const workbookXml = strFromU8(workbookXmlBytes)
     for (const match of workbookXml.matchAll(XLSX_SHEET_PATTERN)) {
-      const sheetName = decodeXmlText(match[1] ?? '', normalizeCompareBaselineTextLine)
+      const sheetName = decodeCompareBaselineXmlText(match[1] ?? '')
       if (sheetName) {
         lines.push(sheetName)
       }
@@ -3833,7 +3975,7 @@ function extractCompareBaselineXlsxText(filePath: string): string {
   }
 
   const sharedStringsXml = archive['xl/sharedStrings.xml'] ? strFromU8(archive['xl/sharedStrings.xml']!) : ''
-  return uniqueNonEmptyLines([...lines, ...extractXlsxSharedStringTexts(sharedStringsXml, normalizeCompareBaselineTextLine)])
+  return uniqueNonEmptyLines([...lines, ...extractCompareBaselineXlsxSharedStringTexts(sharedStringsXml)])
 }
 
 export function extractPaper(filePath: string, allowedTargets: ReadonlySet<string>): ExtractionFragment {

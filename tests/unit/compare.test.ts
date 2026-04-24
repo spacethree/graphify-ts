@@ -424,12 +424,12 @@ describe('compare runtime', () => {
     expect(JSON.stringify(savedReport)).not.toContain(execTemplate)
   })
 
-  it('loads graphify snippets relative to the inferred project root instead of the current cwd', () => {
+  it('loads graphify snippets when compare runs from outside the inferred project root', () => {
     const graph = makeGraph()
     writeProjectFiles()
     const graphPath = writeGraphFixture(graph)
     const originalCwd = process.cwd()
-    const alternateCwd = join(PROJECT_FIXTURE_ROOT, 'tools', 'runner')
+    const alternateCwd = resolve('graphify-out', 'test-runtime', 'outside-compare-runner')
     mkdirSync(alternateCwd, { recursive: true })
 
     try {
@@ -445,12 +445,13 @@ describe('compare runtime', () => {
         now: new Date('2026-04-24T19:30:00.000Z'),
       })
 
+      expect(process.cwd()).toBe(alternateCwd)
       const graphifyPrompt = readFileSync(result.reports[0]!.paths.graphify_prompt, 'utf8')
       expect(graphifyPrompt).toContain('createSession(userId) {')
       expect(graphifyPrompt).toContain('return new SessionStore().write(userId)')
     } finally {
       process.chdir(originalCwd)
-      rmSync(join(alternateCwd, 'graphify-out'), { recursive: true, force: true })
+      rmSync(alternateCwd, { recursive: true, force: true })
     }
   })
 
@@ -506,6 +507,90 @@ describe('compare runtime', () => {
       expect(graphifyPrompt).not.toContain('TOP SECRET compare snippet')
     } finally {
       rmSync(outsideSecretPath, { force: true })
+    }
+  })
+
+  it('keeps source-path retrieval matches for outside-root nodes while suppressing snippets', () => {
+    const graph = makeGraph()
+    graph.addNode('outside_archive', {
+      label: 'ArchiveNode',
+      source_file: '../../../vault/private/notes.txt',
+      source_location: 'L1',
+      line_number: 1,
+      node_kind: 'file',
+      file_type: 'code',
+      community: 0,
+    })
+    writeProjectFiles()
+    const outsideNotesPath = resolve(PROJECT_FIXTURE_ROOT, '..', '..', '..', 'vault', 'private', 'notes.txt')
+    mkdirSync(dirname(outsideNotesPath), { recursive: true })
+    writeFileSync(outsideNotesPath, 'PRIVATE snippet should never appear\n', 'utf8')
+    const graphPath = writeGraphFixture(graph)
+
+    try {
+      const result = generateCompareArtifacts({
+        graphPath,
+        question: 'where is private documented',
+        outputDir: COMPARE_OUTPUT_ROOT,
+        execTemplate: 'claude -p "$(cat {prompt_file})"',
+        baselineMode: 'full',
+        now: new Date('2026-04-24T19:30:00.000Z'),
+      })
+
+      const graphifyPrompt = readFileSync(result.reports[0]!.paths.graphify_prompt, 'utf8')
+      expect(graphifyPrompt).toContain('ArchiveNode')
+      expect(graphifyPrompt).not.toContain('PRIVATE snippet should never appear')
+    } finally {
+      rmSync(resolve(PROJECT_FIXTURE_ROOT, '..', '..', '..', 'vault'), { recursive: true, force: true })
+    }
+  })
+
+  it('restores the original outside-root source path when surrogate tokens collide', () => {
+    const graph = makeGraph()
+    graph.addNode('outside_dash', {
+      label: 'ArchiveDash',
+      source_file: '../../../vault/private-notes.txt',
+      source_location: 'L1',
+      line_number: 1,
+      node_kind: 'file',
+      file_type: 'code',
+      community: 0,
+    })
+    graph.addNode('outside_nested', {
+      label: 'ArchiveNested',
+      source_file: '../../../vault/private/notes.txt',
+      source_location: 'L1',
+      line_number: 1,
+      node_kind: 'file',
+      file_type: 'code',
+      community: 0,
+    })
+    writeProjectFiles()
+    const outsideVaultRoot = resolve(PROJECT_FIXTURE_ROOT, '..', '..', '..', 'vault')
+    mkdirSync(dirname(join(outsideVaultRoot, 'private-notes.txt')), { recursive: true })
+    mkdirSync(join(outsideVaultRoot, 'private'), { recursive: true })
+    writeFileSync(join(outsideVaultRoot, 'private-notes.txt'), 'outside dash snippet\n', 'utf8')
+    writeFileSync(join(outsideVaultRoot, 'private', 'notes.txt'), 'outside nested snippet\n', 'utf8')
+    const graphPath = writeGraphFixture(graph)
+
+    try {
+      const result = generateCompareArtifacts({
+        graphPath,
+        question: 'where are the private notes',
+        outputDir: COMPARE_OUTPUT_ROOT,
+        execTemplate: 'claude -p "$(cat {prompt_file})"',
+        baselineMode: 'full',
+        retrievalBudget: 80,
+        now: new Date('2026-04-24T19:30:00.000Z'),
+      })
+
+      const graphifyPrompt = readFileSync(result.reports[0]!.paths.graphify_prompt, 'utf8')
+      expect(graphifyPrompt).toContain('ArchiveDash @ ../../../vault/private-notes.txt:1')
+      expect(graphifyPrompt).toContain('ArchiveNested @ ../../../vault/private/notes.txt:1')
+      expect(graphifyPrompt).not.toContain('outside dash snippet')
+      expect(graphifyPrompt).not.toContain('outside nested snippet')
+    } finally {
+      rmSync(outsideVaultRoot, { recursive: true, force: true })
     }
   })
 

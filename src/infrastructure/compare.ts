@@ -5,7 +5,7 @@ import { KnowledgeGraph } from '../contracts/graph.js'
 import { CODE_EXTENSIONS, DOC_EXTENSIONS, MANIFEST_METADATA_KEY, OFFICE_EXTENSIONS, PAPER_EXTENSIONS } from '../pipeline/detect.js'
 import { extractCompareBaselineNonCodeText } from '../pipeline/extract/non-code.js'
 import { loadBenchmarkQuestions } from './benchmark/questions.js'
-import { retrieveContext, type RetrieveResult } from '../runtime/retrieve.js'
+import { retrieveContext, tokenizeLabel, type RetrieveResult } from '../runtime/retrieve.js'
 import { QUERY_CHARS_PER_TOKEN, estimateQueryTokens, loadGraph } from '../runtime/serve.js'
 import { sidecarAwareFileFingerprint } from '../shared/binary-ingest-sidecar.js'
 import { MAX_TEXT_BYTES, validateGraphOutputPath, validateGraphPath } from '../shared/security.js'
@@ -89,8 +89,6 @@ export interface GenerateCompareArtifactsResult {
 const DEFAULT_RETRIEVAL_BUDGET = 3_000
 const DEFAULT_BOUNDED_BASELINE_TOKENS = 4_000
 const EXEC_TEMPLATE_PLACEHOLDER_PATTERN = /\{[a-z_][a-z0-9_]*\}/gi
-const COMPARE_SNIPPET_HALF_WINDOW = 7
-const MAX_COMPARE_SNIPPET_LINE_LENGTH = 200
 
 function timestampDirectoryName(date: Date): string {
   const iso = date.toISOString()
@@ -283,29 +281,56 @@ function resolveCompareSnippetPath(sourceFile: string, projectRoot: string): str
   return null
 }
 
-function readCompareSnippet(sourceFile: string, lineNumber: number, projectRoot: string): string | null {
-  if (!sourceFile || lineNumber <= 0) {
-    return null
-  }
+function createCompareRetrievalGraph(
+  graph: KnowledgeGraph,
+  projectRoot: string,
+): { graph: KnowledgeGraph; originalSourceFiles: Map<string, string> } {
+  const retrievalGraph = new KnowledgeGraph(graph.isDirected())
+  Object.assign(retrievalGraph.graph, graph.graph)
 
-  try {
-    const snippetPath = resolveCompareSnippetPath(sourceFile, projectRoot)
-    if (!snippetPath || !existsSync(snippetPath)) {
-      return null
+  const originalSourceFiles = new Map<string, string>()
+  let outsideSourceIndex = 0
+  for (const [id, attributes] of graph.nodeEntries()) {
+    const sourceFile = String(attributes.source_file ?? '')
+    const safeSourceFileTokens = tokenizeLabel(sourceFile)
+    const retrievalSourceFile =
+      sourceFile.length > 0 && resolveCompareSnippetPath(sourceFile, projectRoot) === null
+        ? `__compare_outside__/${
+            safeSourceFileTokens.length > 0 ? safeSourceFileTokens.join('/') : 'source'
+          }%${outsideSourceIndex}`
+        : sourceFile
+    if (retrievalSourceFile !== sourceFile) {
+      outsideSourceIndex += 1
     }
 
-    const content = readFileSync(snippetPath, 'utf8')
-    const lines = content.split(/\r?\n/)
-    const zeroIndex = lineNumber - 1
-    const start = Math.max(0, zeroIndex - COMPARE_SNIPPET_HALF_WINDOW)
-    const end = Math.min(lines.length, zeroIndex + COMPARE_SNIPPET_HALF_WINDOW + 1)
+    retrievalGraph.addNode(id, {
+      ...attributes,
+      ...(retrievalSourceFile !== sourceFile ? { source_file: retrievalSourceFile } : {}),
+    })
+    if (retrievalSourceFile !== sourceFile) {
+      originalSourceFiles.set(retrievalSourceFile, sourceFile)
+    }
+  }
 
-    return lines
-      .slice(start, end)
-      .map((line) => (line.length > MAX_COMPARE_SNIPPET_LINE_LENGTH ? `${line.slice(0, MAX_COMPARE_SNIPPET_LINE_LENGTH)}...` : line))
-      .join('\n')
-  } catch {
-    return null
+  for (const [source, target, attributes] of graph.edgeEntries()) {
+    retrievalGraph.addEdge(source, target, attributes)
+  }
+
+  return { graph: retrievalGraph, originalSourceFiles }
+}
+
+function retrieveCompareContext(graph: KnowledgeGraph, question: string, budget: number, projectRoot: string): RetrieveResult {
+  const { graph: retrievalGraph, originalSourceFiles } = createCompareRetrievalGraph(graph, projectRoot)
+  const originalCwd = process.cwd()
+  try {
+    process.chdir(projectRoot)
+    const retrieval = retrieveContext(retrievalGraph, { question, budget })
+    for (const matchedNode of retrieval.matched_nodes) {
+      matchedNode.source_file = originalSourceFiles.get(matchedNode.source_file) ?? matchedNode.source_file
+    }
+    return retrieval
+  } finally {
+    process.chdir(originalCwd)
   }
 }
 
@@ -479,11 +504,7 @@ export function generateCompareArtifacts(input: GenerateCompareArtifactsInput): 
     })
     const projectRoot = realpathSync(inferProjectRootFromGraphPath(graphPath))
     const retrievalBudget = input.retrievalBudget ?? DEFAULT_RETRIEVAL_BUDGET
-    const retrieval = retrieveContext(graph, {
-      question,
-      budget: retrievalBudget,
-      snippetLoader: (sourceFile, lineNumber) => readCompareSnippet(sourceFile, lineNumber, projectRoot),
-    })
+    const retrieval = retrieveCompareContext(graph, question, retrievalBudget, projectRoot)
     const graphifyPrompt = buildGraphifyPromptPack({ question, retrieval })
 
     const paths: ComparePromptArtifactPaths = {
