@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs'
 
-import { type BenchmarkResult, printBenchmark, runBenchmark } from '../infrastructure/benchmark.js'
+import { loadBenchmarkQuestions, type BenchmarkResult, printBenchmark, runBenchmark } from '../infrastructure/benchmark.js'
 import { evaluateRetrievalQuality, formatQualityReport } from '../infrastructure/benchmark/quality.js'
 import { federate } from '../pipeline/federate.js'
 import { generateGraph, type GenerateGraphResult, type ProgressStep } from '../infrastructure/generate.js'
@@ -181,7 +181,9 @@ export function formatHelp(binaryName = 'graphify-ts'): string {
     '    --nodes N1 N2 ...     source node labels cited in the answer',
     '    --memory-dir DIR      memory directory (default graphify-out/memory)',
     '  benchmark [graph.json] measure token reduction, question coverage, and structure signals',
+    '    --questions PATH     load benchmark/eval questions from a JSON file',
     '  eval [graph.json]      measure retrieval quality: recall and MRR',
+    '    --questions PATH     load benchmark/eval questions from a JSON file',
     '  install [--platform P] install the platform skill or local graphify config',
     '    platforms            claude|windows|gemini|cursor|codex|opencode|aider|claw|droid|trae|trae-cn|copilot',
     '  hook <action>          manage git hooks for graphify rebuild reminders',
@@ -516,15 +518,17 @@ export async function executeCli(argv: string[], io: CliIO = console, dependenci
 
     if (command === 'benchmark') {
       const options = parseBenchmarkArgs(args)
-      const result = dependencies.runBenchmark(options.graphPath)
+      const questions = options.questionsPath ? loadBenchmarkQuestions(options.questionsPath) : undefined
+      const result = dependencies.runBenchmark(options.graphPath, undefined, questions)
       dependencies.printBenchmark(result)
       return 0
     }
 
     if (command === 'eval') {
-      const graphPath = args[0] ?? 'graphify-out/graph.json'
-      const graph = dependencies.loadGraph(graphPath)
-      const report = evaluateRetrievalQuality(graph)
+      const options = parseBenchmarkArgs(args, 'eval')
+      const graph = dependencies.loadGraph(options.graphPath)
+      const questions = options.questionsPath ? loadBenchmarkQuestions(options.questionsPath) : undefined
+      const report = evaluateRetrievalQuality(graph, questions, 3000, { graphPath: options.graphPath })
       io.log(formatQualityReport(report))
       return 0
     }

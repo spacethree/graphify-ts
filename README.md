@@ -50,6 +50,22 @@ graphify-out/
 └── cache/           content-addressed extraction cache
 ```
 
+## 3-command proof (demo workspace)
+
+This repo includes a tiny checked-in workspace at `examples/demo-repo/` plus a labeled question set. From the repo root, run `npm install && npm run build` once, then:
+
+```bash
+node dist/src/cli/bin.js generate examples/demo-repo --no-html
+node dist/src/cli/bin.js benchmark examples/demo-repo/graphify-out/graph.json --questions examples/demo-repo/benchmark-questions.json
+node dist/src/cli/bin.js eval examples/demo-repo/graphify-out/graph.json --questions examples/demo-repo/benchmark-questions.json
+```
+
+Outputs land in `examples/demo-repo/graphify-out/`, which is ignored so you can rerun the demo without polluting git status.
+
+- `benchmark` proves the graph is cheaper to query than reading the corpus naively, while still covering the labeled demo questions and their expected evidence. On the checked-in demo repo you should see `Question coverage: 5/5 matched`, `Expected evidence: 17/17 labels found`, and about `1.7x` fewer tokens per query.
+- `eval` proves retrieval quality on the same labeled questions: recall plus ranking quality (MRR). On the checked-in demo repo you should see `Recall: 100.0%`, `MRR: 1.000`, and about `2.7x` fewer tokens at query time.
+- The demo repo is intentionally tiny, so these ratios are lower than the production benchmark below. The point is that the proof is fully reproducible from this repo.
+
 ## MCP Tools for AI Agents
 
 When an agent connects via `graphify-ts serve --stdio`, it gets these tools:

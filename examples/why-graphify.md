@@ -111,7 +111,24 @@ Merges graphs, infers cross-repo edges from shared types, and all MCP tools work
 | API keys required | **0** |
 | Cloud services required | **0** |
 
-## How to Run These Benchmarks
+## Reproducible Demo Proof (in this repo)
+
+The production numbers above come from GoValidate. This repo also ships a tiny checked-in proof kit at `examples/demo-repo/` so anyone can reproduce the workflow end-to-end. From the repo root, run `npm install && npm run build` once, then:
+
+```bash
+node dist/src/cli/bin.js generate examples/demo-repo --no-html
+node dist/src/cli/bin.js benchmark examples/demo-repo/graphify-out/graph.json --questions examples/demo-repo/benchmark-questions.json
+node dist/src/cli/bin.js eval examples/demo-repo/graphify-out/graph.json --questions examples/demo-repo/benchmark-questions.json
+```
+
+What each command proves:
+
+- `benchmark` proves token reduction, question coverage, expected-evidence coverage, and structure-signal reporting on a known question set. On the checked-in demo repo it should report `Question coverage: 5/5 matched`, `Expected evidence: 17/17 labels found`, and roughly `1.7x` fewer tokens per query.
+- `eval` proves retrieval quality on that same labeled question set: recall plus ranking quality (MRR). On the checked-in demo repo it should report `Recall: 100.0%`, `MRR: 1.000`, and roughly `2.7x` fewer tokens at query time.
+
+The demo repo is intentionally tiny, so its token-reduction numbers are modest. It exists to make the flow reproducible, not to maximize the headline ratio. Demo outputs land in `examples/demo-repo/graphify-out/`, which is ignored so you can rerun the flow locally without polluting git status.
+
+## Run It on Your Own Codebase
 
 ```bash
 # Install
@@ -122,6 +139,9 @@ graphify-ts generate .
 
 # Run the built-in benchmark
 graphify-ts benchmark graphify-out/graph.json
+
+# If you have a labeled question set, also measure recall + MRR
+graphify-ts eval graphify-out/graph.json --questions benchmark-questions.json
 
 # Set up your AI agent
 graphify-ts claude install    # writes .mcp.json with MCP server

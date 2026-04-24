@@ -58,6 +58,7 @@ function createDependencies(): CliDependencies {
     runBenchmark: (graphPath) => ({
       corpus_tokens: 1000,
       corpus_words: 750,
+      corpus_source: 'manifest',
       nodes: 10,
       edges: 20,
       structure_signals: {
@@ -271,9 +272,19 @@ describe('cli parser', () => {
   })
 
   it('parses benchmark args', () => {
-    expect(parseBenchmarkArgs([])).toEqual({ graphPath: 'graphify-out/graph.json' })
-    expect(parseBenchmarkArgs(['custom.json'])).toEqual({ graphPath: 'custom.json' })
+    expect(parseBenchmarkArgs([])).toEqual({ graphPath: 'graphify-out/graph.json', questionsPath: null })
+    expect(parseBenchmarkArgs(['custom.json'])).toEqual({ graphPath: 'custom.json', questionsPath: null })
+    expect(parseBenchmarkArgs(['custom.json', '--questions', 'tests/fixtures/workspace-parity-questions.json'])).toEqual({
+      graphPath: 'custom.json',
+      questionsPath: 'tests/fixtures/workspace-parity-questions.json',
+    })
+    expect(parseBenchmarkArgs(['--questions=tests/fixtures/workspace-parity-questions.json'])).toEqual({
+      graphPath: 'graphify-out/graph.json',
+      questionsPath: 'tests/fixtures/workspace-parity-questions.json',
+    })
     expect(() => parseBenchmarkArgs(['one.json', 'two.json'])).toThrow('Usage: graphify-ts benchmark')
+    expect(() => parseBenchmarkArgs(['--questions', '--wat'])).toThrow('error: --questions requires a value')
+    expect(() => parseBenchmarkArgs(['custom.json', '--wat'])).toThrow('error: unknown option for benchmark: --wat')
   })
 
   it('parses generate args', () => {
@@ -469,6 +480,7 @@ describe('cli main', () => {
     expect(help).toContain('add <url> [path]')
     expect(help).toContain('save-result')
     expect(help).toContain('benchmark [graph.json]')
+    expect(help).toContain('--questions PATH')
     expect(help).toContain('question coverage')
     expect(help).toContain('hook <action>')
     expect(help).toContain('install [--platform P]')
@@ -680,29 +692,47 @@ describe('cli main', () => {
     expect(logs[0]).toBe(`Saved to ${resolve('graphify-out/mem')}/Q.md`)
   })
 
-  it('executes benchmark commands via injected dependencies', async () => {
+  it('executes benchmark commands with question files via injected dependencies', async () => {
     const { io } = createIo()
     let printed = false
+    let capturedQuestions: unknown
     const dependencies = createDependencies()
+    dependencies.runBenchmark = (graphPath, _corpusWords, questions) => {
+      capturedQuestions = questions
+      return createDependencies().runBenchmark(graphPath)
+    }
     dependencies.printBenchmark = () => {
       printed = true
     }
 
-    const exitCode = await executeCli(['benchmark', 'graph.json'], io, dependencies)
+    const exitCode = await executeCli(
+      ['benchmark', 'graph.json', '--questions', resolve('tests/fixtures/workspace-parity-questions.json')],
+      io,
+      dependencies,
+    )
 
     expect(exitCode).toBe(0)
     expect(printed).toBe(true)
+    expect(capturedQuestions).toEqual([
+      { question: 'create session login', expected_labels: ['default()', 'loginUser()', '.login()'] },
+      { question: 'login user session', expected_labels: ['loginUser()', 'default()', 'session.ts'] },
+      { question: 'shared auth helper', expected_labels: ['default()', 'auth.ts', 'index.ts'] },
+      { question: 'reindex workspace', expected_labels: ['reindexWorkspace()', 'jobs.ts'] },
+      { question: 'workspace architecture docs', expected_labels: ['Workspace Architecture', 'architecture.md'] },
+      { question: 'billing flow', expected_labels: [] },
+    ])
   })
 
-  it('executes eval command and routes output through io.log', async () => {
+  it('executes eval command with question files and routes output through io.log', async () => {
     const { io, logs } = createIo()
     const dependencies = createDependencies()
 
-    const exitCode = await executeCli(['eval'], io, dependencies)
+    const exitCode = await executeCli(['eval', '--questions', resolve('tests/fixtures/workspace-parity-questions.json')], io, dependencies)
 
     expect(exitCode).toBe(0)
     expect(logs.some((line) => line.includes('retrieval quality benchmark'))).toBe(true)
     expect(logs.some((line) => line.includes('Recall:'))).toBe(true)
+    expect(logs.some((line) => line.includes('create session login'))).toBe(true)
   })
 
   it('executes hook commands via injected dependencies', async () => {

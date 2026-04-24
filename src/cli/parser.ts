@@ -56,6 +56,7 @@ export interface SaveResultCliOptions {
 
 export interface BenchmarkCliOptions {
   graphPath: string
+  questionsPath: string | null
 }
 
 export interface GenerateCliOptions {
@@ -121,6 +122,14 @@ function requireNonEmptyValue(flag: string, value: string | undefined): string {
     throw new UsageError(`error: ${flag} requires a value`)
   }
   return value
+}
+
+function requireOptionValue(flag: string, value: string | undefined): string {
+  const required = requireNonEmptyValue(flag, value)
+  if (required.startsWith('--')) {
+    throw new UsageError(`error: ${flag} requires a value`)
+  }
+  return required
 }
 
 function parsePositiveInteger(flag: string, value: string): number {
@@ -531,16 +540,40 @@ export function parseSaveResultArgs(args: string[]): SaveResultCliOptions {
   return { question, answer, queryType, sourceNodes, memoryDir }
 }
 
-export function parseBenchmarkArgs(args: string[]): BenchmarkCliOptions {
-  if (args.length === 0) {
-    return { graphPath: 'graphify-out/graph.json' }
+export function parseBenchmarkArgs(args: string[], commandName = 'benchmark'): BenchmarkCliOptions {
+  let graphPath = 'graphify-out/graph.json'
+  let questionsPath: string | null = null
+
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index]
+    if (!argument) {
+      continue
+    }
+
+    if (!argument.startsWith('--')) {
+      if (graphPath !== 'graphify-out/graph.json') {
+        throw new UsageError(`Usage: graphify-ts ${commandName} [graph.json] [--questions PATH]`)
+      }
+      graphPath = requireNonEmptyValue('graph path', argument)
+      continue
+    }
+
+    if (argument === '--questions') {
+      questionsPath = requireOptionValue('--questions', args[index + 1])
+      index += 1
+      continue
+    }
+
+    if (argument.startsWith('--questions=')) {
+      const [, value] = argument.split('=', 2)
+      questionsPath = requireNonEmptyValue('--questions', value)
+      continue
+    }
+
+    throw new UsageError(`error: unknown option for ${commandName}: ${argument}`)
   }
 
-  if (args.length > 1 || args[0]?.startsWith('--')) {
-    throw new UsageError('Usage: graphify-ts benchmark [graph.json]')
-  }
-
-  return { graphPath: requireNonEmptyValue('graph path', args[0]) }
+  return { graphPath, questionsPath }
 }
 
 export function parseGenerateArgs(args: string[]): GenerateCliOptions {
