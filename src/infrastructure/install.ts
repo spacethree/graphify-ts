@@ -91,15 +91,36 @@ const PLATFORM_CONFIG: Record<SkillInstallPlatform, InstallPlatformConfig> = {
   },
 }
 
+// Cross-platform hook: base64-encodes JSON payloads so the node -e command has
+// zero special shell characters. Works on macOS, Linux, and Windows (PowerShell/CMD).
+function hookCommand(payloadJson: string): string {
+  const b64 = Buffer.from(payloadJson).toString('base64')
+  return `node -e "try{require('fs').accessSync('graphify-out/graph.json');process.stdout.write(Buffer.from('${b64}','base64').toString())}catch(e){}"`
+}
+
+function hookCommandWithFallback(matchJson: string, missJson: string): string {
+  const b64Match = Buffer.from(matchJson).toString('base64')
+  const b64Miss = Buffer.from(missJson).toString('base64')
+  return `node -e "var f;try{require('fs').accessSync('graphify-out/graph.json');f='${b64Match}'}catch(e){f='${b64Miss}'}process.stdout.write(Buffer.from(f,'base64').toString())"`
+}
+
+const RETRIEVE_FIRST_MESSAGE =
+  'STOP. This project has a graphify-ts knowledge graph. You MUST call the retrieve MCP tool FIRST with your question before using Glob, Grep, Bash, Read, or Agent tools for codebase questions. The graph has 384x better token efficiency than raw file exploration. Only fall back to raw files if retrieve returns no results.'
+
 const SETTINGS_HOOK = {
   // SECURITY: Keep this command static. Do not interpolate user-controlled input here.
-  matcher: 'Glob|Grep',
+  matcher: 'Glob|Grep|Bash|Agent|Read',
   hooks: [
     {
       type: 'command',
-      command:
-        `[ -f graphify-out/graph.json ] && ` +
-        `echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"graphify-ts: Knowledge graph exists. Use the retrieve MCP tool for codebase questions, or read graphify-out/GRAPH_REPORT.md for god nodes and community structure."}}' || true`,
+      command: hookCommand(
+        JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            additionalContext: RETRIEVE_FIRST_MESSAGE,
+          },
+        }),
+      ),
     },
   ],
 }
@@ -113,9 +134,15 @@ const CODEX_HOOK = {
         hooks: [
           {
             type: 'command',
-            command:
-              `[ -f graphify-out/graph.json ] && ` +
-              `echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"},"systemMessage":"graphify-ts: Knowledge graph exists. Use the retrieve MCP tool for codebase questions, or read graphify-out/GRAPH_REPORT.md for god nodes and community structure."}' || true`,
+            command: hookCommand(
+              JSON.stringify({
+                hookSpecificOutput: {
+                  hookEventName: 'PreToolUse',
+                  permissionDecision: 'allow',
+                },
+                systemMessage: RETRIEVE_FIRST_MESSAGE,
+              }),
+            ),
           },
         ],
       },
@@ -125,14 +152,17 @@ const CODEX_HOOK = {
 
 const GEMINI_HOOK = {
   // SECURITY: Keep this command static. Do not interpolate user-controlled input here.
-  matcher: 'read_file|list_directory',
+  matcher: 'read_file|list_directory|search_for_pattern',
   hooks: [
     {
       type: 'command',
-      command:
-        `[ -f graphify-out/graph.json ] && ` +
-        `echo '{"decision":"allow","additionalContext":"graphify-ts: Knowledge graph exists. Use the retrieve MCP tool for codebase questions, or read graphify-out/GRAPH_REPORT.md for god nodes and community structure."}' || ` +
-        `echo '{"decision":"allow"}'`,
+      command: hookCommandWithFallback(
+        JSON.stringify({
+          decision: 'allow',
+          additionalContext: RETRIEVE_FIRST_MESSAGE,
+        }),
+        JSON.stringify({ decision: 'allow' }),
+      ),
     },
   ],
 }
@@ -144,35 +174,30 @@ const SKILL_REGISTRATION =
 
 const CLAUDE_MD_SECTION = `${SECTION_MARKER}
 
-This project has a graphify-ts knowledge graph at graphify-out/.
+IMPORTANT: This project has a graphify-ts knowledge graph. You MUST follow these rules:
 
-Rules:
-- When answering codebase questions, use the \`retrieve\` MCP tool (via graphify-ts serve --stdio) with a question and token budget to get relevant nodes, code snippets, relationships, and structural signals. Fall back to reading graphify-out/GRAPH_REPORT.md if the MCP server is not available.
-- If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
-- Use only Node.js / TypeScript tooling in this repository. Do not install or invoke Python, pip, a legacy Python package, or a deleted reference checkout.
-- After modifying code files in this session, refresh graph artifacts with this repository's TypeScript graphify-ts workflow only.
+1. **BEFORE answering ANY codebase question**, call the \`retrieve\` MCP tool with your question and a token budget (default 3000). Do NOT use Glob, Grep, Bash, Read, or dispatch Agent/Explore subagents to search the codebase until you have called retrieve first.
+2. **Only fall back to raw file tools** if retrieve returns no relevant results or the MCP server is unavailable. In that case, read graphify-out/GRAPH_REPORT.md first.
+3. **For impact analysis** ("what breaks if I change X?"), use the \`impact\` MCP tool.
+4. **Do NOT dispatch Explore or research agents** for codebase questions — the knowledge graph already has the structural context they would spend tokens discovering.
 `
 
 const AGENTS_MD_SECTION = `${SECTION_MARKER}
 
-This project has a graphify-ts knowledge graph at graphify-out/.
+IMPORTANT: This project has a graphify-ts knowledge graph. You MUST follow these rules:
 
-Rules:
-- When answering codebase questions, use the \`retrieve\` MCP tool (via graphify-ts serve --stdio) with a question and token budget to get relevant nodes, code snippets, relationships, and structural signals. Fall back to reading graphify-out/GRAPH_REPORT.md if the MCP server is not available.
-- If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
-- Use only Node.js / TypeScript tooling in this repository. Do not install or invoke Python, pip, a legacy Python package, or a deleted reference checkout.
-- After modifying code files in this session, refresh graph artifacts with this repository's TypeScript graphify-ts workflow only.
+1. **BEFORE answering ANY codebase question**, call the \`retrieve\` MCP tool with your question and a token budget (default 3000). Do NOT search the codebase with other tools until you have called retrieve first.
+2. **Only fall back to raw file tools** if retrieve returns no relevant results or the MCP server is unavailable. In that case, read graphify-out/GRAPH_REPORT.md first.
+3. **For impact analysis** ("what breaks if I change X?"), use the \`impact\` MCP tool.
 `
 
 const GEMINI_MD_SECTION = `${SECTION_MARKER}
 
-This project has a graphify-ts knowledge graph at graphify-out/.
+IMPORTANT: This project has a graphify-ts knowledge graph. You MUST follow these rules:
 
-Rules:
-- When answering codebase questions, use the \`retrieve\` MCP tool (via graphify-ts serve --stdio) with a question and token budget to get relevant nodes, code snippets, relationships, and structural signals. Fall back to reading graphify-out/GRAPH_REPORT.md if the MCP server is not available.
-- If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
-- Use only Node.js / TypeScript tooling in this repository. Do not install or invoke Python, pip, a legacy Python package, or a deleted reference checkout.
-- After modifying code files in this session, refresh graph artifacts with this repository's TypeScript graphify-ts workflow only.
+1. **BEFORE answering ANY codebase question**, call the \`retrieve\` MCP tool with your question and a token budget (default 3000). Do NOT search the codebase with other tools until you have called retrieve first.
+2. **Only fall back to raw file tools** if retrieve returns no relevant results or the MCP server is unavailable. In that case, read graphify-out/GRAPH_REPORT.md first.
+3. **For impact analysis** ("what breaks if I change X?"), use the \`impact\` MCP tool.
 `
 
 const SKILL_REGISTRATION_MARKER = '- **graphify-ts**'
@@ -205,16 +230,15 @@ export const GraphifyPlugin = async ({ directory }) => {
 `
 
 const CURSOR_RULE = `---
-description: graphify-ts knowledge graph context
+description: graphify-ts knowledge graph — MUST use retrieve MCP tool before searching files
 alwaysApply: true
 ---
 
-This project has a graphify-ts knowledge graph at graphify-out/.
+IMPORTANT: This project has a graphify-ts knowledge graph.
 
-- When answering codebase questions, use the \`retrieve\` MCP tool (via graphify-ts serve --stdio) with a question and token budget to get relevant nodes, code snippets, relationships, and structural signals. Fall back to reading graphify-out/GRAPH_REPORT.md if the MCP server is not available.
-- If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
-- Use only Node.js / TypeScript tooling in this repository. Do not install or invoke Python, pip, a legacy Python package, or a deleted reference checkout.
-- After modifying code files in this session, refresh graph artifacts with this repository's TypeScript graphify-ts workflow only.
+1. **BEFORE answering ANY codebase question**, call the \`retrieve\` MCP tool with your question and a token budget (default 3000). Do NOT search the codebase with other tools until you have called retrieve first.
+2. **Only fall back to raw file tools** if retrieve returns no relevant results or the MCP server is unavailable. In that case, read graphify-out/GRAPH_REPORT.md first.
+3. **For impact analysis** ("what breaks if I change X?"), use the \`impact\` MCP tool.
 `
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -491,7 +515,7 @@ function installClaudeHook(projectDir: string): string {
   const hooks = ensureRecord(settings, 'hooks')
   const preToolUse = ensureArray(hooks, 'PreToolUse')
 
-  const existingIndex = preToolUse.findIndex((hook) => isRecord(hook) && hook.matcher === 'Glob|Grep' && JSON.stringify(hook).includes(SKILL_SLUG))
+  const existingIndex = preToolUse.findIndex((hook) => isRecord(hook) && JSON.stringify(hook).includes('graphify-out'))
   if (existingIndex >= 0) {
     preToolUse[existingIndex] = SETTINGS_HOOK
     writeJson(settingsPath, settings)
@@ -512,7 +536,7 @@ function uninstallClaudeHook(projectDir: string): string | undefined {
   const settings = readJsonObject(settingsPath)
   const hooks = ensureRecord(settings, 'hooks')
   const preToolUse = ensureArray(hooks, 'PreToolUse')
-  const filtered = preToolUse.filter((hook) => !(isRecord(hook) && hook.matcher === 'Glob|Grep' && JSON.stringify(hook).includes(SKILL_SLUG)))
+  const filtered = preToolUse.filter((hook) => !(isRecord(hook) && JSON.stringify(hook).includes('graphify-out')))
 
   if (filtered.length === preToolUse.length) {
     return undefined
@@ -529,7 +553,7 @@ function installGeminiHook(projectDir: string): string {
   const hooks = ensureRecord(settings, 'hooks')
   const beforeTool = ensureArray(hooks, 'BeforeTool')
 
-  if (beforeTool.some((hook) => JSON.stringify(hook).includes(SKILL_SLUG))) {
+  if (beforeTool.some((hook) => JSON.stringify(hook).includes('graphify-out'))) {
     return '.gemini/settings.json -> BeforeTool hook already registered (no change)'
   }
 
@@ -547,7 +571,7 @@ function uninstallGeminiHook(projectDir: string): string | undefined {
   const settings = readJsonObject(settingsPath)
   const hooks = ensureRecord(settings, 'hooks')
   const beforeTool = ensureArray(hooks, 'BeforeTool')
-  const filtered = beforeTool.filter((hook) => !JSON.stringify(hook).includes(SKILL_SLUG))
+  const filtered = beforeTool.filter((hook) => !JSON.stringify(hook).includes('graphify-out'))
 
   if (filtered.length === beforeTool.length) {
     return undefined
@@ -564,7 +588,7 @@ function installCodexHook(projectDir: string): string {
   const hooks = ensureRecord(hooksConfig, 'hooks')
   const preToolUse = ensureArray(hooks, 'PreToolUse')
 
-  if (preToolUse.some((hook) => JSON.stringify(hook).includes(SKILL_SLUG))) {
+  if (preToolUse.some((hook) => JSON.stringify(hook).includes('graphify-out'))) {
     return '.codex/hooks.json -> hook already registered (no change)'
   }
 
@@ -583,7 +607,7 @@ function uninstallCodexHook(projectDir: string): string | undefined {
   const hooksConfig = readJsonObject(hooksPath)
   const hooks = ensureRecord(hooksConfig, 'hooks')
   const preToolUse = ensureArray(hooks, 'PreToolUse')
-  const filtered = preToolUse.filter((hook) => !JSON.stringify(hook).includes(SKILL_SLUG))
+  const filtered = preToolUse.filter((hook) => !JSON.stringify(hook).includes('graphify-out'))
 
   if (filtered.length === preToolUse.length) {
     return undefined
@@ -812,7 +836,7 @@ export function cursorUninstall(projectDir = '.'): string {
 export function claudeInstall(projectDir = '.'): string {
   const resolvedProjectDir = resolve(projectDir)
   const messages = [writeSection(join(resolvedProjectDir, 'CLAUDE.md'), CLAUDE_MD_SECTION), installClaudeHook(resolvedProjectDir), installMcpServer(resolvedProjectDir)]
-  messages.push('', 'Claude Code will now use the retrieve MCP tool for codebase questions', 'and check the knowledge graph before searching raw files.')
+  messages.push('', 'Claude Code will now call the retrieve MCP tool BEFORE', 'searching raw files for any codebase question.')
   return messages.join('\n')
 }
 
