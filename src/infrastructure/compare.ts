@@ -39,10 +39,16 @@ export interface ComparePromptArtifactPaths {
   report: string
 }
 
+export interface CompareExecCommandSummary {
+  command: string | null
+  placeholders: string[]
+  redacted: true
+}
+
 export interface ComparePromptReport {
   question: string
   graph_path: string
-  exec_command: string
+  exec_command: CompareExecCommandSummary
   baseline_mode: CompareBaselineMode
   baseline_prompt_tokens: number
   graphify_prompt_tokens: number
@@ -82,9 +88,21 @@ export interface GenerateCompareArtifactsResult {
 
 const DEFAULT_RETRIEVAL_BUDGET = 3_000
 const DEFAULT_BOUNDED_BASELINE_TOKENS = 4_000
+const EXEC_TEMPLATE_PLACEHOLDER_PATTERN = /\{[a-z_][a-z0-9_]*\}/gi
+
 function timestampDirectoryName(date: Date): string {
   const iso = date.toISOString()
   return iso.slice(0, 19).replace(/:/g, '-')
+}
+
+function summarizeExecTemplate(execTemplate: string): CompareExecCommandSummary {
+  const placeholders = [...execTemplate.matchAll(EXEC_TEMPLATE_PLACEHOLDER_PATTERN)].map((match) => match[0])
+
+  return {
+    command: null,
+    placeholders: [...new Set(placeholders)],
+    redacted: true,
+  }
 }
 
 function createCompareOutputRoot(outputDir: string, date: Date): string {
@@ -401,6 +419,7 @@ export function generateCompareArtifacts(input: GenerateCompareArtifactsInput): 
     const retrieval = retrieveContext(graph, {
       question,
       budget: input.retrievalBudget ?? DEFAULT_RETRIEVAL_BUDGET,
+      snippetRoot: inferProjectRootFromGraphPath(graphPath),
     })
     const graphifyPrompt = buildGraphifyPromptPack({ question, retrieval })
 
@@ -423,7 +442,7 @@ export function generateCompareArtifacts(input: GenerateCompareArtifactsInput): 
     const report: ComparePromptReport = {
       question,
       graph_path: graphPath,
-      exec_command: input.execTemplate,
+      exec_command: summarizeExecTemplate(input.execTemplate),
       baseline_mode: input.baselineMode,
       baseline_prompt_tokens: baselinePromptTokens,
       graphify_prompt_tokens: graphifyPromptTokens,

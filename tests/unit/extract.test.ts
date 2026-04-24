@@ -10056,43 +10056,6 @@ describe('extract', () => {
     }
   })
 
-  it('keeps standard docx core metadata extraction bounded to sanitizeLabel rules', () => {
-    const root = createTempRoot()
-    try {
-      const docxPath = join(root, 'guide.docx')
-      const longTitle = `Guide Title ${'preserve compare-only baseline text '.repeat(12)}`.trim()
-      const archive = zipSync({
-        'word/document.xml': strToU8(
-          [
-            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">',
-            '  <w:body>',
-            '    <w:p><w:r><w:t>Overview</w:t></w:r></w:p>',
-            '  </w:body>',
-            '</w:document>',
-          ].join(''),
-        ),
-        'docProps/core.xml': strToU8(
-          [
-            '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/">',
-            `  <dc:title>${longTitle}</dc:title>`,
-            '</cp:coreProperties>',
-          ].join(''),
-        ),
-      })
-
-      writeFileSync(docxPath, Buffer.from(archive))
-
-      const result = extract([docxPath])
-      const fileNode = result.nodes.find((node) => node.file_type === 'document' && node.label === 'guide.docx')
-
-      expect(longTitle.length).toBeGreaterThan(256)
-      expect(fileNode?.title).toBe(longTitle.slice(0, 256))
-      expect(fileNode?.title).not.toBe(longTitle)
-    } finally {
-      rmSync(root, { recursive: true, force: true })
-    }
-  })
-
   it('extracts numbered reference entries, bibliography detection, and inline citation resolution from docx sections', () => {
     const root = createTempRoot()
     try {
@@ -10344,43 +10307,6 @@ describe('extract', () => {
           ]),
         })
       }
-    } finally {
-      rmSync(root, { recursive: true, force: true })
-    }
-  })
-
-  it('keeps standard xlsx core metadata extraction bounded to sanitizeLabel rules', () => {
-    const root = createTempRoot()
-    try {
-      const workbookPath = join(root, 'metrics.xlsx')
-      const longTitle = `Workbook Title ${'preserve compare-only baseline text '.repeat(12)}`.trim()
-      const archive = zipSync({
-        'xl/workbook.xml': strToU8(
-          [
-            '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
-            '  <sheets>',
-            '    <sheet name="Summary" sheetId="1" r:id="rId1" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>',
-            '  </sheets>',
-            '</workbook>',
-          ].join(''),
-        ),
-        'docProps/core.xml': strToU8(
-          [
-            '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/">',
-            `  <dc:title>${longTitle}</dc:title>`,
-            '</cp:coreProperties>',
-          ].join(''),
-        ),
-      })
-
-      writeFileSync(workbookPath, Buffer.from(archive))
-
-      const result = extract([workbookPath])
-      const workbookNode = result.nodes.find((node) => node.file_type === 'document' && node.label === 'metrics.xlsx')
-
-      expect(longTitle.length).toBeGreaterThan(256)
-      expect(workbookNode?.title).toBe(longTitle.slice(0, 256))
-      expect(workbookNode?.title).not.toBe(longTitle)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

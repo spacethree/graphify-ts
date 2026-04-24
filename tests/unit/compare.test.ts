@@ -356,7 +356,7 @@ describe('compare runtime', () => {
     const graph = makeGraph()
     writeProjectFiles()
     const graphPath = writeGraphFixture(graph)
-    const execTemplate = 'claude -p "$(cat {prompt_file})"'
+    const execTemplate = 'OPENAI_API_KEY=super-secret claude -p "$(cat {prompt_file})"'
     const questionsPath = join(GRAPH_FIXTURE_ROOT, 'compare-questions.json')
     writeFileSync(
       questionsPath,
@@ -398,7 +398,11 @@ describe('compare runtime', () => {
     expect(savedReport).toEqual(
       expect.objectContaining({
         question: 'how does login create a session',
-        exec_command: execTemplate,
+        exec_command: {
+          command: null,
+          placeholders: ['{prompt_file}'],
+          redacted: true,
+        },
         graph_path: join('graphify-out', 'test-runtime', 'compare-runtime-project', 'graphify-out', 'graph.json'),
         baseline_prompt_tokens: estimateQueryTokens(baselinePrompt),
         graphify_prompt_tokens: estimateQueryTokens(graphifyPrompt),
@@ -411,6 +415,72 @@ describe('compare runtime', () => {
         },
       }),
     )
+    expect(JSON.stringify(savedReport)).not.toContain('super-secret')
+    expect(JSON.stringify(savedReport)).not.toContain(execTemplate)
+  })
+
+  it('loads graphify snippets relative to the inferred project root instead of the current cwd', () => {
+    const graph = makeGraph()
+    writeProjectFiles()
+    const graphPath = writeGraphFixture(graph)
+    const originalCwd = process.cwd()
+    const alternateCwd = join(PROJECT_FIXTURE_ROOT, 'tools', 'runner')
+    mkdirSync(alternateCwd, { recursive: true })
+
+    try {
+      process.chdir(alternateCwd)
+      const alternateOutputRoot = join(alternateCwd, 'graphify-out', 'compare', 'alternate-cwd')
+
+      const result = generateCompareArtifacts({
+        graphPath,
+        question: 'how does login create a session',
+        outputDir: alternateOutputRoot,
+        execTemplate: 'claude -p "$(cat {prompt_file})"',
+        baselineMode: 'full',
+        now: new Date('2026-04-24T19:30:00.000Z'),
+      })
+
+      const graphifyPrompt = readFileSync(result.reports[0]!.paths.graphify_prompt, 'utf8')
+      expect(graphifyPrompt).toContain('createSession(userId) {')
+      expect(graphifyPrompt).toContain('return new SessionStore().write(userId)')
+    } finally {
+      process.chdir(originalCwd)
+      rmSync(join(alternateCwd, 'graphify-out'), { recursive: true, force: true })
+    }
+  })
+
+  it('does not load graphify snippets from paths outside the inferred project root', () => {
+    const graph = makeGraph()
+    graph.addNode('secret_leak', {
+      label: 'SecretLeak',
+      source_file: '../../../outside-secret.txt',
+      source_location: 'L1',
+      line_number: 1,
+      node_kind: 'file',
+      file_type: 'code',
+      community: 0,
+    })
+    writeProjectFiles()
+    const outsideSecretPath = resolve(PROJECT_FIXTURE_ROOT, '..', '..', '..', 'outside-secret.txt')
+    writeFileSync(outsideSecretPath, 'TOP SECRET compare snippet\n', 'utf8')
+    const graphPath = writeGraphFixture(graph)
+
+    try {
+      const result = generateCompareArtifacts({
+        graphPath,
+        question: 'where is the secret leak',
+        outputDir: COMPARE_OUTPUT_ROOT,
+        execTemplate: 'claude -p "$(cat {prompt_file})"',
+        baselineMode: 'full',
+        now: new Date('2026-04-24T19:30:00.000Z'),
+      })
+
+      const graphifyPrompt = readFileSync(result.reports[0]!.paths.graphify_prompt, 'utf8')
+      expect(graphifyPrompt).toContain('SecretLeak')
+      expect(graphifyPrompt).not.toContain('TOP SECRET compare snippet')
+    } finally {
+      rmSync(outsideSecretPath, { force: true })
+    }
   })
 
   it('creates a collision-safe compare output directory for repeated runs at the same timestamp', () => {
