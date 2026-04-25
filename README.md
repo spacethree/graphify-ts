@@ -83,7 +83,8 @@ What `compare` does:
 - Expands runner placeholders: `{prompt_file}`, `{question}`, `{mode}`, and `{output_file}`.
 - For large prompts, pass `{prompt_file}` through stdin or file redirection. Avoid shell command substitution around `{prompt_file}` (for example `$(cat {prompt_file})`), which can hit OS argument-length limits.
 - Writes a proof bundle under `graphify-out/compare/<timestamp>/` with `baseline-prompt.txt`, `graphify-prompt.txt`, `baseline-answer.txt`, `graphify-answer.txt`, and `report.json`.
-- Preserves partial artifacts when one side fails, so you can still inspect the surviving prompt/answer/report output.
+- Reports prompt-token counts as local `cl100k_base` estimates, not provider billing tokens.
+- Preserves partial artifacts when one side fails, and classifies prompt-size failures such as `Prompt is too long` as `context_overflow` evidence in `report.json`.
 
 Use `compare` when you want a showcase or a customer-proof run. Use `benchmark` and `eval` when you want repeatable local measurements without calling a model.
 

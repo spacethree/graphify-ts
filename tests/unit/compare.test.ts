@@ -9,7 +9,9 @@ import {
   buildGraphifyPromptPack,
   executeCompareRuns,
   expandCompareExecTemplate,
+  formatCompareSummary,
   generateCompareArtifacts,
+  runCompareCommand,
   resolveCompareQuestions,
 } from '../../src/infrastructure/compare.js'
 import { saveManifest } from '../../src/pipeline/manifest.js'
@@ -365,6 +367,22 @@ describe('compare runtime', () => {
     expect(estimateQueryTokens(boundedPack.prompt)).toBeLessThanOrEqual(120)
   })
 
+  it('builds bounded baseline excerpts for token-dense corpus text', () => {
+    const graph = makeGraph()
+    const corpusText = '😀'.repeat(500)
+
+    const boundedPack = buildBaselinePromptPack({
+      question: 'how does login create a session',
+      graph,
+      corpusText,
+      mode: 'bounded',
+      maxTokens: 120,
+    })
+
+    expect(boundedPack.prompt).toContain('[bounded baseline excerpt]')
+    expect(estimateQueryTokens(boundedPack.prompt)).toBeLessThanOrEqual(120)
+  })
+
   it('rejects bounded baseline budgets below the prompt floor', () => {
     const graph = makeGraph()
     const corpusText = makeCorpusText()
@@ -428,6 +446,10 @@ describe('compare runtime', () => {
     expect(graphifyPack.token_count).toBe(estimateQueryTokens(graphifyPack.prompt))
   })
 
+  it('uses local tokenization rather than a fixed chars-per-token ratio for prompt counts', () => {
+    expect(estimateQueryTokens('hello world')).toBe(2)
+  })
+
   it('writes prompt artifacts and report from graph-backed files when corpusText is omitted', () => {
     const graph = makeGraph()
     writeProjectFiles()
@@ -483,6 +505,14 @@ describe('compare runtime', () => {
         baseline_prompt_tokens: estimateQueryTokens(baselinePrompt),
         graphify_prompt_tokens: estimateQueryTokens(graphifyPrompt),
         reduction_ratio: report!.reduction_ratio,
+        baseline_prompt_tokens_estimated: estimateQueryTokens(baselinePrompt),
+        graphify_prompt_tokens_estimated: estimateQueryTokens(graphifyPrompt),
+        reduction_ratio_estimated: report!.reduction_ratio,
+        prompt_token_estimator: {
+          source: 'local_tokenizer',
+          model: 'cl100k_base',
+          exact: false,
+        },
         paths: {
           output_dir: join('graphify-out', 'compare', 'test-runtime', '2026-04-24T19-30-00'),
           baseline_prompt: join('graphify-out', 'compare', 'test-runtime', '2026-04-24T19-30-00', 'baseline-prompt.txt'),
@@ -634,6 +664,89 @@ describe('compare runtime', () => {
         },
       }),
     )
+  })
+
+  it('classifies prompt-too-long runner output as context overflow evidence', async () => {
+    const graph = makeGraph()
+    writeProjectFiles()
+    const graphPath = writeGraphFixture(graph)
+
+    const result = await executeCompareRuns(
+      {
+        graphPath,
+        question: 'how does login create a session',
+        outputDir: COMPARE_OUTPUT_ROOT,
+        execTemplate: 'runner --prompt {prompt_file} --mode {mode} --out {output_file}',
+        baselineMode: 'full',
+        now: new Date('2026-04-24T19:30:00.000Z'),
+      },
+      {
+        runner: async (execution) => ({
+          exitCode: execution.mode === 'baseline' ? 1 : 0,
+          stdout: execution.mode === 'baseline' ? 'Prompt is too long\n' : 'graphify answer\n',
+          stderr: '',
+          elapsedMs: execution.mode === 'baseline' ? 5 : 9,
+        }),
+      },
+    )
+
+    const report = result.reports[0]!
+    expect(readFileSync(report.answer_paths.baseline, 'utf8')).toBe('Prompt is too long\n')
+    expect(report.status).toEqual({
+      baseline: 'context_overflow',
+      graphify: 'succeeded',
+    })
+    expect(report.failure_reason).toEqual({
+      baseline: 'prompt_too_long',
+      graphify: null,
+    })
+    expect(report.evidence.baseline).toBe('Prompt is too long')
+
+    const savedReport = JSON.parse(readFileSync(report.paths.report, 'utf8')) as Record<string, unknown>
+    expect(savedReport).toEqual(
+      expect.objectContaining({
+        status: {
+          baseline: 'context_overflow',
+          graphify: 'succeeded',
+        },
+        failure_reason: {
+          baseline: 'prompt_too_long',
+          graphify: null,
+        },
+        evidence: {
+          baseline: 'Prompt is too long',
+          graphify: null,
+        },
+      }),
+    )
+    expect(formatCompareSummary(result)).toContain('1 context overflow')
+  })
+
+  it('does not treat context overflow evidence as a generic compare failure', async () => {
+    const graph = makeGraph()
+    writeProjectFiles()
+    const graphPath = writeGraphFixture(graph)
+
+    await expect(
+      runCompareCommand(
+        {
+          graphPath,
+          question: 'how does login create a session',
+          outputDir: COMPARE_OUTPUT_ROOT,
+          execTemplate: 'runner --prompt {prompt_file} --mode {mode} --out {output_file}',
+          baselineMode: 'full',
+          now: new Date('2026-04-24T19:30:00.000Z'),
+        },
+        {
+          runner: async (execution) => ({
+            exitCode: execution.mode === 'baseline' ? 1 : 0,
+            stdout: execution.mode === 'baseline' ? 'Prompt is too long\n' : 'graphify answer\n',
+            stderr: '',
+            elapsedMs: 1,
+          }),
+        },
+      ),
+    ).resolves.toContain('context overflow')
   })
 
   it('marks invalid compare placeholders as failed runs in persisted reports', async () => {

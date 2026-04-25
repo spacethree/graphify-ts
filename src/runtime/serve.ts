@@ -1,5 +1,7 @@
 import { readFileSync, statSync } from 'node:fs'
 
+import { countTokens } from 'gpt-tokenizer/encoding/cl100k_base'
+
 import { godNodes, semanticAnomalies, workspaceBridges, type SemanticAnomaly, type WorkspaceBridge } from '../pipeline/analyze.js'
 import { buildFromJson } from '../pipeline/build.js'
 import { buildCommunityLabels } from '../pipeline/community-naming.js'
@@ -30,9 +32,14 @@ export interface QueryGraphOptions {
 }
 
 export const QUERY_CHARS_PER_TOKEN = 3
+export const QUERY_TOKEN_ESTIMATOR = {
+  source: 'local_tokenizer',
+  model: 'cl100k_base',
+  exact: false,
+} as const
 
 export function estimateQueryTokens(text: string): number {
-  return Math.max(1, Math.floor(text.length / QUERY_CHARS_PER_TOKEN))
+  return Math.max(1, countTokens(text))
 }
 
 function normalizeQueryFilters(filters?: QueryFilters): QueryFilters | undefined {

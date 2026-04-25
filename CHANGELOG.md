@@ -4,6 +4,12 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-04-25
+
+### Improved
+
+- **Compare evidence reports**: prompt-token counts now use a local `cl100k_base` tokenizer estimate, persist explicit estimated-token fields, and classify prompt-size failures as `context_overflow` instead of generic failures
+
 ## [0.8.1] - 2026-04-25
 
 ### Fixed

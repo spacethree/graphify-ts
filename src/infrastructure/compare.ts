@@ -7,13 +7,14 @@ import { CODE_EXTENSIONS, DOC_EXTENSIONS, MANIFEST_METADATA_KEY, OFFICE_EXTENSIO
 import { extractCompareBaselineNonCodeText } from '../pipeline/extract/non-code.js'
 import { loadBenchmarkQuestions } from './benchmark/questions.js'
 import { retrieveContext, tokenizeLabel, type RetrieveResult } from '../runtime/retrieve.js'
-import { QUERY_CHARS_PER_TOKEN, estimateQueryTokens, loadGraph } from '../runtime/serve.js'
+import { QUERY_TOKEN_ESTIMATOR, estimateQueryTokens, loadGraph } from '../runtime/serve.js'
 import { sidecarAwareFileFingerprint } from '../shared/binary-ingest-sidecar.js'
 import { MAX_TEXT_BYTES, validateGraphOutputPath, validateGraphPath } from '../shared/security.js'
 
 export type CompareBaselineMode = 'full' | 'bounded'
 export type CompareRunMode = 'baseline' | 'graphify'
-export type CompareRunStatus = 'not_run' | 'succeeded' | 'failed'
+export type CompareRunStatus = 'not_run' | 'succeeded' | 'failed' | 'context_overflow'
+export type CompareFailureReason = 'prompt_too_long' | 'runner_error' | 'exec_error'
 
 export interface ComparePromptPack {
   kind: 'baseline' | 'graphify'
@@ -53,6 +54,12 @@ export interface CompareExecCommandSummary {
   redacted: true
 }
 
+export interface ComparePromptTokenEstimator {
+  source: string
+  model: string
+  exact: boolean
+}
+
 export interface ComparePromptReport {
   question: string
   graph_path: string
@@ -61,6 +68,10 @@ export interface ComparePromptReport {
   baseline_prompt_tokens: number
   graphify_prompt_tokens: number
   reduction_ratio: number
+  baseline_prompt_tokens_estimated: number
+  graphify_prompt_tokens_estimated: number
+  reduction_ratio_estimated: number
+  prompt_token_estimator: ComparePromptTokenEstimator
   started_at: string
   completed_at: string
   elapsed_ms: {
@@ -77,6 +88,14 @@ export interface ComparePromptReport {
     graphify: number | null
   }
   stderr: {
+    baseline: string | null
+    graphify: string | null
+  }
+  failure_reason: {
+    baseline: CompareFailureReason | null
+    graphify: CompareFailureReason | null
+  }
+  evidence: {
     baseline: string | null
     graphify: string | null
   }
@@ -134,6 +153,12 @@ const DEFAULT_RETRIEVAL_BUDGET = 3_000
 const DEFAULT_BOUNDED_BASELINE_TOKENS = 4_000
 const EXEC_TEMPLATE_PLACEHOLDER_PATTERN = /\{[a-z_][a-z0-9_]*\}/gi
 const COMPARE_EXEC_PLACEHOLDERS = new Set(['{prompt_file}', '{question}', '{mode}', '{output_file}'])
+const CONTEXT_OVERFLOW_PATTERNS = [
+  /\bprompt is too long\b/i,
+  /\bcontext (?:window|length) (?:exceeded|overflow|too (?:long|large|big))\b/i,
+  /\b(?:maximum|max) context\b/i,
+  /\btoo many tokens\b/i,
+]
 const PROMPT_FILE_COMMAND_SUBSTITUTION_PATTERNS = [
   /\$\([^)]*\{prompt_file\}[^)]*\)/i,
   /`[^`]*\{prompt_file\}[^`]*`/i,
@@ -292,6 +317,16 @@ function summarizeCompareRunnerStderr(stderr: string): string | null {
   return `stderr omitted for safety (${sanitized.length} chars captured)`
 }
 
+function extractContextOverflowEvidence(...messages: string[]): string | null {
+  const combined = messages.map((message) => message.trim()).filter((message) => message.length > 0).join('\n')
+  if (!CONTEXT_OVERFLOW_PATTERNS.some((pattern) => pattern.test(combined))) {
+    return null
+  }
+
+  const matchingLine = combined.split(/\r?\n/).find((line) => CONTEXT_OVERFLOW_PATTERNS.some((pattern) => pattern.test(line))) ?? combined
+  return sanitizeCompareStderr(matchingLine)
+}
+
 function createCompareOutputRoot(outputDir: string, date: Date): string {
   mkdirSync(outputDir, { recursive: true })
 
@@ -339,8 +374,7 @@ function buildBoundedCorpusExcerpt(question: string, graph: KnowledgeGraph, corp
   let excerpt = corpusText.trim()
   let prompt = renderBaselinePrompt(question, graph, `${note}\n${excerpt}`, 'bounded')
   while (estimateQueryTokens(prompt) > maxTokens && excerpt.length > 0) {
-    const overshoot = estimateQueryTokens(prompt) - maxTokens
-    excerpt = excerpt.slice(0, Math.max(0, excerpt.length - Math.max(1, overshoot * QUERY_CHARS_PER_TOKEN))).trimEnd()
+    excerpt = excerpt.slice(0, Math.max(0, Math.floor(excerpt.length * 0.9))).trimEnd()
     prompt = renderBaselinePrompt(question, graph, `${note}\n${excerpt}`, 'bounded')
   }
 
@@ -722,6 +756,10 @@ export function generateCompareArtifacts(input: GenerateCompareArtifactsInput): 
       baseline_prompt_tokens: baselinePromptTokens,
       graphify_prompt_tokens: graphifyPromptTokens,
       reduction_ratio: computeReductionRatio(baselinePromptTokens, graphifyPromptTokens),
+      baseline_prompt_tokens_estimated: baselinePromptTokens,
+      graphify_prompt_tokens_estimated: graphifyPromptTokens,
+      reduction_ratio_estimated: computeReductionRatio(baselinePromptTokens, graphifyPromptTokens),
+      prompt_token_estimator: QUERY_TOKEN_ESTIMATOR,
       started_at: now.toISOString(),
       completed_at: now.toISOString(),
       elapsed_ms: {
@@ -738,6 +776,14 @@ export function generateCompareArtifacts(input: GenerateCompareArtifactsInput): 
         graphify: null,
       },
       stderr: {
+        baseline: null,
+        graphify: null,
+      },
+      failure_reason: {
+        baseline: null,
+        graphify: null,
+      },
+      evidence: {
         baseline: null,
         graphify: null,
       },
@@ -796,16 +842,26 @@ export async function executeCompareRuns(
           command,
         })
         ensureCompareAnswerFile(execution.outputFile, executionResult.stdout)
-        report.status[execution.mode] = executionResult.exitCode === 0 ? 'succeeded' : 'failed'
+        const contextOverflowEvidence =
+          executionResult.exitCode === 0 ? null : extractContextOverflowEvidence(executionResult.stdout, executionResult.stderr)
+        report.status[execution.mode] =
+          executionResult.exitCode === 0 ? 'succeeded' : contextOverflowEvidence !== null ? 'context_overflow' : 'failed'
         report.elapsed_ms[execution.mode] = executionResult.elapsedMs
         report.exit_code[execution.mode] = executionResult.exitCode
         report.stderr[execution.mode] = summarizeCompareRunnerStderr(executionResult.stderr)
+        report.failure_reason[execution.mode] =
+          executionResult.exitCode === 0 ? null : contextOverflowEvidence !== null ? 'prompt_too_long' : 'runner_error'
+        report.evidence[execution.mode] = contextOverflowEvidence
       } catch (error) {
         ensureCompareAnswerFile(execution.outputFile, '')
-        report.status[execution.mode] = 'failed'
+        const errorMessage = error instanceof Error ? error.message : String(error)
+        const contextOverflowEvidence = extractContextOverflowEvidence(errorMessage)
+        report.status[execution.mode] = contextOverflowEvidence !== null ? 'context_overflow' : 'failed'
         report.elapsed_ms[execution.mode] = 0
         report.exit_code[execution.mode] = null
-        report.stderr[execution.mode] = sanitizeCompareStderr(error instanceof Error ? error.message : String(error))
+        report.stderr[execution.mode] = sanitizeCompareStderr(errorMessage)
+        report.failure_reason[execution.mode] = contextOverflowEvidence !== null ? 'prompt_too_long' : 'exec_error'
+        report.evidence[execution.mode] = contextOverflowEvidence
       }
 
       report.completed_at = now().toISOString()
@@ -833,13 +889,16 @@ export function formatCompareSummary(result: GenerateCompareArtifactsResult): st
   const graphifyTokens = sumPromptTokens(result.reports, 'graphify')
   const reductionRatio = computeReductionRatio(baselineTokens, graphifyTokens)
   const failedRuns = countPromptRuns(result.reports, 'failed')
+  const contextOverflowRuns = countPromptRuns(result.reports, 'context_overflow')
   const succeededRuns = countPromptRuns(result.reports, 'succeeded')
 
   return [
     `[graphify compare] completed ${result.reports.length} question(s)`,
     `- Output: ${result.output_root}`,
-    `- Prompt tokens: baseline ${baselineTokens} · graphify ${graphifyTokens} · ${reductionRatio}x smaller`,
-    `- Prompt runs: ${succeededRuns} succeeded${failedRuns > 0 ? ` · ${failedRuns} failed` : ''}`,
+    `- Prompt tokens (estimated ${QUERY_TOKEN_ESTIMATOR.model}): baseline ${baselineTokens} · graphify ${graphifyTokens} · ${reductionRatio}x smaller`,
+    `- Prompt runs: ${succeededRuns} succeeded${contextOverflowRuns > 0 ? ` · ${contextOverflowRuns} context overflow` : ''}${
+      failedRuns > 0 ? ` · ${failedRuns} failed` : ''
+    }`,
   ].join('\n')
 }
 
