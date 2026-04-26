@@ -37,8 +37,8 @@ export function fileHash(filePath: string): string {
   return hash.digest('hex')
 }
 
-export function cacheDir(root: string = '.'): string {
-  const directory = join(root, 'graphify-out', 'cache')
+export function cacheDir(root: string = '.', ...segments: string[]): string {
+  const directory = join(root, 'graphify-out', 'cache', ...segments)
   mkdirSync(directory, { recursive: true })
   return directory
 }

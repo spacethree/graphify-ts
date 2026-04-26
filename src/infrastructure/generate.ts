@@ -198,7 +198,7 @@ function missingCodeExtractionMessage(totalFiles: number): string {
   return 'No graph nodes could be generated from the detected corpus. The current TypeScript extractor supports Python, JavaScript/TypeScript, documents, text-like papers, and image assets, but some detected formats still have shallow coverage.'
 }
 
-function loadGraphExtractorVersion(graphPath: string): number | null {
+export function loadGraphExtractorVersion(graphPath: string): number | null {
   try {
     const parsed = JSON.parse(readFileSync(graphPath, 'utf8')) as unknown
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
