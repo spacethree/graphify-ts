@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { cacheDir, cachedFiles, clearCache, fileHash, loadCached, saveCached } from '../../src/infrastructure/cache.js'
+import { normalizeAssertionPath } from './helpers/platform.js'
 
 describe('cache', () => {
   function createTempRoot(): string {
@@ -122,7 +123,7 @@ describe('cache', () => {
       saveCached(filePath, { nodes: [], edges: [] }, root)
 
       const directory = cacheDir(root)
-      expect(directory.endsWith('graphify-out/cache')).toBe(true)
+      expect(normalizeAssertionPath(directory).endsWith('graphify-out/cache')).toBe(true)
 
       clearCache(root)
 

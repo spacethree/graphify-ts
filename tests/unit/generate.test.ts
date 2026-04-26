@@ -8,6 +8,7 @@ import { describe, expect, test, vi } from 'vitest'
 import { generateGraph } from '../../src/infrastructure/generate.js'
 import { loadGraph } from '../../src/runtime/serve.js'
 import { binaryIngestSidecarPath } from '../../src/shared/binary-ingest-sidecar.js'
+import { normalizeAssertionPath, normalizeAssertionPaths } from './helpers/platform.js'
 
 const FIXTURES_DIR = join(process.cwd(), 'tests', 'fixtures')
 
@@ -4648,7 +4649,7 @@ describe('generateGraph', () => {
         const graph = loadGraph(result.graphPath)
 
         expect(extractSpy).toHaveBeenCalledTimes(1)
-        expect(extractSpy.mock.calls[0]?.[0]).toEqual([sourcePath])
+        expect(normalizeAssertionPaths(extractSpy.mock.calls[0]?.[0] ?? [])).toEqual([normalizeAssertionPath(sourcePath)])
         expect(graph.nodeEntries().some(([, attributes]) => attributes.label === 'helper()')).toBe(true)
         expect(graph.nodeEntries().some(([, attributes]) => attributes.label === 'other()')).toBe(true)
       } finally {

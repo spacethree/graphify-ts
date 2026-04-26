@@ -8,6 +8,7 @@ import { cacheDir, fileHash } from '../../src/infrastructure/cache.js'
 import { detect } from '../../src/pipeline/detect.js'
 import { _makeId, collectFiles, extract, extractJs, extractPython } from '../../src/pipeline/extract.js'
 import { MAX_TEXT_BYTES } from '../../src/shared/security.js'
+import { normalizeAssertionPath, normalizeAssertionPaths } from './helpers/platform.js'
 
 const FIXTURES_DIR = join(process.cwd(), 'tests', 'fixtures')
 
@@ -9199,7 +9200,7 @@ describe('extract', () => {
       const result = extract(detection.files.paper)
       const labels = result.nodes.map((node) => node.label)
 
-      expect(detection.files.paper).toContain(paperPath)
+      expect(normalizeAssertionPaths(detection.files.paper)).toContain(normalizeAssertionPath(paperPath))
       expect(result.nodes.some((node) => node.file_type === 'paper' && node.label === 'paper.md')).toBe(true)
       expect(labels).toContain('Abstract')
     } finally {

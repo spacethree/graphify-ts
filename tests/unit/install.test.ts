@@ -17,6 +17,7 @@ import {
   isInstallPlatform,
   uninstallSkill,
 } from '../../src/infrastructure/install.js'
+import { normalizeAssertionPath } from './helpers/platform.js'
 
 const BUNDLED_ASSET_CONTENT = {
   'skill.md': '# graphify-ts\n\nLocal bundled Claude skill\n',
@@ -275,7 +276,7 @@ describe('install helpers', () => {
   it('writes and removes the local Cursor rule file', () => {
     withTempDir((projectDir) => {
       const installMessage = cursorInstall(projectDir)
-      expect(installMessage).toContain('.cursor/rules/graphify-ts.mdc')
+      expect(normalizeAssertionPath(installMessage)).toContain('.cursor/rules/graphify-ts.mdc')
       expect(existsSync(join(projectDir, '.cursor', 'rules', 'graphify-ts.mdc'))).toBe(true)
       expect(readFileSync(join(projectDir, '.cursor', 'rules', 'graphify-ts.mdc'), 'utf8')).toContain('alwaysApply: true')
 

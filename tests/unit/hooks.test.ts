@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { describe, expect, test } from 'vitest'
 
 import { CHECKOUT_MARKER, HOOK_MARKER, install, status, uninstall } from '../../src/infrastructure/hooks.js'
+import { shouldAssertExecutableBits } from './helpers/platform.js'
 
 function withRepo(callback: (repoDir: string) => void): void {
   const repoDir = mkdtempSync(join(tmpdir(), 'graphify-ts-hooks-'))
@@ -26,7 +27,9 @@ describe('hooks', () => {
       const postCheckout = join(repoDir, '.git', 'hooks', 'post-checkout')
       expect(readFileSync(postCommit, 'utf8')).toContain(HOOK_MARKER)
       expect(readFileSync(postCheckout, 'utf8')).toContain(CHECKOUT_MARKER)
-      expect(statSync(postCommit).mode & 0o111).toBeGreaterThan(0)
+      if (shouldAssertExecutableBits()) {
+        expect(statSync(postCommit).mode & 0o111).toBeGreaterThan(0)
+      }
       expect(result).toContain('installed')
     })
   })

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 
 import { _loadGraphifyignore, _isIgnored, classifyFile, countWords, detect, FileType } from '../../src/pipeline/detect.js'
+import { normalizeAssertionPath, normalizeAssertionPaths } from './helpers/platform.js'
 
 const FIXTURES_DIR = join(process.cwd(), 'tests', 'fixtures')
 
@@ -69,7 +70,7 @@ describe('detect', () => {
 
       const result = detect(root)
 
-      expect(result.files.document).toContain(join(root, 'graphify-out', 'memory', 'query_auth.md'))
+      expect(normalizeAssertionPaths(result.files.document)).toContain(normalizeAssertionPath(join(root, 'graphify-out', 'memory', 'query_auth.md')))
       expect(result.files.document.some((filePath) => filePath.endsWith('GRAPH_REPORT.md'))).toBe(false)
       expect(
         Object.values(result.files)
