@@ -150,6 +150,40 @@ describe('time travel runtime regression coverage', () => {
     expect(nodeEntriesSpy).toHaveBeenCalledTimes(1)
   })
 
+  it('resolves community labels once per graph before ranking risk', async () => {
+    const analyzeImpact = vi.fn((_graph: KnowledgeGraph, _labels: Record<number, string>, options: { label: string }) => ({
+      target: options.label,
+      target_file: '',
+      depth: 3,
+      direct_dependents: [],
+      transitive_dependents: [],
+      affected_files: [],
+      affected_communities: [],
+      top_paths_per_community: [],
+      total_affected: 0,
+    }))
+    const buildCommunityLabels = vi.fn(() => ({}))
+    const communitiesFromGraph = vi.fn(() => ({}))
+
+    vi.doMock('../../src/pipeline/community-naming.js', () => ({
+      buildCommunityLabels,
+    }))
+    vi.doMock('../../src/runtime/serve.js', () => ({
+      communitiesFromGraph,
+    }))
+    vi.doMock('../../src/runtime/impact.js', () => ({
+      analyzeImpact,
+    }))
+
+    const { compareTimeTravelGraphs } = await import('../../src/runtime/time-travel.js')
+
+    compareTimeTravelGraphs(buildBeforeGraph(), buildAfterGraph(), { view: 'risk', limit: 5 })
+
+    expect(analyzeImpact.mock.calls.length).toBeGreaterThan(1)
+    expect(buildCommunityLabels).toHaveBeenCalledTimes(2)
+    expect(communitiesFromGraph).toHaveBeenCalledTimes(2)
+  })
+
   it('uses node id fallback when selecting risk impact graphs for unlabeled changed nodes', async () => {
     const analyzeImpact = vi.fn((graph: KnowledgeGraph, _labels: Record<number, string>, options: { label: string }) => ({
       target: options.label,

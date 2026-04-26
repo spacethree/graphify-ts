@@ -185,6 +185,8 @@ function changedLabels(
 function riskView(
   beforeGraph: KnowledgeGraph,
   afterGraph: KnowledgeGraph,
+  beforeCommunityLabels: Record<number, string>,
+  afterCommunityLabels: Record<number, string>,
   afterGraphLabels: ReadonlySet<string>,
   labels: string[],
   options: CompareTimeTravelGraphsOptions,
@@ -192,8 +194,8 @@ function riskView(
 ): Array<{ label: string; transitiveDependents: number }> {
   return labels
     .map((label) => {
-      const graph = afterGraphLabels.has(label) ? afterGraph : beforeGraph
-      const impact = analyzeImpact(graph, resolveCommunityLabels(graph), {
+      const useAfterGraph = afterGraphLabels.has(label)
+      const impact = analyzeImpact(useAfterGraph ? afterGraph : beforeGraph, useAfterGraph ? afterCommunityLabels : beforeCommunityLabels, {
         label,
         ...(options.depth !== undefined ? { depth: options.depth } : {}),
         ...(options.edgeTypes !== undefined ? { edgeTypes: options.edgeTypes } : {}),
@@ -269,13 +271,15 @@ export function compareTimeTravelGraphs(
   const diff = graphDiff(beforeGraph, afterGraph)
   const drift = movedNodes(beforeGraph, afterGraph)
   const afterGraphLabels = new Set(afterGraph.nodeEntries().map(([nodeId, attributes]) => String(attributes.label ?? nodeId)))
+  const beforeCommunityLabels = resolveCommunityLabels(beforeGraph)
+  const afterCommunityLabels = resolveCommunityLabels(afterGraph)
   const communityLabels = {
-    ...resolveCommunityLabels(beforeGraph),
-    ...resolveCommunityLabels(afterGraph),
+    ...beforeCommunityLabels,
+    ...afterCommunityLabels,
   }
   const changedCommunities = summarizeChangedCommunities(diff, beforeGraph, afterGraph, limit, drift)
   const labels = changedLabels(diff, beforeGraph, afterGraph, drift)
-  const topImpacts = riskView(beforeGraph, afterGraph, afterGraphLabels, labels, options, limit)
+  const topImpacts = riskView(beforeGraph, afterGraph, beforeCommunityLabels, afterCommunityLabels, afterGraphLabels, labels, options, limit)
 
   const result: TimeTravelResult = {
     fromRef,
