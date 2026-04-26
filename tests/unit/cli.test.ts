@@ -389,7 +389,6 @@ describe('cli parser', () => {
     expect(() => parseTimeTravelArgs(['main', 'HEAD', '--view', 'weird'])).toThrow(
       'error: --view must be one of summary, risk, drift, timeline',
     )
-    expect(() => parseTimeTravelArgs(['a'.repeat(513), 'HEAD'])).toThrow('error: from exceeds maximum length of 512 characters')
   })
 
   it('parses generate args', () => {

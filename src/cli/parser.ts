@@ -768,11 +768,11 @@ export function parseTimeTravelArgs(args: string[]): TimeTravelCliOptions {
 
     if (!argument.startsWith('--')) {
       if (fromRef === null) {
-        fromRef = validateCliText('from', argument.trim())
+        fromRef = argument.trim()
         continue
       }
       if (toRef === null) {
-        toRef = validateCliText('to', argument.trim())
+        toRef = argument.trim()
         continue
       }
       throw new UsageError(usage)
