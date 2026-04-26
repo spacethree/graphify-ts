@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { EXTRACTOR_CACHE_VERSION } from '../../src/pipeline/extract.js'
 import { compareRefs, loadOrBuildSnapshot, type CompareRefsDependencies, type SnapshotDependencies } from '../../src/infrastructure/time-travel.js'
+import type { TimeTravelResult } from '../../src/runtime/time-travel.js'
 
 const createdRoots = new Set<string>()
 
@@ -234,7 +235,7 @@ describe('time travel infrastructure', () => {
 
     const fromGraph = { id: 'from-graph' }
     const toGraph = { id: 'to-graph' }
-    const expected = {
+    const expected: TimeTravelResult = {
       fromRef: 'main',
       toRef: 'HEAD',
       view: 'risk',
