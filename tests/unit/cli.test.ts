@@ -16,6 +16,7 @@ import {
   parseQueryArgs,
   parseSaveResultArgs,
   parseServeArgs,
+  parseTimeTravelArgs,
   parseWatchArgs,
 } from '../../src/cli/parser.js'
 import { KnowledgeGraph } from '../../src/contracts/graph.js'
@@ -95,6 +96,7 @@ function createDependencies(): CliDependencies {
       ],
     }),
     runCompare: async () => 'compare command is not implemented yet',
+    runTimeTravel: async () => 'time-travel command is not implemented yet',
     confirm: async () => true,
     printBenchmark: () => {},
     installHooks: () => 'hooks installed',
@@ -371,6 +373,25 @@ describe('cli parser', () => {
     expect(() => parseCompareArgs(['--exec', 'claude -p "$(cat {prompt_file})"'])).toThrow('Usage: graphify-ts compare')
   })
 
+  it('parses time-travel args', () => {
+    expect(parseTimeTravelArgs(['main', 'HEAD'])).toEqual({
+      fromRef: 'main',
+      toRef: 'HEAD',
+      view: 'summary',
+      json: false,
+      refresh: false,
+      limit: 10,
+    })
+  })
+
+  it('rejects invalid time-travel args', () => {
+    expect(() => parseTimeTravelArgs(['main'])).toThrow('Usage: graphify-ts time-travel <from> <to>')
+    expect(() => parseTimeTravelArgs(['main', 'HEAD', '--view', 'weird'])).toThrow(
+      'error: --view must be one of summary, risk, drift, timeline',
+    )
+    expect(() => parseTimeTravelArgs(['a'.repeat(513), 'HEAD'])).toThrow('error: from exceeds maximum length of 512 characters')
+  })
+
   it('parses generate args', () => {
     expect(parseGenerateArgs([])).toEqual({
       path: '.',
@@ -573,6 +594,11 @@ describe('cli main', () => {
     expect(help).toContain('    --baseline-mode MODE  choose full or bounded baseline context (default full)')
     expect(help).toContain('    --yes                 skip confirmation before running the paid prompt comparison')
     expect(help).toContain('    --limit N             cap processed prompts/questions for the comparison run')
+    expect(help).toContain('time-travel <from> <to> compare two refs using graph snapshots')
+    expect(help).toContain('    --view MODE         summary|risk|drift|timeline (default summary)')
+    expect(help).toContain('    --json              emit machine-readable JSON')
+    expect(help).toContain('    --refresh           rebuild snapshots instead of using cache')
+    expect(help).toContain('    --limit N           cap view items (default 10)')
     expect(help).toContain('question coverage')
     expect(help).toContain('hook <action>')
     expect(help).toContain('install [--platform P]')
@@ -761,6 +787,39 @@ describe('cli main', () => {
       process.chdir(originalCwd)
       rmSync(sandboxRoot, { recursive: true, force: true })
     }
+  })
+
+  it('routes time-travel through the injected dependency after parsing args', async () => {
+    const { io, logs, errors } = createIo()
+    const dependencies = createDependencies() as CliDependencies & {
+      runTimeTravel: (request: {
+        options: ReturnType<typeof parseTimeTravelArgs>
+        io: typeof io
+      }) => Promise<string | void> | string | void
+    }
+    let capturedRequest: unknown
+
+    dependencies.runTimeTravel = async (request) => {
+      capturedRequest = request
+      return 'time-travel result'
+    }
+
+    const exitCode = await executeCli(['time-travel', 'main', 'HEAD', '--view', 'risk', '--json', '--refresh', '--limit', '3'], io, dependencies)
+
+    expect(exitCode).toBe(0)
+    expect(logs).toEqual(['time-travel result'])
+    expect(errors).toEqual([])
+    expect(capturedRequest).toEqual({
+      options: {
+        fromRef: 'main',
+        toRef: 'HEAD',
+        view: 'risk',
+        json: true,
+        refresh: true,
+        limit: 3,
+      },
+      io,
+    })
   })
 
   it('executes query commands via injected dependencies', async () => {

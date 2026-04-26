@@ -70,6 +70,15 @@ export interface CompareCliOptions {
   limit: number | null
 }
 
+export interface TimeTravelCliOptions {
+  fromRef: string
+  toRef: string
+  view: 'summary' | 'risk' | 'drift' | 'timeline'
+  json: boolean
+  refresh: boolean
+  limit: number
+}
+
 export interface GenerateCliOptions {
   path: string
   update: boolean
@@ -214,6 +223,14 @@ function parseCompareBaselineMode(value: string): 'full' | 'bounded' {
     return normalized
   }
   throw new UsageError('error: --baseline-mode must be one of full, bounded')
+}
+
+function parseTimeTravelView(value: string): 'summary' | 'risk' | 'drift' | 'timeline' {
+  const normalized = value.trim().toLowerCase()
+  if (normalized === 'summary' || normalized === 'risk' || normalized === 'drift' || normalized === 'timeline') {
+    return normalized
+  }
+  throw new UsageError('error: --view must be one of summary, risk, drift, timeline')
 }
 
 function validateCliText(field: string, value: string): string {
@@ -732,6 +749,77 @@ export function parseCompareArgs(args: string[]): CompareCliOptions {
   outputDir = validateGraphOutputPath(outputDir)
 
   return { question, graphPath, execTemplate, questionsPath, outputDir, baselineMode, yes, limit }
+}
+
+export function parseTimeTravelArgs(args: string[]): TimeTravelCliOptions {
+  const usage = 'Usage: graphify-ts time-travel <from> <to> [--view MODE] [--json] [--refresh] [--limit N]'
+  let fromRef: string | null = null
+  let toRef: string | null = null
+  let view: 'summary' | 'risk' | 'drift' | 'timeline' = 'summary'
+  let json = false
+  let refresh = false
+  let limit = 10
+
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index]
+    if (!argument) {
+      continue
+    }
+
+    if (!argument.startsWith('--')) {
+      if (fromRef === null) {
+        fromRef = validateCliText('from', argument.trim())
+        continue
+      }
+      if (toRef === null) {
+        toRef = validateCliText('to', argument.trim())
+        continue
+      }
+      throw new UsageError(usage)
+    }
+
+    if (argument === '--view') {
+      view = parseTimeTravelView(requireOptionValue('--view', args[index + 1]))
+      index += 1
+      continue
+    }
+
+    if (argument.startsWith('--view=')) {
+      const [, value] = argument.split('=', 2)
+      view = parseTimeTravelView(requireOptionValue('--view', value))
+      continue
+    }
+
+    if (argument === '--json') {
+      json = true
+      continue
+    }
+
+    if (argument === '--refresh') {
+      refresh = true
+      continue
+    }
+
+    if (argument === '--limit') {
+      limit = parsePositiveDecimalInteger('--limit', requireOptionValue('--limit', args[index + 1]))
+      index += 1
+      continue
+    }
+
+    if (argument.startsWith('--limit=')) {
+      const [, value] = argument.split('=', 2)
+      limit = parsePositiveDecimalInteger('--limit', requireOptionValue('--limit', value))
+      continue
+    }
+
+    throw new UsageError(`error: unknown option for time-travel: ${argument}`)
+  }
+
+  if (fromRef === null || fromRef.length === 0 || toRef === null || toRef.length === 0) {
+    throw new UsageError(usage)
+  }
+
+  return { fromRef, toRef, view, json, refresh, limit }
 }
 
 export function parseGenerateArgs(args: string[]): GenerateCliOptions {
