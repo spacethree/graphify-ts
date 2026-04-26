@@ -3,6 +3,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
+import { describe, expect, it, vi } from 'vitest'
+
 import { handleStdioRequest, serveGraphStdio } from '../../src/runtime/stdio-server.js'
 
 function createGraphFixtureRoot(): string {
@@ -56,46 +58,88 @@ function createGraphFixtureRoot(): string {
   return root
 }
 
+function createTimeTravelResult(view: 'summary' | 'risk' | 'drift' | 'timeline' = 'summary') {
+  return {
+    fromRef: 'main',
+    toRef: 'HEAD',
+    view,
+    summary: {
+      headline: 'Time travel changed',
+      whyItMatters: ['Cached snapshots keep MCP fast.'],
+    },
+    changed: {
+      nodesAdded: 1,
+      nodesRemoved: 0,
+      edgesAdded: 1,
+      edgesRemoved: 0,
+      communities: [{ community: 0, changeCount: 2 }],
+    },
+    risk: { topImpacts: [] },
+    drift: { movedNodes: [] },
+    timeline: { events: [] },
+  }
+}
+
 describe('stdio runtime', () => {
-  it('supports basic MCP initialize, tools/list, and tools/call flows', () => {
+  it('supports basic MCP initialize, tools/list, and tools/call flows', async () => {
     const root = createGraphFixtureRoot()
     try {
       const graphPath = join(root, 'graph.json')
+      const compareRefs = vi.fn(async () => createTimeTravelResult('summary'))
 
-      const initialize = handleStdioRequest(graphPath, { id: 1, method: 'initialize' })
-      const prompts = handleStdioRequest(graphPath, { id: 2, method: 'prompts/list' })
-      const resources = handleStdioRequest(graphPath, { id: 3, method: 'resources/list' })
-      const tools = handleStdioRequest(graphPath, { id: 4, method: 'tools/list' })
-      const call = handleStdioRequest(graphPath, {
+      const initialize = await Promise.resolve(handleStdioRequest(graphPath, { id: 1, method: 'initialize' }))
+      const prompts = await Promise.resolve(handleStdioRequest(graphPath, { id: 2, method: 'prompts/list' }))
+      const resources = await Promise.resolve(handleStdioRequest(graphPath, { id: 3, method: 'resources/list' }))
+      const tools = await Promise.resolve(handleStdioRequest(graphPath, { id: 4, method: 'tools/list' }))
+      const call = await Promise.resolve(handleStdioRequest(graphPath, {
         id: 5,
         method: 'tools/call',
         params: {
           name: 'shortest_path',
           arguments: { source: 'AuthService', target: 'Transport', maxHops: 3 },
         },
-      })
-      const promptGet = handleStdioRequest(graphPath, {
+      }))
+      const promptGet = await Promise.resolve(handleStdioRequest(graphPath, {
         id: 6,
         method: 'prompts/get',
         params: {
           name: 'graph_query_prompt',
           arguments: { question: 'How does auth reach transport?' },
         },
-      })
-      const resourceRead = handleStdioRequest(graphPath, {
+      }))
+      const resourceRead = await Promise.resolve(handleStdioRequest(graphPath, {
         id: 7,
         method: 'resources/read',
         params: { uri: 'graphify://artifact/GRAPH_REPORT.md' },
-      })
-      const communityPrompt = handleStdioRequest(graphPath, {
+      }))
+      const communityPrompt = await Promise.resolve(handleStdioRequest(graphPath, {
         id: 8,
         method: 'prompts/get',
         params: {
           name: 'graph_community_summary_prompt',
           arguments: { community_id: '0' },
         },
-      })
-      const initializedNotification = handleStdioRequest(graphPath, { method: 'notifications/initialized' })
+      }))
+      const timeTravelCall = await Promise.resolve(handleStdioRequest(
+        graphPath,
+        {
+          id: 11,
+          method: 'tools/call',
+          params: {
+            name: 'time_travel_compare',
+            arguments: {
+              from_ref: 'main',
+              to_ref: 'HEAD',
+              view: 'summary',
+              refresh: false,
+              limit: 5,
+            },
+          },
+        },
+        undefined,
+        { compareRefs },
+      ))
+      const initializedNotification = await Promise.resolve(handleStdioRequest(graphPath, { method: 'notifications/initialized' }))
 
       expect(initialize).toMatchObject({
         jsonrpc: '2.0',
@@ -121,7 +165,8 @@ describe('stdio runtime', () => {
       const graphResource = (resources?.result as { resources: Array<{ uri: string; annotations?: Record<string, unknown> }> }).resources.find(
         (resource) => resource.uri === 'graphify://artifact/graph.json',
       )
-      expect((tools?.result as { tools: Array<{ name: string }> }).tools.map((tool) => tool.name)).toEqual(
+      const toolNames = (tools?.result as { tools: Array<{ name: string }> }).tools.map((tool) => tool.name)
+      expect(toolNames).toEqual(
         expect.arrayContaining([
           'query_graph',
           'graph_diff',
@@ -135,9 +180,13 @@ describe('stdio runtime', () => {
           'god_nodes',
         ]),
       )
+      expect(toolNames).toContain('time_travel_compare')
       expect(graphResource?.annotations?.graph_version).toMatch(/^[a-f0-9]{12}$/)
       expect(graphResource?.annotations?.graph_modified_ms).toEqual(expect.any(Number))
       expect((call?.result as { content: Array<{ type: string; text: string }> }).content[0]?.text).toContain('Shortest path (2 hops)')
+      expect(JSON.parse((timeTravelCall?.result as { content: Array<{ text: string }> }).content[0]!.text)).toEqual(
+        expect.objectContaining({ view: 'summary' }),
+      )
       expect((promptGet?.result as { messages: Array<{ content: { text: string } }> }).messages[0]?.content.text).toContain('How does auth reach transport?')
       expect((promptGet?.result as { messages: Array<{ content: { text: string } }> }).messages[0]?.content.text).toContain('Top communities:')
       expect((promptGet?.result as { messages: Array<{ content: { text: string } }> }).messages[0]?.content.text).toContain('Auth Services')
@@ -338,87 +387,107 @@ describe('stdio runtime', () => {
     }
   })
 
-  it('supports richer MCP snake_case schemas and tool arguments', () => {
+  it('supports richer MCP snake_case schemas and tool arguments', async () => {
     const root = createGraphFixtureRoot()
     try {
       const graphPath = join(root, 'graph.json')
+      const compareRefs = vi.fn(async () => createTimeTravelResult('summary'))
 
-      const initialize = handleStdioRequest(graphPath, { id: 1, method: 'initialize' })
-      const tools = handleStdioRequest(graphPath, { id: 2, method: 'tools/list' })
-      const query = handleStdioRequest(graphPath, {
+      const initialize = await Promise.resolve(handleStdioRequest(graphPath, { id: 1, method: 'initialize' }))
+      const tools = await Promise.resolve(handleStdioRequest(graphPath, { id: 2, method: 'tools/list' }))
+      const query = await Promise.resolve(handleStdioRequest(graphPath, {
         id: 3,
         method: 'tools/call',
         params: {
           name: 'query_graph',
           arguments: { question: 'auth transport', token_budget: 256, depth: 3, rank_by: 'degree', community_id: 0, file_type: 'code' },
         },
-      })
-      const filteredOut = handleStdioRequest(graphPath, {
+      }))
+      const filteredOut = await Promise.resolve(handleStdioRequest(graphPath, {
         id: 31,
         method: 'tools/call',
         params: {
           name: 'query_graph',
           arguments: { question: 'auth', community_id: 1 },
         },
-      })
-      const neighbors = handleStdioRequest(graphPath, {
+      }))
+      const neighbors = await Promise.resolve(handleStdioRequest(graphPath, {
         id: 4,
         method: 'tools/call',
         params: {
           name: 'get_neighbors',
           arguments: { label: 'HttpClient', relation_filter: 'uses' },
         },
-      })
-      const path = handleStdioRequest(graphPath, {
+      }))
+      const path = await Promise.resolve(handleStdioRequest(graphPath, {
         id: 5,
         method: 'tools/call',
         params: {
           name: 'shortest_path',
           arguments: { source: 'AuthService', target: 'Transport', max_hops: 3 },
         },
-      })
-      const community = handleStdioRequest(graphPath, {
+      }))
+      const community = await Promise.resolve(handleStdioRequest(graphPath, {
         id: 6,
         method: 'tools/call',
         params: {
           name: 'get_community',
           arguments: { community_id: 0 },
         },
-      })
-      const godNodes = handleStdioRequest(graphPath, {
+      }))
+      const godNodes = await Promise.resolve(handleStdioRequest(graphPath, {
         id: 7,
         method: 'tools/call',
         params: {
           name: 'god_nodes',
           arguments: { top_n: 1 },
         },
-      })
-      const anomalies = handleStdioRequest(graphPath, {
+      }))
+      const anomalies = await Promise.resolve(handleStdioRequest(graphPath, {
         id: 71,
         method: 'tools/call',
         params: {
           name: 'semantic_anomalies',
           arguments: { top_n: 1 },
         },
-      })
-      const diff = handleStdioRequest(graphPath, {
+      }))
+      const diff = await Promise.resolve(handleStdioRequest(graphPath, {
         id: 8,
         method: 'tools/call',
         params: {
           name: 'graph_diff',
           arguments: { baseline_graph_path: join(root, 'baseline.graph.json'), limit: 5 },
         },
-      })
-      const directDiff = handleStdioRequest(graphPath, {
+      }))
+      const directDiff = await Promise.resolve(handleStdioRequest(graphPath, {
         id: 9,
         method: 'diff',
         params: { baseline_graph_path: join(root, 'baseline.graph.json'), limit: 5 },
-      })
-      const directAnomalies = handleStdioRequest(graphPath, {
+      }))
+      const directAnomalies = await Promise.resolve(handleStdioRequest(graphPath, {
         id: 10,
         method: 'anomalies',
         params: { top_n: 1 },
-      })
+      }))
+      const timeTravel = await Promise.resolve(handleStdioRequest(
+        graphPath,
+        {
+          id: 11,
+          method: 'tools/call',
+          params: {
+            name: 'time_travel_compare',
+            arguments: {
+              from_ref: 'main',
+              to_ref: 'HEAD',
+              view: 'summary',
+              refresh: false,
+              limit: 5,
+            },
+          },
+        },
+        undefined,
+        { compareRefs },
+      ))
 
       const toolList = (tools?.result as { tools: Array<{ name: string; inputSchema: { properties: Record<string, unknown> } }> }).tools
       const queryTool = toolList.find((tool) => tool.name === 'query_graph')
@@ -427,6 +496,7 @@ describe('stdio runtime', () => {
       const neighborsTool = toolList.find((tool) => tool.name === 'get_neighbors')
       const pathTool = toolList.find((tool) => tool.name === 'shortest_path')
       const communityTool = toolList.find((tool) => tool.name === 'get_community')
+      const timeTravelTool = toolList.find((tool) => tool.name === 'time_travel_compare')
 
       expect(initialize).toMatchObject({
         jsonrpc: '2.0',
@@ -448,6 +518,11 @@ describe('stdio runtime', () => {
       expect(neighborsTool?.inputSchema.properties).toHaveProperty('relation_filter')
       expect(pathTool?.inputSchema.properties).toHaveProperty('max_hops')
       expect(communityTool?.inputSchema.properties).toHaveProperty('community_id')
+      expect(timeTravelTool?.inputSchema.properties).toHaveProperty('from_ref')
+      expect(timeTravelTool?.inputSchema.properties).toHaveProperty('to_ref')
+      expect(timeTravelTool?.inputSchema.properties).toHaveProperty('view')
+      expect(timeTravelTool?.inputSchema.properties).toHaveProperty('refresh')
+      expect(timeTravelTool?.inputSchema.properties).toHaveProperty('limit')
       expect((query?.result as { content: Array<{ text: string }> }).content[0]?.text).toContain('Traversal:')
       expect((query?.result as { content: Array<{ text: string }> }).content[0]?.text).toContain('Rank: DEGREE')
       expect((filteredOut?.result as { content: Array<{ text: string }> }).content[0]?.text).toContain('No matching nodes found')
@@ -459,6 +534,9 @@ describe('stdio runtime', () => {
       expect((anomalies?.result as { content: Array<{ text: string }> }).content[0]?.text).toContain('HttpClient bridges Auth Services and Transport Layer.')
       expect((diff?.result as { content: Array<{ text: string }> }).content[0]?.text).toContain('Graph diff: 1 new node, 1 new edge')
       expect((diff?.result as { content: Array<{ text: string }> }).content[0]?.text).toContain('Transport [transport]')
+      expect(JSON.parse((timeTravel?.result as { content: Array<{ text: string }> }).content[0]!.text)).toEqual(
+        expect.objectContaining({ view: 'summary' }),
+      )
       expect(directDiff?.result as string).toContain('Before: 2 nodes')
       expect(directDiff?.result as string).toContain('After: 3 nodes')
       expect(directAnomalies?.result as string).toContain('Semantic anomalies (1 shown)')

@@ -3,6 +3,7 @@ import { statSync } from 'node:fs'
 import { basename, dirname } from 'node:path'
 import type { Readable, Writable } from 'node:stream'
 
+import { compareRefs } from '../infrastructure/time-travel.js'
 import { diffGraphs } from './diff.js'
 import { MCP_PROMPTS, MCP_TOOLS, type McpPromptDefinition } from './stdio/definitions.js'
 import { handleCompletion, handlePromptGet, promptDefinitionsForGraph, readStoredCommunityLabels } from './stdio/prompts.js'
@@ -60,6 +61,10 @@ interface JsonRpcNotification {
   jsonrpc: '2.0'
   method: string
   params?: unknown
+}
+
+interface StdioToolOverrides {
+  compareRefs?: typeof compareRefs
 }
 
 const DEFAULT_STDIO_LOG_LEVEL: McpLogLevel = 'info'
@@ -414,7 +419,12 @@ function handleGraphDiff(id: string | number | null, currentGraphPath: string, p
   }
 }
 
-export function handleStdioRequest(graphPath: string, payload: unknown, sessionState: StdioSessionState = createSessionState()): StdioResponse | null {
+export function handleStdioRequest(
+  graphPath: string,
+  payload: unknown,
+  sessionState: StdioSessionState = createSessionState(),
+  toolOverrides: StdioToolOverrides = {},
+): StdioResponse | Promise<StdioResponse> | null {
   if (!payload || typeof payload !== 'object') {
     return failure(null, JSONRPC_INVALID_REQUEST, 'Invalid request')
   }
@@ -547,8 +557,14 @@ export function handleStdioRequest(graphPath: string, payload: unknown, sessionS
           loadGraphCached,
           queryOptionsFromParams,
           handleGraphDiff,
+          compareRefs: async (input) => {
+            const safeGraphPath = validateGraphPath(graphPath)
+            const projectRoot = dirname(dirname(safeGraphPath))
+            return await (toolOverrides.compareRefs ?? compareRefs)(input, { rootDir: projectRoot })
+          },
           readStoredCommunityLabels,
           jsonrpcInvalidParams: JSONRPC_INVALID_PARAMS,
+          jsonrpcServerError: JSONRPC_SERVER_ERROR,
           maxStdioTextLength: MAX_STDIO_TEXT_LENGTH,
           maxStdioHops: MAX_STDIO_HOPS,
           maxStdioTokenBudget: MAX_STDIO_TOKEN_BUDGET,
@@ -652,7 +668,7 @@ export async function serveGraphStdio(options: ServeGraphStdioOptions): Promise<
     }
 
     emitResourceNotifications(output, options.graphPath, sessionState)
-    const response = handleStdioRequest(options.graphPath, payload, sessionState)
+    const response = await Promise.resolve(handleStdioRequest(options.graphPath, payload, sessionState))
     if (response) {
       if (response.error) {
         emitLogNotification(output, sessionState, 'error', { message: response.error.message, code: response.error.code })
