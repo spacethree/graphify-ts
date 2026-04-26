@@ -54,6 +54,30 @@ function buildAfterGraph(): KnowledgeGraph {
   return graph
 }
 
+function buildUnlabeledBeforeGraph(): KnowledgeGraph {
+  const graph = new KnowledgeGraph({ directed: true })
+
+  graph.addNode('web', { label: 'WebApp', source_file: '/src/web.ts', node_kind: 'module', file_type: 'code', community: 2 })
+  graph.addNode('gateway', { source_file: '/src/gateway.ts', node_kind: 'function', file_type: 'code', community: 1 })
+
+  graph.addEdge('web', 'gateway', { relation: 'calls', confidence: 'EXTRACTED', source_file: '/src/web.ts' })
+
+  return graph
+}
+
+function buildUnlabeledAfterGraph(): KnowledgeGraph {
+  const graph = new KnowledgeGraph({ directed: true })
+
+  graph.addNode('web', { label: 'WebApp', source_file: '/src/web.ts', node_kind: 'module', file_type: 'code', community: 2 })
+  graph.addNode('gateway', { source_file: '/src/gateway.ts', node_kind: 'function', file_type: 'code', community: 1 })
+  graph.addNode('mobile', { label: 'MobileClient', source_file: '/src/mobile.ts', node_kind: 'module', file_type: 'code', community: 2 })
+
+  graph.addEdge('web', 'gateway', { relation: 'calls', confidence: 'EXTRACTED', source_file: '/src/web.ts' })
+  graph.addEdge('mobile', 'gateway', { relation: 'calls', confidence: 'EXTRACTED', source_file: '/src/mobile.ts' })
+
+  return graph
+}
+
 describe('time travel runtime regression coverage', () => {
   beforeEach(() => {
     vi.resetModules()
@@ -124,5 +148,44 @@ describe('time travel runtime regression coverage', () => {
     expect(result.risk.topImpacts[0]?.label).toBe('AuthService')
     expect(analyzeImpact).toHaveBeenCalled()
     expect(nodeEntriesSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('uses node id fallback when selecting risk impact graphs for unlabeled changed nodes', async () => {
+    const analyzeImpact = vi.fn((graph: KnowledgeGraph, _labels: Record<number, string>, options: { label: string }) => ({
+      target: options.label,
+      target_file: '',
+      depth: 3,
+      direct_dependents: [],
+      transitive_dependents: options.label === 'gateway' && graph.hasNode('mobile') ? [{
+        label: 'MobileClient',
+        source_file: '/src/mobile.ts',
+        node_kind: 'module',
+        file_type: 'code',
+        community: 2,
+        community_label: 'App Layer',
+        distance: 2,
+        relation: 'calls',
+      }] : [],
+      affected_files: [],
+      affected_communities: [],
+      top_paths_per_community: [],
+      total_affected: 0,
+    }))
+
+    vi.doMock('../../src/pipeline/community-naming.js', () => ({
+      buildCommunityLabels: () => ({}),
+    }))
+    vi.doMock('../../src/runtime/serve.js', () => ({
+      communitiesFromGraph: () => ({}),
+    }))
+    vi.doMock('../../src/runtime/impact.js', () => ({
+      analyzeImpact,
+    }))
+
+    const { compareTimeTravelGraphs } = await import('../../src/runtime/time-travel.js')
+
+    const result = compareTimeTravelGraphs(buildUnlabeledBeforeGraph(), buildUnlabeledAfterGraph(), { view: 'risk', limit: 5 })
+
+    expect(result.risk.topImpacts).toContainEqual(expect.objectContaining({ label: 'gateway', transitiveDependents: 1 }))
   })
 })

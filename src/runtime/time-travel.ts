@@ -268,7 +268,7 @@ export function compareTimeTravelGraphs(
   const view = options.view ?? 'summary'
   const diff = graphDiff(beforeGraph, afterGraph)
   const drift = movedNodes(beforeGraph, afterGraph)
-  const afterGraphLabels = new Set(afterGraph.nodeEntries().map(([, attributes]) => String(attributes.label ?? '')))
+  const afterGraphLabels = new Set(afterGraph.nodeEntries().map(([nodeId, attributes]) => String(attributes.label ?? nodeId)))
   const communityLabels = {
     ...resolveCommunityLabels(beforeGraph),
     ...resolveCommunityLabels(afterGraph),
