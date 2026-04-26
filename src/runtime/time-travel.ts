@@ -36,7 +36,7 @@ export interface CompareTimeTravelGraphsOptions {
 }
 
 function resolveLimit(limit?: number): number {
-  return typeof limit === 'number' && Number.isInteger(limit) && limit > 0 ? limit : DEFAULT_TIME_TRAVEL_LIMIT
+  return typeof limit === 'number' && Number.isInteger(limit) && limit >= 0 ? limit : DEFAULT_TIME_TRAVEL_LIMIT
 }
 
 function parseCommunityId(raw: unknown): number | null {

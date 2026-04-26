@@ -77,6 +77,12 @@ describe('time travel runtime', () => {
     expect(formatTimeTravelResult(result)).toContain('Security Layer')
   })
 
+  it('treats limit zero as zero drift items', () => {
+    const result = compareTimeTravelGraphs(buildBeforeGraph(), buildAfterGraph(), { view: 'drift', limit: 0 })
+
+    expect(result.drift.movedNodes).toEqual([])
+  })
+
   it('builds and formats a timeline view from graph deltas', () => {
     const result = compareTimeTravelGraphs(buildBeforeGraph(), buildAfterGraph(), { view: 'timeline', limit: 4 })
 
