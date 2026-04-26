@@ -1,0 +1,128 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { KnowledgeGraph } from '../../src/contracts/graph.js'
+
+function buildBeforeGraph(): KnowledgeGraph {
+  const graph = new KnowledgeGraph({ directed: true })
+
+  graph.addNode('web', { label: 'WebApp', source_file: '/src/web.ts', node_kind: 'module', file_type: 'code', community: 2 })
+  graph.addNode('mobile', { label: 'MobileClient', source_file: '/src/mobile.ts', node_kind: 'module', file_type: 'code', community: 2 })
+  graph.addNode('api', { label: 'ApiHandler', source_file: '/src/api.ts', node_kind: 'function', file_type: 'code', community: 2 })
+  graph.addNode('auth', { label: 'AuthService', source_file: '/src/auth.ts', node_kind: 'class', file_type: 'code', community: 0 })
+  graph.addNode('session', { label: 'SessionStore', source_file: '/src/session.ts', node_kind: 'class', file_type: 'code', community: 0 })
+  graph.addNode('db', { label: 'DatabaseConnection', source_file: '/src/db.ts', node_kind: 'class', file_type: 'code', community: 1 })
+
+  graph.addEdge('web', 'api', { relation: 'calls', confidence: 'EXTRACTED', source_file: '/src/web.ts' })
+  graph.addEdge('mobile', 'api', { relation: 'calls', confidence: 'EXTRACTED', source_file: '/src/mobile.ts' })
+  graph.addEdge('api', 'auth', { relation: 'calls', confidence: 'EXTRACTED', source_file: '/src/api.ts' })
+  graph.addEdge('auth', 'session', { relation: 'calls', confidence: 'EXTRACTED', source_file: '/src/auth.ts' })
+  graph.addEdge('session', 'db', { relation: 'calls', confidence: 'EXTRACTED', source_file: '/src/session.ts' })
+
+  graph.graph.community_labels = {
+    0: 'Auth Layer',
+    1: 'Data Layer',
+    2: 'App Layer',
+  }
+
+  return graph
+}
+
+function buildAfterGraph(): KnowledgeGraph {
+  const graph = new KnowledgeGraph({ directed: true })
+
+  graph.addNode('web', { label: 'WebApp', source_file: '/src/web.ts', node_kind: 'module', file_type: 'code', community: 2 })
+  graph.addNode('mobile', { label: 'MobileClient', source_file: '/src/mobile.ts', node_kind: 'module', file_type: 'code', community: 2 })
+  graph.addNode('api', { label: 'ApiHandler', source_file: '/src/api.ts', node_kind: 'function', file_type: 'code', community: 2 })
+  graph.addNode('auth', { label: 'AuthService', source_file: '/src/auth.ts', node_kind: 'class', file_type: 'code', community: 1 })
+  graph.addNode('session', { label: 'SessionStore', source_file: '/src/session.ts', node_kind: 'class', file_type: 'code', community: 0 })
+  graph.addNode('db', { label: 'DatabaseConnection', source_file: '/src/db.ts', node_kind: 'class', file_type: 'code', community: 1 })
+  graph.addNode('guide', { label: 'MigrationGuide', source_file: '/docs/migration.md', node_kind: 'document', file_type: 'document', community: 3 })
+
+  graph.addEdge('web', 'api', { relation: 'calls', confidence: 'EXTRACTED', source_file: '/src/web.ts' })
+  graph.addEdge('mobile', 'api', { relation: 'calls', confidence: 'EXTRACTED', source_file: '/src/mobile.ts' })
+  graph.addEdge('api', 'auth', { relation: 'calls', confidence: 'EXTRACTED', source_file: '/src/api.ts' })
+  graph.addEdge('auth', 'session', { relation: 'calls', confidence: 'EXTRACTED', source_file: '/src/auth.ts' })
+  graph.addEdge('session', 'db', { relation: 'calls', confidence: 'EXTRACTED', source_file: '/src/session.ts' })
+
+  graph.graph.community_labels = {
+    0: 'Auth Layer',
+    1: 'Security Layer',
+    2: 'App Layer',
+    3: 'Docs',
+  }
+
+  return graph
+}
+
+describe('time travel runtime regression coverage', () => {
+  beforeEach(() => {
+    vi.resetModules()
+  })
+
+  afterEach(() => {
+    vi.doUnmock('../../src/pipeline/analyze.js')
+    vi.doUnmock('../../src/pipeline/community-naming.js')
+    vi.doUnmock('../../src/runtime/impact.js')
+    vi.doUnmock('../../src/runtime/serve.js')
+    vi.clearAllMocks()
+  })
+
+  it('computes the graph diff once per comparison', async () => {
+    const actualAnalyze = await vi.importActual<typeof import('../../src/pipeline/analyze.js')>('../../src/pipeline/analyze.js')
+    const graphDiffSpy = vi.fn(actualAnalyze.graphDiff)
+
+    vi.doMock('../../src/pipeline/analyze.js', () => ({
+      ...actualAnalyze,
+      graphDiff: graphDiffSpy,
+    }))
+
+    const { compareTimeTravelGraphs } = await import('../../src/runtime/time-travel.js')
+
+    compareTimeTravelGraphs(buildBeforeGraph(), buildAfterGraph(), { view: 'summary', limit: 5 })
+
+    expect(graphDiffSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('builds the after-graph label lookup once before ranking risk', async () => {
+    const analyzeImpact = vi.fn((graph: KnowledgeGraph, _labels: Record<number, string>, options: { label: string }) => ({
+      target: options.label,
+      target_file: '',
+      depth: 3,
+      direct_dependents: [],
+      transitive_dependents: graph.hasNode('web') && options.label === 'AuthService' ? [{
+        label: 'WebApp',
+        source_file: '/src/web.ts',
+        node_kind: 'module',
+        file_type: 'code',
+        community: 2,
+        community_label: 'App Layer',
+        distance: 2,
+        relation: 'calls',
+      }] : [],
+      affected_files: [],
+      affected_communities: [],
+      top_paths_per_community: [],
+      total_affected: 0,
+    }))
+
+    vi.doMock('../../src/pipeline/community-naming.js', () => ({
+      buildCommunityLabels: () => ({}),
+    }))
+    vi.doMock('../../src/runtime/serve.js', () => ({
+      communitiesFromGraph: () => ({}),
+    }))
+    vi.doMock('../../src/runtime/impact.js', () => ({
+      analyzeImpact,
+    }))
+
+    const { compareTimeTravelGraphs } = await import('../../src/runtime/time-travel.js')
+    const afterGraph = buildAfterGraph()
+    const nodeEntriesSpy = vi.spyOn(afterGraph, 'nodeEntries')
+
+    const result = compareTimeTravelGraphs(buildBeforeGraph(), afterGraph, { view: 'risk', limit: 3 })
+
+    expect(result.risk.topImpacts[0]?.label).toBe('AuthService')
+    expect(analyzeImpact).toHaveBeenCalled()
+    expect(nodeEntriesSpy).toHaveBeenCalledTimes(1)
+  })
+})

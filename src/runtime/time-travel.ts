@@ -1,5 +1,5 @@
 import type { KnowledgeGraph } from '../contracts/graph.js'
-import { graphDiff } from '../pipeline/analyze.js'
+import { graphDiff, type GraphDiffResult } from '../pipeline/analyze.js'
 import { buildCommunityLabels } from '../pipeline/community-naming.js'
 import { analyzeImpact } from './impact.js'
 import { communitiesFromGraph } from './serve.js'
@@ -120,12 +120,12 @@ function incrementCommunityChange(counts: Map<number, number>, community: number
 }
 
 function summarizeChangedCommunities(
+  diff: GraphDiffResult,
   beforeGraph: KnowledgeGraph,
   afterGraph: KnowledgeGraph,
   limit: number,
   moved: Array<{ label: string; fromCommunity: number | null; toCommunity: number | null }>,
 ): Array<{ community: number; changeCount: number }> {
-  const diff = graphDiff(beforeGraph, afterGraph)
   const counts = new Map<number, number>()
 
   for (const node of diff.new_nodes) {
@@ -154,11 +154,11 @@ function summarizeChangedCommunities(
 }
 
 function changedLabels(
+  diff: GraphDiffResult,
   beforeGraph: KnowledgeGraph,
   afterGraph: KnowledgeGraph,
   moved: Array<{ label: string; fromCommunity: number | null; toCommunity: number | null }>,
 ): string[] {
-  const diff = graphDiff(beforeGraph, afterGraph)
   const labels = new Set<string>()
 
   for (const node of diff.new_nodes) {
@@ -185,13 +185,14 @@ function changedLabels(
 function riskView(
   beforeGraph: KnowledgeGraph,
   afterGraph: KnowledgeGraph,
+  afterGraphLabels: ReadonlySet<string>,
   labels: string[],
   options: CompareTimeTravelGraphsOptions,
   limit: number,
 ): Array<{ label: string; transitiveDependents: number }> {
   return labels
     .map((label) => {
-      const graph = afterGraph.nodeEntries().some(([, attributes]) => String(attributes.label ?? '') === label) ? afterGraph : beforeGraph
+      const graph = afterGraphLabels.has(label) ? afterGraph : beforeGraph
       const impact = analyzeImpact(graph, resolveCommunityLabels(graph), {
         label,
         ...(options.depth !== undefined ? { depth: options.depth } : {}),
@@ -208,13 +209,13 @@ function riskView(
 }
 
 function timelineView(
+  diff: GraphDiffResult,
   beforeGraph: KnowledgeGraph,
   afterGraph: KnowledgeGraph,
   moved: Array<{ label: string; fromCommunity: number | null; toCommunity: number | null }>,
   communityLabels: Record<number, string>,
   limit: number,
 ): Array<{ kind: string; label: string; reason: string }> {
-  const diff = graphDiff(beforeGraph, afterGraph)
   const events: Array<{ kind: string; label: string; reason: string }> = []
 
   for (const node of moved) {
@@ -267,13 +268,14 @@ export function compareTimeTravelGraphs(
   const view = options.view ?? 'summary'
   const diff = graphDiff(beforeGraph, afterGraph)
   const drift = movedNodes(beforeGraph, afterGraph)
+  const afterGraphLabels = new Set(afterGraph.nodeEntries().map(([, attributes]) => String(attributes.label ?? '')))
   const communityLabels = {
     ...resolveCommunityLabels(beforeGraph),
     ...resolveCommunityLabels(afterGraph),
   }
-  const changedCommunities = summarizeChangedCommunities(beforeGraph, afterGraph, limit, drift)
-  const labels = changedLabels(beforeGraph, afterGraph, drift)
-  const topImpacts = riskView(beforeGraph, afterGraph, labels, options, limit)
+  const changedCommunities = summarizeChangedCommunities(diff, beforeGraph, afterGraph, limit, drift)
+  const labels = changedLabels(diff, beforeGraph, afterGraph, drift)
+  const topImpacts = riskView(beforeGraph, afterGraph, afterGraphLabels, labels, options, limit)
 
   const result: TimeTravelResult = {
     fromRef,
@@ -305,7 +307,7 @@ export function compareTimeTravelGraphs(
       movedNodes: drift.slice(0, limit),
     },
     timeline: {
-      events: timelineView(beforeGraph, afterGraph, drift, communityLabels, limit),
+      events: timelineView(diff, beforeGraph, afterGraph, drift, communityLabels, limit),
     },
   }
 
