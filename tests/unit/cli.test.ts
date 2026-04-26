@@ -816,35 +816,82 @@ describe('cli main', () => {
 
   it('routes time-travel through the injected dependency after parsing args', async () => {
     const { io, logs, errors } = createIo()
-    const dependencies = createDependencies() as CliDependencies & {
-      runTimeTravel: (request: {
-        options: ReturnType<typeof parseTimeTravelArgs>
-        io: typeof io
-      }) => Promise<string | void> | string | void
-    }
-    let capturedRequest: unknown
-
-    dependencies.runTimeTravel = async (request) => {
-      capturedRequest = request
-      return 'time-travel result'
+    const runTimeTravel = vi.fn<NonNullable<CliDependencies['runTimeTravel']>>().mockResolvedValue('time-travel result')
+    const dependencies: CliDependencies = {
+      ...createDependencies(),
+      runTimeTravel,
     }
 
-    const exitCode = await executeCli(['time-travel', 'main', 'HEAD', '--view', 'risk', '--json', '--refresh', '--limit', '3'], io, dependencies)
+    await expect(executeCli(['time-travel', 'main', 'HEAD'], io, dependencies)).resolves.toBe(0)
 
-    expect(exitCode).toBe(0)
-    expect(logs).toEqual(['time-travel result'])
-    expect(errors).toEqual([])
-    expect(capturedRequest).toEqual({
+    expect(runTimeTravel).toHaveBeenCalledWith({
       options: {
         fromRef: 'main',
         toRef: 'HEAD',
-        view: 'risk',
-        json: true,
-        refresh: true,
-        limit: 3,
+        view: 'summary',
+        json: false,
+        refresh: false,
+        limit: 10,
       },
       io,
     })
+    expect(logs).toEqual(['time-travel result'])
+    expect(errors).toEqual([])
+  })
+
+  it('uses the default time-travel dependency to emit raw JSON unchanged', async () => {
+    const { io, logs, errors } = createIo()
+    const compareResult = {
+      fromRef: 'main',
+      toRef: 'HEAD',
+      view: 'summary' as const,
+      summary: {
+        headline: 'Auth flow changed',
+        whyItMatters: ['Transport now sits between auth and client.'],
+      },
+      changed: {
+        nodesAdded: 1,
+        nodesRemoved: 0,
+        edgesAdded: 1,
+        edgesRemoved: 0,
+        communities: [{ community: 1, changeCount: 2 }],
+      },
+      risk: {
+        topImpacts: [{ label: 'AuthService', transitiveDependents: 2 }],
+      },
+      drift: {
+        movedNodes: [],
+      },
+      timeline: {
+        events: [{ kind: 'node_added', label: 'Transport', reason: 'added in Community 1' }],
+      },
+    }
+    const compareRefs = vi.fn().mockResolvedValue(compareResult)
+
+    try {
+      vi.resetModules()
+      vi.doMock('../../src/infrastructure/time-travel.js', () => ({
+        compareRefs,
+      }))
+
+      const { executeCli: executeCliWithDefaultDependencies } = await import('../../src/cli/main.js')
+
+      await expect(executeCliWithDefaultDependencies(['time-travel', 'main', 'HEAD', '--json'], io)).resolves.toBe(0)
+
+      expect(compareRefs).toHaveBeenCalledWith({
+        fromRef: 'main',
+        toRef: 'HEAD',
+        view: 'summary',
+        json: true,
+        refresh: false,
+        limit: 10,
+      })
+      expect(logs).toEqual([JSON.stringify(compareResult, null, 2)])
+      expect(errors).toEqual([])
+    } finally {
+      vi.doUnmock('../../src/infrastructure/time-travel.js')
+      vi.resetModules()
+    }
   })
 
   it('executes query commands via injected dependencies', async () => {

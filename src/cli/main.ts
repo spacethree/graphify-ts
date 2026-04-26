@@ -4,6 +4,7 @@ import { createInterface } from 'node:readline/promises'
 import { loadBenchmarkQuestions, type BenchmarkResult, printBenchmark, runBenchmark } from '../infrastructure/benchmark.js'
 import { evaluateRetrievalQuality, formatQualityReport } from '../infrastructure/benchmark/quality.js'
 import { runCompareCommand } from '../infrastructure/compare.js'
+import { compareRefs } from '../infrastructure/time-travel.js'
 import { federate } from '../pipeline/federate.js'
 import { generateGraph, type GenerateGraphResult, type ProgressStep } from '../infrastructure/generate.js'
 import { install as installHooks, status as hookStatus, uninstall as uninstallHooks } from '../infrastructure/hooks.js'
@@ -29,6 +30,7 @@ import { serveGraph } from '../runtime/http-server.js'
 import { diffGraphs } from '../runtime/diff.js'
 import { serveGraphStdio } from '../runtime/stdio-server.js'
 import { getNeighbors, getNode, loadGraph, queryGraph, shortestPath } from '../runtime/serve.js'
+import { formatTimeTravelResult } from '../runtime/time-travel.js'
 import {
   parseBenchmarkArgs,
   parseAddArgs,
@@ -115,8 +117,9 @@ const DEFAULT_DEPENDENCIES: CliDependencies = {
       limit: options.limit,
     })
   },
-  runTimeTravel: async () => {
-    throw new Error('time-travel is not implemented yet')
+  runTimeTravel: async ({ options }) => {
+    const result = await compareRefs(options)
+    return options.json ? JSON.stringify(result, null, 2) : formatTimeTravelResult(result)
   },
   confirm: async (message) => {
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
