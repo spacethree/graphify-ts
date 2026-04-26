@@ -373,21 +373,47 @@ describe('cli parser', () => {
     expect(() => parseCompareArgs(['--exec', 'claude -p "$(cat {prompt_file})"'])).toThrow('Usage: graphify-ts compare')
   })
 
-  it('parses time-travel args', () => {
-    expect(parseTimeTravelArgs(['main', 'HEAD'])).toEqual({
+  it.each([
+    { args: ['main', 'HEAD'], view: 'summary' as const },
+    { args: ['main', 'HEAD', '--view', 'risk'], view: 'risk' as const },
+    { args: ['main', 'HEAD', '--view=drift'], view: 'drift' as const },
+    { args: ['main', 'HEAD', '--view=timeline'], view: 'timeline' as const },
+  ])('parses time-travel args for $view view', ({ args, view }) => {
+    expect(parseTimeTravelArgs(args)).toEqual({
       fromRef: 'main',
       toRef: 'HEAD',
-      view: 'summary',
+      view,
       json: false,
       refresh: false,
       limit: 10,
     })
   })
 
+  it('parses time-travel args with equals syntax for view and limit', () => {
+    expect(parseTimeTravelArgs(['main', 'HEAD', '--view=risk', '--json', '--refresh', '--limit=3'])).toEqual({
+      fromRef: 'main',
+      toRef: 'HEAD',
+      view: 'risk',
+      json: true,
+      refresh: true,
+      limit: 3,
+    })
+  })
+
   it('rejects invalid time-travel args', () => {
+    expect(() => parseTimeTravelArgs([])).toThrow('Usage: graphify-ts time-travel <from> <to>')
     expect(() => parseTimeTravelArgs(['main'])).toThrow('Usage: graphify-ts time-travel <from> <to>')
+    expect(() => parseTimeTravelArgs(['  ', 'HEAD'])).toThrow('Usage: graphify-ts time-travel <from> <to>')
+    expect(() => parseTimeTravelArgs(['main', 'HEAD', 'extra'])).toThrow('Usage: graphify-ts time-travel <from> <to>')
     expect(() => parseTimeTravelArgs(['main', 'HEAD', '--view', 'weird'])).toThrow(
       'error: --view must be one of summary, risk, drift, timeline',
+    )
+    expect(() => parseTimeTravelArgs(['main', 'HEAD', '--limit', '-1'])).toThrow(
+      'error: --limit must be a positive integer',
+    )
+    expect(() => parseTimeTravelArgs(['main', 'HEAD', '--limit=0'])).toThrow('error: --limit must be a positive integer')
+    expect(() => parseTimeTravelArgs(['main', 'HEAD', '--limit', 'abc'])).toThrow(
+      'error: --limit must be a positive integer',
     )
   })
 
@@ -594,10 +620,10 @@ describe('cli main', () => {
     expect(help).toContain('    --yes                 skip confirmation before running the paid prompt comparison')
     expect(help).toContain('    --limit N             cap processed prompts/questions for the comparison run')
     expect(help).toContain('time-travel <from> <to> compare two refs using graph snapshots')
-    expect(help).toContain('    --view MODE         summary|risk|drift|timeline (default summary)')
-    expect(help).toContain('    --json              emit machine-readable JSON')
-    expect(help).toContain('    --refresh           rebuild snapshots instead of using cache')
-    expect(help).toContain('    --limit N           cap view items (default 10)')
+    expect(help).toContain('    --view MODE          summary|risk|drift|timeline (default summary)')
+    expect(help).toContain('    --json               emit machine-readable JSON')
+    expect(help).toContain('    --refresh            rebuild snapshots instead of using cache')
+    expect(help).toContain('    --limit N            cap view items (default 10)')
     expect(help).toContain('question coverage')
     expect(help).toContain('hook <action>')
     expect(help).toContain('install [--platform P]')
