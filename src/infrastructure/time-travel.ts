@@ -112,8 +112,8 @@ function worktreePath(rootDir: string, commitSha: string): string {
   return join(worktreeRootDir(rootDir), `${commitSha}-${process.pid}-${Date.now()}`)
 }
 
-function snapshotBuildKey(rootDir: string, commitSha: string): string {
-  return `${rootDir}:${commitSha}`
+function snapshotBuildKey(rootDir: string, commitSha: string, refresh: boolean): string {
+  return `${rootDir}:${commitSha}:${refresh ? 'refresh' : 'reuse'}`
 }
 
 function snapshotTempDir(rootDir: string, commitSha: string): string {
@@ -213,6 +213,65 @@ function cachedSnapshot(rootDir: string, ref: string, commitSha: string): TimeTr
   }
 }
 
+function createDeferred<T>(): {
+  promise: Promise<T>
+  resolve: (value: T | PromiseLike<T>) => void
+  reject: (reason?: unknown) => void
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
+async function snapshotFromInflightBuild(input: SnapshotRequest, rootDir: string, commitSha: string, inflightBuild: Promise<TimeTravelSnapshot>): Promise<TimeTravelSnapshot> {
+  const snapshot = await inflightBuild
+  if (!input.refresh && canReuseSnapshot(rootDir, commitSha)) {
+    return cachedSnapshot(rootDir, input.ref, commitSha)
+  }
+  return {
+    ...snapshot,
+    ref: input.ref,
+    fromCache: false,
+  }
+}
+
+function getOrCreateInflightSnapshotBuild(buildKey: string, createBuild: () => Promise<TimeTravelSnapshot>): {
+  promise: Promise<TimeTravelSnapshot>
+  created: boolean
+} {
+  const existingBuild = inflightSnapshotBuilds.get(buildKey)
+  if (existingBuild) {
+    return {
+      promise: existingBuild,
+      created: false,
+    }
+  }
+
+  const deferredBuild = createDeferred<TimeTravelSnapshot>()
+  inflightSnapshotBuilds.set(buildKey, deferredBuild.promise)
+
+  void (async () => {
+    try {
+      deferredBuild.resolve(await createBuild())
+    } catch (error) {
+      deferredBuild.reject(error)
+    } finally {
+      if (inflightSnapshotBuilds.get(buildKey) === deferredBuild.promise) {
+        inflightSnapshotBuilds.delete(buildKey)
+      }
+    }
+  })()
+
+  return {
+    promise: deferredBuild.promise,
+    created: true,
+  }
+}
+
 function resolvedSnapshotDependencies(dependencies: SnapshotDependencies): Required<SnapshotDependencies> & { git: Required<SnapshotGitDependencies> } {
   const rootDir = resolve(dependencies.rootDir ?? '.')
   return {
@@ -238,26 +297,21 @@ function resolvedCompareDependencies(dependencies: CompareRefsDependencies): Req
 export async function loadOrBuildSnapshot(input: SnapshotRequest, dependencies: SnapshotDependencies = {}): Promise<TimeTravelSnapshot> {
   const deps = resolvedSnapshotDependencies(dependencies)
   const commitSha = await deps.git.resolveRef(input.ref)
+  const refresh = input.refresh === true
 
-  if (!input.refresh && canReuseSnapshot(deps.rootDir, commitSha)) {
+  if (!refresh && canReuseSnapshot(deps.rootDir, commitSha)) {
     return cachedSnapshot(deps.rootDir, input.ref, commitSha)
   }
 
-  const buildKey = snapshotBuildKey(deps.rootDir, commitSha)
-  const inflightBuild = inflightSnapshotBuilds.get(buildKey)
-  if (inflightBuild) {
-    const snapshot = await inflightBuild
-    if (!input.refresh && canReuseSnapshot(deps.rootDir, commitSha)) {
-      return cachedSnapshot(deps.rootDir, input.ref, commitSha)
-    }
-    return {
-      ...snapshot,
-      ref: input.ref,
-      fromCache: false,
+  if (!refresh) {
+    const inflightRefreshBuild = inflightSnapshotBuilds.get(snapshotBuildKey(deps.rootDir, commitSha, true))
+    if (inflightRefreshBuild) {
+      return snapshotFromInflightBuild(input, deps.rootDir, commitSha, inflightRefreshBuild)
     }
   }
 
-  const buildPromise = (async (): Promise<TimeTravelSnapshot> => {
+  const buildKey = snapshotBuildKey(deps.rootDir, commitSha, refresh)
+  const { promise: buildPromise, created } = getOrCreateInflightSnapshotBuild(buildKey, async (): Promise<TimeTravelSnapshot> => {
     const materializedWorktree = worktreePath(deps.rootDir, commitSha)
     let worktreeCreated = false
     let buildError: unknown = null
@@ -283,17 +337,13 @@ export async function loadOrBuildSnapshot(input: SnapshotRequest, dependencies: 
         }
       }
     }
-  })()
+  })
 
-  inflightSnapshotBuilds.set(buildKey, buildPromise)
-
-  try {
-    return await buildPromise
-  } finally {
-    if (inflightSnapshotBuilds.get(buildKey) === buildPromise) {
-      inflightSnapshotBuilds.delete(buildKey)
-    }
+  if (!created) {
+    return snapshotFromInflightBuild(input, deps.rootDir, commitSha, buildPromise)
   }
+
+  return buildPromise
 }
 
 export async function compareRefs(input: CompareRefsInput, dependencies: CompareRefsDependencies = {}): Promise<TimeTravelResult> {

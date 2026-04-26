@@ -8,6 +8,20 @@ import { compareRefs, loadOrBuildSnapshot, type CompareRefsDependencies, type Sn
 
 const createdRoots = new Set<string>()
 
+function createDeferred<T>(): {
+  promise: Promise<T>
+  resolve: (value: T | PromiseLike<T>) => void
+  reject: (reason?: unknown) => void
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
 function createTestRoot(name: string): string {
   const root = resolve('.test-artifacts', `time-travel-infrastructure-${name}-${process.pid}-${Math.random().toString(36).slice(2, 10)}`)
   mkdirSync(root, { recursive: true })
@@ -129,29 +143,31 @@ describe('time travel infrastructure', () => {
     expect(deps.generateGraph).toHaveBeenCalledTimes(1)
   })
 
-  it('reuses an in-flight snapshot build for the same commit', async () => {
+  it('reuses an in-flight snapshot build for concurrent requests for the same commit', async () => {
     const rootDir = createTestRoot('in-flight')
     const deps = createSnapshotDependencies(rootDir)
-    deps.git.resolveRef.mockResolvedValue('shared-sha')
+    const resolveRefGate = createDeferred<void>()
+    deps.git.resolveRef.mockImplementation(async () => {
+      await resolveRefGate.promise
+      return 'shared-sha'
+    })
 
-    let releaseBuild: (() => void) | null = null
-    const buildStarted = new Promise<void>((resolveStarted) => {
-      deps.generateGraph.mockImplementationOnce(async (worktreePath: string) => {
-        resolveStarted()
-        await new Promise<void>((resolveBuild) => {
-          releaseBuild = resolveBuild
-        })
-        return {
-          graphPath: join(worktreePath, 'graphify-out', 'graph.json'),
-          reportPath: join(worktreePath, 'graphify-out', 'GRAPH_REPORT.md'),
-        }
-      })
+    const buildGate = createDeferred<void>()
+    const buildStarted = createDeferred<void>()
+    deps.generateGraph.mockImplementationOnce(async (worktreePath: string) => {
+      buildStarted.resolve()
+      await buildGate.promise
+      return {
+        graphPath: join(worktreePath, 'graphify-out', 'graph.json'),
+        reportPath: join(worktreePath, 'graphify-out', 'GRAPH_REPORT.md'),
+      }
     })
 
     const first = loadOrBuildSnapshot({ ref: 'main', refresh: false }, deps)
-    await buildStarted
     const second = loadOrBuildSnapshot({ ref: 'origin/main', refresh: false }, deps)
-    releaseBuild?.()
+    resolveRefGate.resolve()
+    await buildStarted.promise
+    buildGate.resolve()
 
     const [firstResult, secondResult] = await Promise.all([first, second])
 
@@ -159,6 +175,40 @@ describe('time travel infrastructure', () => {
     expect(firstResult.fromCache).toBe(false)
     expect(secondResult.fromCache).toBe(true)
     expect(secondResult.graphPath).toBe(firstResult.graphPath)
+  })
+
+  it('starts a fresh build when refresh is requested during a non-refresh in-flight build', async () => {
+    const rootDir = createTestRoot('refresh-in-flight')
+    const deps = createSnapshotDependencies(rootDir)
+    deps.git.resolveRef.mockResolvedValue('shared-sha')
+
+    const firstBuildGate = createDeferred<void>()
+    const firstBuildStarted = createDeferred<void>()
+    deps.generateGraph
+      .mockImplementationOnce(async (worktreePath: string) => {
+        firstBuildStarted.resolve()
+        await firstBuildGate.promise
+        return {
+          graphPath: join(worktreePath, 'graphify-out', 'graph.json'),
+          reportPath: join(worktreePath, 'graphify-out', 'GRAPH_REPORT.md'),
+        }
+      })
+      .mockImplementation(async (worktreePath: string) => ({
+        graphPath: join(worktreePath, 'graphify-out', 'graph.json'),
+        reportPath: join(worktreePath, 'graphify-out', 'GRAPH_REPORT.md'),
+      }))
+
+    const first = loadOrBuildSnapshot({ ref: 'main', refresh: false }, deps)
+    await firstBuildStarted.promise
+    const refreshed = loadOrBuildSnapshot({ ref: 'main', refresh: true }, deps)
+    firstBuildGate.resolve()
+
+    const [firstResult, refreshedResult] = await Promise.all([first, refreshed])
+
+    expect(deps.generateGraph).toHaveBeenCalledTimes(2)
+    expect(deps.git.createDetachedWorktree).toHaveBeenCalledTimes(2)
+    expect(firstResult.fromCache).toBe(false)
+    expect(refreshedResult.fromCache).toBe(false)
   })
 
   it('preserves the original failure when worktree cleanup also fails', async () => {
