@@ -1,5 +1,5 @@
 import { KnowledgeGraph } from '../../src/contracts/graph.js'
-import { retrieveContext, scoreNode, tokenizeLabel, tokenizeQuestion } from '../../src/runtime/retrieve.js'
+import { retrieveContext, scoreNode, tokenWeightsForQuestion, tokenizeLabel, tokenizeQuestion } from '../../src/runtime/retrieve.js'
 
 describe('retrieve', () => {
   describe('tokenizeQuestion', () => {
@@ -242,6 +242,39 @@ describe('retrieve', () => {
       const result = retrieveContext(graph, { question: 'how does auth work?', budget: 5000 })
 
       expect(result.question).toBe('how does auth work?')
+    })
+
+    it('labels matched nodes with direct, related, and peripheral relevance bands', () => {
+      const graph = buildTestGraph()
+      graph.addNode('billing_store', {
+        label: 'BillingStore',
+        source_file: '/src/billing.ts',
+        line_number: 2,
+        node_kind: 'class',
+        file_type: 'code',
+      })
+      graph.addEdge('session_mgr', 'billing_store', { relation: 'depends_on', confidence: 'EXTRACTED', source_file: '/src/session.ts' })
+      const result = retrieveContext(graph, { question: 'auth', budget: 5000 })
+
+      expect(result.matched_nodes.find((node) => node.label === 'authenticateUser')?.relevance_band).toBe('direct')
+      expect(result.matched_nodes.find((node) => node.label === 'SessionManager')?.relevance_band).toBe('related')
+      expect(result.matched_nodes.find((node) => node.label === 'BillingStore')?.relevance_band).toBe('peripheral')
+    })
+  })
+
+  describe('tokenWeightsForQuestion', () => {
+    it('reuses cached token weights for the same graph instance and query tokens', () => {
+      const graph = new KnowledgeGraph()
+      graph.addNode('auth_service', { label: 'AuthService' })
+      graph.addNode('auth_controller', { label: 'AuthController' })
+
+      const questionTokens = tokenizeQuestion('auth flow')
+      const first = tokenWeightsForQuestion(graph, questionTokens)
+      const second = tokenWeightsForQuestion(graph, questionTokens)
+      const different = tokenWeightsForQuestion(graph, tokenizeQuestion('controller'))
+
+      expect(second).toBe(first)
+      expect(different).not.toBe(first)
     })
   })
 })

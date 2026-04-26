@@ -29,6 +29,7 @@ export interface ImpactResult {
   transitive_dependents: ImpactNode[]
   affected_files: string[]
   affected_communities: Array<{ id: number; label: string; node_count: number }>
+  top_paths_per_community: Array<{ id: number; label: string; distance: number; path: string[] }>
   total_affected: number
 }
 
@@ -99,6 +100,7 @@ export function analyzeImpact(
       transitive_dependents: [],
       affected_files: [],
       affected_communities: [],
+      top_paths_per_community: [],
       total_affected: 0,
     }
   }
@@ -108,11 +110,12 @@ export function analyzeImpact(
 
   // BFS to find all dependents at each distance
   const visited = new Map<string, number>() // nodeId -> distance
-  const queue: Array<{ nodeId: string; distance: number }> = [{ nodeId: targetNodeId, distance: 0 }]
+  const queue: Array<{ nodeId: string; distance: number; path: string[] }> = [{ nodeId: targetNodeId, distance: 0, path: [targetNodeId] }]
   visited.set(targetNodeId, 0)
 
   const directDependents: ImpactNode[] = []
   const transitiveDependents: ImpactNode[] = []
+  const discoveredDependents: Array<{ nodeId: string; path: string[]; node: ImpactNode }> = []
 
   while (queue.length > 0 && visited.size < MAX_IMPACT_NODES) {
     const current = queue.shift()
@@ -120,24 +123,25 @@ export function analyzeImpact(
       continue
     }
 
-    const neighbors = graph.incidentNeighbors(current.nodeId)
-    for (const neighborId of neighbors) {
-      if (visited.has(neighborId)) {
+    const dependents = graph.predecessors(current.nodeId)
+    for (const dependentId of dependents) {
+      if (visited.has(dependentId)) {
         continue
       }
 
-      const relation = edgeRelation(graph, current.nodeId, neighborId)
+      const relation = edgeRelation(graph, dependentId, current.nodeId)
       if (!matchesEdgeType(relation, options.edgeTypes)) {
         continue
       }
 
       const distance = current.distance + 1
-      visited.set(neighborId, distance)
+      const path = [...current.path, dependentId]
+      visited.set(dependentId, distance)
 
-      const attributes = graph.nodeAttributes(neighborId)
+      const attributes = graph.nodeAttributes(dependentId)
       const community = parseCommunityId(attributes.community)
       const node: ImpactNode = {
-        label: String(attributes.label ?? neighborId),
+        label: String(attributes.label ?? dependentId),
         source_file: String(attributes.source_file ?? ''),
         node_kind: String(attributes.node_kind ?? ''),
         file_type: String(attributes.file_type ?? ''),
@@ -153,23 +157,37 @@ export function analyzeImpact(
         transitiveDependents.push(node)
       }
 
-      queue.push({ nodeId: neighborId, distance })
+      discoveredDependents.push({ nodeId: dependentId, path, node })
+      queue.push({ nodeId: dependentId, distance, path })
     }
   }
 
   // Affected files (deduplicated)
   const fileSet = new Set<string>()
-  for (const node of [...directDependents, ...transitiveDependents]) {
-    if (node.source_file) {
-      fileSet.add(node.source_file)
+  for (const discovered of discoveredDependents) {
+    if (discovered.node.source_file) {
+      fileSet.add(discovered.node.source_file)
     }
   }
 
   // Affected communities (deduplicated with counts)
   const communityMap = new Map<number, number>()
-  for (const node of [...directDependents, ...transitiveDependents]) {
+  const topPathsByCommunity = new Map<number, { distance: number; path: string[] }>()
+  for (const discovered of discoveredDependents) {
+    const { node, path } = discovered
     if (node.community !== null) {
       communityMap.set(node.community, (communityMap.get(node.community) ?? 0) + 1)
+
+      const labeledPath = path.map((nodeId) => String(graph.nodeAttributes(nodeId).label ?? nodeId))
+      const existing = topPathsByCommunity.get(node.community)
+      const shouldReplace =
+        !existing ||
+        node.distance < existing.distance ||
+        (node.distance === existing.distance && labeledPath.join('\u0000') < existing.path.join('\u0000'))
+
+      if (shouldReplace) {
+        topPathsByCommunity.set(node.community, { distance: node.distance, path: labeledPath })
+      }
     }
   }
 
@@ -181,6 +199,15 @@ export function analyzeImpact(
     }))
     .sort((a, b) => b.node_count - a.node_count)
 
+  const topPathsPerCommunity = [...topPathsByCommunity.entries()]
+    .map(([id, value]) => ({
+      id,
+      label: communityLabels[id] ?? `Community ${id}`,
+      distance: value.distance,
+      path: value.path,
+    }))
+    .sort((a, b) => a.distance - b.distance || a.label.localeCompare(b.label))
+
   return {
     target: String(targetAttributes.label ?? targetNodeId),
     target_file: String(targetAttributes.source_file ?? ''),
@@ -189,6 +216,7 @@ export function analyzeImpact(
     transitive_dependents: transitiveDependents.sort((a, b) => a.distance - b.distance || a.label.localeCompare(b.label)),
     affected_files: [...fileSet].sort(),
     affected_communities: affectedCommunities,
+    top_paths_per_community: topPathsPerCommunity,
     total_affected: directDependents.length + transitiveDependents.length,
   }
 }

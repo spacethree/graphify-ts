@@ -300,6 +300,23 @@ describe('install helpers', () => {
     })
   })
 
+  it('pins the Claude MCP server package to the installed graphify-ts version', () => {
+    withTempDir((projectDir) => {
+      claudeInstall(projectDir)
+
+      const mcpConfig = JSON.parse(readFileSync(join(projectDir, '.mcp.json'), 'utf8')) as {
+        mcpServers?: {
+          'graphify-ts'?: {
+            args?: string[]
+          }
+        }
+      }
+      const packageJson = JSON.parse(readFileSync('package.json', 'utf8')) as { version: string }
+
+      expect(mcpConfig.mcpServers?.['graphify-ts']?.args?.[1]).toBe(`@mohammednagy/graphify-ts@${packageJson.version}`)
+    })
+  })
+
   it('keeps Claude project instructions and hooks idempotent across repeated installs', () => {
     withTempDir((projectDir) => {
       claudeInstall(projectDir)

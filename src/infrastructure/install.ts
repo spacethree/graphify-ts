@@ -467,11 +467,21 @@ function registerHomeClaudeSkill(homeDir: string): string {
 }
 
 type McpConfigTarget = 'claude' | 'cursor' | 'copilot'
+const NPM_PACKAGE_NAME = '@mohammednagy/graphify-ts'
 
 const MCP_CONFIG_PATHS: Record<McpConfigTarget, string> = {
   claude: '.mcp.json',
   cursor: join('.cursor', 'mcp.json'),
   copilot: join('.vscode', 'mcp.json'),
+}
+
+function installPackageSpecifier(packageRoot = findPackageRoot()): string {
+  const version = readPackageVersion(packageRoot)
+  if (version === 'unknown') {
+    throw new Error(`Could not determine graphify-ts package version from ${join(packageRoot, 'package.json')}`)
+  }
+
+  return `${NPM_PACKAGE_NAME}@${version}`
 }
 
 function installMcpServer(projectDir: string, target: McpConfigTarget = 'claude', nodePlatform = process.platform): string {
@@ -485,7 +495,7 @@ function installMcpServer(projectDir: string, target: McpConfigTarget = 'claude'
   // --yes skips the interactive install prompt that hangs in stdio mode.
   // Scoped name ensures npx resolves the package on first run.
   const npxCommand = nodePlatform === 'win32' ? 'npx.cmd' : 'npx'
-  const npxArgs = ['--yes', '@mohammednagy/graphify-ts', 'serve', '--stdio', graphPath]
+  const npxArgs = ['--yes', installPackageSpecifier(), 'serve', '--stdio', graphPath]
   const serverConfig = isVscode
     ? { type: 'stdio', command: npxCommand, args: npxArgs }
     : { command: npxCommand, args: npxArgs }

@@ -6,7 +6,7 @@ graphify-out/
 examples/demo-repo/graphify-out/
 .env
 .worktrees/
-docs/plans/
+docs/plans/*
 CLAUDE.md
 .claude
 .vscode

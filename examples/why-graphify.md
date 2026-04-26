@@ -128,6 +128,8 @@ What each command proves:
 
 The demo repo is intentionally tiny, so its token-reduction numbers are modest. It exists to make the flow reproducible, not to maximize the headline ratio. Demo outputs land in `examples/demo-repo/graphify-out/`, which is ignored so you can rerun the flow locally without polluting git status.
 
+If you want the exact command-level proof ladder and when to use each command, see [`docs/proof-workflows.md`](../docs/proof-workflows.md).
+
 ## Real A/B Proof with Your Own Model Command
 
 `benchmark` and `eval` prove graph quality offline. If you want a real "same question, same model, with and without graphify" run, use `compare`:
@@ -173,3 +175,23 @@ graphify-ts copilot install   # writes .vscode/mcp.json
 
 # Ask your agent a question — it will use retrieve, impact, etc. automatically
 ```
+
+## What to Prove First in a Real Team
+
+For an internal team rollout, the most convincing sequence is usually:
+
+1. Run `benchmark` and `eval` on one repo to prove the graph is smaller to query and still retrieves the expected evidence.
+2. Run `compare` with your real model command to produce a saved baseline-vs-graphify answer bundle.
+3. If your system spans multiple repos, generate each graph separately and use `federate` before showing the agent workflow.
+
+That progression keeps the proof honest:
+
+- `benchmark` and `eval` are local graph-quality measurements
+- `compare` is the model-facing proof
+- `federate` is the production architecture proof for frontend/backend/shared or microservice splits
+
+## Capability Coverage Matters
+
+`graphify-ts` does not use one extractor for everything. Today the strongest code path is TypeScript/JavaScript via the TypeScript compiler API; Go, Java, Python, Ruby, and Rust use tree-sitter first with local fallback; several other languages use heuristic extractors; and images/audio/video are metadata only.
+
+The exact matrix is published in [`docs/language-capability-matrix.md`](../docs/language-capability-matrix.md). That distinction is important when you are evaluating the tool for a polyglot codebase rather than a single TypeScript repo.

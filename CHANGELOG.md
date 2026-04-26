@@ -4,6 +4,25 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-04-26
+
+### Added
+
+- **Public capability matrix**: added `docs/language-capability-matrix.md` to document which languages and file types use AST-backed, tree-sitter, heuristic, document, or metadata-only extraction paths
+- **Proof workflow docs**: added `docs/proof-workflows.md` to separate reproducible local proof (`benchmark`/`eval`), same-model A/B proof (`compare`), and federated multi-repo proof
+
+### Improved
+
+- **Impact evidence**: `impact` now follows directed dependents and reports `top_paths_per_community` so blast-radius results include path evidence instead of just aggregate counts
+- **Retrieve output quality**: `retrieve` now tags matched nodes with a `relevance_band` and avoids over-expanding community-only matches, which keeps graph-guided context tighter
+- **Claude install pinning**: generated `.mcp.json` entries now pin `@mohammednagy/graphify-ts` to the installed package version so project MCP setups do not silently float
+- **Release and proof docs**: README and `examples/why-graphify.md` now explain the public capability matrix, reproducible proof ladder, federated proof workflow, and pinned project-local MCP setup
+
+### Fixed
+
+- **License metadata drift**: README and contributing docs now consistently describe the package as GNU AGPL v3.0-only
+- **Extractor and stdio maintainability**: refactored the major extractor and stdio hotspots into smaller modules without changing the command surface, making the release safer to maintain
+
 ## [0.8.2] - 2026-04-25
 
 ### Improved

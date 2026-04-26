@@ -6,7 +6,7 @@
 [![Vitest 3.2](https://img.shields.io/badge/tests-Vitest%203.2-6e9f18)](https://vitest.dev/)
 [![Local first](https://img.shields.io/badge/local--first-no%20cloud%20required-0f766e)](#what-this-package-is-best-at-today)
 [![No API keys](https://img.shields.io/badge/API%20keys-none%20required-111827)](#what-this-package-is-best-at-today)
-[![license MIT](https://img.shields.io/badge/license-MIT-16a34a)](https://github.com/mohanagy/graphify-ts/blob/main/LICENSE)
+[![license AGPL--3.0--only](https://img.shields.io/badge/license-AGPL--3.0--only-16a34a)](https://github.com/mohanagy/graphify-ts/blob/main/LICENSE)
 
 `graphify-ts` is a local TypeScript CLI that turns codebases and mixed project folders into queryable knowledge graphs. It generates graph artifacts that AI agents (Claude, Copilot, Cursor, Gemini) use to answer codebase questions with structural awareness — impact analysis, call chains, cross-repo connections — without sending your code anywhere.
 
@@ -37,6 +37,8 @@ graphify-ts claude install    # or cursor, copilot, gemini
 
 # Now your agent can use retrieve, impact, call_chain, and other MCP tools
 ```
+
+Need the exact support matrix? See [docs/language-capability-matrix.md](docs/language-capability-matrix.md). Need the reproducible proof ladder? See [docs/proof-workflows.md](docs/proof-workflows.md) and [examples/why-graphify.md](examples/why-graphify.md).
 
 What you get in `graphify-out/`:
 
@@ -94,8 +96,8 @@ When an agent connects via `graphify-ts serve --stdio`, it gets these tools:
 
 | Tool | What it does |
 |------|-------------|
-| `retrieve` | One-call context retrieval — question + token budget → matched nodes with code snippets, relationships, community context |
-| `impact` | Blast radius analysis — "if I change X, what could break?" with direct/transitive dependents |
+| `retrieve` | One-call context retrieval — question + token budget → matched nodes with code snippets, relationships, community context, and relevance bands |
+| `impact` | Blast radius analysis — "if I change X, what could break?" with directed dependents, affected communities, and path evidence |
 | `call_chain` | Execution path tracing — all paths from A to B filtered by edge type |
 | `pr_impact` | PR risk analysis — git diff → affected nodes → aggregate blast radius |
 | `community_details` | Hierarchical community data at micro/mid/macro zoom levels |
@@ -111,7 +113,7 @@ When an agent connects via `graphify-ts serve --stdio`, it gets these tools:
 
 The agent uses these tools to answer questions like:
 - "How does authentication work?" → `retrieve` returns relevant nodes with code snippets
-- "What breaks if I refactor SessionManager?" → `impact` shows 23 dependents across 4 communities
+- "What breaks if I refactor SessionManager?" → `impact` shows directed dependents, affected communities, and the highest-signal propagation paths
 - "How does a request flow from the API to the database?" → `call_chain` traces the execution path
 - "Is this PR safe to merge?" → `pr_impact` computes blast radius of all changes
 
@@ -169,22 +171,28 @@ graphify-ts generate .
 `claude install` does three things:
 1. Writes rules to `CLAUDE.md` telling the agent to use `retrieve` for codebase questions
 2. Registers a PreToolUse hook that reminds the agent about the graph
-3. Configures the MCP server to auto-start in `.claude/settings.json`
+3. Configures the MCP server to auto-start in `.mcp.json`
+
+The generated `.mcp.json` is project-local setup for your machine. Keep it out of version control, rerun `graphify-ts claude install` after upgrading `graphify-ts` so the pinned MCP package version stays current, and regenerate it locally instead of committing a user-specific graph path.
 
 Other platforms: `cursor install`, `copilot install`, `gemini install`, `aider install`
 
-## Current scope
+## Capability coverage
 
-| Area | Status | Notes |
-|---|---|---|
-| Graph generation + HTML explorer | Strong | Core workflow with Louvain community detection |
-| JavaScript / TypeScript extraction | Strong | TypeScript compiler API |
-| MCP tools for AI agents | Strong | 14 tools including retrieve, impact, call_chain |
-| Multi-repo federation | Available | Merges graphs with cross-repo edge inference |
-| Other languages | Available | Python, Go, Java, Ruby, Rust (tree-sitter), and more |
-| Documents and media | Available | PDF, DOCX, XLSX, images, audio/video metadata |
-| URL ingest | Available | GitHub, Reddit, HN, YouTube structured capture |
-| Exports | Available | HTML, JSON, wiki, Obsidian, SVG, GraphML, Neo4j |
+The public support matrix is in [docs/language-capability-matrix.md](docs/language-capability-matrix.md). The short version:
+
+| Area | Current implementation |
+|---|---|
+| TypeScript / JavaScript | TypeScript compiler API |
+| Python / Ruby / Go / Java / Rust | Tree-sitter WASM primary path with local fallback |
+| C-family / Kotlin / C# / Scala / PHP / Swift / Zig | Generic structural extractor |
+| Lua / Elixir / Julia / PowerShell / Objective-C / TOC | Lightweight language-specific scanners |
+| Markdown / text / PDF / DOCX / XLSX | Structured document extractors |
+| Images / audio / video | Metadata-only asset nodes |
+| URL ingest | GitHub, Reddit, Hacker News, X/Twitter, arXiv, YouTube, PDF, image, audio, video, webpage |
+| Everything else | No registered capability yet |
+
+That distinction matters: some paths are AST-backed, some are tree-sitter-backed with fallback, some are heuristic, and some asset types are metadata only. The matrix document is the precise source of truth.
 
 ## Optional generate flags
 
@@ -231,3 +239,9 @@ Contributions welcome — parser fixes, regression coverage, docs, install-flow 
 
 - [CONTRIBUTING.md](https://github.com/mohanagy/graphify-ts/blob/main/CONTRIBUTING.md)
 - [SECURITY.md](https://github.com/mohanagy/graphify-ts/blob/main/SECURITY.md)
+
+## License
+
+`graphify-ts` is licensed under **GNU AGPL v3.0 only**.
+
+In practice, that keeps local CLI use, internal use, and self-hosted workflows open while requiring network-service wrappers of the project to publish their source under the same license. See [`LICENSE`](LICENSE) for the full terms.

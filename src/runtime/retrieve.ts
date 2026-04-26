@@ -20,6 +20,7 @@ const STOP_WORDS = new Set([
 ])
 
 const CHARS_PER_TOKEN = 3
+const tokenWeightCache = new WeakMap<KnowledgeGraph, Map<string, Map<string, number>>>()
 
 export interface RetrieveOptions {
   question: string
@@ -36,6 +37,7 @@ export interface RetrieveMatchedNode {
   file_type: string
   snippet: string | null
   match_score: number
+  relevance_band: 'direct' | 'related' | 'peripheral'
   community: number | null
   community_label: string | null
 }
@@ -118,6 +120,24 @@ function buildTokenWeights(graph: KnowledgeGraph, questionTokens: readonly strin
   return weights
 }
 
+export function tokenWeightsForQuestion(graph: KnowledgeGraph, questionTokens: readonly string[]): Map<string, number> {
+  const cacheKey = questionTokens.join('\u0000')
+  let graphCache = tokenWeightCache.get(graph)
+  if (!graphCache) {
+    graphCache = new Map()
+    tokenWeightCache.set(graph, graphCache)
+  }
+
+  const cached = graphCache.get(cacheKey)
+  if (cached) {
+    return cached
+  }
+
+  const weights = buildTokenWeights(graph, questionTokens)
+  graphCache.set(cacheKey, weights)
+  return weights
+}
+
 function estimateTokens(text: string): number {
   return Math.max(1, Math.floor(text.length / CHARS_PER_TOKEN))
 }
@@ -179,6 +199,7 @@ interface ScoredNode {
   fileType: string
   community: number | null
   score: number
+  relevanceBand: 'direct' | 'related' | 'peripheral'
 }
 
 export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions): RetrieveResult {
@@ -213,7 +234,7 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
   }
 
   // Step 1+2: Score all nodes with TF-IDF-weighted tokens + community boost
-  const tokenWeights = buildTokenWeights(graph, questionTokens)
+  const tokenWeights = tokenWeightsForQuestion(graph, questionTokens)
   const scored: ScoredNode[] = []
   for (const [id, attributes] of graph.nodeEntries()) {
     const community = parseCommunityId(attributes.community)
@@ -245,6 +266,7 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
         fileType,
         community,
         score: totalScore,
+        relevanceBand: labelScore + sourceScore > 0 ? 'direct' : 'related',
       })
     }
   }
@@ -254,14 +276,21 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
   // Step 3: Multi-hop expansion — take top seeds, expand 2 hops with decaying scores
   const seedCount = Math.min(scored.length, 10)
   const seedIds = new Set(scored.slice(0, seedCount).map((node) => node.id))
+  const directSeedIds = scored
+    .filter((node) => node.relevanceBand === 'direct')
+    .slice(0, seedCount)
+    .map((node) => node.id)
+  const expansionSeedIds = new Set(directSeedIds.length > 0 ? directSeedIds : [...seedIds])
   const hopScores = new Map<string, number>()
+  const hopDistances = new Map<string, 1 | 2>()
 
   // Hop 1: direct neighbors get 0.5x of best seed score
   const bestSeedScore = scored.length > 0 ? scored[0]?.score ?? 0 : 0
-  for (const seedId of seedIds) {
+  for (const seedId of expansionSeedIds) {
     for (const neighborId of graph.neighbors(seedId)) {
-      if (!seedIds.has(neighborId)) {
+      if (!expansionSeedIds.has(neighborId)) {
         hopScores.set(neighborId, Math.max(hopScores.get(neighborId) ?? 0, bestSeedScore * 0.5))
+        hopDistances.set(neighborId, 1)
       }
     }
   }
@@ -273,6 +302,7 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
       for (const hop2Id of graph.neighbors(hop1Id)) {
         if (!seedIds.has(hop2Id) && !hop1Ids.has(hop2Id)) {
           hopScores.set(hop2Id, Math.max(hopScores.get(hop2Id) ?? 0, bestSeedScore * 0.25))
+          hopDistances.set(hop2Id, 2)
         }
       }
     }
@@ -304,6 +334,7 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
       fileType,
       community,
       score: hopScore,
+      relevanceBand: hopDistances.get(nodeId) === 1 ? 'related' : 'peripheral',
     })
   }
 
@@ -349,6 +380,7 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
       file_type: node.fileType,
       snippet,
       match_score: node.score,
+      relevance_band: node.relevanceBand,
       community: node.community,
       community_label: node.community !== null ? (communityLabels[node.community] ?? null) : null,
     })

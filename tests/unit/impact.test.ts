@@ -2,7 +2,7 @@ import { KnowledgeGraph } from '../../src/contracts/graph.js'
 import { analyzeImpact, callChains } from '../../src/runtime/impact.js'
 
 function buildTestGraph(): KnowledgeGraph {
-  const graph = new KnowledgeGraph()
+  const graph = new KnowledgeGraph({ directed: true })
 
   graph.addNode('auth', { label: 'authenticateUser', source_file: '/src/auth.ts', node_kind: 'function', file_type: 'code', community: 0 })
   graph.addNode('session', { label: 'SessionManager', source_file: '/src/session.ts', node_kind: 'class', file_type: 'code', community: 0 })
@@ -27,25 +27,21 @@ describe('impact', () => {
       const result = analyzeImpact(graph, {}, { label: 'authenticateUser' })
 
       expect(result.target).toBe('authenticateUser')
-      expect(result.direct_dependents.length).toBeGreaterThan(0)
-
-      const directLabels = result.direct_dependents.map((d) => d.label)
-      expect(directLabels).toContain('SessionManager')
-      expect(directLabels).toContain('UserModel')
-      expect(directLabels).toContain('ApiHandler')
+      expect(result.direct_dependents.map((d) => d.label)).toEqual(['ApiHandler'])
     })
 
     it('finds transitive dependents at depth 2+', () => {
       const graph = buildTestGraph()
-      const result = analyzeImpact(graph, {}, { label: 'authenticateUser', depth: 3 })
+      const result = analyzeImpact(graph, {}, { label: 'DatabaseConnection', depth: 3 })
 
       const transitiveLabels = result.transitive_dependents.map((d) => d.label)
-      expect(transitiveLabels).toContain('DatabaseConnection')
+      expect(transitiveLabels).toContain('authenticateUser')
+      expect(transitiveLabels).toContain('ApiHandler')
     })
 
     it('reports affected files', () => {
       const graph = buildTestGraph()
-      const result = analyzeImpact(graph, {}, { label: 'authenticateUser' })
+      const result = analyzeImpact(graph, {}, { label: 'DatabaseConnection', depth: 3 })
 
       expect(result.affected_files.length).toBeGreaterThan(0)
       expect(result.affected_files).toContain('/src/session.ts')
@@ -53,7 +49,7 @@ describe('impact', () => {
 
     it('reports affected communities', () => {
       const graph = buildTestGraph()
-      const result = analyzeImpact(graph, { 0: 'Auth Module', 1: 'Database' }, { label: 'authenticateUser', depth: 3 })
+      const result = analyzeImpact(graph, { 0: 'Auth Module', 1: 'Database', 2: 'API Layer' }, { label: 'DatabaseConnection', depth: 3 })
 
       expect(result.affected_communities.length).toBeGreaterThan(0)
     })
@@ -68,8 +64,8 @@ describe('impact', () => {
 
     it('respects depth limit', () => {
       const graph = buildTestGraph()
-      const shallow = analyzeImpact(graph, {}, { label: 'authenticateUser', depth: 1 })
-      const deep = analyzeImpact(graph, {}, { label: 'authenticateUser', depth: 3 })
+      const shallow = analyzeImpact(graph, {}, { label: 'DatabaseConnection', depth: 1 })
+      const deep = analyzeImpact(graph, {}, { label: 'DatabaseConnection', depth: 3 })
 
       expect(shallow.total_affected).toBeLessThanOrEqual(deep.total_affected)
       expect(shallow.transitive_dependents.length).toBe(0)
@@ -77,15 +73,15 @@ describe('impact', () => {
 
     it('filters by edge types', () => {
       const graph = buildTestGraph()
-      const callsOnly = analyzeImpact(graph, {}, { label: 'authenticateUser', edgeTypes: ['calls'] })
-      const allEdges = analyzeImpact(graph, {}, { label: 'authenticateUser' })
+      const callsOnly = analyzeImpact(graph, {}, { label: 'DatabaseConnection', edgeTypes: ['calls'] })
+      const allEdges = analyzeImpact(graph, {}, { label: 'DatabaseConnection' })
 
       expect(callsOnly.total_affected).toBeLessThanOrEqual(allEdges.total_affected)
     })
 
     it('includes distance on each dependent', () => {
       const graph = buildTestGraph()
-      const result = analyzeImpact(graph, {}, { label: 'authenticateUser', depth: 3 })
+      const result = analyzeImpact(graph, {}, { label: 'DatabaseConnection', depth: 3 })
 
       for (const dep of result.direct_dependents) {
         expect(dep.distance).toBe(1)
@@ -93,6 +89,26 @@ describe('impact', () => {
       for (const dep of result.transitive_dependents) {
         expect(dep.distance).toBeGreaterThan(1)
       }
+    })
+
+    it('returns shortest path evidence per affected community', () => {
+      const graph = buildTestGraph()
+      const result = analyzeImpact(graph, { 0: 'Auth Module', 2: 'API Layer' }, { label: 'SessionManager', depth: 3 })
+
+      expect(result.top_paths_per_community).toEqual([
+        {
+          id: 0,
+          label: 'Auth Module',
+          distance: 1,
+          path: ['SessionManager', 'authenticateUser'],
+        },
+        {
+          id: 2,
+          label: 'API Layer',
+          distance: 2,
+          path: ['SessionManager', 'authenticateUser', 'ApiHandler'],
+        },
+      ])
     })
   })
 
