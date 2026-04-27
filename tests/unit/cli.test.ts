@@ -16,6 +16,7 @@ import {
   parseQueryArgs,
   parseSaveResultArgs,
   parseServeArgs,
+  parseTimeTravelArgs,
   parseWatchArgs,
 } from '../../src/cli/parser.js'
 import { KnowledgeGraph } from '../../src/contracts/graph.js'
@@ -95,6 +96,7 @@ function createDependencies(): CliDependencies {
       ],
     }),
     runCompare: async () => 'compare command is not implemented yet',
+    runTimeTravel: async () => 'time-travel command is not implemented yet',
     confirm: async () => true,
     printBenchmark: () => {},
     installHooks: () => 'hooks installed',
@@ -371,6 +373,50 @@ describe('cli parser', () => {
     expect(() => parseCompareArgs(['--exec', 'claude -p "$(cat {prompt_file})"'])).toThrow('Usage: graphify-ts compare')
   })
 
+  it.each([
+    { args: ['main', 'HEAD'], view: 'summary' as const },
+    { args: ['main', 'HEAD', '--view', 'risk'], view: 'risk' as const },
+    { args: ['main', 'HEAD', '--view=drift'], view: 'drift' as const },
+    { args: ['main', 'HEAD', '--view=timeline'], view: 'timeline' as const },
+  ])('parses time-travel args for $view view', ({ args, view }) => {
+    expect(parseTimeTravelArgs(args)).toEqual({
+      fromRef: 'main',
+      toRef: 'HEAD',
+      view,
+      json: false,
+      refresh: false,
+      limit: 10,
+    })
+  })
+
+  it('parses time-travel args with equals syntax for view and limit', () => {
+    expect(parseTimeTravelArgs(['main', 'HEAD', '--view=risk', '--json', '--refresh', '--limit=3'])).toEqual({
+      fromRef: 'main',
+      toRef: 'HEAD',
+      view: 'risk',
+      json: true,
+      refresh: true,
+      limit: 3,
+    })
+  })
+
+  it('rejects invalid time-travel args', () => {
+    expect(() => parseTimeTravelArgs([])).toThrow('Usage: graphify-ts time-travel <from> <to>')
+    expect(() => parseTimeTravelArgs(['main'])).toThrow('Usage: graphify-ts time-travel <from> <to>')
+    expect(() => parseTimeTravelArgs(['  ', 'HEAD'])).toThrow('Usage: graphify-ts time-travel <from> <to>')
+    expect(() => parseTimeTravelArgs(['main', 'HEAD', 'extra'])).toThrow('Usage: graphify-ts time-travel <from> <to>')
+    expect(() => parseTimeTravelArgs(['main', 'HEAD', '--view', 'weird'])).toThrow(
+      'error: --view must be one of summary, risk, drift, timeline',
+    )
+    expect(() => parseTimeTravelArgs(['main', 'HEAD', '--limit', '-1'])).toThrow(
+      'error: --limit must be a positive integer',
+    )
+    expect(() => parseTimeTravelArgs(['main', 'HEAD', '--limit=0'])).toThrow('error: --limit must be a positive integer')
+    expect(() => parseTimeTravelArgs(['main', 'HEAD', '--limit', 'abc'])).toThrow(
+      'error: --limit must be a positive integer',
+    )
+  })
+
   it('parses generate args', () => {
     expect(parseGenerateArgs([])).toEqual({
       path: '.',
@@ -573,6 +619,11 @@ describe('cli main', () => {
     expect(help).toContain('    --baseline-mode MODE  choose full or bounded baseline context (default full)')
     expect(help).toContain('    --yes                 skip confirmation before running the paid prompt comparison')
     expect(help).toContain('    --limit N             cap processed prompts/questions for the comparison run')
+    expect(help).toContain('time-travel <from> <to> compare two refs using on-demand cached graph snapshots')
+    expect(help).toContain('    --view MODE          summary|risk|drift|timeline (default summary)')
+    expect(help).toContain('    --json               emit machine-readable JSON')
+    expect(help).toContain('    --refresh            rebuild snapshots instead of using cache')
+    expect(help).toContain('    --limit N            cap view items (default 10)')
     expect(help).toContain('question coverage')
     expect(help).toContain('hook <action>')
     expect(help).toContain('install [--platform P]')
@@ -760,6 +811,86 @@ describe('cli main', () => {
     } finally {
       process.chdir(originalCwd)
       rmSync(sandboxRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('routes time-travel through the injected dependency after parsing args', async () => {
+    const { io, logs, errors } = createIo()
+    const runTimeTravel = vi.fn<NonNullable<CliDependencies['runTimeTravel']>>().mockResolvedValue('time-travel result')
+    const dependencies: CliDependencies = {
+      ...createDependencies(),
+      runTimeTravel,
+    }
+
+    await expect(executeCli(['time-travel', 'main', 'HEAD'], io, dependencies)).resolves.toBe(0)
+
+    expect(runTimeTravel).toHaveBeenCalledWith({
+      options: {
+        fromRef: 'main',
+        toRef: 'HEAD',
+        view: 'summary',
+        json: false,
+        refresh: false,
+        limit: 10,
+      },
+      io,
+    })
+    expect(logs).toEqual(['time-travel result'])
+    expect(errors).toEqual([])
+  })
+
+  it('uses the default time-travel dependency to emit raw JSON unchanged', async () => {
+    const { io, logs, errors } = createIo()
+    const compareResult = {
+      fromRef: 'main',
+      toRef: 'HEAD',
+      view: 'summary' as const,
+      summary: {
+        headline: 'Auth flow changed',
+        whyItMatters: ['Transport now sits between auth and client.'],
+      },
+      changed: {
+        nodesAdded: 1,
+        nodesRemoved: 0,
+        edgesAdded: 1,
+        edgesRemoved: 0,
+        communities: [{ community: 1, changeCount: 2 }],
+      },
+      risk: {
+        topImpacts: [{ label: 'AuthService', transitiveDependents: 2 }],
+      },
+      drift: {
+        movedNodes: [],
+      },
+      timeline: {
+        events: [{ kind: 'node_added', label: 'Transport', reason: 'added in Community 1' }],
+      },
+    }
+    const compareRefs = vi.fn().mockResolvedValue(compareResult)
+
+    try {
+      vi.resetModules()
+      vi.doMock('../../src/infrastructure/time-travel.js', () => ({
+        compareRefs,
+      }))
+
+      const { executeCli: executeCliWithDefaultDependencies } = await import('../../src/cli/main.js')
+
+      await expect(executeCliWithDefaultDependencies(['time-travel', 'main', 'HEAD', '--json'], io)).resolves.toBe(0)
+
+      expect(compareRefs).toHaveBeenCalledWith({
+        fromRef: 'main',
+        toRef: 'HEAD',
+        view: 'summary',
+        json: true,
+        refresh: false,
+        limit: 10,
+      })
+      expect(logs).toEqual([JSON.stringify(compareResult, null, 2)])
+      expect(errors).toEqual([])
+    } finally {
+      vi.doUnmock('../../src/infrastructure/time-travel.js')
+      vi.resetModules()
     }
   })
 

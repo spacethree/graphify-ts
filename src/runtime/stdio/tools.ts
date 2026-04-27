@@ -1,11 +1,13 @@
 import { dirname } from 'node:path'
 
+import type { CompareRefsInput } from '../../infrastructure/time-travel.js'
 import { buildCommunityLabels } from '../../pipeline/community-naming.js'
 import { communityDetailsAtZoom, communityDetailsMicro, type CommunityZoomLevel } from '../../pipeline/community-details.js'
 import { validateGraphPath } from '../../shared/security.js'
 import { analyzeImpact, callChains } from '../impact.js'
 import { analyzePrImpact } from '../pr-impact.js'
 import { retrieveContext } from '../retrieve.js'
+import type { TimeTravelView } from '../time-travel.js'
 import {
   communitiesFromGraph,
   getCommunity,
@@ -40,14 +42,18 @@ interface ToolHelpers {
   loadGraphCached(graphPath: string): KnowledgeGraph
   queryOptionsFromParams(id: string | number | null, params: unknown): { failureResponse?: StdioResponse; queryOptions?: Record<string, unknown> }
   handleGraphDiff(id: string | number | null, currentGraphPath: string, params: unknown): StdioResponse
+  compareRefs(input: CompareRefsInput): Promise<unknown>
   readStoredCommunityLabels(graphPath: string): Record<number, string>
   jsonrpcInvalidParams: number
+  jsonrpcServerError: number
   maxStdioTextLength: number
   maxStdioHops: number
   maxStdioTokenBudget: number
 }
 
-export function handleToolCall(id: string | number | null, graphPath: string, params: unknown, helpers: ToolHelpers): StdioResponse {
+const TIME_TRAVEL_VIEWS = new Set<TimeTravelView>(['summary', 'risk', 'drift', 'timeline'])
+
+export function handleToolCall(id: string | number | null, graphPath: string, params: unknown, helpers: ToolHelpers): StdioResponse | Promise<StdioResponse> {
   const toolName = helpers.stringParam(params, 'name')
   if (!toolName) {
     return helpers.failure(id, helpers.jsonrpcInvalidParams, `tools/call requires a string name parameter <= ${helpers.maxStdioTextLength} characters`)
@@ -195,6 +201,40 @@ export function handleToolCall(id: string | number | null, graphPath: string, pa
         ...(retrieveFileType ? { fileType: retrieveFileType } : {}),
       })
       return helpers.ok(id, helpers.textToolResult(JSON.stringify(result)))
+    }
+    case 'time_travel_compare': {
+      const fromRef = helpers.stringParamAlias(toolArguments, ['from_ref', 'fromRef'])
+      const toRef = helpers.stringParamAlias(toolArguments, ['to_ref', 'toRef'])
+      if (!fromRef || !toRef) {
+        return helpers.failure(id, helpers.jsonrpcInvalidParams, `time_travel_compare requires string from_ref and to_ref parameters <= ${helpers.maxStdioTextLength} characters`)
+      }
+
+      const rawView = helpers.stringParam(toolArguments, 'view')
+      if (Object.hasOwn(toolArguments, 'view') && (!rawView || !TIME_TRAVEL_VIEWS.has(rawView as TimeTravelView))) {
+        return helpers.failure(id, helpers.jsonrpcInvalidParams, 'view must be one of summary, risk, drift, timeline')
+      }
+
+      const limit = helpers.numberParamAlias(toolArguments, ['limit'], { min: 0, max: 100 })
+      if (Object.hasOwn(toolArguments, 'limit') && limit === null) {
+        return helpers.failure(id, helpers.jsonrpcInvalidParams, 'limit must be a number between 0 and 100')
+      }
+
+      const refresh = toolArguments.refresh
+      if (Object.hasOwn(toolArguments, 'refresh') && typeof refresh !== 'boolean') {
+        return helpers.failure(id, helpers.jsonrpcInvalidParams, 'refresh must be a boolean')
+      }
+
+      return helpers.compareRefs({
+        fromRef,
+        toRef,
+        ...(rawView ? { view: rawView as TimeTravelView } : {}),
+        ...(typeof refresh === 'boolean' ? { refresh } : {}),
+        ...(limit !== null ? { limit } : {}),
+      }).then((result) => {
+        return helpers.ok(id, helpers.textToolResult(JSON.stringify(result)))
+      }).catch((error: unknown) => {
+        return helpers.failure(id, helpers.jsonrpcServerError, error instanceof Error ? error.message : 'Time travel comparison failed')
+      })
     }
     default:
       return helpers.failure(id, helpers.jsonrpcInvalidParams, `Unknown tool: ${toolName}`)

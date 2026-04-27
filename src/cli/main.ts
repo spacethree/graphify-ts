@@ -4,6 +4,7 @@ import { createInterface } from 'node:readline/promises'
 import { loadBenchmarkQuestions, type BenchmarkResult, printBenchmark, runBenchmark } from '../infrastructure/benchmark.js'
 import { evaluateRetrievalQuality, formatQualityReport } from '../infrastructure/benchmark/quality.js'
 import { runCompareCommand } from '../infrastructure/compare.js'
+import { compareRefs } from '../infrastructure/time-travel.js'
 import { federate } from '../pipeline/federate.js'
 import { generateGraph, type GenerateGraphResult, type ProgressStep } from '../infrastructure/generate.js'
 import { install as installHooks, status as hookStatus, uninstall as uninstallHooks } from '../infrastructure/hooks.js'
@@ -29,6 +30,7 @@ import { serveGraph } from '../runtime/http-server.js'
 import { diffGraphs } from '../runtime/diff.js'
 import { serveGraphStdio } from '../runtime/stdio-server.js'
 import { getNeighbors, getNode, loadGraph, queryGraph, shortestPath } from '../runtime/serve.js'
+import { formatTimeTravelResult } from '../runtime/time-travel.js'
 import {
   parseBenchmarkArgs,
   parseAddArgs,
@@ -43,8 +45,10 @@ import {
   parseQueryArgs,
   parseSaveResultArgs,
   parseServeArgs,
+  parseTimeTravelArgs,
   parseWatchArgs,
   type CompareCliOptions,
+  type TimeTravelCliOptions,
   UsageError,
 } from './parser.js'
 
@@ -59,6 +63,11 @@ export interface CompareCommandContext {
   confirm(message: string): Promise<boolean>
 }
 
+export interface TimeTravelCommandContext {
+  options: TimeTravelCliOptions
+  io: CliIO
+}
+
 export interface CliDependencies {
   loadGraph: typeof loadGraph
   queryGraph: typeof queryGraph
@@ -66,6 +75,7 @@ export interface CliDependencies {
   ingest: typeof ingest
   runBenchmark: typeof runBenchmark
   runCompare: (context: CompareCommandContext) => Promise<string | void> | string | void
+  runTimeTravel: (context: TimeTravelCommandContext) => Promise<string | void> | string | void
   confirm: (message: string) => Promise<boolean>
   printBenchmark: (result: BenchmarkResult) => void
   installHooks: typeof installHooks
@@ -106,6 +116,10 @@ const DEFAULT_DEPENDENCIES: CliDependencies = {
       baselineMode: options.baselineMode,
       limit: options.limit,
     })
+  },
+  runTimeTravel: async ({ options }) => {
+    const result = await compareRefs(options)
+    return options.json ? JSON.stringify(result, null, 2) : formatTimeTravelResult(result)
   },
   confirm: async (message) => {
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
@@ -232,6 +246,11 @@ export function formatHelp(binaryName = 'graphify-ts'): string {
     '    --baseline-mode MODE  choose full or bounded baseline context (default full)',
     '    --yes                 skip confirmation before running the paid prompt comparison',
     '    --limit N             cap processed prompts/questions for the comparison run',
+    '  time-travel <from> <to> compare two refs using on-demand cached graph snapshots',
+    '    --view MODE          summary|risk|drift|timeline (default summary)',
+    '    --json               emit machine-readable JSON',
+    '    --refresh            rebuild snapshots instead of using cache',
+    '    --limit N            cap view items (default 10)',
     '  install [--platform P] install the platform skill or local graphify config',
     '    platforms            claude|windows|gemini|cursor|codex|opencode|aider|claw|droid|trae|trae-cn|copilot',
     '  hook <action>          manage git hooks for graphify rebuild reminders',
@@ -401,6 +420,15 @@ export async function executeCli(argv: string[], io: CliIO = console, dependenci
         io,
         confirm,
       })
+      if (output !== undefined) {
+        io.log(output)
+      }
+      return 0
+    }
+
+    if (command === 'time-travel') {
+      const options = parseTimeTravelArgs(args)
+      const output = await dependencies.runTimeTravel({ options, io })
       if (output !== undefined) {
         io.log(output)
       }

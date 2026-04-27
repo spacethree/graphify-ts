@@ -4,6 +4,15 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Graph time travel CLI**: added `graphify-ts time-travel <from> <to>` to compare two git refs through local on-demand graph snapshots with `summary`, `risk`, `drift`, and `timeline` views; the default terminal output is the `summary` view
+- **Graph time travel MCP tool**: added `time_travel_compare` so MCP clients can run the same ref-to-ref comparison with `from_ref`, `to_ref`, optional `view`, `refresh`, and `limit` parameters
+
+### Improved
+
+- **Time travel snapshot docs**: documented that time-travel snapshots are built on demand, stored under `graphify-out/time-travel/snapshots/`, reused from cache when compatible, and rebuilt only when `--refresh` is requested
+
 ## [0.8.3] - 2026-04-26
 
 ### Added
