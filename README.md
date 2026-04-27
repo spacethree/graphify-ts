@@ -90,6 +90,31 @@ What `compare` does:
 
 Use `compare` when you want a showcase or a customer-proof run. Use `benchmark` and `eval` when you want repeatable local measurements without calling a model.
 
+## Graph time travel (ref-to-ref graph compare)
+
+Use `graphify-ts time-travel <from> <to>` to compare two git refs through local graph snapshots:
+
+```bash
+graphify-ts time-travel main HEAD
+graphify-ts time-travel v0.8.2 HEAD --view risk
+graphify-ts time-travel main HEAD --view timeline --json
+```
+
+How it works today:
+
+- On first use, graphify-ts materializes each ref on demand, builds a local snapshot, and stores it under `graphify-out/time-travel/snapshots/<commit-sha>/`
+- Later runs reuse compatible cached snapshots automatically; pass `--refresh` to rebuild both refs
+- There is no background history daemon or persistent snapshot service — snapshots are built only when you request a compare
+
+Views:
+
+- `summary` (default): headline, why-it-matters bullets, node/edge deltas, and changed communities
+- `risk`: changed labels ranked by transitive dependents
+- `drift`: nodes that moved between communities
+- `timeline`: added/removed nodes and edges plus community-move events
+
+The CLI defaults to the `summary` view. Pass `--json` when you want the raw result object instead of terminal formatting.
+
 ## MCP Tools for AI Agents
 
 When an agent connects via `graphify-ts serve --stdio`, it gets these tools:
@@ -103,6 +128,7 @@ When an agent connects via `graphify-ts serve --stdio`, it gets these tools:
 | `community_details` | Hierarchical community data at micro/mid/macro zoom levels |
 | `community_overview` | Quick overview of all communities — names, sizes, top nodes |
 | `query_graph` | Graph traversal for a natural language question |
+| `time_travel_compare` | Compare two refs using on-demand cached graph snapshots and return `summary`, `risk`, `drift`, or `timeline` JSON |
 | `get_node` | Node details |
 | `explain_node` | Node + neighborhood summary |
 | `shortest_path` | Shortest path between two concepts |
@@ -116,6 +142,7 @@ The agent uses these tools to answer questions like:
 - "What breaks if I refactor SessionManager?" → `impact` shows directed dependents, affected communities, and the highest-signal propagation paths
 - "How does a request flow from the API to the database?" → `call_chain` traces the execution path
 - "Is this PR safe to merge?" → `pr_impact` computes blast radius of all changes
+- "What changed between main and HEAD?" → `time_travel_compare` builds or reuses local snapshots and returns a summary, risk, drift, or timeline view
 
 ## Multi-Repo Federation
 
@@ -149,6 +176,7 @@ This merges graphs and infers cross-repo connections from shared types and funct
 | `benchmark [graph.json]` | Measure token reduction and structure signals |
 | `eval [graph.json]` | Measure retrieval quality: recall and MRR |
 | `compare [question]` | Run a real baseline-vs-graphify prompt comparison through your own terminal LLM command |
+| `time-travel <from> <to>` | Compare two refs via on-demand local graph snapshots (`summary` default; `risk`, `drift`, `timeline` optional) |
 | `install --platform claude` | Install home-level Claude skill |
 | `claude install` | Install project-local Claude integration with MCP auto-start |
 

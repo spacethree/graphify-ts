@@ -489,7 +489,7 @@ describe('stdio runtime', () => {
         { compareRefs },
       ))
 
-      const toolList = (tools?.result as { tools: Array<{ name: string; inputSchema: { properties: Record<string, unknown> } }> }).tools
+      const toolList = (tools?.result as { tools: Array<{ name: string; description?: string; inputSchema: { properties: Record<string, unknown> } }> }).tools
       const queryTool = toolList.find((tool) => tool.name === 'query_graph')
       const diffTool = toolList.find((tool) => tool.name === 'graph_diff')
       const anomaliesTool = toolList.find((tool) => tool.name === 'semantic_anomalies')
@@ -523,6 +523,9 @@ describe('stdio runtime', () => {
       expect(timeTravelTool?.inputSchema.properties).toHaveProperty('view')
       expect(timeTravelTool?.inputSchema.properties).toHaveProperty('refresh')
       expect(timeTravelTool?.inputSchema.properties).toHaveProperty('limit')
+      expect(timeTravelTool?.description).toBe(
+        'Compare two git refs using on-demand cached graph snapshots and return summary, risk, drift, or timeline output.',
+      )
       expect((query?.result as { content: Array<{ text: string }> }).content[0]?.text).toContain('Traversal:')
       expect((query?.result as { content: Array<{ text: string }> }).content[0]?.text).toContain('Rank: DEGREE')
       expect((filteredOut?.result as { content: Array<{ text: string }> }).content[0]?.text).toContain('No matching nodes found')

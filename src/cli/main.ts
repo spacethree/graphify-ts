@@ -246,7 +246,7 @@ export function formatHelp(binaryName = 'graphify-ts'): string {
     '    --baseline-mode MODE  choose full or bounded baseline context (default full)',
     '    --yes                 skip confirmation before running the paid prompt comparison',
     '    --limit N             cap processed prompts/questions for the comparison run',
-    '  time-travel <from> <to> compare two refs using graph snapshots',
+    '  time-travel <from> <to> compare two refs using on-demand cached graph snapshots',
     '    --view MODE          summary|risk|drift|timeline (default summary)',
     '    --json               emit machine-readable JSON',
     '    --refresh            rebuild snapshots instead of using cache',

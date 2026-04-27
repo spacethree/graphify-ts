@@ -224,7 +224,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
   },
   {
     name: 'time_travel_compare',
-    description: 'Compare two git refs using cached graph snapshots and return summary, risk, drift, or timeline output.',
+    description: 'Compare two git refs using on-demand cached graph snapshots and return summary, risk, drift, or timeline output.',
     inputSchema: {
       type: 'object',
       required: ['from_ref', 'to_ref'],

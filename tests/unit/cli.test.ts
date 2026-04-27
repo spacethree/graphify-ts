@@ -619,7 +619,7 @@ describe('cli main', () => {
     expect(help).toContain('    --baseline-mode MODE  choose full or bounded baseline context (default full)')
     expect(help).toContain('    --yes                 skip confirmation before running the paid prompt comparison')
     expect(help).toContain('    --limit N             cap processed prompts/questions for the comparison run')
-    expect(help).toContain('time-travel <from> <to> compare two refs using graph snapshots')
+    expect(help).toContain('time-travel <from> <to> compare two refs using on-demand cached graph snapshots')
     expect(help).toContain('    --view MODE          summary|risk|drift|timeline (default summary)')
     expect(help).toContain('    --json               emit machine-readable JSON')
     expect(help).toContain('    --refresh            rebuild snapshots instead of using cache')
