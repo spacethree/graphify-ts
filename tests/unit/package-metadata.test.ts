@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest'
 
 interface PackageManifest {
   devDependencies?: Record<string, string>
+  license?: string
 }
 
 function loadPackageManifest(): PackageManifest {
@@ -13,6 +14,14 @@ function loadPackageManifest(): PackageManifest {
 
 function loadDependabotConfig(): string {
   return readFileSync(join(process.cwd(), '.github', 'dependabot.yml'), 'utf8')
+}
+
+function loadReadme(): string {
+  return readFileSync(join(process.cwd(), 'README.md'), 'utf8')
+}
+
+function loadContributingGuide(): string {
+  return readFileSync(join(process.cwd(), 'CONTRIBUTING.md'), 'utf8')
 }
 
 function normalizeVersionRange(range: string | undefined): string {
@@ -36,5 +45,12 @@ describe('package metadata', () => {
     expect(dependabotConfig).toContain('patterns:')
     expect(dependabotConfig).toContain('- vitest')
     expect(dependabotConfig).toContain('- "@vitest/coverage-v8"')
+  })
+
+  it('keeps the declared project license aligned with MIT', () => {
+    expect(loadPackageManifest().license).toBe('MIT')
+    expect(loadReadme()).toContain('[![license MIT]')
+    expect(loadReadme()).toContain('licensed under **MIT**')
+    expect(loadContributingGuide()).toContain("licensed under this project's MIT license")
   })
 })

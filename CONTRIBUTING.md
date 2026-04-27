@@ -82,4 +82,4 @@ If you maintain the repository, repository-level protections such as branch prot
 
 ## License
 
-By contributing, you agree that your contributions are licensed under this project's GNU AGPL v3.0-only license.
+By contributing, you agree that your contributions are licensed under this project's MIT license.

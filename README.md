@@ -6,7 +6,7 @@
 [![Vitest 3.2](https://img.shields.io/badge/tests-Vitest%203.2-6e9f18)](https://vitest.dev/)
 [![Local first](https://img.shields.io/badge/local--first-no%20cloud%20required-0f766e)](#what-this-package-is-best-at-today)
 [![No API keys](https://img.shields.io/badge/API%20keys-none%20required-111827)](#what-this-package-is-best-at-today)
-[![license AGPL--3.0--only](https://img.shields.io/badge/license-AGPL--3.0--only-16a34a)](https://github.com/mohanagy/graphify-ts/blob/main/LICENSE)
+[![license MIT](https://img.shields.io/badge/license-MIT-16a34a)](https://github.com/mohanagy/graphify-ts/blob/main/LICENSE)
 
 `graphify-ts` is a local TypeScript CLI that turns codebases and mixed project folders into queryable knowledge graphs. It generates graph artifacts that AI agents (Claude, Copilot, Cursor, Gemini) use to answer codebase questions with structural awareness — impact analysis, call chains, cross-repo connections — without sending your code anywhere.
 
@@ -270,6 +270,4 @@ Contributions welcome — parser fixes, regression coverage, docs, install-flow 
 
 ## License
 
-`graphify-ts` is licensed under **GNU AGPL v3.0 only**.
-
-In practice, that keeps local CLI use, internal use, and self-hosted workflows open while requiring network-service wrappers of the project to publish their source under the same license. See [`LICENSE`](LICENSE) for the full terms.
+`graphify-ts` is licensed under **MIT**. See [`LICENSE`](LICENSE) for the full terms.
