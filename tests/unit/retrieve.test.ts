@@ -457,20 +457,28 @@ describe('retrieve', () => {
       const result = retrieveContext(graph, { question: 'auth', budget: 5000 })
       const labels = result.matched_nodes.map((node) => node.label)
 
-      expect(labels.indexOf('SessionManager')).toBeLessThan(labels.indexOf('BillingStore'))
+      expect(labels).toContain('SessionValidator')
+      expect(labels).toContain('SessionRouter')
+      expect(labels).toContain('SessionManager')
+      expect(labels).toContain('BillingCache')
+      expect(labels).toContain('InvoiceLedger')
+      expect(labels).toContain('TaxRules')
+      expect(labels.indexOf('SessionValidator')).toBeLessThan(labels.indexOf('BillingCache'))
+      expect(labels.indexOf('SessionRouter')).toBeLessThan(labels.indexOf('InvoiceLedger'))
+      expect(labels.indexOf('SessionManager')).toBeLessThan(labels.indexOf('TaxRules'))
+      expect(result.matched_nodes.find((node) => node.label === 'BillingCache')?.relevance_band).toBe('peripheral')
     })
 
     it('avoids promoting weak peripheral nodes when budget is tight', () => {
       const graph = buildExpansionGraph()
 
       const result = retrieveContext(graph, { question: 'auth flow', budget: 80 })
+      const labels = result.matched_nodes.map((node) => node.label)
 
-      expect(result.matched_nodes.map((node) => node.label)).toEqual(
-        expect.arrayContaining(['authenticateUser']),
-      )
-      expect(result.matched_nodes).not.toEqual(
-        expect.arrayContaining([expect.objectContaining({ label: 'BillingStore' })]),
-      )
+      expect(labels).toEqual(expect.arrayContaining(['authenticateUser']))
+      expect(labels).not.toContain('BillingCache')
+      expect(labels).not.toContain('InvoiceLedger')
+      expect(labels).not.toContain('TaxRules')
     })
 
     it('respects community filter', () => {
