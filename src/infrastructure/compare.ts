@@ -15,6 +15,7 @@ export type CompareBaselineMode = 'full' | 'bounded'
 export type CompareRunMode = 'baseline' | 'graphify'
 export type CompareRunStatus = 'not_run' | 'succeeded' | 'failed' | 'context_overflow'
 export type CompareFailureReason = 'prompt_too_long' | 'runner_error' | 'exec_error'
+export type ComparePromptTokenSource = 'estimated_cl100k_base' | 'claude_reported_input' | 'gemini_reported_input'
 
 export interface ComparePromptPack {
   kind: 'baseline' | 'graphify'
@@ -60,6 +61,17 @@ export interface ComparePromptTokenEstimator {
   exact: boolean
 }
 
+export interface ComparePromptUsage {
+  provider: 'claude' | 'gemini'
+  source: 'structured_stdout'
+  input_tokens: number
+  output_tokens: number
+  cache_creation_input_tokens: number
+  cache_read_input_tokens: number
+  input_total_tokens: number
+  total_tokens: number
+}
+
 export interface ComparePromptReport {
   question: string
   graph_path: string
@@ -68,10 +80,21 @@ export interface ComparePromptReport {
   baseline_prompt_tokens: number
   graphify_prompt_tokens: number
   reduction_ratio: number
+  baseline_total_tokens: number | null
+  graphify_total_tokens: number | null
+  total_reduction_ratio: number | null
   baseline_prompt_tokens_estimated: number
   graphify_prompt_tokens_estimated: number
   reduction_ratio_estimated: number
   prompt_token_estimator: ComparePromptTokenEstimator
+  prompt_token_source: {
+    baseline: ComparePromptTokenSource
+    graphify: ComparePromptTokenSource
+  }
+  usage: {
+    baseline: ComparePromptUsage | null
+    graphify: ComparePromptUsage | null
+  }
   started_at: string
   completed_at: string
   elapsed_ms: {
@@ -149,6 +172,13 @@ export interface ExecuteCompareRunsDependencies {
   now?: () => Date
 }
 
+interface ParsedCompareRunnerOutput {
+  answerText: string | null
+  usage: ComparePromptUsage | null
+}
+
+type CompareRunnerOutputParser = (stdout: string) => ParsedCompareRunnerOutput | null
+
 const DEFAULT_RETRIEVAL_BUDGET = 3_000
 const DEFAULT_BOUNDED_BASELINE_TOKENS = 4_000
 const EXEC_TEMPLATE_PLACEHOLDER_PATTERN = /\{[a-z_][a-z0-9_]*\}/gi
@@ -177,6 +207,170 @@ function summarizeExecTemplate(execTemplate: string): CompareExecCommandSummary 
     placeholders: [...new Set(placeholders)],
     redacted: true,
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function parseNonNegativeNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
+}
+
+function parseStructuredCompareAnswer(payload: Record<string, unknown>): string | null {
+  if (typeof payload.result === 'string') {
+    return payload.result
+  }
+  if (typeof payload.completion === 'string') {
+    return payload.completion
+  }
+  return null
+}
+
+function parseJsonRecord(stdout: string): Record<string, unknown> | null {
+  const trimmed = stdout.trim()
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
+    return null
+  }
+
+  let payload: unknown
+  try {
+    payload = JSON.parse(trimmed)
+  } catch {
+    return null
+  }
+
+  return isRecord(payload) ? payload : null
+}
+
+function parseClaudeStructuredUsage(payload: Record<string, unknown>): ComparePromptUsage | null {
+  if (!isRecord(payload.usage)) {
+    return null
+  }
+
+  const inputTokens = parseNonNegativeNumber(payload.usage.input_tokens)
+  const outputTokens = parseNonNegativeNumber(payload.usage.output_tokens)
+  if (inputTokens === null || outputTokens === null) {
+    return null
+  }
+
+  const cacheCreationInputTokens = parseNonNegativeNumber(payload.usage.cache_creation_input_tokens) ?? 0
+  const cacheReadInputTokens = parseNonNegativeNumber(payload.usage.cache_read_input_tokens) ?? 0
+  const inputTotalTokens = inputTokens + cacheCreationInputTokens + cacheReadInputTokens
+
+  return {
+    provider: 'claude',
+    source: 'structured_stdout',
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    cache_creation_input_tokens: cacheCreationInputTokens,
+    cache_read_input_tokens: cacheReadInputTokens,
+    input_total_tokens: inputTotalTokens,
+    total_tokens: inputTotalTokens + outputTokens,
+  }
+}
+
+function parseClaudeStructuredCompareRunnerOutput(stdout: string): ParsedCompareRunnerOutput | null {
+  const payload = parseJsonRecord(stdout)
+  if (payload === null) {
+    return null
+  }
+
+  const answerText = parseStructuredCompareAnswer(payload)
+  const usage = parseClaudeStructuredUsage(payload)
+  if (answerText === null && usage === null) {
+    return null
+  }
+
+  return {
+    answerText,
+    usage,
+  }
+}
+
+function parseGeminiStructuredAnswer(payload: Record<string, unknown>): string | null {
+  if (!Array.isArray(payload.candidates) || payload.candidates.length === 0) {
+    return null
+  }
+
+  const firstCandidate = payload.candidates[0]
+  if (!isRecord(firstCandidate) || !isRecord(firstCandidate.content) || !Array.isArray(firstCandidate.content.parts)) {
+    return null
+  }
+
+  let answerText = ''
+  for (const part of firstCandidate.content.parts) {
+    if (isRecord(part) && typeof part.text === 'string') {
+      answerText += part.text
+    }
+  }
+
+  return answerText.length > 0 ? answerText : null
+}
+
+function parseGeminiStructuredUsage(payload: Record<string, unknown>): ComparePromptUsage | null {
+  if (!isRecord(payload.usageMetadata)) {
+    return null
+  }
+
+  const inputTokens = parseNonNegativeNumber(payload.usageMetadata.promptTokenCount)
+  const outputTokens = parseNonNegativeNumber(payload.usageMetadata.candidatesTokenCount)
+  const totalTokens = parseNonNegativeNumber(payload.usageMetadata.totalTokenCount)
+  if (inputTokens === null || outputTokens === null || totalTokens === null) {
+    return null
+  }
+
+  return {
+    provider: 'gemini',
+    source: 'structured_stdout',
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: 0,
+    input_total_tokens: inputTokens,
+    total_tokens: totalTokens,
+  }
+}
+
+function parseGeminiStructuredCompareRunnerOutput(stdout: string): ParsedCompareRunnerOutput | null {
+  const payload = parseJsonRecord(stdout)
+  if (payload === null) {
+    return null
+  }
+
+  const answerText = parseGeminiStructuredAnswer(payload)
+  const usage = parseGeminiStructuredUsage(payload)
+  if (answerText === null && usage === null) {
+    return null
+  }
+
+  return {
+    answerText,
+    usage,
+  }
+}
+
+const COMPARE_RUNNER_OUTPUT_PARSERS: readonly CompareRunnerOutputParser[] = [
+  parseClaudeStructuredCompareRunnerOutput,
+  parseGeminiStructuredCompareRunnerOutput,
+]
+
+function parsePlainTextCompareRunnerOutput(stdout: string): ParsedCompareRunnerOutput {
+  return {
+    answerText: stdout,
+    usage: null,
+  }
+}
+
+function parseCompareRunnerOutput(stdout: string): ParsedCompareRunnerOutput {
+  for (const parser of COMPARE_RUNNER_OUTPUT_PARSERS) {
+    const parsedOutput = parser(stdout)
+    if (parsedOutput !== null) {
+      return parsedOutput
+    }
+  }
+
+  return parsePlainTextCompareRunnerOutput(stdout)
 }
 
 function validateCompareExecTemplate(template: string): void {
@@ -411,6 +605,41 @@ function computeReductionRatio(baselinePromptTokens: number, graphifyPromptToken
     return 0
   }
   return Number((baselinePromptTokens / graphifyPromptTokens).toFixed(1))
+}
+
+function formatTokenComparison(baselineTokens: number, graphifyTokens: number): string {
+  if (baselineTokens <= 0 || graphifyTokens <= 0) {
+    return 'n/a'
+  }
+  if (baselineTokens === graphifyTokens) {
+    return 'same size'
+  }
+  if (baselineTokens > graphifyTokens) {
+    return `${computeReductionRatio(baselineTokens, graphifyTokens)}x smaller`
+  }
+  return `${Number((graphifyTokens / baselineTokens).toFixed(1))}x larger`
+}
+
+function syncComparePromptMetrics(report: ComparePromptReport): void {
+  report.baseline_prompt_tokens = report.usage.baseline?.input_total_tokens ?? report.baseline_prompt_tokens_estimated
+  report.graphify_prompt_tokens = report.usage.graphify?.input_total_tokens ?? report.graphify_prompt_tokens_estimated
+  report.reduction_ratio = computeReductionRatio(report.baseline_prompt_tokens, report.graphify_prompt_tokens)
+  report.baseline_total_tokens = report.usage.baseline?.total_tokens ?? null
+  report.graphify_total_tokens = report.usage.graphify?.total_tokens ?? null
+  report.total_reduction_ratio =
+    report.baseline_total_tokens !== null && report.graphify_total_tokens !== null
+      ? computeReductionRatio(report.baseline_total_tokens, report.graphify_total_tokens)
+      : null
+  report.prompt_token_source.baseline = comparePromptTokenSource(report.usage.baseline)
+  report.prompt_token_source.graphify = comparePromptTokenSource(report.usage.graphify)
+}
+
+function comparePromptTokenSource(usage: ComparePromptUsage | null): ComparePromptTokenSource {
+  if (usage === null) {
+    return 'estimated_cl100k_base'
+  }
+
+  return usage.provider === 'claude' ? 'claude_reported_input' : 'gemini_reported_input'
 }
 
 function portablePath(path: string): string {
@@ -756,10 +985,21 @@ export function generateCompareArtifacts(input: GenerateCompareArtifactsInput): 
       baseline_prompt_tokens: baselinePromptTokens,
       graphify_prompt_tokens: graphifyPromptTokens,
       reduction_ratio: computeReductionRatio(baselinePromptTokens, graphifyPromptTokens),
+      baseline_total_tokens: null,
+      graphify_total_tokens: null,
+      total_reduction_ratio: null,
       baseline_prompt_tokens_estimated: baselinePromptTokens,
       graphify_prompt_tokens_estimated: graphifyPromptTokens,
       reduction_ratio_estimated: computeReductionRatio(baselinePromptTokens, graphifyPromptTokens),
       prompt_token_estimator: QUERY_TOKEN_ESTIMATOR,
+      prompt_token_source: {
+        baseline: 'estimated_cl100k_base',
+        graphify: 'estimated_cl100k_base',
+      },
+      usage: {
+        baseline: null,
+        graphify: null,
+      },
       started_at: now.toISOString(),
       completed_at: now.toISOString(),
       elapsed_ms: {
@@ -790,6 +1030,7 @@ export function generateCompareArtifacts(input: GenerateCompareArtifactsInput): 
       paths,
     }
 
+    syncComparePromptMetrics(report)
     writeCompareReport(report)
     return report
   })
@@ -841,9 +1082,14 @@ export async function executeCompareRuns(
           question: report.question,
           command,
         })
-        ensureCompareAnswerFile(execution.outputFile, executionResult.stdout)
+        const parsedOutput = parseCompareRunnerOutput(executionResult.stdout)
+        ensureCompareAnswerFile(
+          execution.outputFile,
+          parsedOutput.answerText ?? '',
+        )
         const contextOverflowEvidence =
           executionResult.exitCode === 0 ? null : extractContextOverflowEvidence(executionResult.stdout, executionResult.stderr)
+        report.usage[execution.mode] = executionResult.exitCode === 0 ? parsedOutput.usage : null
         report.status[execution.mode] =
           executionResult.exitCode === 0 ? 'succeeded' : contextOverflowEvidence !== null ? 'context_overflow' : 'failed'
         report.elapsed_ms[execution.mode] = executionResult.elapsedMs
@@ -854,6 +1100,7 @@ export async function executeCompareRuns(
         report.evidence[execution.mode] = contextOverflowEvidence
       } catch (error) {
         ensureCompareAnswerFile(execution.outputFile, '')
+        report.usage[execution.mode] = null
         const errorMessage = error instanceof Error ? error.message : String(error)
         const contextOverflowEvidence = extractContextOverflowEvidence(errorMessage)
         report.status[execution.mode] = contextOverflowEvidence !== null ? 'context_overflow' : 'failed'
@@ -864,6 +1111,7 @@ export async function executeCompareRuns(
         report.evidence[execution.mode] = contextOverflowEvidence
       }
 
+      syncComparePromptMetrics(report)
       report.completed_at = now().toISOString()
       writeCompareReport(report)
     }
@@ -876,6 +1124,18 @@ function sumPromptTokens(reports: readonly ComparePromptReport[], mode: CompareR
   return reports.reduce((total, report) => total + (mode === 'baseline' ? report.baseline_prompt_tokens : report.graphify_prompt_tokens), 0)
 }
 
+function sumTotalTokens(reports: readonly ComparePromptReport[], mode: CompareRunMode): number | null {
+  let total = 0
+  for (const report of reports) {
+    const value = mode === 'baseline' ? report.baseline_total_tokens : report.graphify_total_tokens
+    if (value === null) {
+      return null
+    }
+    total += value
+  }
+  return total
+}
+
 function countPromptRuns(reports: readonly ComparePromptReport[], status: Exclude<CompareRunStatus, 'not_run'>): number {
   return reports.reduce((total, report) => {
     const baseline = report.status.baseline === status ? 1 : 0
@@ -884,22 +1144,66 @@ function countPromptRuns(reports: readonly ComparePromptReport[], status: Exclud
   }, 0)
 }
 
+function countPromptUsageRuns(reports: readonly ComparePromptReport[]): number {
+  return reports.reduce((total, report) => total + (report.usage.baseline === null ? 0 : 1) + (report.usage.graphify === null ? 0 : 1), 0)
+}
+
+function usageProviderSummaryLabel(reports: readonly ComparePromptReport[]): string {
+  const providers = new Set<ComparePromptUsage['provider']>()
+
+  for (const report of reports) {
+    if (report.usage.baseline !== null) {
+      providers.add(report.usage.baseline.provider)
+    }
+    if (report.usage.graphify !== null) {
+      providers.add(report.usage.graphify.provider)
+    }
+  }
+
+  if (providers.size !== 1) {
+    return 'Runner'
+  }
+
+  const [provider] = providers
+  return provider === 'gemini' ? 'Gemini' : 'Claude'
+}
+
 export function formatCompareSummary(result: GenerateCompareArtifactsResult): string {
   const baselineTokens = sumPromptTokens(result.reports, 'baseline')
   const graphifyTokens = sumPromptTokens(result.reports, 'graphify')
-  const reductionRatio = computeReductionRatio(baselineTokens, graphifyTokens)
+  const baselineTotalTokens = sumTotalTokens(result.reports, 'baseline')
+  const graphifyTotalTokens = sumTotalTokens(result.reports, 'graphify')
+  const totalReductionRatio =
+    baselineTotalTokens !== null && graphifyTotalTokens !== null ? computeReductionRatio(baselineTotalTokens, graphifyTotalTokens) : null
   const failedRuns = countPromptRuns(result.reports, 'failed')
   const contextOverflowRuns = countPromptRuns(result.reports, 'context_overflow')
   const succeededRuns = countPromptRuns(result.reports, 'succeeded')
+  const usageRuns = countPromptUsageRuns(result.reports)
+  const totalRuns = result.reports.length * 2
+  const usageProviderLabel = usageProviderSummaryLabel(result.reports)
+  const promptTokenLabel =
+    usageRuns === totalRuns
+      ? `Input tokens (${usageProviderLabel} reported)`
+      : usageRuns > 0
+        ? `Input tokens (${usageProviderLabel} reported where available; ${QUERY_TOKEN_ESTIMATOR.model} estimate fallback)`
+        : `Prompt tokens (estimated ${QUERY_TOKEN_ESTIMATOR.model})`
 
-  return [
+  const lines = [
     `[graphify compare] completed ${result.reports.length} question(s)`,
     `- Output: ${result.output_root}`,
-    `- Prompt tokens (estimated ${QUERY_TOKEN_ESTIMATOR.model}): baseline ${baselineTokens} · graphify ${graphifyTokens} · ${reductionRatio}x smaller`,
+    `- ${promptTokenLabel}: baseline ${baselineTokens} · graphify ${graphifyTokens} · ${formatTokenComparison(baselineTokens, graphifyTokens)}`,
     `- Prompt runs: ${succeededRuns} succeeded${contextOverflowRuns > 0 ? ` · ${contextOverflowRuns} context overflow` : ''}${
       failedRuns > 0 ? ` · ${failedRuns} failed` : ''
     }`,
-  ].join('\n')
+  ]
+
+  if (baselineTotalTokens !== null && graphifyTotalTokens !== null && totalReductionRatio !== null) {
+    lines.splice(3, 0, `- Total tokens (${usageProviderLabel} reported): baseline ${baselineTotalTokens} · graphify ${graphifyTotalTokens} · ${formatTokenComparison(baselineTotalTokens, graphifyTotalTokens)}`)
+  } else if (usageRuns > 0 && usageRuns < totalRuns) {
+    lines.splice(3, 0, `- Usage capture: ${usageProviderLabel} reported usage for ${usageRuns}/${totalRuns} prompt runs; remaining runs used local estimate fallback`)
+  }
+
+  return lines.join('\n')
 }
 
 export async function runCompareCommand(

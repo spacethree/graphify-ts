@@ -611,6 +611,561 @@ describe('compare runtime', () => {
     )
   })
 
+  it('captures Claude-reported usage from structured runner output and saves plain answers', async () => {
+    const graph = makeGraph()
+    writeProjectFiles()
+    const graphPath = writeGraphFixture(graph)
+
+    const result = await executeCompareRuns(
+      {
+        graphPath,
+        question: 'how does login create a session',
+        outputDir: COMPARE_OUTPUT_ROOT,
+        execTemplate: 'runner --prompt {prompt_file} --mode {mode} --out {output_file}',
+        baselineMode: 'full',
+        now: new Date('2026-04-24T19:30:00.000Z'),
+      },
+      {
+        runner: async (execution) => ({
+          exitCode: 0,
+          stdout: JSON.stringify({
+            type: 'result',
+            subtype: 'success',
+            result: `${execution.mode} answer\n`,
+            usage:
+              execution.mode === 'baseline'
+                ? {
+                    input_tokens: 1200,
+                    output_tokens: 90,
+                    cache_creation_input_tokens: 100,
+                    cache_read_input_tokens: 20,
+                  }
+                : {
+                    input_tokens: 400,
+                    output_tokens: 70,
+                    cache_creation_input_tokens: 0,
+                    cache_read_input_tokens: 10,
+                  },
+          }),
+          stderr: '',
+          elapsedMs: execution.mode === 'baseline' ? 11 : 17,
+        }),
+      },
+    )
+
+    const report = result.reports[0]!
+    expect(readFileSync(report.answer_paths.baseline, 'utf8')).toBe('baseline answer\n')
+    expect(readFileSync(report.answer_paths.graphify, 'utf8')).toBe('graphify answer\n')
+    expect(report.baseline_prompt_tokens).toBe(1320)
+    expect(report.graphify_prompt_tokens).toBe(410)
+    expect(report.prompt_token_source).toEqual({
+      baseline: 'claude_reported_input',
+      graphify: 'claude_reported_input',
+    })
+    expect(report.usage).toEqual({
+      baseline: {
+        provider: 'claude',
+        source: 'structured_stdout',
+        input_tokens: 1200,
+        output_tokens: 90,
+        cache_creation_input_tokens: 100,
+        cache_read_input_tokens: 20,
+        input_total_tokens: 1320,
+        total_tokens: 1410,
+      },
+      graphify: {
+        provider: 'claude',
+        source: 'structured_stdout',
+        input_tokens: 400,
+        output_tokens: 70,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 10,
+        input_total_tokens: 410,
+        total_tokens: 480,
+      },
+    })
+    expect(report.baseline_total_tokens).toBe(1410)
+    expect(report.graphify_total_tokens).toBe(480)
+    expect(formatCompareSummary(result)).toContain('Input tokens (Claude reported): baseline 1320 · graphify 410')
+    expect(formatCompareSummary(result)).toContain('Total tokens (Claude reported): baseline 1410 · graphify 480')
+  })
+
+  it('does not write structured stdout JSON into answer artifacts when usage is present without answer text', async () => {
+    const graph = makeGraph()
+    writeProjectFiles()
+    const graphPath = writeGraphFixture(graph)
+
+    const result = await executeCompareRuns(
+      {
+        graphPath,
+        question: 'how does login create a session',
+        outputDir: COMPARE_OUTPUT_ROOT,
+        execTemplate: 'runner --prompt {prompt_file} --mode {mode} --out {output_file}',
+        baselineMode: 'full',
+        now: new Date('2026-04-24T19:30:00.000Z'),
+      },
+      {
+        runner: async () => ({
+          exitCode: 0,
+          stdout: JSON.stringify({
+            type: 'result',
+            subtype: 'success',
+            usage: {
+              input_tokens: 1200,
+              output_tokens: 90,
+              cache_creation_input_tokens: 100,
+              cache_read_input_tokens: 20,
+            },
+          }),
+          stderr: '',
+          elapsedMs: 11,
+        }),
+      },
+    )
+
+    const report = result.reports[0]!
+    expect(readFileSync(report.answer_paths.baseline, 'utf8')).toBe('')
+    expect(readFileSync(report.answer_paths.graphify, 'utf8')).toBe('')
+    expect(report.usage.baseline?.total_tokens).toBe(1410)
+    expect(report.usage.graphify?.total_tokens).toBe(1410)
+  })
+
+  it('falls back to raw stdout for unrecognized structured JSON output', async () => {
+    const graph = makeGraph()
+    writeProjectFiles()
+    const graphPath = writeGraphFixture(graph)
+
+    const stdout = JSON.stringify({
+      type: 'result',
+      subtype: 'success',
+      message: 'runner emitted raw JSON without parsed answer metadata',
+    })
+
+    const result = await executeCompareRuns(
+      {
+        graphPath,
+        question: 'how does login create a session',
+        outputDir: COMPARE_OUTPUT_ROOT,
+        execTemplate: 'runner --prompt {prompt_file} --mode {mode} --out {output_file}',
+        baselineMode: 'full',
+        now: new Date('2026-04-24T19:30:00.000Z'),
+      },
+      {
+        runner: async () => ({
+          exitCode: 0,
+          stdout,
+          stderr: '',
+          elapsedMs: 11,
+        }),
+      },
+    )
+
+    const report = result.reports[0]!
+    expect(readFileSync(report.answer_paths.baseline, 'utf8')).toBe(stdout)
+    expect(readFileSync(report.answer_paths.graphify, 'utf8')).toBe(stdout)
+    expect(report.usage.baseline).toBeNull()
+    expect(report.usage.graphify).toBeNull()
+  })
+
+  it('captures Gemini-reported usage from structured runner output and saves plain answers', async () => {
+    const graph = makeGraph()
+    writeProjectFiles()
+    const graphPath = writeGraphFixture(graph)
+
+    const result = await executeCompareRuns(
+      {
+        graphPath,
+        question: 'how does login create a session',
+        outputDir: COMPARE_OUTPUT_ROOT,
+        execTemplate: 'runner --prompt {prompt_file} --mode {mode} --out {output_file}',
+        baselineMode: 'full',
+        now: new Date('2026-04-24T19:30:00.000Z'),
+      },
+      {
+        runner: async (execution) => ({
+          exitCode: 0,
+          stdout: JSON.stringify({
+            candidates: [
+              {
+                content: {
+                  parts: [{ text: `${execution.mode} answer\n` }],
+                },
+              },
+            ],
+            usageMetadata:
+              execution.mode === 'baseline'
+                ? {
+                    promptTokenCount: 1200,
+                    candidatesTokenCount: 90,
+                    totalTokenCount: 1290,
+                  }
+                : {
+                    promptTokenCount: 400,
+                    candidatesTokenCount: 70,
+                    totalTokenCount: 470,
+                  },
+          }),
+          stderr: '',
+          elapsedMs: execution.mode === 'baseline' ? 11 : 17,
+        }),
+      },
+    )
+
+    const report = result.reports[0]!
+    expect(readFileSync(report.answer_paths.baseline, 'utf8')).toBe('baseline answer\n')
+    expect(readFileSync(report.answer_paths.graphify, 'utf8')).toBe('graphify answer\n')
+    expect(report.usage.baseline).toEqual(
+      expect.objectContaining({
+        provider: 'gemini',
+        input_tokens: 1200,
+        output_tokens: 90,
+        total_tokens: 1290,
+      }),
+    )
+    expect(report.usage.graphify).toEqual(
+      expect.objectContaining({
+        provider: 'gemini',
+        input_tokens: 400,
+        output_tokens: 70,
+        total_tokens: 470,
+      }),
+    )
+
+    const savedReport = JSON.parse(readFileSync(report.paths.report, 'utf8')) as {
+      usage: {
+        baseline: Record<string, unknown> | null
+        graphify: Record<string, unknown> | null
+      }
+    }
+    expect(savedReport.usage.baseline).toEqual(
+      expect.objectContaining({
+        provider: 'gemini',
+        input_tokens: 1200,
+        output_tokens: 90,
+        total_tokens: 1290,
+      }),
+    )
+    expect(savedReport.usage.graphify).toEqual(
+      expect.objectContaining({
+        provider: 'gemini',
+        input_tokens: 400,
+        output_tokens: 70,
+        total_tokens: 470,
+      }),
+    )
+  })
+
+  it('does not write Gemini structured stdout JSON into answer artifacts when usage metadata is present without answer text', async () => {
+    const graph = makeGraph()
+    writeProjectFiles()
+    const graphPath = writeGraphFixture(graph)
+
+    const result = await executeCompareRuns(
+      {
+        graphPath,
+        question: 'how does login create a session',
+        outputDir: COMPARE_OUTPUT_ROOT,
+        execTemplate: 'runner --prompt {prompt_file} --mode {mode} --out {output_file}',
+        baselineMode: 'full',
+        now: new Date('2026-04-24T19:30:00.000Z'),
+      },
+      {
+        runner: async (execution) => ({
+          exitCode: 0,
+          stdout: JSON.stringify({
+            candidates: [
+              {
+                content: {
+                  parts: [{ inlineData: { mimeType: 'text/plain' } }],
+                },
+              },
+            ],
+            usageMetadata:
+              execution.mode === 'baseline'
+                ? {
+                    promptTokenCount: 1200,
+                    candidatesTokenCount: 90,
+                    totalTokenCount: 1290,
+                  }
+                : {
+                    promptTokenCount: 400,
+                    candidatesTokenCount: 70,
+                    totalTokenCount: 470,
+                  },
+          }),
+          stderr: '',
+          elapsedMs: execution.mode === 'baseline' ? 11 : 17,
+        }),
+      },
+    )
+
+    const report = result.reports[0]!
+    expect(readFileSync(report.answer_paths.baseline, 'utf8')).toBe('')
+    expect(readFileSync(report.answer_paths.graphify, 'utf8')).toBe('')
+    expect(report.usage.baseline).toEqual(
+      expect.objectContaining({
+        provider: 'gemini',
+        input_tokens: 1200,
+        output_tokens: 90,
+        total_tokens: 1290,
+      }),
+    )
+    expect(report.usage.graphify).toEqual(
+      expect.objectContaining({
+        provider: 'gemini',
+        input_tokens: 400,
+        output_tokens: 70,
+        total_tokens: 470,
+      }),
+    )
+
+    const savedReport = JSON.parse(readFileSync(report.paths.report, 'utf8')) as {
+      usage: {
+        baseline: Record<string, unknown> | null
+        graphify: Record<string, unknown> | null
+      }
+    }
+    expect(savedReport.usage.baseline).toEqual(
+      expect.objectContaining({
+        provider: 'gemini',
+        input_tokens: 1200,
+        output_tokens: 90,
+        total_tokens: 1290,
+      }),
+    )
+    expect(savedReport.usage.graphify).toEqual(
+      expect.objectContaining({
+        provider: 'gemini',
+        input_tokens: 400,
+        output_tokens: 70,
+        total_tokens: 470,
+      }),
+    )
+  })
+
+  it('saves Gemini answers when structured usage metadata is missing and keeps estimate summaries', async () => {
+    const graph = makeGraph()
+    writeProjectFiles()
+    const graphPath = writeGraphFixture(graph)
+
+    const result = await executeCompareRuns(
+      {
+        graphPath,
+        question: 'how does login create a session',
+        outputDir: COMPARE_OUTPUT_ROOT,
+        execTemplate: 'runner --prompt {prompt_file} --mode {mode} --out {output_file}',
+        baselineMode: 'full',
+        now: new Date('2026-04-24T19:30:00.000Z'),
+      },
+      {
+        runner: async (execution) => ({
+          exitCode: 0,
+          stdout: JSON.stringify({
+            candidates: [
+              {
+                content: {
+                  parts: [{ text: `${execution.mode} answer\n` }],
+                },
+              },
+            ],
+          }),
+          stderr: '',
+          elapsedMs: execution.mode === 'baseline' ? 11 : 17,
+        }),
+      },
+    )
+
+    const report = result.reports[0]!
+    expect(readFileSync(report.answer_paths.baseline, 'utf8')).toBe('baseline answer\n')
+    expect(readFileSync(report.answer_paths.graphify, 'utf8')).toBe('graphify answer\n')
+    expect(report.usage.baseline).toBeNull()
+    expect(report.usage.graphify).toBeNull()
+    expect(report.prompt_token_source).toEqual({
+      baseline: 'estimated_cl100k_base',
+      graphify: 'estimated_cl100k_base',
+    })
+    expect(formatCompareSummary(result)).toContain('estimate')
+  })
+
+  it('concatenates Gemini text parts from the first candidate into answer artifacts', async () => {
+    const graph = makeGraph()
+    writeProjectFiles()
+    const graphPath = writeGraphFixture(graph)
+
+    const result = await executeCompareRuns(
+      {
+        graphPath,
+        question: 'how does login create a session',
+        outputDir: COMPARE_OUTPUT_ROOT,
+        execTemplate: 'runner --prompt {prompt_file} --mode {mode} --out {output_file}',
+        baselineMode: 'full',
+        now: new Date('2026-04-24T19:30:00.000Z'),
+      },
+      {
+        runner: async (execution) => ({
+          exitCode: 0,
+          stdout: JSON.stringify({
+            candidates: [
+              {
+                content: {
+                  parts: [{ text: `${execution.mode} ` }, { inlineData: { mimeType: 'text/plain' } }, { text: 'answer' }, { text: '\n' }],
+                },
+              },
+              {
+                content: {
+                  parts: [{ text: 'ignored candidate answer\n' }],
+                },
+              },
+            ],
+            usageMetadata: {
+              promptTokenCount: 1200,
+              candidatesTokenCount: 90,
+              totalTokenCount: 1290,
+            },
+          }),
+          stderr: '',
+          elapsedMs: execution.mode === 'baseline' ? 11 : 17,
+        }),
+      },
+    )
+
+    const report = result.reports[0]!
+    expect(readFileSync(report.answer_paths.baseline, 'utf8')).toBe('baseline answer\n')
+    expect(readFileSync(report.answer_paths.graphify, 'utf8')).toBe('graphify answer\n')
+  })
+
+  it('preserves malformed Gemini JSON stdout as the answer artifact without capturing usage', async () => {
+    const graph = makeGraph()
+    writeProjectFiles()
+    const graphPath = writeGraphFixture(graph)
+    const rawStdout = '{not valid json'
+
+    const result = await executeCompareRuns(
+      {
+        graphPath,
+        question: 'how does login create a session',
+        outputDir: COMPARE_OUTPUT_ROOT,
+        execTemplate: 'runner --prompt {prompt_file} --mode {mode} --out {output_file}',
+        baselineMode: 'full',
+        now: new Date('2026-04-24T19:30:00.000Z'),
+      },
+      {
+        runner: async () => ({
+          exitCode: 0,
+          stdout: rawStdout,
+          stderr: '',
+          elapsedMs: 11,
+        }),
+      },
+    )
+
+    const report = result.reports[0]!
+    expect(readFileSync(report.answer_paths.baseline, 'utf8')).toBe(rawStdout)
+    expect(readFileSync(report.answer_paths.graphify, 'utf8')).toBe(rawStdout)
+    expect(report.usage.baseline).toBeNull()
+    expect(report.usage.graphify).toBeNull()
+  })
+
+  it('promotes Gemini-reported input and total tokens into compare summaries', async () => {
+    const graph = makeGraph()
+    writeProjectFiles()
+    const graphPath = writeGraphFixture(graph)
+
+    const result = await executeCompareRuns(
+      {
+        graphPath,
+        question: 'how does login create a session',
+        outputDir: COMPARE_OUTPUT_ROOT,
+        execTemplate: 'runner --prompt {prompt_file} --mode {mode} --out {output_file}',
+        baselineMode: 'full',
+        now: new Date('2026-04-24T19:30:00.000Z'),
+      },
+      {
+        runner: async (execution) => ({
+          exitCode: 0,
+          stdout: JSON.stringify({
+            candidates: [
+              {
+                content: {
+                  parts: [{ text: `${execution.mode} answer\n` }],
+                },
+              },
+            ],
+            usageMetadata:
+              execution.mode === 'baseline'
+                ? {
+                    promptTokenCount: 1200,
+                    candidatesTokenCount: 90,
+                    totalTokenCount: 1290,
+                  }
+                : {
+                    promptTokenCount: 400,
+                    candidatesTokenCount: 70,
+                    totalTokenCount: 470,
+                  },
+          }),
+          stderr: '',
+          elapsedMs: execution.mode === 'baseline' ? 11 : 17,
+        }),
+      },
+    )
+
+    const report = result.reports[0]!
+    expect(report.baseline_prompt_tokens).toBe(1200)
+    expect(report.graphify_prompt_tokens).toBe(400)
+    expect(report.baseline_total_tokens).toBe(1290)
+    expect(report.graphify_total_tokens).toBe(470)
+    const summary = formatCompareSummary(result)
+    expect(summary).toContain('Input tokens (Gemini reported): baseline 1200 · graphify 400')
+    expect(summary).toContain('Total tokens (Gemini reported): baseline 1290 · graphify 470')
+  })
+
+  it('reports when graphify uses more Claude-reported tokens than the baseline', async () => {
+    const graph = makeGraph()
+    writeProjectFiles()
+    const graphPath = writeGraphFixture(graph)
+
+    const result = await executeCompareRuns(
+      {
+        graphPath,
+        question: 'how does login create a session',
+        outputDir: COMPARE_OUTPUT_ROOT,
+        execTemplate: 'runner --prompt {prompt_file} --mode {mode} --out {output_file}',
+        baselineMode: 'full',
+        now: new Date('2026-04-24T19:30:00.000Z'),
+      },
+      {
+        runner: async (execution) => ({
+          exitCode: 0,
+          stdout: JSON.stringify({
+            type: 'result',
+            subtype: 'success',
+            result: `${execution.mode} answer\n`,
+            usage:
+              execution.mode === 'baseline'
+                ? {
+                    input_tokens: 300,
+                    output_tokens: 50,
+                    cache_creation_input_tokens: 0,
+                    cache_read_input_tokens: 0,
+                  }
+                : {
+                    input_tokens: 500,
+                    output_tokens: 80,
+                    cache_creation_input_tokens: 0,
+                    cache_read_input_tokens: 0,
+                  },
+          }),
+          stderr: '',
+          elapsedMs: 1,
+        }),
+      },
+    )
+
+    expect(formatCompareSummary(result)).toContain('Input tokens (Claude reported): baseline 300 · graphify 500 · 1.7x larger')
+    expect(formatCompareSummary(result)).toContain('Total tokens (Claude reported): baseline 350 · graphify 580 · 1.7x larger')
+  })
+
   it('preserves partial compare results when one side fails', async () => {
     const graph = makeGraph()
     writeProjectFiles()
