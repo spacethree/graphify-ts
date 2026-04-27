@@ -4,6 +4,13 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.6] - 2026-04-27
+
+### Fixed
+
+- **Dependency security and release hygiene**: upgraded `vitest` to `4.1.5` and `@types/node` to `25.6.0` from merged Dependabot updates
+- **Coupled test-tooling updates**: Dependabot now groups `vitest` and `@vitest/coverage-v8` together, and package metadata tests enforce both the group rule and version alignment to prevent another release-time dependency skew
+
 ## [0.8.5] - 2026-04-27
 
 ### Fixed
