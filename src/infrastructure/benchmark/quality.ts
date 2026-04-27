@@ -56,6 +56,18 @@ export const GOLD_QUESTIONS: GoldQuestion[] = [
     expected_labels: ['retrievecontext', 'scorenode'],
   },
   {
+    question: 'retrieveContext',
+    expected_labels: ['retrievecontext'],
+  },
+  {
+    question: 'how does retrieveContext build community labels',
+    expected_labels: ['retrievecontext', 'buildcommunitylabels'],
+  },
+  {
+    question: 'scoreNode',
+    expected_labels: ['scorenode'],
+  },
+  {
     question: 'how does javascript extraction work',
     expected_labels: ['extractjs', 'extractionnode'],
   },

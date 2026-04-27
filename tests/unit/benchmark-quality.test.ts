@@ -63,6 +63,29 @@ describe('retrieval quality benchmark', () => {
     expect(report.questions[0]!.missing_labels).toEqual([])
   })
 
+  it('raises reciprocal rank when the expected direct node appears before supporting context', () => {
+    const graph = buildTestGraph()
+    const questions: GoldQuestion[] = [
+      { question: 'how does authentication work', expected_labels: ['loginhandler'] },
+    ]
+
+    const report = evaluateRetrievalQuality(graph, questions, 3000)
+
+    expect(report.mrr).toBe(1)
+  })
+
+  it('keeps recall while reducing unnecessary returned labels for narrow symbol queries', () => {
+    const graph = buildTestGraph()
+    const report = evaluateRetrievalQuality(
+      graph,
+      [{ question: 'login handler', expected_labels: ['loginhandler'] }],
+      3000,
+    )
+
+    expect(report.questions[0]?.recall).toBe(1)
+    expect(report.questions[0]?.returned_labels.length).toBeLessThanOrEqual(3)
+  })
+
   it('reports zero recall when no expected labels match', () => {
     const graph = buildTestGraph()
     const questions: GoldQuestion[] = [{ question: 'quantum entanglement physics', expected_labels: ['quantumprocessor'] }]

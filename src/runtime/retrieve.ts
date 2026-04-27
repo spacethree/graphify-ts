@@ -206,6 +206,8 @@ interface ScoredNode {
   nodeKind: string
   fileType: string
   community: number | null
+  exactLabelMatch: boolean
+  sourcePathMatch: boolean
   evidenceTier: 0 | 1 | 2
   score: number
   relevanceBand: 'direct' | 'related' | 'peripheral'
@@ -263,12 +265,18 @@ function relationWeight(relation: string): number {
     case 'imports_from':
     case 'defines':
       return 1
+    case 'contains':
+      return 1.2
     case 'uses':
     case 'depends_on':
       return 0.7
     default:
       return 0.35
   }
+}
+
+function isPrimaryExpansionRelation(relation: string): boolean {
+  return relation === 'calls' || relation === 'imports_from' || relation === 'defines' || relation === 'contains'
 }
 
 export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions): RetrieveResult {
@@ -327,6 +335,8 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
         nodeKind: String(attributes.node_kind ?? ''),
         fileType,
         community,
+        exactLabelMatch: score.labelExactScore > 0,
+        sourcePathMatch: score.sourcePathScore > 0,
         evidenceTier: evidenceTierForSeedScore(score),
         score: score.total,
         relevanceBand: score.labelExactScore > 0 || score.labelTokenScore > 0 ? 'direct' : 'related',
@@ -338,6 +348,7 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
 
   // Step 3: Multi-hop expansion — take top seeds, expand 2 hops with decaying scores
   const seedCount = Math.min(scored.length, 10)
+  const hasExactSeedMatch = scored.some((node) => node.exactLabelMatch)
   const seedIds = new Set(scored.slice(0, seedCount).map((node) => node.id))
   const directSeeds = scored
     .filter((node) => node.relevanceBand === 'direct')
@@ -354,7 +365,7 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
       if (!expansionSeedIds.has(neighborId)) {
         const relation = String(graph.edgeAttributes(seed.id, neighborId).relation ?? 'related_to')
         const hopScore = seed.score * 0.5 * relationWeight(relation)
-        const hopEvidenceTier = relationWeight(relation) === 1 ? 1 : 0
+        const hopEvidenceTier = isPrimaryExpansionRelation(relation) ? 1 : 0
         const existingHopScore = hopScores.get(neighborId) ?? 0
         const existingHopEvidenceTier = hopEvidenceTiers.get(neighborId) ?? 0
         if (hopScore > existingHopScore || (hopScore === existingHopScore && hopEvidenceTier > existingHopEvidenceTier)) {
@@ -367,8 +378,31 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
     }
   }
 
+  for (const node of scored) {
+    const hopScore = hopScores.get(node.id)
+    if (!hopScore) {
+      continue
+    }
+
+    node.score += hopScore
+    const hopEvidenceTier = hopEvidenceTiers.get(node.id) ?? 0
+    if (node.sourcePathMatch && hopEvidenceTier > 0) {
+      node.evidenceTier = 2
+      node.relevanceBand = 'direct'
+      node.score += 0.5
+      continue
+    }
+
+    if (hopEvidenceTier > node.evidenceTier) {
+      node.evidenceTier = hopEvidenceTier
+      if (node.relevanceBand === 'peripheral') {
+        node.relevanceBand = 'related'
+      }
+    }
+  }
+
   // Hop 2: neighbors-of-neighbors decay again, but keep this pool small and relation-aware.
-  if (budget >= 2000) {
+  if (budget >= 2000 && !hasExactSeedMatch) {
     const hop2Scores = new Map<string, number>()
     for (const hop1Id of hop1Ids) {
       const hop1Score = hopScores.get(hop1Id) ?? 0
@@ -418,6 +452,8 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
       nodeKind: String(attributes.node_kind ?? ''),
       fileType,
       community,
+      exactLabelMatch: false,
+      sourcePathMatch: false,
       evidenceTier: hopDistances.get(nodeId) === 1 ? (hopEvidenceTiers.get(nodeId) ?? 0) : 0,
       score: hopScore,
       relevanceBand: hopDistances.get(nodeId) === 1 ? 'related' : 'peripheral',
