@@ -4,6 +4,8 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-04-27
+
 ### Added
 
 - **Graph time travel CLI**: added `graphify-ts time-travel <from> <to>` to compare two git refs through local on-demand graph snapshots with `summary`, `risk`, `drift`, and `timeline` views; the default terminal output is the `summary` view
