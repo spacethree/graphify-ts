@@ -11,6 +11,10 @@ function loadPackageManifest(): PackageManifest {
   return JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')) as PackageManifest
 }
 
+function loadDependabotConfig(): string {
+  return readFileSync(join(process.cwd(), '.github', 'dependabot.yml'), 'utf8')
+}
+
 function normalizeVersionRange(range: string | undefined): string {
   return (range ?? '').replace(/^[\^~]/, '')
 }
@@ -22,5 +26,15 @@ describe('package metadata', () => {
     expect(normalizeVersionRange(devDependencies['@vitest/coverage-v8'])).toBe(
       normalizeVersionRange(devDependencies.vitest),
     )
+  })
+
+  it('groups vitest tooling updates together in dependabot', () => {
+    const dependabotConfig = loadDependabotConfig()
+
+    expect(dependabotConfig).toContain('groups:')
+    expect(dependabotConfig).toContain('test-tooling:')
+    expect(dependabotConfig).toContain('patterns:')
+    expect(dependabotConfig).toContain('- vitest')
+    expect(dependabotConfig).toContain('- "@vitest/coverage-v8"')
   })
 })
