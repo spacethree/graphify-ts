@@ -4,6 +4,13 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.7] - 2026-04-27
+
+### Changed
+
+- **Project license**: switched the package, repository license file, README license badge/text, and contribution terms from AGPL to MIT
+- **License metadata guardrail**: package metadata tests now enforce that the manifest, README, and contributing guide stay aligned on the MIT license
+
 ## [0.8.6] - 2026-04-27
 
 ### Fixed
