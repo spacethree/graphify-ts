@@ -4,6 +4,12 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.5] - 2026-04-27
+
+### Fixed
+
+- **Release install compatibility**: aligned `@vitest/coverage-v8` with the repo's Vitest version and added a regression test so `npm ci` succeeds on the Node 20 / npm 10 CI and release runners
+
 ## [0.8.4] - 2026-04-27
 
 ### Added
