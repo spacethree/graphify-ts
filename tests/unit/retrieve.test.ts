@@ -138,6 +138,143 @@ describe('retrieve', () => {
       expect(labels).toContain('authenticateUser')
     })
 
+    it('keeps direct symbol matches above path-only matches after structural boosts', () => {
+      const graph = new KnowledgeGraph()
+      graph.addNode('direct_symbol', {
+        label: 'LoginController',
+        source_file: '/src/controllers.ts',
+        line_number: 1,
+        node_kind: 'function',
+        file_type: 'code',
+        community: 0,
+      })
+      graph.addNode('path_only', {
+        label: 'RenderPage',
+        source_file: '/src/login/handler.ts',
+        line_number: 2,
+        node_kind: 'function',
+        file_type: 'code',
+        community: 0,
+      })
+      graph.addNode('guide_a', {
+        label: 'LoginHandlerGuideA',
+        source_file: '/docs/login-a.md',
+        line_number: 3,
+        node_kind: 'section',
+        file_type: 'document',
+        community: 0,
+      })
+      graph.addNode('guide_b', {
+        label: 'LoginHandlerGuideB',
+        source_file: '/docs/login-b.md',
+        line_number: 4,
+        node_kind: 'section',
+        file_type: 'document',
+        community: 0,
+      })
+      graph.addNode('guide_c', {
+        label: 'LoginHandlerGuideC',
+        source_file: '/docs/login-c.md',
+        line_number: 5,
+        node_kind: 'section',
+        file_type: 'document',
+        community: 0,
+      })
+      graph.addNode('guide_d', {
+        label: 'LoginHandlerGuideD',
+        source_file: '/docs/login-d.md',
+        line_number: 6,
+        node_kind: 'section',
+        file_type: 'document',
+        community: 1,
+      })
+      graph.addEdge('path_only', 'guide_a', {
+        relation: 'calls',
+        confidence: 'EXTRACTED',
+        source_file: '/src/login/handler.ts',
+      })
+      graph.addEdge('path_only', 'guide_d', {
+        relation: 'calls',
+        confidence: 'EXTRACTED',
+        source_file: '/src/login/handler.ts',
+      })
+
+      const result = retrieveContext(graph, { question: 'login', budget: 5000, fileType: 'code' })
+
+      expect(result.matched_nodes.map((node) => node.label).slice(0, 2)).toEqual(['LoginController', 'RenderPage'])
+      expect(result.matched_nodes.find((node) => node.label === 'LoginController')?.relevance_band).toBe('direct')
+      expect(result.matched_nodes.find((node) => node.label === 'RenderPage')?.relevance_band).toBe('related')
+    })
+
+    it('keeps direct symbol matches above community-only matches after structural boosts', () => {
+      const graph = new KnowledgeGraph()
+      graph.addNode('direct_symbol', {
+        label: 'AuthGateway',
+        source_file: '/src/auth.ts',
+        line_number: 1,
+        node_kind: 'class',
+        file_type: 'code',
+        community: 0,
+      })
+      graph.addNode('community_only', {
+        label: 'SessionCoordinator',
+        source_file: '/src/session.ts',
+        line_number: 2,
+        node_kind: 'class',
+        file_type: 'code',
+        community: 0,
+      })
+      graph.addNode('guide_a', {
+        label: 'AuthGuideA',
+        source_file: '/docs/auth-a.md',
+        line_number: 3,
+        node_kind: 'section',
+        file_type: 'document',
+        community: 0,
+      })
+      graph.addNode('guide_b', {
+        label: 'AuthGuideB',
+        source_file: '/docs/auth-b.md',
+        line_number: 4,
+        node_kind: 'section',
+        file_type: 'document',
+        community: 0,
+      })
+      graph.addNode('guide_c', {
+        label: 'AuthGuideC',
+        source_file: '/docs/auth-c.md',
+        line_number: 5,
+        node_kind: 'section',
+        file_type: 'document',
+        community: 0,
+      })
+      graph.addNode('guide_d', {
+        label: 'AuthGuideD',
+        source_file: '/docs/auth-d.md',
+        line_number: 6,
+        node_kind: 'section',
+        file_type: 'document',
+        community: 1,
+      })
+      graph.addEdge('community_only', 'guide_a', {
+        relation: 'depends_on',
+        confidence: 'EXTRACTED',
+        source_file: '/src/session.ts',
+      })
+      graph.addEdge('community_only', 'guide_d', {
+        relation: 'depends_on',
+        confidence: 'EXTRACTED',
+        source_file: '/src/session.ts',
+      })
+      graph.graph.community_labels = { 0: 'Auth' }
+
+      const result = retrieveContext(graph, { question: 'auth', budget: 5000, fileType: 'code' })
+
+      expect(result.matched_nodes.map((node) => node.label).slice(0, 2)).toEqual(['AuthGateway', 'SessionCoordinator'])
+      expect(result.matched_nodes.find((node) => node.label === 'AuthGateway')?.relevance_band).toBe('direct')
+      expect(result.matched_nodes.find((node) => node.label === 'SessionCoordinator')?.relevance_band).toBe('related')
+    })
+
     it('includes neighbors of matched nodes', () => {
       const graph = buildTestGraph()
       const result = retrieveContext(graph, { question: 'auth', budget: 5000 })

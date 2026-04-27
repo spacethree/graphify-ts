@@ -190,6 +190,14 @@ function storedCommunityLabelsFromGraph(graph: KnowledgeGraph): Record<number, s
   )
 }
 
+interface SeedScoreBreakdown {
+  labelExactScore: number
+  labelTokenScore: number
+  sourcePathScore: number
+  communityScore: number
+  total: number
+}
+
 interface ScoredNode {
   id: string
   label: string
@@ -198,8 +206,55 @@ interface ScoredNode {
   nodeKind: string
   fileType: string
   community: number | null
+  evidenceTier: 0 | 1 | 2
   score: number
   relevanceBand: 'direct' | 'related' | 'peripheral'
+}
+
+function normalizeSeedText(value: string): string {
+  return tokenizeLabel(value).join('')
+}
+
+function evidenceTierForSeedScore(score: SeedScoreBreakdown): 0 | 1 | 2 {
+  if (score.labelExactScore > 0 || score.labelTokenScore > 0) {
+    return 2
+  }
+  if (score.sourcePathScore > 0 || score.communityScore > 0) {
+    return 1
+  }
+  return 0
+}
+
+function compareScoredNodes(graph: KnowledgeGraph, left: ScoredNode, right: ScoredNode): number {
+  return (
+    right.evidenceTier - left.evidenceTier ||
+    right.score - left.score ||
+    graph.degree(right.id) - graph.degree(left.id)
+  )
+}
+
+function scoreSeedCandidate(
+  question: string,
+  questionTokens: readonly string[],
+  label: string,
+  sourceFile: string,
+  communityLabel: string | null,
+  tokenWeights: ReadonlyMap<string, number>,
+): SeedScoreBreakdown {
+  const labelExactScore = normalizeSeedText(question) !== '' && normalizeSeedText(question) === normalizeSeedText(label) ? 2 : 0
+  const labelTokenScore = scoreNode(questionTokens, tokenizeLabel(label), tokenWeights)
+  const sourcePathScore = scoreNode(questionTokens, tokenizeLabel(sourceFile), tokenWeights) * 0.25
+  const communityScore = communityLabel
+    ? Math.min(scoreNode(questionTokens, tokenizeLabel(communityLabel)) * 0.1, 0.2)
+    : 0
+
+  return {
+    labelExactScore,
+    labelTokenScore,
+    sourcePathScore,
+    communityScore,
+    total: labelExactScore + labelTokenScore + sourcePathScore + communityScore,
+  }
 }
 
 export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions): RetrieveResult {
@@ -217,23 +272,14 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
     }
   }
 
-  // Pre-compute community label scores so nodes in matching communities get a boost
+  // Pre-compute community labels so seed scoring can treat them as secondary evidence.
   const communities = communitiesFromGraph(graph)
   const communityLabels: Record<number, string> = {
     ...buildCommunityLabels(graph, communities),
     ...storedCommunityLabelsFromGraph(graph),
   }
-  const communityBoost = new Map<number, number>()
-  for (const [idStr, label] of Object.entries(communityLabels)) {
-    const id = Number(idStr)
-    const communityTokens = tokenizeLabel(label)
-    const score = scoreNode(questionTokens, communityTokens)
-    if (score > 0) {
-      communityBoost.set(id, Math.min(score * 0.1, 0.3))
-    }
-  }
 
-  // Step 1+2: Score all nodes with TF-IDF-weighted tokens + community boost
+  // Step 1+2: Score all nodes with explicit seed evidence weights.
   const tokenWeights = tokenWeightsForQuestion(graph, questionTokens)
   const scored: ScoredNode[] = []
   for (const [id, attributes] of graph.nodeEntries()) {
@@ -248,15 +294,17 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
     }
 
     const label = String(attributes.label ?? '')
-    const labelTokens = tokenizeLabel(label)
     const sourceFile = String(attributes.source_file ?? '')
-    const sourceTokens = tokenizeLabel(sourceFile)
-    const labelScore = scoreNode(questionTokens, labelTokens, tokenWeights)
-    const sourceScore = scoreNode(questionTokens, sourceTokens, tokenWeights) * 0.5
-    const comBoost = community !== null ? (communityBoost.get(community) ?? 0) : 0
-    const totalScore = labelScore + sourceScore + comBoost
+    const score = scoreSeedCandidate(
+      question,
+      questionTokens,
+      label,
+      sourceFile,
+      community !== null ? (communityLabels[community] ?? null) : null,
+      tokenWeights,
+    )
 
-    if (totalScore > 0) {
+    if (score.total > 0) {
       scored.push({
         id,
         label,
@@ -265,13 +313,14 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
         nodeKind: String(attributes.node_kind ?? ''),
         fileType,
         community,
-        score: totalScore,
-        relevanceBand: labelScore + sourceScore > 0 ? 'direct' : 'related',
+        evidenceTier: evidenceTierForSeedScore(score),
+        score: score.total,
+        relevanceBand: score.labelExactScore > 0 || score.labelTokenScore > 0 ? 'direct' : 'related',
       })
     }
   }
 
-  scored.sort((a, b) => b.score - a.score || graph.degree(b.id) - graph.degree(a.id))
+  scored.sort((a, b) => compareScoredNodes(graph, a, b))
 
   // Step 3: Multi-hop expansion — take top seeds, expand 2 hops with decaying scores
   const seedCount = Math.min(scored.length, 10)
@@ -333,6 +382,7 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
       nodeKind: String(attributes.node_kind ?? ''),
       fileType,
       community,
+      evidenceTier: 0,
       score: hopScore,
       relevanceBand: hopDistances.get(nodeId) === 1 ? 'related' : 'peripheral',
     })
@@ -352,7 +402,7 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
   }
 
   // Re-sort: seeds first by score, then neighbors by degree
-  scored.sort((a, b) => b.score - a.score || graph.degree(b.id) - graph.degree(a.id))
+  scored.sort((a, b) => compareScoredNodes(graph, a, b))
 
   // Step 4+5: Read snippets and assemble within budget
   const matchedNodes: RetrieveMatchedNode[] = []
