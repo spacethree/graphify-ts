@@ -275,6 +275,18 @@ function relationWeight(relation: string): number {
   }
 }
 
+function relationBetweenNodes(graph: KnowledgeGraph, source: string, target: string): string {
+  try {
+    return String(graph.edgeAttributes(source, target).relation ?? 'related_to')
+  } catch {
+    try {
+      return String(graph.edgeAttributes(target, source).relation ?? 'related_to')
+    } catch {
+      return 'related_to'
+    }
+  }
+}
+
 function isPrimaryExpansionRelation(relation: string): boolean {
   return relation === 'calls' || relation === 'imports_from' || relation === 'defines' || relation === 'contains'
 }
@@ -361,9 +373,9 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
 
   // Hop 1: direct neighbors inherit a relation-weighted slice of each strong seed's score.
   for (const seed of directSeeds.length > 0 ? directSeeds : scored.slice(0, seedCount)) {
-    for (const neighborId of graph.neighbors(seed.id)) {
+    for (const neighborId of graph.incidentNeighbors(seed.id)) {
       if (!expansionSeedIds.has(neighborId)) {
-        const relation = String(graph.edgeAttributes(seed.id, neighborId).relation ?? 'related_to')
+        const relation = relationBetweenNodes(graph, seed.id, neighborId)
         const hopScore = seed.score * 0.5 * relationWeight(relation)
         const hopEvidenceTier = isPrimaryExpansionRelation(relation) ? 1 : 0
         const existingHopScore = hopScores.get(neighborId) ?? 0
@@ -407,9 +419,9 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
     for (const hop1Id of hop1Ids) {
       const hop1Score = hopScores.get(hop1Id) ?? 0
       if (hop1Score <= 0) continue
-      for (const hop2Id of graph.neighbors(hop1Id)) {
+      for (const hop2Id of graph.incidentNeighbors(hop1Id)) {
         if (!seedIds.has(hop2Id) && !hop1Ids.has(hop2Id)) {
-          const relation = String(graph.edgeAttributes(hop1Id, hop2Id).relation ?? 'related_to')
+          const relation = relationBetweenNodes(graph, hop1Id, hop2Id)
           const hop2Score = hop1Score * 0.5 * relationWeight(relation)
           if (hop2Score > (hop2Scores.get(hop2Id) ?? 0)) {
             hop2Scores.set(hop2Id, hop2Score)

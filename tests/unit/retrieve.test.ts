@@ -432,6 +432,36 @@ describe('retrieve', () => {
       expect(labels).toContain('SessionManager')
     })
 
+    it('includes predecessors of matched nodes in directed graphs', () => {
+      const graph = new KnowledgeGraph({ directed: true })
+      graph.addNode('caller', {
+        label: 'CallerService',
+        source_file: '/src/caller.ts',
+        line_number: 1,
+        node_kind: 'function',
+        file_type: 'code',
+      })
+      graph.addNode('target', {
+        label: 'TargetHandler',
+        source_file: '/src/target.ts',
+        line_number: 2,
+        node_kind: 'function',
+        file_type: 'code',
+      })
+      graph.addEdge('caller', 'target', {
+        relation: 'calls',
+        confidence: 'EXTRACTED',
+        source_file: '/src/caller.ts',
+      })
+
+      const result = retrieveContext(graph, { question: 'target', budget: 5000 })
+      const labels = result.matched_nodes.map((node) => node.label)
+
+      expect(labels).toContain('TargetHandler')
+      expect(labels).toContain('CallerService')
+      expect(result.matched_nodes.find((node) => node.label === 'CallerService')?.relevance_band).toBe('related')
+    })
+
     it('includes relationships between matched nodes', () => {
       const graph = buildTestGraph()
       const result = retrieveContext(graph, { question: 'auth', budget: 5000 })
