@@ -119,6 +119,153 @@ describe('retrieve', () => {
       return graph
     }
 
+    function buildExpansionGraph(): KnowledgeGraph {
+      const graph = new KnowledgeGraph()
+
+      graph.addNode('auth_user', {
+        label: 'authenticateUser',
+        source_file: '/src/auth.ts',
+        line_number: 10,
+        node_kind: 'function',
+        file_type: 'code',
+        community: 0,
+      })
+      graph.addNode('auth_flow_controller', {
+        label: 'AuthFlowController',
+        source_file: '/src/auth/flow-controller.ts',
+        line_number: 20,
+        node_kind: 'class',
+        file_type: 'code',
+        community: 0,
+      })
+      graph.addNode('auth_guard', {
+        label: 'AuthGuard',
+        source_file: '/src/auth/guard.ts',
+        line_number: 30,
+        node_kind: 'class',
+        file_type: 'code',
+        community: 0,
+      })
+      graph.addNode('auth_policy', {
+        label: 'AuthPolicy',
+        source_file: '/src/auth/policy.ts',
+        line_number: 40,
+        node_kind: 'class',
+        file_type: 'code',
+        community: 0,
+      })
+
+      graph.addNode('session_mgr', {
+        label: 'SessionManager',
+        source_file: '/src/session.ts',
+        line_number: 5,
+        node_kind: 'class',
+        file_type: 'code',
+        community: 2,
+      })
+      graph.addNode('session_validator', {
+        label: 'SessionValidator',
+        source_file: '/src/session-validator.ts',
+        line_number: 6,
+        node_kind: 'class',
+        file_type: 'code',
+        community: 2,
+      })
+      graph.addNode('session_router', {
+        label: 'SessionRouter',
+        source_file: '/src/session-router.ts',
+        line_number: 7,
+        node_kind: 'class',
+        file_type: 'code',
+        community: 2,
+      })
+      graph.addNode('session_policy', {
+        label: 'SessionPolicy',
+        source_file: '/src/session-policy.ts',
+        line_number: 8,
+        node_kind: 'class',
+        file_type: 'code',
+        community: 2,
+      })
+
+      graph.addNode('billing_store', {
+        label: 'BillingStore',
+        source_file: '/src/billing.ts',
+        line_number: 9,
+        node_kind: 'class',
+        file_type: 'code',
+        community: 1,
+      })
+      graph.addNode('billing_cache', {
+        label: 'BillingCache',
+        source_file: '/src/billing-cache.ts',
+        line_number: 10,
+        node_kind: 'class',
+        file_type: 'code',
+        community: 1,
+      })
+      graph.addNode('invoice_ledger', {
+        label: 'InvoiceLedger',
+        source_file: '/src/invoice-ledger.ts',
+        line_number: 11,
+        node_kind: 'class',
+        file_type: 'code',
+        community: 1,
+      })
+      graph.addNode('tax_rules', {
+        label: 'TaxRules',
+        source_file: '/src/tax-rules.ts',
+        line_number: 12,
+        node_kind: 'class',
+        file_type: 'code',
+        community: 1,
+      })
+
+      graph.addEdge('auth_user', 'session_mgr', { relation: 'calls', confidence: 'EXTRACTED', source_file: '/src/auth.ts' })
+      graph.addEdge('auth_flow_controller', 'session_validator', {
+        relation: 'imports_from',
+        confidence: 'EXTRACTED',
+        source_file: '/src/auth/flow-controller.ts',
+      })
+      graph.addEdge('auth_guard', 'session_router', {
+        relation: 'calls',
+        confidence: 'EXTRACTED',
+        source_file: '/src/auth/guard.ts',
+      })
+      graph.addEdge('auth_policy', 'session_policy', {
+        relation: 'defines',
+        confidence: 'EXTRACTED',
+        source_file: '/src/auth/policy.ts',
+      })
+      graph.addEdge('auth_guard', 'billing_store', {
+        relation: 'depends_on',
+        confidence: 'EXTRACTED',
+        source_file: '/src/auth/guard.ts',
+      })
+      graph.addEdge('billing_store', 'billing_cache', {
+        relation: 'depends_on',
+        confidence: 'EXTRACTED',
+        source_file: '/src/billing.ts',
+      })
+      graph.addEdge('billing_store', 'invoice_ledger', {
+        relation: 'uses',
+        confidence: 'EXTRACTED',
+        source_file: '/src/billing.ts',
+      })
+      graph.addEdge('billing_store', 'tax_rules', {
+        relation: 'uses',
+        confidence: 'EXTRACTED',
+        source_file: '/src/billing.ts',
+      })
+      graph.graph.community_labels = {
+        0: 'Authentication',
+        1: 'Billing',
+        2: 'Session',
+      }
+
+      return graph
+    }
+
     it('returns empty result for no matching tokens', () => {
       const graph = buildTestGraph()
       const result = retrieveContext(graph, { question: 'how does the', budget: 5000 })
@@ -302,6 +449,28 @@ describe('retrieve', () => {
       expect(result.community_context.length).toBeGreaterThan(0)
       const community0 = result.community_context.find((c) => c.id === 0)
       expect(community0).toBeDefined()
+    })
+
+    it('prefers calls and imports edges over generic second-hop expansion', () => {
+      const graph = buildExpansionGraph()
+
+      const result = retrieveContext(graph, { question: 'auth', budget: 5000 })
+      const labels = result.matched_nodes.map((node) => node.label)
+
+      expect(labels.indexOf('SessionManager')).toBeLessThan(labels.indexOf('BillingStore'))
+    })
+
+    it('avoids promoting weak peripheral nodes when budget is tight', () => {
+      const graph = buildExpansionGraph()
+
+      const result = retrieveContext(graph, { question: 'auth flow', budget: 80 })
+
+      expect(result.matched_nodes.map((node) => node.label)).toEqual(
+        expect.arrayContaining(['authenticateUser']),
+      )
+      expect(result.matched_nodes).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ label: 'BillingStore' })]),
+      )
     })
 
     it('respects community filter', () => {

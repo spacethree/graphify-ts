@@ -257,6 +257,20 @@ function scoreSeedCandidate(
   }
 }
 
+function relationWeight(relation: string): number {
+  switch (relation) {
+    case 'calls':
+    case 'imports_from':
+    case 'defines':
+      return 1
+    case 'uses':
+    case 'depends_on':
+      return 0.7
+    default:
+      return 0.35
+  }
+}
+
 export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions): RetrieveResult {
   const { question, budget } = options
   const questionTokens = tokenizeQuestion(question)
@@ -325,35 +339,57 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
   // Step 3: Multi-hop expansion — take top seeds, expand 2 hops with decaying scores
   const seedCount = Math.min(scored.length, 10)
   const seedIds = new Set(scored.slice(0, seedCount).map((node) => node.id))
-  const directSeedIds = scored
+  const directSeeds = scored
     .filter((node) => node.relevanceBand === 'direct')
-    .slice(0, seedCount)
-    .map((node) => node.id)
-  const expansionSeedIds = new Set(directSeedIds.length > 0 ? directSeedIds : [...seedIds])
+    .slice(0, 4)
+  const expansionSeedIds = new Set((directSeeds.length > 0 ? directSeeds : scored.slice(0, seedCount)).map((node) => node.id))
   const hopScores = new Map<string, number>()
   const hopDistances = new Map<string, 1 | 2>()
+  const hopEvidenceTiers = new Map<string, 0 | 1>()
+  const hop1Ids = new Set<string>()
 
-  // Hop 1: direct neighbors get 0.5x of best seed score
-  const bestSeedScore = scored.length > 0 ? scored[0]?.score ?? 0 : 0
-  for (const seedId of expansionSeedIds) {
-    for (const neighborId of graph.neighbors(seedId)) {
+  // Hop 1: direct neighbors inherit a relation-weighted slice of each strong seed's score.
+  for (const seed of directSeeds.length > 0 ? directSeeds : scored.slice(0, seedCount)) {
+    for (const neighborId of graph.neighbors(seed.id)) {
       if (!expansionSeedIds.has(neighborId)) {
-        hopScores.set(neighborId, Math.max(hopScores.get(neighborId) ?? 0, bestSeedScore * 0.5))
-        hopDistances.set(neighborId, 1)
+        const relation = String(graph.edgeAttributes(seed.id, neighborId).relation ?? 'related_to')
+        const hopScore = seed.score * 0.5 * relationWeight(relation)
+        const hopEvidenceTier = relationWeight(relation) === 1 ? 1 : 0
+        const existingHopScore = hopScores.get(neighborId) ?? 0
+        const existingHopEvidenceTier = hopEvidenceTiers.get(neighborId) ?? 0
+        if (hopScore > existingHopScore || (hopScore === existingHopScore && hopEvidenceTier > existingHopEvidenceTier)) {
+          hopScores.set(neighborId, hopScore)
+          hopDistances.set(neighborId, 1)
+          hopEvidenceTiers.set(neighborId, hopEvidenceTier)
+        }
+        hop1Ids.add(neighborId)
       }
     }
   }
 
-  // Hop 2: neighbors-of-neighbors get 0.25x (skip if budget is tight)
+  // Hop 2: neighbors-of-neighbors decay again, but keep this pool small and relation-aware.
   if (budget >= 2000) {
-    const hop1Ids = new Set(hopScores.keys())
+    const hop2Scores = new Map<string, number>()
     for (const hop1Id of hop1Ids) {
+      const hop1Score = hopScores.get(hop1Id) ?? 0
+      if (hop1Score <= 0) continue
       for (const hop2Id of graph.neighbors(hop1Id)) {
         if (!seedIds.has(hop2Id) && !hop1Ids.has(hop2Id)) {
-          hopScores.set(hop2Id, Math.max(hopScores.get(hop2Id) ?? 0, bestSeedScore * 0.25))
-          hopDistances.set(hop2Id, 2)
+          const relation = String(graph.edgeAttributes(hop1Id, hop2Id).relation ?? 'related_to')
+          const hop2Score = hop1Score * 0.5 * relationWeight(relation)
+          if (hop2Score > (hop2Scores.get(hop2Id) ?? 0)) {
+            hop2Scores.set(hop2Id, hop2Score)
+          }
         }
       }
+    }
+
+    const maxSecondHopAdds = budget >= 5000 ? 6 : 3
+    for (const [hop2Id, hop2Score] of [...hop2Scores.entries()]
+      .sort(([leftId, leftScore], [rightId, rightScore]) => rightScore - leftScore || graph.degree(rightId) - graph.degree(leftId))
+      .slice(0, maxSecondHopAdds)) {
+      hopScores.set(hop2Id, Math.max(hopScores.get(hop2Id) ?? 0, hop2Score))
+      hopDistances.set(hop2Id, 2)
     }
   }
 
@@ -382,7 +418,7 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
       nodeKind: String(attributes.node_kind ?? ''),
       fileType,
       community,
-      evidenceTier: 0,
+      evidenceTier: hopDistances.get(nodeId) === 1 ? (hopEvidenceTiers.get(nodeId) ?? 0) : 0,
       score: hopScore,
       relevanceBand: hopDistances.get(nodeId) === 1 ? 'related' : 'peripheral',
     })
@@ -408,12 +444,12 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
   const matchedNodes: RetrieveMatchedNode[] = []
   const includedIds = new Set<string>()
   let tokenCount = 0
+  const inclusionOrder = [
+    ...scored.filter((node) => (seedIds.has(node.id) || hopScores.has(node.id)) && node.relevanceBand !== 'peripheral'),
+    ...scored.filter((node) => (seedIds.has(node.id) || hopScores.has(node.id)) && node.relevanceBand === 'peripheral'),
+  ]
 
-  for (const node of scored) {
-    if (!seedIds.has(node.id) && !hopScores.has(node.id)) {
-      continue
-    }
-
+  for (const node of inclusionOrder) {
     const snippet = readSnippet(node.sourceFile, node.lineNumber)
     const nodeText = `${node.label} ${node.sourceFile}:${node.lineNumber} ${snippet ?? ''}`
     const nodeTokens = estimateTokens(nodeText)
