@@ -690,7 +690,7 @@ describe('compare runtime', () => {
     )
   })
 
-  it('captures Claude-reported usage from structured runner output and saves plain answers', async () => {
+  it('preserves Claude structured usage parsing through compare execution', async () => {
     const graph = makeGraph()
     writeProjectFiles()
     const graphPath = writeGraphFixture(graph)
@@ -809,7 +809,7 @@ describe('compare runtime', () => {
     expect(report.usage.graphify?.total_tokens).toBe(1410)
   })
 
-  it('falls back to raw stdout for unrecognized structured JSON output', async () => {
+  it('preserves plain-text fallback when structured parsing fails', async () => {
     const graph = makeGraph()
     writeProjectFiles()
     const graphPath = writeGraphFixture(graph)
@@ -844,9 +844,13 @@ describe('compare runtime', () => {
     expect(readFileSync(report.answer_paths.graphify, 'utf8')).toBe(stdout)
     expect(report.usage.baseline).toBeNull()
     expect(report.usage.graphify).toBeNull()
+    expect(report.prompt_token_source).toEqual({
+      baseline: 'estimated_cl100k_base',
+      graphify: 'estimated_cl100k_base',
+    })
   })
 
-  it('captures Gemini-reported usage from structured runner output and saves plain answers', async () => {
+  it('preserves Gemini structured usage parsing through compare execution', async () => {
     const graph = makeGraph()
     writeProjectFiles()
     const graphPath = writeGraphFixture(graph)
@@ -893,6 +897,12 @@ describe('compare runtime', () => {
     const report = result.reports[0]!
     expect(readFileSync(report.answer_paths.baseline, 'utf8')).toBe('baseline answer\n')
     expect(readFileSync(report.answer_paths.graphify, 'utf8')).toBe('graphify answer\n')
+    expect(report.baseline_prompt_tokens).toBe(1200)
+    expect(report.graphify_prompt_tokens).toBe(400)
+    expect(report.prompt_token_source).toEqual({
+      baseline: 'gemini_reported_input',
+      graphify: 'gemini_reported_input',
+    })
     expect(report.usage.baseline).toEqual(
       expect.objectContaining({
         provider: 'gemini',
@@ -932,6 +942,8 @@ describe('compare runtime', () => {
         total_tokens: 470,
       }),
     )
+    expect(formatCompareSummary(result)).toContain('Input tokens (Gemini reported): baseline 1200 · graphify 400')
+    expect(formatCompareSummary(result)).toContain('Total tokens (Gemini reported): baseline 1290 · graphify 470')
   })
 
   it('does not write Gemini structured stdout JSON into answer artifacts when usage metadata is present without answer text', async () => {
