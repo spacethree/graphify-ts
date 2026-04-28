@@ -17,12 +17,18 @@ const FIXTURES_DIR = join(process.cwd(), 'tests', 'fixtures')
 const DEMO_REPO_DIR = join(process.cwd(), 'examples', 'demo-repo')
 const DEMO_QUESTIONS_PATH = join(DEMO_REPO_DIR, 'benchmark-questions.json')
 
-function withTempDir(callback: (tempDir: string) => void): void {
+function withTempDir(callback: (tempDir: string) => void | Promise<void>): void | Promise<void> {
   const tempDir = mkdtempSync(join(tmpdir(), 'graphify-ts-benchmark-'))
+  const finalize = () => rmSync(tempDir, { recursive: true, force: true })
   try {
-    callback(tempDir)
-  } finally {
-    rmSync(tempDir, { recursive: true, force: true })
+    const result = callback(tempDir)
+    if (result && typeof (result as Promise<void>).then === 'function') {
+      return (result as Promise<void>).finally(finalize)
+    }
+    finalize()
+  } catch (error) {
+    finalize()
+    throw error
   }
 }
 
@@ -79,6 +85,20 @@ function makeWorkspaceGraph(): KnowledgeGraph {
   graph.addEdge('f', 'concept', { relation: 'references', confidence: 'EXTRACTED', source_file: 'export.ts' })
   graph.addEdge('file', 'a', { relation: 'contains', confidence: 'EXTRACTED', source_file: 'auth.ts' })
   return graph
+}
+
+async function runRunnerBackedBenchmark(
+  graphPath: string,
+  corpusWords: number | null | undefined,
+  questions: BenchmarkQuestionInput[] | undefined,
+  options: Record<string, unknown>,
+) {
+  return await (runBenchmark as unknown as (
+    graphPath: string,
+    corpusWords: number | null | undefined,
+    questions: BenchmarkQuestionInput[] | undefined,
+    options: Record<string, unknown>,
+  ) => Promise<Awaited<ReturnType<typeof runBenchmark>>>)(graphPath, corpusWords, questions, options)
 }
 
 describe('querySubgraphTokens', () => {
@@ -455,6 +475,119 @@ describe('runBenchmark', () => {
       })
     })
   })
+
+  test('executes each matched question through the shared runner and captures reported usage', async () => {
+    await withTempDir(async (tempDir) => {
+      const graphPath = join(tempDir, 'graphify-out', 'graph.json')
+      const benchmarkOutputDir = join(tempDir, 'graphify-out', 'benchmark')
+      mkdirSync(join(tempDir, 'graphify-out'), { recursive: true })
+      toJson(makeGraph(), { 0: ['n1', 'n2'], 1: ['n3', 'n4'], 2: ['n5'] }, graphPath)
+
+      const executions: Array<{
+        question: string
+        mode: string
+        command: string
+        promptFile: string
+        outputFile: string
+      }> = []
+
+      const benchmark = await runRunnerBackedBenchmark(
+        graphPath,
+        10_000,
+        [
+          { question: 'how does authentication work', expected_labels: ['authentication'] },
+          'xyzzy plugh zorkmid',
+          { question: 'what is the main entry point', expected_labels: ['main_entry'] },
+        ],
+        {
+          execTemplate: 'runner --prompt {prompt_file} --question {question} --mode {mode} --out {output_file}',
+          outputDir: benchmarkOutputDir,
+          now: new Date('2026-04-28T10:15:00.000Z'),
+          runner: async (execution: {
+            question: string
+            mode: string
+            command: string
+            promptFile: string
+            outputFile: string
+          }) => {
+            executions.push(execution)
+            const inputTokens = execution.question.includes('authentication') ? 320 : 180
+            const totalTokens = execution.question.includes('authentication') ? 360 : 210
+            return {
+              exitCode: 0,
+              stdout: JSON.stringify({
+                type: 'result',
+                subtype: 'success',
+                result: `Answer for ${execution.question}\n`,
+                usage: {
+                  input_tokens: inputTokens,
+                  output_tokens: totalTokens - inputTokens,
+                  cache_creation_input_tokens: 0,
+                  cache_read_input_tokens: 0,
+                },
+              }),
+              stderr: '',
+              elapsedMs: execution.question.includes('authentication') ? 11 : 17,
+            }
+          },
+        },
+      )
+
+      expect('reduction_ratio' in benchmark).toBe(true)
+      if (!('reduction_ratio' in benchmark)) {
+        return
+      }
+
+      expect(executions).toHaveLength(2)
+      expect(executions.map((execution) => execution.question)).toEqual([
+        'how does authentication work',
+        'what is the main entry point',
+      ])
+      expect(executions.map((execution) => execution.mode)).toEqual(['graphify', 'graphify'])
+      expect(executions[0]?.command).toContain("--mode 'graphify'")
+      expect(readFileSync(executions[0]!.promptFile, 'utf8')).toContain('Retrieved graph context:')
+      expect(readFileSync(executions[0]!.promptFile, 'utf8')).toContain('Question:\nhow does authentication work')
+      expect(readFileSync(executions[0]!.outputFile, 'utf8')).toBe('Answer for how does authentication work\n')
+      expect(readFileSync(executions[1]!.outputFile, 'utf8')).toBe('Answer for what is the main entry point\n')
+
+      expect(benchmark.matched_question_count).toBe(2)
+      expect(benchmark.unmatched_questions).toEqual(['xyzzy plugh zorkmid'])
+      expect(benchmark.avg_query_tokens).toBe(250)
+      expect(benchmark.avg_total_tokens).toBe(285)
+      expect(benchmark.per_question).toEqual([
+        expect.objectContaining({
+          question: 'how does authentication work',
+          query_tokens: 320,
+          total_tokens: 360,
+          prompt_token_source: 'claude_reported_input',
+          usage: expect.objectContaining({
+            provider: 'claude',
+            input_total_tokens: 320,
+            total_tokens: 360,
+          }),
+          artifacts: expect.objectContaining({
+            prompt: executions[0]!.promptFile,
+            answer: executions[0]!.outputFile,
+          }),
+        }),
+        expect.objectContaining({
+          question: 'what is the main entry point',
+          query_tokens: 180,
+          total_tokens: 210,
+          prompt_token_source: 'claude_reported_input',
+          usage: expect.objectContaining({
+            provider: 'claude',
+            input_total_tokens: 180,
+            total_tokens: 210,
+          }),
+          artifacts: expect.objectContaining({
+            prompt: executions[1]!.promptFile,
+            answer: executions[1]!.outputFile,
+          }),
+        }),
+      ])
+    })
+  })
 })
 
 describe('printBenchmark', () => {
@@ -539,8 +672,120 @@ describe('printBenchmark', () => {
       ],
     })
     const output = spy.mock.calls.flat().join('\n')
-    expect(output).toContain('naive corpus (estimated from graph size)')
+    expect(output).toContain('Corpus baseline:')
+    expect(output).toContain('estimated from graph size')
+    expect(output).not.toContain('naive corpus')
     expect(output).toContain('Structure signals: unavailable for graph artifacts without source_file provenance')
+    spy.mockRestore()
+  })
+
+  test('prints runner-backed usage summaries without estimate fallback when usage is reported for every match', () => {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    printBenchmark({
+      corpus_tokens: 1000,
+      corpus_words: 750,
+      corpus_source: 'manifest',
+      nodes: 5,
+      edges: 4,
+      structure_signals: null,
+      question_count: 1,
+      matched_question_count: 1,
+      unmatched_questions: [],
+      expected_label_count: 0,
+      matched_expected_label_count: 0,
+      missing_expected_labels: [],
+      avg_query_tokens: 410,
+      avg_total_tokens: 480,
+      reduction_ratio: 2.4,
+      per_question: [
+        {
+          question: 'how does authentication work',
+          query_tokens: 410,
+          total_tokens: 480,
+          reduction: 2.4,
+          expected_labels: [],
+          matched_expected_labels: [],
+          missing_expected_labels: [],
+          prompt_token_source: 'claude_reported_input',
+          usage: {
+            provider: 'claude',
+            source: 'structured_stdout',
+            input_tokens: 400,
+            output_tokens: 70,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 10,
+            input_total_tokens: 410,
+            total_tokens: 480,
+          },
+        },
+      ],
+    } as any)
+    const output = spy.mock.calls.flat().join('\n')
+    expect(output).toContain('graphify runner-backed benchmark')
+    expect(output).toContain('Avg input tokens (Claude reported): ~410')
+    expect(output).toContain('Avg total tokens (Claude reported): ~480')
+    expect(output).not.toContain('estimate fallback')
+    expect(output).not.toContain('graphify token reduction benchmark')
+    expect(output).not.toContain('naive corpus')
+    spy.mockRestore()
+  })
+
+  test('labels estimate fallback only when structured usage is unavailable', () => {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    printBenchmark({
+      corpus_tokens: 1000,
+      corpus_words: 750,
+      corpus_source: 'manifest',
+      nodes: 5,
+      edges: 4,
+      structure_signals: null,
+      question_count: 2,
+      matched_question_count: 2,
+      unmatched_questions: [],
+      expected_label_count: 0,
+      matched_expected_label_count: 0,
+      missing_expected_labels: [],
+      avg_query_tokens: 255,
+      avg_total_tokens: null,
+      reduction_ratio: 3.9,
+      per_question: [
+        {
+          question: 'how does authentication work',
+          query_tokens: 410,
+          total_tokens: 480,
+          reduction: 2.4,
+          expected_labels: [],
+          matched_expected_labels: [],
+          missing_expected_labels: [],
+          prompt_token_source: 'claude_reported_input',
+          usage: {
+            provider: 'claude',
+            source: 'structured_stdout',
+            input_tokens: 400,
+            output_tokens: 70,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 10,
+            input_total_tokens: 410,
+            total_tokens: 480,
+          },
+        },
+        {
+          question: 'what is the main entry point',
+          query_tokens: 100,
+          total_tokens: null,
+          reduction: 10,
+          expected_labels: [],
+          matched_expected_labels: [],
+          missing_expected_labels: [],
+          prompt_token_source: 'estimated_cl100k_base',
+          usage: null,
+        },
+      ],
+    } as any)
+    const output = spy.mock.calls.flat().join('\n')
+    expect(output).toContain('Avg input tokens (Claude reported where available; cl100k_base estimate fallback): ~255')
+    expect(output).toContain('Usage capture: Claude reported usage for 1/2 matched questions; remaining runs used local estimate fallback')
+    expect(output).not.toContain('Avg total tokens (Claude reported)')
     spy.mockRestore()
   })
 
