@@ -4,6 +4,8 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.8] - 2026-04-28
+
 ### Improved
 
 - **Retrieval quality**: improved retrieval ranking with relation-aware expansion so connected evidence surfaces more effectively, and strengthened recall/MRR eval guardrails to prevent misleading benchmark results
