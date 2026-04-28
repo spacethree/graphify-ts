@@ -1,3 +1,6 @@
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
+
 import { existsSync } from 'node:fs'
 
 import { KnowledgeGraph } from '../../src/contracts/graph.js'
@@ -17,10 +20,21 @@ function buildTestGraph(): KnowledgeGraph {
   return graph
 }
 
+const RUNNER_GRAPH_PATH = join(process.cwd(), 'graphify-out', 'graph.json')
+const RUNNER_OUTPUT_DIR = join(process.cwd(), 'graphify-out', 'benchmark-quality-test-output')
+
+function resetRunnerOutputDir(): void {
+  rmSync(RUNNER_OUTPUT_DIR, { recursive: true, force: true })
+  mkdirSync(RUNNER_OUTPUT_DIR, { recursive: true })
+}
+
 // @ts-expect-error GoldQuestion must require expected_labels for built-in eval sets.
 const invalidGoldQuestion: GoldQuestion = { question: 'missing labels' }
 
 describe('retrieval quality benchmark', () => {
+  afterAll(() => {
+    rmSync(RUNNER_OUTPUT_DIR, { recursive: true, force: true })
+  })
 
   it('computes precision, recall, and MRR for gold questions with exact matching', () => {
     const graph = buildTestGraph()
@@ -162,6 +176,125 @@ describe('retrieval quality benchmark', () => {
     expect(output).toContain('retrieval quality benchmark')
     expect(output).toContain('Recall:')
     expect(output).toContain('MRR:')
+  })
+
+  it('executes each labeled eval question through the runner and reports provider usage averages', async () => {
+    resetRunnerOutputDir()
+    const graph = buildTestGraph()
+    const executions: Array<{ question: string; mode: string; command: string; promptFile: string; outputFile: string }> = []
+    const report = await evaluateRetrievalQuality(
+      graph,
+      [
+        { question: 'how does authentication work', expected_labels: ['authmodule', 'loginhandler'] },
+        { question: 'benchmark-only prompt' },
+        { question: 'what is the database layer', expected_labels: ['database'] },
+      ],
+      3000,
+      {
+        graphPath: RUNNER_GRAPH_PATH,
+        execTemplate: "runner --mode '{mode}' --prompt {prompt_file} --output {output_file}",
+        outputDir: RUNNER_OUTPUT_DIR,
+        now: new Date('2024-03-04T05:06:07.000Z'),
+        runner: async (execution) => {
+          executions.push(execution)
+          const inputTokens = execution.question.includes('authentication') ? 320 : 180
+          const totalTokens = execution.question.includes('authentication') ? 360 : 210
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              result: `Answer for ${execution.question}\n`,
+              usage: {
+                input_tokens: inputTokens,
+                output_tokens: totalTokens - inputTokens,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+              },
+            }),
+            stderr: '',
+            elapsedMs: execution.question.includes('authentication') ? 11 : 17,
+          }
+        },
+      },
+    )
+
+    expect(executions.map((execution) => execution.question)).toEqual([
+      'how does authentication work',
+      'what is the database layer',
+    ])
+    expect(executions.map((execution) => execution.mode)).toEqual(['graphify', 'graphify'])
+    expect(executions[0]?.command).toContain("--mode 'graphify'")
+    expect(report.total_questions).toBe(2)
+    expect(report.skipped_questions).toBe(1)
+    expect(report.avg_recall).toBe(1)
+    expect(report.mrr).toBe(1)
+    expect(report.avg_tokens_used).toBe(250)
+    expect(report.avg_total_tokens).toBe(285)
+    expect(report.questions[0]?.usage?.provider).toBe('claude')
+    expect(report.questions[0]?.artifacts?.prompt).toContain('graphify-prompt.txt')
+    expect(readFileSync(report.questions[0]!.artifacts!.answer, 'utf8')).toBe('Answer for how does authentication work\n')
+
+    const output = formatQualityReport(report)
+
+    expect(output).toContain('Recall:       100.0%')
+    expect(output).toContain('MRR:          1.000')
+    expect(output).toContain('Avg input tokens (Claude reported): ~250')
+    expect(output).toContain('Avg total tokens (Claude reported): ~285')
+    expect(output).not.toContain('estimate fallback')
+  })
+
+  it('labels fallback estimates only when structured runner usage is unavailable', async () => {
+    resetRunnerOutputDir()
+    const graph = buildTestGraph()
+    const report = await evaluateRetrievalQuality(
+      graph,
+      [
+        { question: 'how does authentication work', expected_labels: ['authmodule'] },
+        { question: 'what is the database layer', expected_labels: ['database'] },
+      ],
+      3000,
+      {
+        graphPath: RUNNER_GRAPH_PATH,
+        execTemplate: "runner --mode '{mode}' --prompt {prompt_file} --output {output_file}",
+        outputDir: RUNNER_OUTPUT_DIR,
+        now: new Date('2024-03-04T05:06:08.000Z'),
+        runner: async (execution) => {
+          if (execution.question.includes('authentication')) {
+            return {
+              exitCode: 0,
+              stdout: JSON.stringify({
+                result: `Answer for ${execution.question}\n`,
+                usage: {
+                  input_tokens: 400,
+                  output_tokens: 70,
+                  cache_creation_input_tokens: 0,
+                  cache_read_input_tokens: 10,
+                },
+              }),
+              stderr: '',
+              elapsedMs: 11,
+            }
+          }
+
+          return {
+            exitCode: 0,
+            stdout: `Plain answer for ${execution.question}\n`,
+            stderr: '',
+            elapsedMs: 7,
+          }
+        },
+      },
+    )
+
+    expect(report.avg_total_tokens).toBeNull()
+    expect(report.questions[0]?.usage?.provider).toBe('claude')
+    expect(report.questions[1]?.prompt_token_source).toBe('estimated_cl100k_base')
+    expect(readFileSync(report.questions[1]!.artifacts!.answer, 'utf8')).toBe('Plain answer for what is the database layer\n')
+
+    const output = formatQualityReport(report)
+
+    expect(output).toContain(`Avg input tokens (Claude reported where available; cl100k_base estimate fallback): ~${report.avg_tokens_used.toLocaleString()}`)
+    expect(output).toContain('Usage capture: Claude reported usage for 1/2 evaluated questions; remaining runs used local estimate fallback')
+    expect(output).not.toContain('Avg total tokens (Claude reported)')
   })
 
   const graphPath = 'graphify-out/graph.json'
