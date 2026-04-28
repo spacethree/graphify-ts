@@ -282,18 +282,35 @@ describe('cli parser', () => {
   })
 
   it('parses benchmark args', () => {
-    expect(parseBenchmarkArgs([])).toEqual({ graphPath: 'graphify-out/graph.json', questionsPath: null })
-    expect(parseBenchmarkArgs(['custom.json'])).toEqual({ graphPath: 'custom.json', questionsPath: null })
-    expect(parseBenchmarkArgs(['custom.json', '--questions', 'tests/fixtures/workspace-parity-questions.json'])).toEqual({
+    expect(parseBenchmarkArgs(['--exec', 'claude -p "$(cat {prompt_file})"'])).toEqual({
+      graphPath: 'graphify-out/graph.json',
+      questionsPath: null,
+      execTemplate: 'claude -p "$(cat {prompt_file})"',
+      yes: false,
+    })
+    expect(parseBenchmarkArgs(['custom.json', '--exec', 'claude -p "$(cat {prompt_file})"'])).toEqual({
+      graphPath: 'custom.json',
+      questionsPath: null,
+      execTemplate: 'claude -p "$(cat {prompt_file})"',
+      yes: false,
+    })
+    expect(parseBenchmarkArgs(['custom.json', '--questions', 'tests/fixtures/workspace-parity-questions.json', '--exec', 'claude -p "$(cat {prompt_file})"', '--yes'])).toEqual({
       graphPath: 'custom.json',
       questionsPath: 'tests/fixtures/workspace-parity-questions.json',
+      execTemplate: 'claude -p "$(cat {prompt_file})"',
+      yes: true,
     })
-    expect(parseBenchmarkArgs(['--questions=tests/fixtures/workspace-parity-questions.json'])).toEqual({
+    expect(parseBenchmarkArgs(['--questions=tests/fixtures/workspace-parity-questions.json', '--exec=claude -p "$(cat {prompt_file})"'])).toEqual({
       graphPath: 'graphify-out/graph.json',
       questionsPath: 'tests/fixtures/workspace-parity-questions.json',
+      execTemplate: 'claude -p "$(cat {prompt_file})"',
+      yes: false,
     })
-    expect(() => parseBenchmarkArgs(['one.json', 'two.json'])).toThrow('Usage: graphify-ts benchmark')
+    expect(() => parseBenchmarkArgs([])).toThrow('error: --exec is required')
+    expect(() => parseBenchmarkArgs([], 'eval')).toThrow('error: --exec is required')
+    expect(() => parseBenchmarkArgs(['one.json', 'two.json', '--exec', 'claude -p "$(cat {prompt_file})"'])).toThrow('Usage: graphify-ts benchmark')
     expect(() => parseBenchmarkArgs(['--questions', '--wat'])).toThrow('error: --questions requires a value')
+    expect(() => parseBenchmarkArgs(['--exec', '--wat'])).toThrow('error: --exec requires a value')
     expect(() => parseBenchmarkArgs(['custom.json', '--wat'])).toThrow('error: unknown option for benchmark: --wat')
   })
 
@@ -610,7 +627,11 @@ describe('cli main', () => {
     expect(help).toContain('add <url> [path]')
     expect(help).toContain('save-result')
     expect(help).toContain('benchmark [graph.json]')
+    expect(help).toContain('benchmark/eval runner. This may consume paid model tokens.')
+    expect(help).toContain('    --exec TEMPLATE       required command template; supports {prompt_file}, {question}, {mode}, and {output_file}')
     expect(help).toContain('--questions PATH')
+    expect(help).toContain('    --yes                 skip confirmation before running the paid benchmark/eval prompts')
+    expect(help).toContain('eval [graph.json]')
     expect(help).toContain('compare [question]    run a real baseline vs graphify prompt comparison')
     expect(help).toContain('    --graph <path>        path to graph.json (default graphify-out/graph.json)')
     expect(help).toContain('    --exec TEMPLATE       required command template; supports {prompt_file}, {question}, {mode}, and {output_file}')
@@ -764,6 +785,46 @@ describe('cli main', () => {
       expect(exitCode).toBe(2)
       expect(logs).toEqual(['Warning: compare will execute a baseline prompt and a graphify prompt for each question. This may consume paid model tokens.'])
       expect(errors).toEqual(['error: compare requires --yes in non-interactive mode.'])
+    } finally {
+      Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: stdinTty })
+      Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: stdoutTty })
+    }
+  })
+
+  it('fails fast when benchmark is run without --yes in non-interactive mode', async () => {
+    const { io, logs, errors } = createIo()
+    const stdinTty = process.stdin.isTTY
+    const stdoutTty = process.stdout.isTTY
+
+    Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: false })
+    Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: false })
+
+    try {
+      const exitCode = await executeCli(['benchmark', '--exec', 'claude -p "$(cat {prompt_file})"'], io)
+
+      expect(exitCode).toBe(2)
+      expect(logs).toEqual(['Warning: benchmark will execute the benchmark/eval runner. This may consume paid model tokens.'])
+      expect(errors).toEqual(['error: benchmark requires --yes in non-interactive mode.'])
+    } finally {
+      Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: stdinTty })
+      Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: stdoutTty })
+    }
+  })
+
+  it('fails fast when eval is run without --yes in non-interactive mode', async () => {
+    const { io, logs, errors } = createIo()
+    const stdinTty = process.stdin.isTTY
+    const stdoutTty = process.stdout.isTTY
+
+    Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: false })
+    Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: false })
+
+    try {
+      const exitCode = await executeCli(['eval', '--exec', 'claude -p "$(cat {prompt_file})"'], io)
+
+      expect(exitCode).toBe(2)
+      expect(logs).toEqual(['Warning: eval will execute the benchmark/eval runner. This may consume paid model tokens.'])
+      expect(errors).toEqual(['error: eval requires --yes in non-interactive mode.'])
     } finally {
       Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: stdinTty })
       Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: stdoutTty })
@@ -1108,7 +1169,7 @@ describe('cli main', () => {
     }
 
     const exitCode = await executeCli(
-      ['benchmark', 'graph.json', '--questions', resolve('tests/fixtures/workspace-parity-questions.json')],
+      ['benchmark', 'graph.json', '--questions', resolve('tests/fixtures/workspace-parity-questions.json'), '--exec', 'claude -p "$(cat {prompt_file})"', '--yes'],
       io,
       dependencies,
     )
@@ -1129,7 +1190,11 @@ describe('cli main', () => {
     const { io, logs } = createIo()
     const dependencies = createDependencies()
 
-    const exitCode = await executeCli(['eval', '--questions', resolve('tests/fixtures/workspace-parity-questions.json')], io, dependencies)
+    const exitCode = await executeCli(
+      ['eval', '--questions', resolve('tests/fixtures/workspace-parity-questions.json'), '--exec', 'claude -p "$(cat {prompt_file})"', '--yes'],
+      io,
+      dependencies,
+    )
 
     expect(exitCode).toBe(0)
     expect(logs.some((line) => line.includes('retrieval quality benchmark'))).toBe(true)
