@@ -14,6 +14,7 @@ import {
   runCompareCommand,
   resolveCompareQuestions,
 } from '../../src/infrastructure/compare.js'
+import { parsePromptRunnerOutput } from '../../src/infrastructure/prompt-runner.js'
 import { saveManifest } from '../../src/pipeline/manifest.js'
 import { toJson } from '../../src/pipeline/export.js'
 import { retrieveContext } from '../../src/runtime/retrieve.js'
@@ -269,6 +270,84 @@ afterEach(() => {
   rmSync(PROJECT_FIXTURE_ROOT, { recursive: true, force: true })
   rmSync(GRAPH_FIXTURE_ROOT, { recursive: true, force: true })
   rmSync(COMPARE_OUTPUT_ROOT, { recursive: true, force: true })
+})
+
+describe('shared prompt runner parsing', () => {
+  it('parses Claude structured stdout through the shared prompt-runner module', () => {
+    expect(
+      parsePromptRunnerOutput(
+        JSON.stringify({
+          type: 'result',
+          subtype: 'success',
+          result: 'baseline answer\n',
+          usage: {
+            input_tokens: 1200,
+            output_tokens: 90,
+            cache_creation_input_tokens: 100,
+            cache_read_input_tokens: 20,
+          },
+        }),
+      ),
+    ).toEqual({
+      answerText: 'baseline answer\n',
+      usage: {
+        provider: 'claude',
+        source: 'structured_stdout',
+        input_tokens: 1200,
+        output_tokens: 90,
+        cache_creation_input_tokens: 100,
+        cache_read_input_tokens: 20,
+        input_total_tokens: 1320,
+        total_tokens: 1410,
+      },
+    })
+  })
+
+  it('parses Gemini structured stdout through the shared prompt-runner module', () => {
+    expect(
+      parsePromptRunnerOutput(
+        JSON.stringify({
+          candidates: [
+            {
+              content: {
+                parts: [{ text: 'graphify answer' }, { text: '\n' }],
+              },
+            },
+          ],
+          usageMetadata: {
+            promptTokenCount: 400,
+            candidatesTokenCount: 70,
+            totalTokenCount: 470,
+          },
+        }),
+      ),
+    ).toEqual({
+      answerText: 'graphify answer\n',
+      usage: {
+        provider: 'gemini',
+        source: 'structured_stdout',
+        input_tokens: 400,
+        output_tokens: 70,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        input_total_tokens: 400,
+        total_tokens: 470,
+      },
+    })
+  })
+
+  it('falls back to raw stdout when the shared prompt-runner module cannot parse structured JSON', () => {
+    const stdout = JSON.stringify({
+      type: 'result',
+      subtype: 'success',
+      message: 'runner emitted raw JSON without parsed answer metadata',
+    })
+
+    expect(parsePromptRunnerOutput(stdout)).toEqual({
+      answerText: stdout,
+      usage: null,
+    })
+  })
 })
 
 describe('compare runtime', () => {
