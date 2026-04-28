@@ -57,6 +57,8 @@ export interface SaveResultCliOptions {
 export interface BenchmarkCliOptions {
   graphPath: string
   questionsPath: string | null
+  execTemplate: string
+  yes: boolean
 }
 
 export interface CompareCliOptions {
@@ -585,8 +587,11 @@ export function parseSaveResultArgs(args: string[]): SaveResultCliOptions {
 }
 
 export function parseBenchmarkArgs(args: string[], commandName = 'benchmark'): BenchmarkCliOptions {
+  const usage = `Usage: graphify-ts ${commandName} [graph.json] --exec TEMPLATE [--questions PATH] [--yes]`
   let graphPath = 'graphify-out/graph.json'
   let questionsPath: string | null = null
+  let execTemplate = ''
+  let yes = false
 
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index]
@@ -596,7 +601,7 @@ export function parseBenchmarkArgs(args: string[], commandName = 'benchmark'): B
 
     if (!argument.startsWith('--')) {
       if (graphPath !== 'graphify-out/graph.json') {
-        throw new UsageError(`Usage: graphify-ts ${commandName} [graph.json] [--questions PATH]`)
+        throw new UsageError(usage)
       }
       graphPath = requireNonEmptyValue('graph path', argument)
       continue
@@ -614,10 +619,31 @@ export function parseBenchmarkArgs(args: string[], commandName = 'benchmark'): B
       continue
     }
 
+    if (argument === '--exec') {
+      execTemplate = requireOptionValue('--exec', args[index + 1])
+      index += 1
+      continue
+    }
+
+    if (argument.startsWith('--exec=')) {
+      const [, value] = argument.split('=', 2)
+      execTemplate = requireOptionValue('--exec', value)
+      continue
+    }
+
+    if (argument === '--yes') {
+      yes = true
+      continue
+    }
+
     throw new UsageError(`error: unknown option for ${commandName}: ${argument}`)
   }
 
-  return { graphPath, questionsPath }
+  if (execTemplate.length === 0) {
+    throw new UsageError('error: --exec is required')
+  }
+
+  return { graphPath, questionsPath, execTemplate, yes }
 }
 
 export function parseCompareArgs(args: string[]): CompareCliOptions {

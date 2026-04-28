@@ -99,6 +99,8 @@ export interface CliDependencies {
 }
 
 const COMPARE_WARNING_MESSAGE = 'compare will execute a baseline prompt and a graphify prompt for each question. This may consume paid model tokens.'
+const BENCHMARK_WARNING_MESSAGE = 'benchmark will execute the benchmark/eval runner. This may consume paid model tokens.'
+const EVAL_WARNING_MESSAGE = 'eval will execute the benchmark/eval runner. This may consume paid model tokens.'
 
 const DEFAULT_DEPENDENCIES: CliDependencies = {
   loadGraph,
@@ -169,6 +171,32 @@ function formatProgress(progress: ProgressStep): string {
   return `${prefix} ${progress.message}`
 }
 
+async function confirmPaidCommand(
+  commandName: string,
+  warningMessage: string,
+  cancelledMessage: string,
+  yes: boolean,
+  io: CliIO,
+  dependencies: CliDependencies,
+): Promise<boolean> {
+  if (yes) {
+    return true
+  }
+
+  io.log(`Warning: ${warningMessage}`)
+
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new UsageError(`error: ${commandName} requires --yes in non-interactive mode.`)
+  }
+
+  if (!(await dependencies.confirm(warningMessage))) {
+    io.log(cancelledMessage)
+    return false
+  }
+
+  return true
+}
+
 export function formatHelp(binaryName = 'graphify-ts'): string {
   return [
     `Usage: ${binaryName} <command>`,
@@ -234,10 +262,14 @@ export function formatHelp(binaryName = 'graphify-ts'): string {
     '    --type T              query type: query|path_query|explain (default query)',
     '    --nodes N1 N2 ...     source node labels cited in the answer',
     '    --memory-dir DIR      memory directory (default graphify-out/memory)',
-    '  benchmark [graph.json] measure token reduction, question coverage, and structure signals',
-    '    --questions PATH     load benchmark/eval questions from a JSON file',
-    '  eval [graph.json]      measure retrieval quality: recall and MRR',
-    '    --questions PATH     load benchmark/eval questions from a JSON file',
+    '  benchmark [graph.json] measure token reduction, question coverage, and structure signals through the benchmark/eval runner. This may consume paid model tokens.',
+    '    --exec TEMPLATE       required command template; supports {prompt_file}, {question}, {mode}, and {output_file}',
+    '    --questions PATH      load benchmark/eval questions from a JSON file',
+    '    --yes                 skip confirmation before running the paid benchmark/eval prompts',
+    '  eval [graph.json]      measure retrieval quality: recall and MRR through the benchmark/eval runner. This may consume paid model tokens.',
+    '    --exec TEMPLATE       required command template; supports {prompt_file}, {question}, {mode}, and {output_file}',
+    '    --questions PATH      load benchmark/eval questions from a JSON file',
+    '    --yes                 skip confirmation before running the paid benchmark/eval prompts',
     '  compare [question]    run a real baseline vs graphify prompt comparison',
     '    --graph <path>        path to graph.json (default graphify-out/graph.json)',
     '    --exec TEMPLATE       required command template; supports {prompt_file}, {question}, {mode}, and {output_file}',
@@ -615,6 +647,9 @@ export async function executeCli(argv: string[], io: CliIO = console, dependenci
 
     if (command === 'benchmark') {
       const options = parseBenchmarkArgs(args)
+      if (!(await confirmPaidCommand('benchmark', BENCHMARK_WARNING_MESSAGE, 'Benchmark cancelled.', options.yes, io, dependencies))) {
+        return 1
+      }
       const questions = options.questionsPath ? loadBenchmarkQuestions(options.questionsPath) : undefined
       const result = dependencies.runBenchmark(options.graphPath, undefined, questions)
       dependencies.printBenchmark(result)
@@ -623,6 +658,9 @@ export async function executeCli(argv: string[], io: CliIO = console, dependenci
 
     if (command === 'eval') {
       const options = parseBenchmarkArgs(args, 'eval')
+      if (!(await confirmPaidCommand('eval', EVAL_WARNING_MESSAGE, 'Eval cancelled.', options.yes, io, dependencies))) {
+        return 1
+      }
       const graph = dependencies.loadGraph(options.graphPath)
       const questions = options.questionsPath ? loadBenchmarkQuestions(options.questionsPath) : undefined
       const report = evaluateRetrievalQuality(graph, questions, 3000, { graphPath: options.graphPath })
