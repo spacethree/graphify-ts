@@ -121,7 +121,7 @@ const DEFAULT_DEPENDENCIES: CliDependencies = {
   ingest,
   runBenchmark: ({ options }) => {
     const questions = options.questionsPath ? loadBenchmarkQuestions(options.questionsPath) : undefined
-    return runBenchmark(options.graphPath, undefined, questions)
+    return runBenchmark(options.graphPath, undefined, questions, { execTemplate: options.execTemplate })
   },
   runEval: ({ options }) => {
     const graph = loadGraph(options.graphPath)

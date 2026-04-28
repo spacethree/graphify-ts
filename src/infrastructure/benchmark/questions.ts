@@ -3,6 +3,9 @@ import { readFileSync } from 'node:fs'
 import { KnowledgeGraph } from '../../contracts/graph.js'
 import { bfs, estimateQueryTokens, queryGraph, scoreNodes } from '../../runtime/serve.js'
 
+import { type PromptRunnerUsage } from '../prompt-runner.js'
+import { type BenchmarkPromptArtifacts, type BenchmarkPromptTokenSource } from './runner.js'
+
 export interface BenchmarkQuestionResult {
   question: string
   query_tokens: number
@@ -10,6 +13,13 @@ export interface BenchmarkQuestionResult {
   expected_labels: string[]
   matched_expected_labels: string[]
   missing_expected_labels: string[]
+  total_tokens?: number | null
+  prompt_tokens_estimated?: number
+  prompt_token_source?: BenchmarkPromptTokenSource
+  usage?: PromptRunnerUsage | null
+  answer_text?: string | null
+  elapsed_ms?: number
+  artifacts?: BenchmarkPromptArtifacts
 }
 
 export interface BenchmarkQuestionSpec {
