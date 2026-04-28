@@ -58,7 +58,9 @@ function createDependencies(): CliDependencies {
     queryGraph: (_graph, question, options) => `${question} :: ${options?.mode ?? 'bfs'} :: ${options?.tokenBudget ?? 2000}`,
     saveQueryResult: (question, _answer, memoryDir) => `${memoryDir}/${question}.md`,
     ingest: async (url, targetDir) => `${resolve(targetDir)}/${url.includes('arxiv') ? 'paper.md' : 'page.md'}`,
-    runBenchmark: (graphPath) => ({
+    runBenchmark: (context) => {
+      const resolvedGraphPath = context.options.graphPath
+      return {
       corpus_tokens: 1000,
       corpus_words: 750,
       corpus_source: 'manifest',
@@ -86,7 +88,7 @@ function createDependencies(): CliDependencies {
       reduction_ratio: 10,
       per_question: [
         {
-          question: graphPath ?? 'graphify-out/graph.json',
+          question: resolvedGraphPath ?? 'graphify-out/graph.json',
           query_tokens: 100,
           reduction: 10,
           expected_labels: [],
@@ -94,7 +96,9 @@ function createDependencies(): CliDependencies {
           missing_expected_labels: [],
         },
       ],
-    }),
+      }
+    },
+    runEval: () => 'graphify retrieval quality benchmark\nRecall: 100.0%\ncreate session login',
     runCompare: async () => 'compare command is not implemented yet',
     runTimeTravel: async () => 'time-travel command is not implemented yet',
     confirm: async () => true,
@@ -1158,12 +1162,20 @@ describe('cli main', () => {
   it('executes benchmark commands with question files via injected dependencies', async () => {
     const { io } = createIo()
     let printed = false
-    let capturedQuestions: unknown
+    let capturedContext: unknown
     const dependencies = createDependencies()
-    dependencies.runBenchmark = (graphPath, _corpusWords, questions) => {
-      capturedQuestions = questions
-      return createDependencies().runBenchmark(graphPath)
-    }
+    dependencies.runBenchmark = ((context: unknown) => {
+      capturedContext = context
+      return createDependencies().runBenchmark({
+        io,
+        options: {
+          graphPath: 'graph.json',
+          questionsPath: null,
+          execTemplate: 'unused',
+          yes: true,
+        },
+      })
+    }) as CliDependencies['runBenchmark']
     dependencies.printBenchmark = () => {
       printed = true
     }
@@ -1176,19 +1188,26 @@ describe('cli main', () => {
 
     expect(exitCode).toBe(0)
     expect(printed).toBe(true)
-    expect(capturedQuestions).toEqual([
-      { question: 'create session login', expected_labels: ['default()', 'loginUser()', '.login()'] },
-      { question: 'login user session', expected_labels: ['loginUser()', 'default()', 'session.ts'] },
-      { question: 'shared auth helper', expected_labels: ['default()', 'auth.ts', 'index.ts'] },
-      { question: 'reindex workspace', expected_labels: ['reindexWorkspace()', 'jobs.ts'] },
-      { question: 'workspace architecture docs', expected_labels: ['Workspace Architecture', 'architecture.md'] },
-      { question: 'billing flow', expected_labels: [] },
-    ])
+    expect(capturedContext).toEqual({
+      io,
+      options: {
+        graphPath: 'graph.json',
+        questionsPath: resolve('tests/fixtures/workspace-parity-questions.json'),
+        execTemplate: 'claude -p "$(cat {prompt_file})"',
+        yes: true,
+      },
+    })
   })
 
   it('executes eval command with question files and routes output through io.log', async () => {
     const { io, logs } = createIo()
-    const dependencies = createDependencies()
+    let capturedContext: unknown
+    const dependencies: CliDependencies & { runEval: (context: unknown) => string } = Object.assign(createDependencies(), {
+      runEval: (context: unknown) => {
+        capturedContext = context
+        return 'eval result'
+      },
+    })
 
     const exitCode = await executeCli(
       ['eval', '--questions', resolve('tests/fixtures/workspace-parity-questions.json'), '--exec', 'claude -p "$(cat {prompt_file})"', '--yes'],
@@ -1197,9 +1216,16 @@ describe('cli main', () => {
     )
 
     expect(exitCode).toBe(0)
-    expect(logs.some((line) => line.includes('retrieval quality benchmark'))).toBe(true)
-    expect(logs.some((line) => line.includes('Recall:'))).toBe(true)
-    expect(logs.some((line) => line.includes('create session login'))).toBe(true)
+    expect(logs).toEqual(['eval result'])
+    expect(capturedContext).toEqual({
+      io,
+      options: {
+        graphPath: 'graphify-out/graph.json',
+        questionsPath: resolve('tests/fixtures/workspace-parity-questions.json'),
+        execTemplate: 'claude -p "$(cat {prompt_file})"',
+        yes: true,
+      },
+    })
   })
 
   it('executes hook commands via injected dependencies', async () => {
