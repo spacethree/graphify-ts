@@ -46,6 +46,7 @@ export interface RunBenchmarkPromptOptions {
   outputDir?: string
   now?: Date
   retrievalBudget?: number
+  retrieval?: RetrieveResult
   runner?: (execution: BenchmarkPromptExecution) => Promise<BenchmarkPromptRunnerResult>
 }
 
@@ -168,7 +169,7 @@ function benchmarkPromptTokenSource(usage: PromptRunnerUsage | null): BenchmarkP
   return usage.provider === 'claude' ? 'claude_reported_input' : 'gemini_reported_input'
 }
 
-function retrieveBenchmarkContext(graph: KnowledgeGraph, graphPath: string, question: string, budget: number): RetrieveResult {
+export function retrieveBenchmarkContext(graph: KnowledgeGraph, graphPath: string, question: string, budget: number): RetrieveResult {
   const projectRoot = realpathSync(inferProjectRootFromGraphPath(graphPath))
   const originalCwd = process.cwd()
   try {
@@ -184,7 +185,7 @@ export async function runBenchmarkPrompt(options: RunBenchmarkPromptOptions): Pr
 
   const startedAt = options.now ?? new Date()
   const outputRoot = createBenchmarkOutputRoot(options.graphPath, options.outputDir, startedAt)
-  const retrieval = retrieveBenchmarkContext(
+  const retrieval = options.retrieval ?? retrieveBenchmarkContext(
     options.graph,
     options.graphPath,
     options.question,

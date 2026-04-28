@@ -123,10 +123,13 @@ const DEFAULT_DEPENDENCIES: CliDependencies = {
     const questions = options.questionsPath ? loadBenchmarkQuestions(options.questionsPath) : undefined
     return runBenchmark(options.graphPath, undefined, questions, { execTemplate: options.execTemplate })
   },
-  runEval: ({ options }) => {
+  runEval: async ({ options }) => {
     const graph = loadGraph(options.graphPath)
     const questions = options.questionsPath ? loadBenchmarkQuestions(options.questionsPath) : undefined
-    const report = evaluateRetrievalQuality(graph, questions, 3000, { graphPath: options.graphPath })
+    const report = await evaluateRetrievalQuality(graph, questions, 3000, {
+      graphPath: options.graphPath,
+      execTemplate: options.execTemplate,
+    })
     return formatQualityReport(report)
   },
   runCompare: async ({ options }) => {

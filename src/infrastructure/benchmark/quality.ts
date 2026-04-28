@@ -2,6 +2,22 @@ import { KnowledgeGraph } from '../../contracts/graph.js'
 import { retrieveContext, type RetrieveResult } from '../../runtime/retrieve.js'
 import { formatTokenRatio, resolveCorpusBaseline, type CorpusBaselineSource } from './corpus.js'
 import { normalizeBenchmarkQuestion, normalizeExpectedLabel, type BenchmarkQuestionSpec } from './questions.js'
+import { type PromptRunnerUsage } from '../prompt-runner.js'
+import {
+  retrieveBenchmarkContext,
+  runBenchmarkPrompt,
+  type BenchmarkPromptArtifacts,
+  type BenchmarkPromptExecution,
+  type BenchmarkPromptRunnerResult,
+  type BenchmarkPromptTokenSource,
+} from './runner.js'
+import {
+  averageInputTokenLabel,
+  averageReportedTotalTokens,
+  promptTokenSourceSuffix,
+  usageCaptureSummary,
+  usageProviderLabel,
+} from './usage.js'
 
 export interface GoldQuestion {
   question: string
@@ -20,6 +36,13 @@ export interface QualityResult {
   recall: number
   reciprocal_rank: number
   tokens_used: number
+  total_tokens: number | null
+  prompt_tokens_estimated: number | null
+  prompt_token_source: BenchmarkPromptTokenSource | null
+  usage: PromptRunnerUsage | null
+  answer_text: string | null
+  elapsed_ms: number | null
+  artifacts: BenchmarkPromptArtifacts | null
 }
 
 export interface QualityReport {
@@ -31,6 +54,7 @@ export interface QualityReport {
   questions_with_hits: number
   total_questions: number
   avg_tokens_used: number
+  avg_total_tokens: number | null
   corpus_tokens: number
   corpus_source: CorpusBaselineSource
   compression_ratio: number
@@ -39,6 +63,10 @@ export interface QualityReport {
 export interface QualityOptions {
   graphPath?: string
   corpusWords?: number | null
+  execTemplate?: string
+  outputDir?: string
+  now?: Date
+  runner?: (execution: BenchmarkPromptExecution) => Promise<BenchmarkPromptRunnerResult>
 }
 
 /**
@@ -118,9 +146,23 @@ function normalizeGoldQuestion(question: QualityQuestionInput): GoldQuestion | n
   }
 }
 
-function evaluateQuestion(graph: KnowledgeGraph, gold: GoldQuestion, budget: number): QualityResult {
+interface QualityQuestionRunMetadata {
+  tokens_used: number
+  total_tokens: number | null
+  prompt_tokens_estimated: number | null
+  prompt_token_source: BenchmarkPromptTokenSource | null
+  usage: PromptRunnerUsage | null
+  answer_text: string | null
+  elapsed_ms: number | null
+  artifacts: BenchmarkPromptArtifacts | null
+}
+
+function qualityRetrieveContext(graph: KnowledgeGraph, question: string, budget: number, graphPath?: string): RetrieveResult {
+  return graphPath ? retrieveBenchmarkContext(graph, graphPath, question, budget) : retrieveContext(graph, { question, budget })
+}
+
+function buildQualityResult(gold: GoldQuestion, result: RetrieveResult, metadata: QualityQuestionRunMetadata): QualityResult {
   const expectedLabels = gold.expected_labels
-  const result: RetrieveResult = retrieveContext(graph, { question: gold.question, budget })
   const returnedLabels = result.matched_nodes.map((node) => normalizeExpectedLabel(node.label))
 
   const matchedLabels = expectedLabels.filter((expected) =>
@@ -153,21 +195,69 @@ function evaluateQuestion(graph: KnowledgeGraph, gold: GoldQuestion, budget: num
     precision,
     recall,
     reciprocal_rank: reciprocalRank,
-    tokens_used: result.token_count,
+    tokens_used: metadata.tokens_used,
+    total_tokens: metadata.total_tokens,
+    prompt_tokens_estimated: metadata.prompt_tokens_estimated,
+    prompt_token_source: metadata.prompt_token_source,
+    usage: metadata.usage,
+    answer_text: metadata.answer_text,
+    elapsed_ms: metadata.elapsed_ms,
+    artifacts: metadata.artifacts,
   }
 }
 
-export function evaluateRetrievalQuality(
+function evaluateQuestion(graph: KnowledgeGraph, gold: GoldQuestion, budget: number, graphPath?: string): QualityResult {
+  const result = qualityRetrieveContext(graph, gold.question, budget, graphPath)
+  return buildQualityResult(gold, result, {
+    tokens_used: result.token_count,
+    total_tokens: null,
+    prompt_tokens_estimated: null,
+    prompt_token_source: null,
+    usage: null,
+    answer_text: null,
+    elapsed_ms: null,
+    artifacts: null,
+  })
+}
+
+async function evaluateRunnerBackedQuestion(
   graph: KnowledgeGraph,
-  questions: ReadonlyArray<QualityQuestionInput> = GOLD_QUESTIONS,
-  budget = 3000,
-  options: QualityOptions = {},
+  gold: GoldQuestion,
+  budget: number,
+  options: QualityOptions & { execTemplate: string },
+): Promise<QualityResult> {
+  const graphPath = options.graphPath ?? 'graphify-out/graph.json'
+  const retrieval = qualityRetrieveContext(graph, gold.question, budget, graphPath)
+  const run = await runBenchmarkPrompt({
+    graphPath,
+    graph,
+    question: gold.question,
+    execTemplate: options.execTemplate,
+    retrieval,
+    retrievalBudget: budget,
+    ...(options.outputDir !== undefined ? { outputDir: options.outputDir } : {}),
+    ...(options.now !== undefined ? { now: options.now } : {}),
+    ...(options.runner !== undefined ? { runner: options.runner } : {}),
+  })
+
+  return buildQualityResult(gold, retrieval, {
+    tokens_used: run.query_tokens,
+    total_tokens: run.total_tokens,
+    prompt_tokens_estimated: run.prompt_tokens_estimated,
+    prompt_token_source: run.prompt_token_source,
+    usage: run.usage,
+    answer_text: run.answer_text,
+    elapsed_ms: run.elapsed_ms,
+    artifacts: run.artifacts,
+  })
+}
+
+function buildQualityReport(
+  graph: KnowledgeGraph,
+  results: QualityResult[],
+  skippedQuestions: number,
+  options: QualityOptions,
 ): QualityReport {
-  const normalizedQuestions = questions.map((question) => normalizeGoldQuestion(question))
-  const skippedQuestions = normalizedQuestions.filter((question) => question === null).length
-  const results = normalizedQuestions
-    .filter((question): question is GoldQuestion => question !== null)
-    .map((question) => evaluateQuestion(graph, question, budget))
   const withHits = results.filter((r) => r.matched_labels.length > 0)
   const avgTokens = results.length > 0 ? Math.floor(results.reduce((sum, r) => sum + r.tokens_used, 0) / results.length) : 0
   const baseline = resolveCorpusBaseline(graph.numberOfNodes(), options)
@@ -181,10 +271,46 @@ export function evaluateRetrievalQuality(
     questions_with_hits: withHits.length,
     total_questions: results.length,
     avg_tokens_used: avgTokens,
+    avg_total_tokens: averageReportedTotalTokens(results),
     corpus_tokens: baseline.tokens,
     corpus_source: baseline.source,
     compression_ratio: avgTokens > 0 ? Number((baseline.tokens / avgTokens).toFixed(1)) : 0,
   }
+}
+
+export function evaluateRetrievalQuality(
+  graph: KnowledgeGraph,
+  questions: ReadonlyArray<QualityQuestionInput> | undefined,
+  budget: number | undefined,
+  options: QualityOptions & { execTemplate: string },
+): Promise<QualityReport>
+export function evaluateRetrievalQuality(
+  graph: KnowledgeGraph,
+  questions?: ReadonlyArray<QualityQuestionInput>,
+  budget?: number,
+  options?: QualityOptions,
+): QualityReport
+export function evaluateRetrievalQuality(
+  graph: KnowledgeGraph,
+  questions: ReadonlyArray<QualityQuestionInput> = GOLD_QUESTIONS,
+  budget = 3000,
+  options: QualityOptions = {},
+): QualityReport | Promise<QualityReport> {
+  const normalizedQuestions = questions.map((question) => normalizeGoldQuestion(question))
+  const skippedQuestions = normalizedQuestions.filter((question) => question === null).length
+  const labeledQuestions = normalizedQuestions.filter((question): question is GoldQuestion => question !== null)
+  if (!options.execTemplate) {
+    const results = labeledQuestions.map((question) => evaluateQuestion(graph, question, budget, options.graphPath))
+    return buildQualityReport(graph, results, skippedQuestions, options)
+  }
+
+  return (async () => {
+    const results: QualityResult[] = []
+    for (const question of labeledQuestions) {
+      results.push(await evaluateRunnerBackedQuestion(graph, question, budget, options as QualityOptions & { execTemplate: string }))
+    }
+    return buildQualityReport(graph, results, skippedQuestions, options)
+  })()
 }
 
 export function formatQualityReport(report: QualityReport): string {
@@ -204,7 +330,14 @@ export function formatQualityReport(report: QualityReport): string {
       report.corpus_tokens >= report.avg_tokens_used
         ? `${formatTokenRatio(report.corpus_tokens, report.avg_tokens_used)} tokens with ${(report.avg_recall * 100).toFixed(0)}% recall`
         : `not achieved (${formatTokenRatio(report.corpus_tokens, report.avg_tokens_used)} tokens with ${(report.avg_recall * 100).toFixed(0)}% recall)`
-    lines.push(`  Avg tokens:   ${report.avg_tokens_used.toLocaleString()} per query (vs ~${report.corpus_tokens.toLocaleString()}${corpusNote} naive corpus)`)
+    lines.push(`  ${averageInputTokenLabel(report.questions)}: ~${report.avg_tokens_used.toLocaleString()} per query (vs ~${report.corpus_tokens.toLocaleString()}${corpusNote} naive corpus)`)
+    if (report.avg_total_tokens !== null) {
+      lines.push(`  Avg total tokens (${usageProviderLabel(report.questions)} reported): ~${report.avg_total_tokens.toLocaleString()}`)
+    }
+    const usageSummary = usageCaptureSummary(report.questions, 'evaluated questions')
+    if (usageSummary) {
+      lines.push(`  Usage capture: ${usageSummary}`)
+    }
     lines.push(`  Compression:  ${compressionSummary}`)
   }
 
@@ -213,7 +346,7 @@ export function formatQualityReport(report: QualityReport): string {
   for (const r of report.questions) {
     const status = r.recall === 1 ? '+' : r.recall > 0 ? '~' : 'x'
     const recallPct = (r.recall * 100).toFixed(0)
-    lines.push(`    ${status} [recall ${recallPct}%] ${r.question}`)
+    lines.push(`    ${status} [recall ${recallPct}%] ${r.question}${promptTokenSourceSuffix(r.prompt_token_source)}`)
     if (r.missing_labels.length > 0) {
       lines.push(`      missing: ${r.missing_labels.join(', ')}`)
     }

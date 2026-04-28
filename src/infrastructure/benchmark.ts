@@ -14,6 +14,13 @@ import {
   type BenchmarkQuestionInput,
   type BenchmarkQuestionResult,
 } from './benchmark/questions.js'
+import {
+  averageInputTokenLabel,
+  averageReportedTotalTokens,
+  promptTokenSourceSuffix,
+  usageCaptureSummary,
+  usageProviderLabel,
+} from './benchmark/usage.js'
 
 export { loadBenchmarkQuestions, querySubgraphTokens, type BenchmarkQuestionInput } from './benchmark/questions.js'
 
@@ -70,17 +77,6 @@ function averageQueryTokens(perQuestion: readonly BenchmarkQuestionResult[]): nu
   return Math.floor(perQuestion.reduce((sum, entry) => sum + entry.query_tokens, 0) / perQuestion.length)
 }
 
-function averageTotalTokens(perQuestion: readonly BenchmarkQuestionResult[]): number | null {
-  let total = 0
-  for (const entry of perQuestion) {
-    if (entry.total_tokens === null || entry.total_tokens === undefined) {
-      return null
-    }
-    total += entry.total_tokens
-  }
-  return Math.floor(total / perQuestion.length)
-}
-
 function finalizeBenchmarkResult(
   graph: KnowledgeGraph,
   structureSignals: GraphStructureMetrics | null,
@@ -107,7 +103,7 @@ function finalizeBenchmarkResult(
     matched_expected_label_count: matchedExpectedLabelCount,
     missing_expected_labels: missingExpectedLabels,
     avg_query_tokens: avgQueryTokens,
-    avg_total_tokens: averageTotalTokens(perQuestion),
+    avg_total_tokens: averageReportedTotalTokens(perQuestion),
     reduction_ratio: avgQueryTokens > 0 ? Number((baseline.tokens / avgQueryTokens).toFixed(1)) : 0,
     per_question: perQuestion,
   }
@@ -153,55 +149,12 @@ async function runRunnerBackedBenchmark(
   return perQuestion
 }
 
-function usageProviderLabel(result: BenchmarkSuccessResult): string {
-  const providers = new Set(result.per_question.flatMap((entry) => (entry.usage ? [entry.usage.provider] : [])))
-  if (providers.size !== 1) {
-    return 'Runner'
-  }
-
-  const [provider] = providers
-  return provider === 'gemini' ? 'Gemini' : 'Claude'
-}
-
-function promptTokenLabel(result: BenchmarkSuccessResult): string {
-  const usageRuns = result.per_question.reduce((count, entry) => count + (entry.usage === null || entry.usage === undefined ? 0 : 1), 0)
-  const totalRuns = result.per_question.length
-  const providerLabel = usageProviderLabel(result)
-
-  if (usageRuns === totalRuns) {
-    return `Avg input tokens (${providerLabel} reported)`
-  }
-  if (usageRuns > 0) {
-    return `Avg input tokens (${providerLabel} reported where available; ${QUERY_TOKEN_ESTIMATOR.model} estimate fallback)`
-  }
-  return `Avg input tokens (estimated ${QUERY_TOKEN_ESTIMATOR.model})`
-}
-
-function usageCaptureLine(result: BenchmarkSuccessResult): string | null {
-  const usageRuns = result.per_question.reduce((count, entry) => count + (entry.usage === null || entry.usage === undefined ? 0 : 1), 0)
-  if (usageRuns <= 0 || usageRuns >= result.per_question.length) {
-    return null
-  }
-
-  return `  Usage capture: ${usageProviderLabel(result)} reported usage for ${usageRuns}/${result.per_question.length} matched questions; remaining runs used local estimate fallback`
-}
-
 function totalTokenLabel(result: BenchmarkSuccessResult): string | null {
   if (result.avg_total_tokens === null || result.avg_total_tokens === undefined) {
     return null
   }
 
-  return `  Avg total tokens (${usageProviderLabel(result)} reported): ~${result.avg_total_tokens.toLocaleString()}`
-}
-
-function perQuestionTokenSourceLabel(entry: BenchmarkQuestionResult): string {
-  if (entry.prompt_token_source === 'claude_reported_input') {
-    return ' · Claude reported'
-  }
-  if (entry.prompt_token_source === 'gemini_reported_input') {
-    return ' · Gemini reported'
-  }
-  return entry.prompt_token_source === 'estimated_cl100k_base' ? ` · estimated ${QUERY_TOKEN_ESTIMATOR.model}` : ''
+  return `  Avg total tokens (${usageProviderLabel(result.per_question)} reported): ~${result.avg_total_tokens.toLocaleString()}`
 }
 
 export function runBenchmark(
@@ -323,12 +276,13 @@ export function printBenchmark(result: BenchmarkResult): void {
   } else {
     console.log('  Structure signals: unavailable for graph artifacts without source_file provenance')
   }
-  console.log(`  ${promptTokenLabel(result)}: ~${result.avg_query_tokens.toLocaleString()}`)
+  console.log(`  ${averageInputTokenLabel(result.per_question)}: ~${result.avg_query_tokens.toLocaleString()}`)
   const totalTokensLine = totalTokenLabel(result)
   if (totalTokensLine) {
     console.log(totalTokensLine)
   }
-  const usageLine = usageCaptureLine(result)
+  const usageSummary = usageCaptureSummary(result.per_question, 'matched questions')
+  const usageLine = usageSummary ? `  Usage capture: ${usageSummary}` : null
   if (usageLine) {
     console.log(usageLine)
   }
@@ -336,7 +290,7 @@ export function printBenchmark(result: BenchmarkResult): void {
   console.log('\n  Per question:')
   for (const entry of result.per_question) {
     console.log(
-      `    [${formatTokenRatio(result.corpus_tokens, entry.query_tokens)}] ${entry.question.slice(0, 55)}${perQuestionTokenSourceLabel(entry)}`,
+      `    [${formatTokenRatio(result.corpus_tokens, entry.query_tokens)}] ${entry.question.slice(0, 55)}${promptTokenSourceSuffix(entry.prompt_token_source)}`,
     )
   }
   console.log('')

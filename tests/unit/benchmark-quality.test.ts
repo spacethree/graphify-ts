@@ -222,7 +222,7 @@ describe('retrieval quality benchmark', () => {
       'what is the database layer',
     ])
     expect(executions.map((execution) => execution.mode)).toEqual(['graphify', 'graphify'])
-    expect(executions[0]?.command).toContain("--mode 'graphify'")
+    expect(executions[0]?.command).toContain('graphify-prompt.txt')
     expect(report.total_questions).toBe(2)
     expect(report.skipped_questions).toBe(1)
     expect(report.avg_recall).toBe(1)
