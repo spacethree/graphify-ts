@@ -6,6 +6,7 @@ import { KnowledgeGraph } from '../contracts/graph.js'
 import { CODE_EXTENSIONS, DOC_EXTENSIONS, MANIFEST_METADATA_KEY, OFFICE_EXTENSIONS, PAPER_EXTENSIONS } from '../pipeline/detect.js'
 import { extractCompareBaselineNonCodeText } from '../pipeline/extract/non-code.js'
 import { loadBenchmarkQuestions } from './benchmark/questions.js'
+import { parsePromptRunnerOutput, type PromptRunnerUsage } from './prompt-runner.js'
 import { retrieveContext, tokenizeLabel, type RetrieveResult } from '../runtime/retrieve.js'
 import { QUERY_TOKEN_ESTIMATOR, estimateQueryTokens, loadGraph } from '../runtime/serve.js'
 import { sidecarAwareFileFingerprint } from '../shared/binary-ingest-sidecar.js'
@@ -61,16 +62,7 @@ export interface ComparePromptTokenEstimator {
   exact: boolean
 }
 
-export interface ComparePromptUsage {
-  provider: 'claude' | 'gemini'
-  source: 'structured_stdout'
-  input_tokens: number
-  output_tokens: number
-  cache_creation_input_tokens: number
-  cache_read_input_tokens: number
-  input_total_tokens: number
-  total_tokens: number
-}
+export type ComparePromptUsage = PromptRunnerUsage
 
 export interface ComparePromptReport {
   question: string
@@ -172,13 +164,6 @@ export interface ExecuteCompareRunsDependencies {
   now?: () => Date
 }
 
-interface ParsedCompareRunnerOutput {
-  answerText: string | null
-  usage: ComparePromptUsage | null
-}
-
-type CompareRunnerOutputParser = (stdout: string) => ParsedCompareRunnerOutput | null
-
 const DEFAULT_RETRIEVAL_BUDGET = 3_000
 const DEFAULT_BOUNDED_BASELINE_TOKENS = 4_000
 const EXEC_TEMPLATE_PLACEHOLDER_PATTERN = /\{[a-z_][a-z0-9_]*\}/gi
@@ -207,170 +192,6 @@ function summarizeExecTemplate(execTemplate: string): CompareExecCommandSummary 
     placeholders: [...new Set(placeholders)],
     redacted: true,
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null
-}
-
-function parseNonNegativeNumber(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
-}
-
-function parseStructuredCompareAnswer(payload: Record<string, unknown>): string | null {
-  if (typeof payload.result === 'string') {
-    return payload.result
-  }
-  if (typeof payload.completion === 'string') {
-    return payload.completion
-  }
-  return null
-}
-
-function parseJsonRecord(stdout: string): Record<string, unknown> | null {
-  const trimmed = stdout.trim()
-  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
-    return null
-  }
-
-  let payload: unknown
-  try {
-    payload = JSON.parse(trimmed)
-  } catch {
-    return null
-  }
-
-  return isRecord(payload) ? payload : null
-}
-
-function parseClaudeStructuredUsage(payload: Record<string, unknown>): ComparePromptUsage | null {
-  if (!isRecord(payload.usage)) {
-    return null
-  }
-
-  const inputTokens = parseNonNegativeNumber(payload.usage.input_tokens)
-  const outputTokens = parseNonNegativeNumber(payload.usage.output_tokens)
-  if (inputTokens === null || outputTokens === null) {
-    return null
-  }
-
-  const cacheCreationInputTokens = parseNonNegativeNumber(payload.usage.cache_creation_input_tokens) ?? 0
-  const cacheReadInputTokens = parseNonNegativeNumber(payload.usage.cache_read_input_tokens) ?? 0
-  const inputTotalTokens = inputTokens + cacheCreationInputTokens + cacheReadInputTokens
-
-  return {
-    provider: 'claude',
-    source: 'structured_stdout',
-    input_tokens: inputTokens,
-    output_tokens: outputTokens,
-    cache_creation_input_tokens: cacheCreationInputTokens,
-    cache_read_input_tokens: cacheReadInputTokens,
-    input_total_tokens: inputTotalTokens,
-    total_tokens: inputTotalTokens + outputTokens,
-  }
-}
-
-function parseClaudeStructuredCompareRunnerOutput(stdout: string): ParsedCompareRunnerOutput | null {
-  const payload = parseJsonRecord(stdout)
-  if (payload === null) {
-    return null
-  }
-
-  const answerText = parseStructuredCompareAnswer(payload)
-  const usage = parseClaudeStructuredUsage(payload)
-  if (answerText === null && usage === null) {
-    return null
-  }
-
-  return {
-    answerText,
-    usage,
-  }
-}
-
-function parseGeminiStructuredAnswer(payload: Record<string, unknown>): string | null {
-  if (!Array.isArray(payload.candidates) || payload.candidates.length === 0) {
-    return null
-  }
-
-  const firstCandidate = payload.candidates[0]
-  if (!isRecord(firstCandidate) || !isRecord(firstCandidate.content) || !Array.isArray(firstCandidate.content.parts)) {
-    return null
-  }
-
-  let answerText = ''
-  for (const part of firstCandidate.content.parts) {
-    if (isRecord(part) && typeof part.text === 'string') {
-      answerText += part.text
-    }
-  }
-
-  return answerText.length > 0 ? answerText : null
-}
-
-function parseGeminiStructuredUsage(payload: Record<string, unknown>): ComparePromptUsage | null {
-  if (!isRecord(payload.usageMetadata)) {
-    return null
-  }
-
-  const inputTokens = parseNonNegativeNumber(payload.usageMetadata.promptTokenCount)
-  const outputTokens = parseNonNegativeNumber(payload.usageMetadata.candidatesTokenCount)
-  const totalTokens = parseNonNegativeNumber(payload.usageMetadata.totalTokenCount)
-  if (inputTokens === null || outputTokens === null || totalTokens === null) {
-    return null
-  }
-
-  return {
-    provider: 'gemini',
-    source: 'structured_stdout',
-    input_tokens: inputTokens,
-    output_tokens: outputTokens,
-    cache_creation_input_tokens: 0,
-    cache_read_input_tokens: 0,
-    input_total_tokens: inputTokens,
-    total_tokens: totalTokens,
-  }
-}
-
-function parseGeminiStructuredCompareRunnerOutput(stdout: string): ParsedCompareRunnerOutput | null {
-  const payload = parseJsonRecord(stdout)
-  if (payload === null) {
-    return null
-  }
-
-  const answerText = parseGeminiStructuredAnswer(payload)
-  const usage = parseGeminiStructuredUsage(payload)
-  if (answerText === null && usage === null) {
-    return null
-  }
-
-  return {
-    answerText,
-    usage,
-  }
-}
-
-const COMPARE_RUNNER_OUTPUT_PARSERS: readonly CompareRunnerOutputParser[] = [
-  parseClaudeStructuredCompareRunnerOutput,
-  parseGeminiStructuredCompareRunnerOutput,
-]
-
-function parsePlainTextCompareRunnerOutput(stdout: string): ParsedCompareRunnerOutput {
-  return {
-    answerText: stdout,
-    usage: null,
-  }
-}
-
-function parseCompareRunnerOutput(stdout: string): ParsedCompareRunnerOutput {
-  for (const parser of COMPARE_RUNNER_OUTPUT_PARSERS) {
-    const parsedOutput = parser(stdout)
-    if (parsedOutput !== null) {
-      return parsedOutput
-    }
-  }
-
-  return parsePlainTextCompareRunnerOutput(stdout)
 }
 
 function validateCompareExecTemplate(template: string): void {
@@ -1082,7 +903,7 @@ export async function executeCompareRuns(
           question: report.question,
           command,
         })
-        const parsedOutput = parseCompareRunnerOutput(executionResult.stdout)
+        const parsedOutput = parsePromptRunnerOutput(executionResult.stdout)
         ensureCompareAnswerFile(
           execution.outputFile,
           parsedOutput.answerText ?? '',

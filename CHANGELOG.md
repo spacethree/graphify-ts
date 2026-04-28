@@ -4,12 +4,16 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+### Improved
+
+- **Runner-backed proof docs**: updated README, proof-workflow docs, demo docs, and quick-benchmark examples so `benchmark`/`eval` show the required `--exec` + `--yes` flow and no longer describe those commands as offline-only
+
 ## [0.8.8] - 2026-04-28
 
 ### Improved
 
 - **Retrieval quality**: improved retrieval ranking with relation-aware expansion so connected evidence surfaces more effectively, and strengthened recall/MRR eval guardrails to prevent misleading benchmark results
-- **Gemini compare docs**: documented the stdin-safe Gemini JSON runner (`cat {prompt_file} | gemini -p "" --output-format json`), clarified that `compare` uses reported Gemini/Claude usage when structured JSON includes it, falls back to labeled local estimates otherwise, and that `benchmark`/`eval` remain offline estimate surfaces
+- **Gemini compare docs**: documented the stdin-safe Gemini JSON runner (`cat {prompt_file} | gemini -p "" --output-format json`) and clarified that `compare` uses reported Gemini/Claude usage when structured JSON includes it, falling back to labeled local estimates otherwise
 
 ## [0.8.7] - 2026-04-27
 

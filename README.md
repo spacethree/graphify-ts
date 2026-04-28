@@ -58,19 +58,24 @@ This repo includes a tiny checked-in workspace at `examples/demo-repo/` plus a l
 
 ```bash
 node dist/src/cli/bin.js generate examples/demo-repo --no-html
-node dist/src/cli/bin.js benchmark examples/demo-repo/graphify-out/graph.json --questions examples/demo-repo/benchmark-questions.json
-node dist/src/cli/bin.js eval examples/demo-repo/graphify-out/graph.json --questions examples/demo-repo/benchmark-questions.json
+node dist/src/cli/bin.js benchmark examples/demo-repo/graphify-out/graph.json --questions examples/demo-repo/benchmark-questions.json \
+  --exec 'cat {prompt_file} | claude -p' \
+  --yes
+node dist/src/cli/bin.js eval examples/demo-repo/graphify-out/graph.json --questions examples/demo-repo/benchmark-questions.json \
+  --exec 'cat {prompt_file} | claude -p' \
+  --yes
 ```
 
 Outputs land in `examples/demo-repo/graphify-out/`, which is ignored so you can rerun the demo without polluting git status.
 
 - `benchmark` proves the graph is cheaper to query than reading the corpus naively, while still covering the labeled demo questions and their expected evidence. On the checked-in demo repo you should see `Question coverage: 5/5 matched`, `Expected evidence: 17/17 labels found`, and about `1.7x` fewer tokens per query.
 - `eval` proves retrieval quality on the same labeled questions: recall plus ranking quality (MRR). On the checked-in demo repo you should see `Recall: 100.0%`, `MRR: 1.000`, and about `2.7x` fewer tokens at query time.
+- `benchmark` and `eval` now execute those prompts through your terminal runner, just like `compare`. When the runner returns structured Gemini/Claude usage, the reports include provider-reported tokens; otherwise they label the local `cl100k_base` fallback estimate explicitly.
 - The demo repo is intentionally tiny, so these ratios are lower than the production benchmark below. The point is that the proof is fully reproducible from this repo.
 
 ## Real A/B compare (same question, same model)
 
-`benchmark` and `eval` are offline graph measurements. `compare` is the paid, real-world proof path: it builds a naive baseline prompt plus a graphify-guided prompt for the same question, runs both through your own terminal LLM command, and saves both answers.
+`benchmark` and `eval` use the same runner-backed prompt surface as `compare`, but they score a labeled question set instead of saving paired baseline-vs-graphify answers. `compare` is still the paid, real-world showcase path: it builds a naive baseline prompt plus a graphify-guided prompt for the same question, runs both through your own terminal LLM command, and saves both answers.
 
 ```bash
 node dist/src/cli/bin.js compare "How does login create a session?" \
@@ -97,7 +102,7 @@ What `compare` does:
 - Falls back to labeled local `cl100k_base` prompt estimates when the runner only returns answer text or malformed JSON, so the token source stays explicit.
 - Preserves partial artifacts when one side fails, and classifies prompt-size failures such as `Prompt is too long` as `context_overflow` evidence in `report.json`.
 
-Use `compare` when you want a showcase or a customer-proof run. Use `benchmark` and `eval` when you want repeatable local measurements without calling a model; they remain offline estimate surfaces rather than provider-reported usage surfaces.
+Use `compare` when you want a showcase or a customer-proof answer bundle. Use `benchmark` and `eval` when you want repeatable runner-backed question-set metrics; they report provider usage when available and clearly label local token-estimate fallback when it is not.
 
 ## Graph time travel (ref-to-ref graph compare)
 
@@ -263,7 +268,7 @@ Run the quick benchmark on your own project:
 ```bash
 cd your-project
 npx @mohammednagy/graphify-ts generate .
-npx @mohammednagy/graphify-ts benchmark graphify-out/graph.json
+npx @mohammednagy/graphify-ts benchmark graphify-out/graph.json --exec 'cat {prompt_file} | claude -p' --yes
 ```
 
 ## Credit

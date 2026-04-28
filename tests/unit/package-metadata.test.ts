@@ -16,6 +16,10 @@ function loadDependabotConfig(): string {
   return readFileSync(join(process.cwd(), '.github', 'dependabot.yml'), 'utf8')
 }
 
+function loadCiWorkflow(): string {
+  return readFileSync(join(process.cwd(), '.github', 'workflows', 'ci.yml'), 'utf8')
+}
+
 function loadReadme(): string {
   return readFileSync(join(process.cwd(), 'README.md'), 'utf8')
 }
@@ -52,5 +56,14 @@ describe('package metadata', () => {
     expect(loadReadme()).toContain('[![license MIT]')
     expect(loadReadme()).toContain('licensed under **MIT**')
     expect(loadContributingGuide()).toContain("licensed under this project's MIT license")
+  })
+
+  it('keeps the eval regression workflow aligned with runner-backed eval requirements', () => {
+    const ciWorkflow = loadCiWorkflow()
+
+    expect(ciWorkflow).toContain('Enforce eval regression thresholds')
+    expect(ciWorkflow).toContain('ci-prompt-runner.mjs')
+    expect(ciWorkflow).toContain('--exec')
+    expect(ciWorkflow).toContain('--yes')
   })
 })

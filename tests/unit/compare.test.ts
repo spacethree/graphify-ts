@@ -14,6 +14,7 @@ import {
   runCompareCommand,
   resolveCompareQuestions,
 } from '../../src/infrastructure/compare.js'
+import { parsePromptRunnerOutput } from '../../src/infrastructure/prompt-runner.js'
 import { saveManifest } from '../../src/pipeline/manifest.js'
 import { toJson } from '../../src/pipeline/export.js'
 import { retrieveContext } from '../../src/runtime/retrieve.js'
@@ -269,6 +270,84 @@ afterEach(() => {
   rmSync(PROJECT_FIXTURE_ROOT, { recursive: true, force: true })
   rmSync(GRAPH_FIXTURE_ROOT, { recursive: true, force: true })
   rmSync(COMPARE_OUTPUT_ROOT, { recursive: true, force: true })
+})
+
+describe('shared prompt runner parsing', () => {
+  it('parses Claude structured stdout through the shared prompt-runner module', () => {
+    expect(
+      parsePromptRunnerOutput(
+        JSON.stringify({
+          type: 'result',
+          subtype: 'success',
+          result: 'baseline answer\n',
+          usage: {
+            input_tokens: 1200,
+            output_tokens: 90,
+            cache_creation_input_tokens: 100,
+            cache_read_input_tokens: 20,
+          },
+        }),
+      ),
+    ).toEqual({
+      answerText: 'baseline answer\n',
+      usage: {
+        provider: 'claude',
+        source: 'structured_stdout',
+        input_tokens: 1200,
+        output_tokens: 90,
+        cache_creation_input_tokens: 100,
+        cache_read_input_tokens: 20,
+        input_total_tokens: 1320,
+        total_tokens: 1410,
+      },
+    })
+  })
+
+  it('parses Gemini structured stdout through the shared prompt-runner module', () => {
+    expect(
+      parsePromptRunnerOutput(
+        JSON.stringify({
+          candidates: [
+            {
+              content: {
+                parts: [{ text: 'graphify answer' }, { text: '\n' }],
+              },
+            },
+          ],
+          usageMetadata: {
+            promptTokenCount: 400,
+            candidatesTokenCount: 70,
+            totalTokenCount: 470,
+          },
+        }),
+      ),
+    ).toEqual({
+      answerText: 'graphify answer\n',
+      usage: {
+        provider: 'gemini',
+        source: 'structured_stdout',
+        input_tokens: 400,
+        output_tokens: 70,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        input_total_tokens: 400,
+        total_tokens: 470,
+      },
+    })
+  })
+
+  it('falls back to raw stdout when the shared prompt-runner module cannot parse structured JSON', () => {
+    const stdout = JSON.stringify({
+      type: 'result',
+      subtype: 'success',
+      message: 'runner emitted raw JSON without parsed answer metadata',
+    })
+
+    expect(parsePromptRunnerOutput(stdout)).toEqual({
+      answerText: stdout,
+      usage: null,
+    })
+  })
 })
 
 describe('compare runtime', () => {
@@ -611,7 +690,7 @@ describe('compare runtime', () => {
     )
   })
 
-  it('captures Claude-reported usage from structured runner output and saves plain answers', async () => {
+  it('preserves Claude structured usage parsing through compare execution', async () => {
     const graph = makeGraph()
     writeProjectFiles()
     const graphPath = writeGraphFixture(graph)
@@ -730,7 +809,7 @@ describe('compare runtime', () => {
     expect(report.usage.graphify?.total_tokens).toBe(1410)
   })
 
-  it('falls back to raw stdout for unrecognized structured JSON output', async () => {
+  it('preserves plain-text fallback when structured parsing fails', async () => {
     const graph = makeGraph()
     writeProjectFiles()
     const graphPath = writeGraphFixture(graph)
@@ -765,9 +844,13 @@ describe('compare runtime', () => {
     expect(readFileSync(report.answer_paths.graphify, 'utf8')).toBe(stdout)
     expect(report.usage.baseline).toBeNull()
     expect(report.usage.graphify).toBeNull()
+    expect(report.prompt_token_source).toEqual({
+      baseline: 'estimated_cl100k_base',
+      graphify: 'estimated_cl100k_base',
+    })
   })
 
-  it('captures Gemini-reported usage from structured runner output and saves plain answers', async () => {
+  it('preserves Gemini structured usage parsing through compare execution', async () => {
     const graph = makeGraph()
     writeProjectFiles()
     const graphPath = writeGraphFixture(graph)
@@ -814,6 +897,12 @@ describe('compare runtime', () => {
     const report = result.reports[0]!
     expect(readFileSync(report.answer_paths.baseline, 'utf8')).toBe('baseline answer\n')
     expect(readFileSync(report.answer_paths.graphify, 'utf8')).toBe('graphify answer\n')
+    expect(report.baseline_prompt_tokens).toBe(1200)
+    expect(report.graphify_prompt_tokens).toBe(400)
+    expect(report.prompt_token_source).toEqual({
+      baseline: 'gemini_reported_input',
+      graphify: 'gemini_reported_input',
+    })
     expect(report.usage.baseline).toEqual(
       expect.objectContaining({
         provider: 'gemini',
@@ -853,6 +942,8 @@ describe('compare runtime', () => {
         total_tokens: 470,
       }),
     )
+    expect(formatCompareSummary(result)).toContain('Input tokens (Gemini reported): baseline 1200 · graphify 400')
+    expect(formatCompareSummary(result)).toContain('Total tokens (Gemini reported): baseline 1290 · graphify 470')
   })
 
   it('does not write Gemini structured stdout JSON into answer artifacts when usage metadata is present without answer text', async () => {

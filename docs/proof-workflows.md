@@ -10,8 +10,12 @@ This repo ships a checked-in demo workspace plus a labeled question set under `e
 npm install
 npm run build
 node dist/src/cli/bin.js generate examples/demo-repo --no-html
-node dist/src/cli/bin.js benchmark examples/demo-repo/graphify-out/graph.json --questions examples/demo-repo/benchmark-questions.json
-node dist/src/cli/bin.js eval examples/demo-repo/graphify-out/graph.json --questions examples/demo-repo/benchmark-questions.json
+node dist/src/cli/bin.js benchmark examples/demo-repo/graphify-out/graph.json --questions examples/demo-repo/benchmark-questions.json \
+  --exec 'cat {prompt_file} | claude -p' \
+  --yes
+node dist/src/cli/bin.js eval examples/demo-repo/graphify-out/graph.json --questions examples/demo-repo/benchmark-questions.json \
+  --exec 'cat {prompt_file} | claude -p' \
+  --yes
 ```
 
 Expected signals on the checked-in demo:
@@ -19,7 +23,7 @@ Expected signals on the checked-in demo:
 - `benchmark`: `Question coverage: 5/5 matched`, `Expected evidence: 17/17 labels found`, about `1.7x` fewer tokens per query
 - `eval`: `Recall: 100.0%`, `MRR: 1.000`, about `2.7x` fewer tokens at query time
 
-This is the safest proof path for CI and release gates because it is local, deterministic, and does not call a paid model.
+This is still the most reproducible question-set proof path because the corpus, labels, and expected signals are checked in here. It now runs through your configured terminal runner, so use `--yes` for CI/non-interactive runs and expect model-token usage unless your runner is purely local.
 
 ## 2. Same-question, same-model A/B proof
 
@@ -48,7 +52,7 @@ What gets saved under `graphify-out/compare/<timestamp>/`:
 - `graphify-answer.txt`
 - `report.json`
 
-When Gemini emits structured JSON with `usageMetadata`, `compare` captures real reported input and total tokens in `report.json` and the terminal summary. If the runner only returns answer text or malformed JSON, `compare` falls back to labeled local `cl100k_base` prompt estimates instead. Use this when you need customer-proof or your own apples-to-apples answer comparison. It can spend paid model tokens, so it is intentionally separate from the local benchmark/eval path. `benchmark` and `eval` remain offline estimate surfaces.
+When Gemini emits structured JSON with `usageMetadata`, `compare` captures real reported input and total tokens in `report.json` and the terminal summary. If the runner only returns answer text or malformed JSON, `compare` falls back to labeled local `cl100k_base` prompt estimates instead. Use this when you need customer-proof or your own apples-to-apples answer comparison. It can spend paid model tokens, just like runner-backed `benchmark` and `eval`; the difference is that `compare` saves paired answers, while `benchmark` and `eval` score a labeled question set.
 
 ## 3. Production and multi-repo proof
 

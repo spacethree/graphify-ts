@@ -10,6 +10,13 @@ set -e
 echo "=== graphify-ts Quick Benchmark ==="
 echo ""
 
+if [ -z "${GRAPHIFY_RUNNER:-}" ]; then
+  echo "Set GRAPHIFY_RUNNER to a prompt runner command template first, for example:"
+  echo "  export GRAPHIFY_RUNNER='cat {prompt_file} | claude -p'"
+  echo "  export GRAPHIFY_RUNNER='cat {prompt_file} | gemini -p \"\" --output-format json'"
+  exit 1
+fi
+
 # Check if graphify-ts is installed
 if ! command -v graphify-ts &> /dev/null; then
   echo "Installing graphify-ts..."
@@ -23,7 +30,7 @@ echo ""
 
 # Run benchmark
 echo "Step 2: Running token reduction benchmark..."
-graphify-ts benchmark graphify-out/graph.json
+graphify-ts benchmark graphify-out/graph.json --exec "$GRAPHIFY_RUNNER" --yes
 echo ""
 
 # Show key stats

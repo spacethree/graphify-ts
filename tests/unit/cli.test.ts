@@ -58,7 +58,9 @@ function createDependencies(): CliDependencies {
     queryGraph: (_graph, question, options) => `${question} :: ${options?.mode ?? 'bfs'} :: ${options?.tokenBudget ?? 2000}`,
     saveQueryResult: (question, _answer, memoryDir) => `${memoryDir}/${question}.md`,
     ingest: async (url, targetDir) => `${resolve(targetDir)}/${url.includes('arxiv') ? 'paper.md' : 'page.md'}`,
-    runBenchmark: (graphPath) => ({
+    runBenchmark: (context) => {
+      const resolvedGraphPath = context.options.graphPath
+      return {
       corpus_tokens: 1000,
       corpus_words: 750,
       corpus_source: 'manifest',
@@ -86,7 +88,7 @@ function createDependencies(): CliDependencies {
       reduction_ratio: 10,
       per_question: [
         {
-          question: graphPath ?? 'graphify-out/graph.json',
+          question: resolvedGraphPath ?? 'graphify-out/graph.json',
           query_tokens: 100,
           reduction: 10,
           expected_labels: [],
@@ -94,7 +96,9 @@ function createDependencies(): CliDependencies {
           missing_expected_labels: [],
         },
       ],
-    }),
+      }
+    },
+    runEval: () => 'graphify retrieval quality benchmark\nRecall: 100.0%\ncreate session login',
     runCompare: async () => 'compare command is not implemented yet',
     runTimeTravel: async () => 'time-travel command is not implemented yet',
     confirm: async () => true,
@@ -282,18 +286,35 @@ describe('cli parser', () => {
   })
 
   it('parses benchmark args', () => {
-    expect(parseBenchmarkArgs([])).toEqual({ graphPath: 'graphify-out/graph.json', questionsPath: null })
-    expect(parseBenchmarkArgs(['custom.json'])).toEqual({ graphPath: 'custom.json', questionsPath: null })
-    expect(parseBenchmarkArgs(['custom.json', '--questions', 'tests/fixtures/workspace-parity-questions.json'])).toEqual({
+    expect(parseBenchmarkArgs(['--exec', 'claude -p "$(cat {prompt_file})"'])).toEqual({
+      graphPath: 'graphify-out/graph.json',
+      questionsPath: null,
+      execTemplate: 'claude -p "$(cat {prompt_file})"',
+      yes: false,
+    })
+    expect(parseBenchmarkArgs(['custom.json', '--exec', 'claude -p "$(cat {prompt_file})"'])).toEqual({
+      graphPath: 'custom.json',
+      questionsPath: null,
+      execTemplate: 'claude -p "$(cat {prompt_file})"',
+      yes: false,
+    })
+    expect(parseBenchmarkArgs(['custom.json', '--questions', 'tests/fixtures/workspace-parity-questions.json', '--exec', 'claude -p "$(cat {prompt_file})"', '--yes'])).toEqual({
       graphPath: 'custom.json',
       questionsPath: 'tests/fixtures/workspace-parity-questions.json',
+      execTemplate: 'claude -p "$(cat {prompt_file})"',
+      yes: true,
     })
-    expect(parseBenchmarkArgs(['--questions=tests/fixtures/workspace-parity-questions.json'])).toEqual({
+    expect(parseBenchmarkArgs(['--questions=tests/fixtures/workspace-parity-questions.json', '--exec=claude -p "$(cat {prompt_file})"'])).toEqual({
       graphPath: 'graphify-out/graph.json',
       questionsPath: 'tests/fixtures/workspace-parity-questions.json',
+      execTemplate: 'claude -p "$(cat {prompt_file})"',
+      yes: false,
     })
-    expect(() => parseBenchmarkArgs(['one.json', 'two.json'])).toThrow('Usage: graphify-ts benchmark')
+    expect(() => parseBenchmarkArgs([])).toThrow('error: --exec is required')
+    expect(() => parseBenchmarkArgs([], 'eval')).toThrow('error: --exec is required')
+    expect(() => parseBenchmarkArgs(['one.json', 'two.json', '--exec', 'claude -p "$(cat {prompt_file})"'])).toThrow('Usage: graphify-ts benchmark')
     expect(() => parseBenchmarkArgs(['--questions', '--wat'])).toThrow('error: --questions requires a value')
+    expect(() => parseBenchmarkArgs(['--exec', '--wat'])).toThrow('error: --exec requires a value')
     expect(() => parseBenchmarkArgs(['custom.json', '--wat'])).toThrow('error: unknown option for benchmark: --wat')
   })
 
@@ -610,7 +631,11 @@ describe('cli main', () => {
     expect(help).toContain('add <url> [path]')
     expect(help).toContain('save-result')
     expect(help).toContain('benchmark [graph.json]')
+    expect(help).toContain('benchmark/eval runner. This may consume paid model tokens.')
+    expect(help).toContain('    --exec TEMPLATE       required command template; supports {prompt_file}, {question}, {mode}, and {output_file}')
     expect(help).toContain('--questions PATH')
+    expect(help).toContain('    --yes                 skip confirmation before running the paid benchmark/eval prompts')
+    expect(help).toContain('eval [graph.json]')
     expect(help).toContain('compare [question]    run a real baseline vs graphify prompt comparison')
     expect(help).toContain('    --graph <path>        path to graph.json (default graphify-out/graph.json)')
     expect(help).toContain('    --exec TEMPLATE       required command template; supports {prompt_file}, {question}, {mode}, and {output_file}')
@@ -764,6 +789,46 @@ describe('cli main', () => {
       expect(exitCode).toBe(2)
       expect(logs).toEqual(['Warning: compare will execute a baseline prompt and a graphify prompt for each question. This may consume paid model tokens.'])
       expect(errors).toEqual(['error: compare requires --yes in non-interactive mode.'])
+    } finally {
+      Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: stdinTty })
+      Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: stdoutTty })
+    }
+  })
+
+  it('fails fast when benchmark is run without --yes in non-interactive mode', async () => {
+    const { io, logs, errors } = createIo()
+    const stdinTty = process.stdin.isTTY
+    const stdoutTty = process.stdout.isTTY
+
+    Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: false })
+    Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: false })
+
+    try {
+      const exitCode = await executeCli(['benchmark', '--exec', 'claude -p "$(cat {prompt_file})"'], io)
+
+      expect(exitCode).toBe(2)
+      expect(logs).toEqual(['Warning: benchmark will execute the benchmark/eval runner. This may consume paid model tokens.'])
+      expect(errors).toEqual(['error: benchmark requires --yes in non-interactive mode.'])
+    } finally {
+      Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: stdinTty })
+      Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: stdoutTty })
+    }
+  })
+
+  it('fails fast when eval is run without --yes in non-interactive mode', async () => {
+    const { io, logs, errors } = createIo()
+    const stdinTty = process.stdin.isTTY
+    const stdoutTty = process.stdout.isTTY
+
+    Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: false })
+    Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: false })
+
+    try {
+      const exitCode = await executeCli(['eval', '--exec', 'claude -p "$(cat {prompt_file})"'], io)
+
+      expect(exitCode).toBe(2)
+      expect(logs).toEqual(['Warning: eval will execute the benchmark/eval runner. This may consume paid model tokens.'])
+      expect(errors).toEqual(['error: eval requires --yes in non-interactive mode.'])
     } finally {
       Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: stdinTty })
       Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: stdoutTty })
@@ -1097,44 +1162,70 @@ describe('cli main', () => {
   it('executes benchmark commands with question files via injected dependencies', async () => {
     const { io } = createIo()
     let printed = false
-    let capturedQuestions: unknown
+    let capturedContext: unknown
     const dependencies = createDependencies()
-    dependencies.runBenchmark = (graphPath, _corpusWords, questions) => {
-      capturedQuestions = questions
-      return createDependencies().runBenchmark(graphPath)
-    }
+    dependencies.runBenchmark = ((context: unknown) => {
+      capturedContext = context
+      return createDependencies().runBenchmark({
+        io,
+        options: {
+          graphPath: 'graph.json',
+          questionsPath: null,
+          execTemplate: 'unused',
+          yes: true,
+        },
+      })
+    }) as CliDependencies['runBenchmark']
     dependencies.printBenchmark = () => {
       printed = true
     }
 
     const exitCode = await executeCli(
-      ['benchmark', 'graph.json', '--questions', resolve('tests/fixtures/workspace-parity-questions.json')],
+      ['benchmark', 'graph.json', '--questions', resolve('tests/fixtures/workspace-parity-questions.json'), '--exec', 'claude -p "$(cat {prompt_file})"', '--yes'],
       io,
       dependencies,
     )
 
     expect(exitCode).toBe(0)
     expect(printed).toBe(true)
-    expect(capturedQuestions).toEqual([
-      { question: 'create session login', expected_labels: ['default()', 'loginUser()', '.login()'] },
-      { question: 'login user session', expected_labels: ['loginUser()', 'default()', 'session.ts'] },
-      { question: 'shared auth helper', expected_labels: ['default()', 'auth.ts', 'index.ts'] },
-      { question: 'reindex workspace', expected_labels: ['reindexWorkspace()', 'jobs.ts'] },
-      { question: 'workspace architecture docs', expected_labels: ['Workspace Architecture', 'architecture.md'] },
-      { question: 'billing flow', expected_labels: [] },
-    ])
+    expect(capturedContext).toEqual({
+      io,
+      options: {
+        graphPath: 'graph.json',
+        questionsPath: resolve('tests/fixtures/workspace-parity-questions.json'),
+        execTemplate: 'claude -p "$(cat {prompt_file})"',
+        yes: true,
+      },
+    })
   })
 
   it('executes eval command with question files and routes output through io.log', async () => {
     const { io, logs } = createIo()
-    const dependencies = createDependencies()
+    let capturedContext: unknown
+    const dependencies: CliDependencies & { runEval: (context: unknown) => string } = Object.assign(createDependencies(), {
+      runEval: (context: unknown) => {
+        capturedContext = context
+        return 'eval result'
+      },
+    })
 
-    const exitCode = await executeCli(['eval', '--questions', resolve('tests/fixtures/workspace-parity-questions.json')], io, dependencies)
+    const exitCode = await executeCli(
+      ['eval', '--questions', resolve('tests/fixtures/workspace-parity-questions.json'), '--exec', 'claude -p "$(cat {prompt_file})"', '--yes'],
+      io,
+      dependencies,
+    )
 
     expect(exitCode).toBe(0)
-    expect(logs.some((line) => line.includes('retrieval quality benchmark'))).toBe(true)
-    expect(logs.some((line) => line.includes('Recall:'))).toBe(true)
-    expect(logs.some((line) => line.includes('create session login'))).toBe(true)
+    expect(logs).toEqual(['eval result'])
+    expect(capturedContext).toEqual({
+      io,
+      options: {
+        graphPath: 'graphify-out/graph.json',
+        questionsPath: resolve('tests/fixtures/workspace-parity-questions.json'),
+        execTemplate: 'claude -p "$(cat {prompt_file})"',
+        yes: true,
+      },
+    })
   })
 
   it('executes hook commands via injected dependencies', async () => {
