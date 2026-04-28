@@ -4,6 +4,8 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.9] - 2026-04-28
+
 ### Improved
 
 - **Runner-backed proof docs**: updated README, proof-workflow docs, demo docs, and quick-benchmark examples so `benchmark`/`eval` show the required `--exec` + `--yes` flow and no longer describe those commands as offline-only
