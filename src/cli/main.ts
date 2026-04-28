@@ -34,6 +34,7 @@ import { formatTimeTravelResult } from '../runtime/time-travel.js'
 import {
   parseBenchmarkArgs,
   parseAddArgs,
+  type BenchmarkCliOptions,
   parseCompareArgs,
   parseDiffArgs,
   parseExplainArgs,
@@ -63,6 +64,16 @@ export interface CompareCommandContext {
   confirm(message: string): Promise<boolean>
 }
 
+export interface BenchmarkCommandContext {
+  options: BenchmarkCliOptions
+  io: CliIO
+}
+
+export interface EvalCommandContext {
+  options: BenchmarkCliOptions
+  io: CliIO
+}
+
 export interface TimeTravelCommandContext {
   options: TimeTravelCliOptions
   io: CliIO
@@ -73,7 +84,8 @@ export interface CliDependencies {
   queryGraph: typeof queryGraph
   saveQueryResult: typeof saveQueryResult
   ingest: typeof ingest
-  runBenchmark: typeof runBenchmark
+  runBenchmark: (context: BenchmarkCommandContext) => Promise<BenchmarkResult> | BenchmarkResult
+  runEval: (context: EvalCommandContext) => Promise<string | void> | string | void
   runCompare: (context: CompareCommandContext) => Promise<string | void> | string | void
   runTimeTravel: (context: TimeTravelCommandContext) => Promise<string | void> | string | void
   confirm: (message: string) => Promise<boolean>
@@ -107,7 +119,16 @@ const DEFAULT_DEPENDENCIES: CliDependencies = {
   queryGraph,
   saveQueryResult,
   ingest,
-  runBenchmark,
+  runBenchmark: ({ options }) => {
+    const questions = options.questionsPath ? loadBenchmarkQuestions(options.questionsPath) : undefined
+    return runBenchmark(options.graphPath, undefined, questions)
+  },
+  runEval: ({ options }) => {
+    const graph = loadGraph(options.graphPath)
+    const questions = options.questionsPath ? loadBenchmarkQuestions(options.questionsPath) : undefined
+    const report = evaluateRetrievalQuality(graph, questions, 3000, { graphPath: options.graphPath })
+    return formatQualityReport(report)
+  },
   runCompare: async ({ options }) => {
     return await runCompareCommand({
       graphPath: options.graphPath,
@@ -650,8 +671,7 @@ export async function executeCli(argv: string[], io: CliIO = console, dependenci
       if (!(await confirmPaidCommand('benchmark', BENCHMARK_WARNING_MESSAGE, 'Benchmark cancelled.', options.yes, io, dependencies))) {
         return 1
       }
-      const questions = options.questionsPath ? loadBenchmarkQuestions(options.questionsPath) : undefined
-      const result = dependencies.runBenchmark(options.graphPath, undefined, questions)
+      const result = await dependencies.runBenchmark({ options, io })
       dependencies.printBenchmark(result)
       return 0
     }
@@ -661,10 +681,10 @@ export async function executeCli(argv: string[], io: CliIO = console, dependenci
       if (!(await confirmPaidCommand('eval', EVAL_WARNING_MESSAGE, 'Eval cancelled.', options.yes, io, dependencies))) {
         return 1
       }
-      const graph = dependencies.loadGraph(options.graphPath)
-      const questions = options.questionsPath ? loadBenchmarkQuestions(options.questionsPath) : undefined
-      const report = evaluateRetrievalQuality(graph, questions, 3000, { graphPath: options.graphPath })
-      io.log(formatQualityReport(report))
+      const output = await dependencies.runEval({ options, io })
+      if (output) {
+        io.log(output)
+      }
       return 0
     }
 
