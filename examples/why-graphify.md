@@ -117,8 +117,12 @@ The production numbers above come from GoValidate. This repo also ships a tiny c
 
 ```bash
 node dist/src/cli/bin.js generate examples/demo-repo --no-html
-node dist/src/cli/bin.js benchmark examples/demo-repo/graphify-out/graph.json --questions examples/demo-repo/benchmark-questions.json
-node dist/src/cli/bin.js eval examples/demo-repo/graphify-out/graph.json --questions examples/demo-repo/benchmark-questions.json
+node dist/src/cli/bin.js benchmark examples/demo-repo/graphify-out/graph.json --questions examples/demo-repo/benchmark-questions.json \
+  --exec 'cat {prompt_file} | claude -p' \
+  --yes
+node dist/src/cli/bin.js eval examples/demo-repo/graphify-out/graph.json --questions examples/demo-repo/benchmark-questions.json \
+  --exec 'cat {prompt_file} | claude -p' \
+  --yes
 ```
 
 What each command proves:
@@ -132,7 +136,7 @@ If you want the exact command-level proof ladder and when to use each command, s
 
 ## Real A/B Proof with Your Own Model Command
 
-`benchmark` and `eval` prove graph quality offline. If you want a real "same question, same model, with and without graphify" run, use `compare`:
+`benchmark` and `eval` now use the same runner-backed prompt surface as `compare`, but they score a labeled question set instead of writing paired answer bundles. If you want a real "same question, same model, with and without graphify" run, use `compare`:
 
 ```bash
 node dist/src/cli/bin.js compare "How does login create a session?" \
@@ -156,7 +160,7 @@ What this gives you:
 - a saved proof bundle in `graphify-out/compare/<timestamp>/`
 - prompt-token counts, usage-source labels, and run statuses in `report.json`
 
-Important: `compare` may spend paid model tokens. It prints a warning before execution and requires `--yes` in non-interactive runs. For large prompts, use stdin or file redirection with `{prompt_file}`; avoid shell command substitution around `{prompt_file}` (for example `$(cat {prompt_file})`) because shell argument expansion can fail on full-repo baselines. If Gemini emits structured JSON with `usageMetadata`, `compare` records real reported input and total tokens. If the runner only returns answer text or malformed JSON, `compare` falls back to labeled local `cl100k_base` prompt estimates instead. `benchmark` and `eval` stay offline estimate surfaces.
+Important: `compare` may spend paid model tokens. It prints a warning before execution and requires `--yes` in non-interactive runs. For large prompts, use stdin or file redirection with `{prompt_file}`; avoid shell command substitution around `{prompt_file}` (for example `$(cat {prompt_file})`) because shell argument expansion can fail on full-repo baselines. If Gemini emits structured JSON with `usageMetadata`, `compare` records real reported input and total tokens. If the runner only returns answer text or malformed JSON, `compare` falls back to labeled local `cl100k_base` prompt estimates instead. Runner-backed `benchmark` and `eval` follow the same reported-usage vs. labeled-estimate fallback rules.
 
 ## Run It on Your Own Codebase
 
@@ -168,10 +172,10 @@ npm install -g @mohammednagy/graphify-ts
 graphify-ts generate .
 
 # Run the built-in benchmark
-graphify-ts benchmark graphify-out/graph.json
+graphify-ts benchmark graphify-out/graph.json --exec 'cat {prompt_file} | claude -p' --yes
 
 # If you have a labeled question set, also measure recall + MRR
-graphify-ts eval graphify-out/graph.json --questions benchmark-questions.json
+graphify-ts eval graphify-out/graph.json --questions benchmark-questions.json --exec 'cat {prompt_file} | claude -p' --yes
 
 # If you want a real same-model A/B proof run
 graphify-ts compare "How does auth work?" --exec 'cat {prompt_file} | claude -p' --yes
@@ -193,13 +197,13 @@ graphify-ts copilot install   # writes .vscode/mcp.json
 
 For an internal team rollout, the most convincing sequence is usually:
 
-1. Run `benchmark` and `eval` on one repo to prove the graph is smaller to query and still retrieves the expected evidence.
+1. Run `benchmark` and `eval` on one repo with your chosen runner to prove the graph is smaller to query and still retrieves the expected evidence.
 2. Run `compare` with your real model command to produce a saved baseline-vs-graphify answer bundle.
 3. If your system spans multiple repos, generate each graph separately and use `federate` before showing the agent workflow.
 
 That progression keeps the proof honest:
 
-- `benchmark` and `eval` are local graph-quality measurements
+- `benchmark` and `eval` are runner-backed graph-quality measurements on labeled prompts
 - `compare` is the model-facing proof, with reported usage when the runner emits structured JSON and labeled estimates otherwise
 - `federate` is the production architecture proof for frontend/backend/shared or microservice splits
 
