@@ -29,6 +29,7 @@ interface ImportedRouteReference {
   sourceFile: string
   line: number
   nodeKind: NonNullable<ExtractionNode['node_kind']>
+  anonymousDefault?: boolean
 }
 
 interface JsModuleAnalysis {
@@ -36,8 +37,6 @@ interface JsModuleAnalysis {
 }
 
 type RouteObjectProperty = ts.PropertyAssignment | ts.MethodDeclaration | ts.ShorthandPropertyAssignment
-
-const jsModuleAnalysisCache = new Map<string, JsModuleAnalysis>()
 
 function lineOf(node: ts.Node, sourceFile: ts.SourceFile): number {
   return sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1
@@ -62,6 +61,7 @@ function createExportedReference(
   line: number,
   label: string,
   nodeKind: NonNullable<ExtractionNode['node_kind']>,
+  anonymousDefault = false,
 ): ImportedRouteReference {
   return {
     id: _makeId(resolve(filePath), name),
@@ -69,6 +69,7 @@ function createExportedReference(
     sourceFile: filePath,
     line,
     nodeKind,
+    anonymousDefault,
   }
 }
 
@@ -92,9 +93,20 @@ function referenceForVariableDeclaration(filePath: string, declaration: ts.Varia
   return createExportedReference(filePath, name, line, name, 'function')
 }
 
-function analyzeJsModule(filePath: string): JsModuleAnalysis {
+function importedReferenceForLocalName(reference: ImportedRouteReference, localName: string): ImportedRouteReference {
+  if (!reference.anonymousDefault) {
+    return reference
+  }
+
+  return {
+    ...reference,
+    label: reference.nodeKind === 'function' ? `${localName}()` : localName,
+  }
+}
+
+function analyzeJsModule(filePath: string, cache: Map<string, JsModuleAnalysis>): JsModuleAnalysis {
   const resolvedFilePath = resolve(filePath)
-  const cached = jsModuleAnalysisCache.get(resolvedFilePath)
+  const cached = cache.get(resolvedFilePath)
   if (cached) {
     return cached
   }
@@ -102,7 +114,7 @@ function analyzeJsModule(filePath: string): JsModuleAnalysis {
   const analysis: JsModuleAnalysis = {
     exports: new Map<string, ImportedRouteReference>(),
   }
-  jsModuleAnalysisCache.set(resolvedFilePath, analysis)
+  cache.set(resolvedFilePath, analysis)
 
   let sourceText: string
   try {
@@ -127,11 +139,11 @@ function analyzeJsModule(filePath: string): JsModuleAnalysis {
       continue
     }
 
-    const exportedBindings = analyzeJsModule(targetFilePath).exports
+    const exportedBindings = analyzeJsModule(targetFilePath, cache).exports
     if (statement.importClause.name) {
       const binding = exportedBindings.get('default')
       if (binding) {
-        importedBindings.set(statement.importClause.name.text, binding)
+        importedBindings.set(statement.importClause.name.text, importedReferenceForLocalName(binding, statement.importClause.name.text))
       }
     }
 
@@ -152,26 +164,40 @@ function analyzeJsModule(filePath: string): JsModuleAnalysis {
     const exported = modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) ?? false
     const defaultExport = modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword) ?? false
 
-    if (ts.isFunctionDeclaration(statement) && statement.name) {
-      const reference = createExportedReference(resolvedFilePath, statement.name.text, lineOf(statement.name, sourceFile), `${statement.name.text}()`, 'function')
-      localBindings.set(statement.name.text, reference)
-      if (exported) {
-        analysis.exports.set(statement.name.text, reference)
-      }
-      if (defaultExport) {
-        analysis.exports.set('default', reference)
+    if (ts.isFunctionDeclaration(statement)) {
+      if (statement.name) {
+        const reference = createExportedReference(
+          resolvedFilePath,
+          statement.name.text,
+          lineOf(statement.name, sourceFile),
+          `${statement.name.text}()`,
+          'function',
+        )
+        localBindings.set(statement.name.text, reference)
+        if (exported) {
+          analysis.exports.set(statement.name.text, reference)
+        }
+        if (defaultExport) {
+          analysis.exports.set('default', reference)
+        }
+      } else if (defaultExport) {
+        analysis.exports.set('default', createExportedReference(resolvedFilePath, 'default', lineOf(statement, sourceFile), 'default', 'function', true))
       }
       continue
     }
 
-    if (ts.isClassDeclaration(statement) && statement.name) {
-      const reference = createExportedReference(resolvedFilePath, statement.name.text, lineOf(statement.name, sourceFile), statement.name.text, 'class')
-      localBindings.set(statement.name.text, reference)
-      if (exported) {
-        analysis.exports.set(statement.name.text, reference)
-      }
-      if (defaultExport) {
-        analysis.exports.set('default', reference)
+    if (ts.isClassDeclaration(statement)) {
+      if (statement.name) {
+        const reference = createExportedReference(resolvedFilePath, statement.name.text, lineOf(statement.name, sourceFile), statement.name.text, 'class')
+        localBindings.set(statement.name.text, reference)
+        if (exported) {
+          analysis.exports.set(statement.name.text, reference)
+        }
+        if (defaultExport) {
+          analysis.exports.set('default', reference)
+        }
+      } else if (defaultExport) {
+        analysis.exports.set('default', createExportedReference(resolvedFilePath, 'default', lineOf(statement, sourceFile), 'default', 'class', true))
       }
       continue
     }
@@ -208,8 +234,10 @@ function analyzeJsModule(filePath: string): JsModuleAnalysis {
           'default',
           createExportedReference(resolvedFilePath, expression.name.text, lineOf(expression, sourceFile), expression.name.text, 'class'),
         )
+      } else if (ts.isClassExpression(expression)) {
+        analysis.exports.set('default', createExportedReference(resolvedFilePath, 'default', lineOf(statement, sourceFile), 'default', 'class', true))
       } else {
-        analysis.exports.set('default', createExportedReference(resolvedFilePath, 'default', lineOf(statement, sourceFile), 'default', 'function'))
+        analysis.exports.set('default', createExportedReference(resolvedFilePath, 'default', lineOf(statement, sourceFile), 'default', 'function', true))
       }
       continue
     }
@@ -219,7 +247,7 @@ function analyzeJsModule(filePath: string): JsModuleAnalysis {
         statement.moduleSpecifier && ts.isStringLiteralLike(statement.moduleSpecifier)
           ? resolveImportPath(resolvedFilePath, statement.moduleSpecifier.text)
           : null
-      const targetExports = targetFilePath ? analyzeJsModule(targetFilePath).exports : null
+      const targetExports = targetFilePath ? analyzeJsModule(targetFilePath, cache).exports : null
 
       for (const element of statement.exportClause.elements) {
         const exportName = element.name.text
@@ -235,13 +263,17 @@ function analyzeJsModule(filePath: string): JsModuleAnalysis {
   return analysis
 }
 
-function collectImportedRouteBindings(filePath: string, sourceFile: ts.SourceFile): Map<string, ImportedRouteReference> {
+function collectImportedRouteBindings(
+  filePath: string,
+  sourceFile: ts.SourceFile,
+  cache: Map<string, JsModuleAnalysis>,
+): Map<string, ImportedRouteReference> {
   const importedBindings = new Map<string, ImportedRouteReference>()
 
   const visit = (node: ts.Node): void => {
     if (ts.isImportDeclaration(node) && node.importClause && ts.isStringLiteralLike(node.moduleSpecifier)) {
       const targetFilePath = resolveImportPath(filePath, node.moduleSpecifier.text)
-      const exportedBindings = targetFilePath ? analyzeJsModule(targetFilePath).exports : null
+      const exportedBindings = targetFilePath ? analyzeJsModule(targetFilePath, cache).exports : null
       if (!exportedBindings) {
         ts.forEachChild(node, visit)
         return
@@ -250,7 +282,7 @@ function collectImportedRouteBindings(filePath: string, sourceFile: ts.SourceFil
       if (node.importClause.name) {
         const binding = exportedBindings.get('default')
         if (binding) {
-          importedBindings.set(node.importClause.name.text, binding)
+          importedBindings.set(node.importClause.name.text, importedReferenceForLocalName(binding, node.importClause.name.text))
         }
       }
 
@@ -643,7 +675,8 @@ export const reactRouterAdapter: JsFrameworkAdapter = {
     const seenIds = new Set<string>()
     const seenEdges = new Set<string>()
     const initializers = new Map<string, ts.Expression>()
-    const importedBindings = collectImportedRouteBindings(context.filePath, context.sourceFile)
+    const moduleAnalysisCache = new Map<string, JsModuleAnalysis>()
+    const importedBindings = collectImportedRouteBindings(context.filePath, context.sourceFile, moduleAnalysisCache)
 
     const collectInitializers = (node: ts.Node) => {
       if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {

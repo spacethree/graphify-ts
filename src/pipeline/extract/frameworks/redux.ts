@@ -38,8 +38,6 @@ interface ReduxModuleAnalysis {
   exports: Map<string, ReduxReference>
 }
 
-const reduxModuleAnalysisCache = new Map<string, ReduxModuleAnalysis>()
-
 function lineOf(node: ts.Node, sourceFile: ts.SourceFile): number {
   return sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1
 }
@@ -204,9 +202,9 @@ function isCreateCall(initializer: ts.Expression, calleeName: string): boolean {
   return ts.isCallExpression(candidate) && !!callee && ts.isIdentifier(callee) && callee.text === calleeName
 }
 
-function analyzeReduxModule(filePath: string): ReduxModuleAnalysis {
+function analyzeReduxModule(filePath: string, cache: Map<string, ReduxModuleAnalysis>): ReduxModuleAnalysis {
   const resolvedFilePath = resolve(filePath)
-  const cached = reduxModuleAnalysisCache.get(resolvedFilePath)
+  const cached = cache.get(resolvedFilePath)
   if (cached) {
     return cached
   }
@@ -214,7 +212,7 @@ function analyzeReduxModule(filePath: string): ReduxModuleAnalysis {
   const analysis: ReduxModuleAnalysis = {
     exports: new Map<string, ReduxReference>(),
   }
-  reduxModuleAnalysisCache.set(resolvedFilePath, analysis)
+  cache.set(resolvedFilePath, analysis)
 
   let sourceText: string
   try {
@@ -302,7 +300,7 @@ function analyzeReduxModule(filePath: string): ReduxModuleAnalysis {
       continue
     }
 
-    const exportedBindings = analyzeReduxModule(targetFilePath).exports
+    const exportedBindings = analyzeReduxModule(targetFilePath, cache).exports
     if (statement.importClause.name) {
       const defaultBinding = exportedBindings.get('default')
       if (defaultBinding) {
@@ -340,7 +338,7 @@ function analyzeReduxModule(filePath: string): ReduxModuleAnalysis {
           statement.moduleSpecifier && ts.isStringLiteralLike(statement.moduleSpecifier)
             ? resolveImportPath(resolvedFilePath, statement.moduleSpecifier.text)
             : null
-        const targetExports = targetFilePath ? analyzeReduxModule(targetFilePath).exports : null
+        const targetExports = targetFilePath ? analyzeReduxModule(targetFilePath, cache).exports : null
 
         for (const element of statement.exportClause.elements) {
           const exportName = element.name.text
@@ -438,16 +436,20 @@ function analyzeReduxModule(filePath: string): ReduxModuleAnalysis {
 }
 
 export function inspectReduxModuleExports(filePath: string): ReadonlyMap<string, ReduxReference> {
-  return analyzeReduxModule(filePath).exports
+  return analyzeReduxModule(filePath, new Map<string, ReduxModuleAnalysis>()).exports
 }
 
-function collectImportedReduxBindings(filePath: string, sourceFile: ts.SourceFile): Map<string, ReduxReference> {
+function collectImportedReduxBindings(
+  filePath: string,
+  sourceFile: ts.SourceFile,
+  cache: Map<string, ReduxModuleAnalysis>,
+): Map<string, ReduxReference> {
   const importedBindings = new Map<string, ReduxReference>()
 
   const visit = (node: ts.Node): void => {
     if (ts.isImportDeclaration(node) && node.importClause && ts.isStringLiteralLike(node.moduleSpecifier)) {
       const targetFilePath = resolveImportPath(filePath, node.moduleSpecifier.text)
-      const exportedBindings = targetFilePath ? analyzeReduxModule(targetFilePath).exports : null
+      const exportedBindings = targetFilePath ? analyzeReduxModule(targetFilePath, cache).exports : null
       if (!exportedBindings) {
         ts.forEachChild(node, visit)
         return
@@ -1025,7 +1027,8 @@ export const reduxAdapter: JsFrameworkAdapter = {
     const slicesByBinding = new Map<string, SliceRecord>()
     const thunkBindings = new Map<string, ReduxReference>()
     const actionBindings = new Map<string, ReduxReference>()
-    const importedBindings = collectImportedReduxBindings(context.filePath, context.sourceFile)
+    const moduleAnalysisCache = new Map<string, ReduxModuleAnalysis>()
+    const importedBindings = collectImportedReduxBindings(context.filePath, context.sourceFile, moduleAnalysisCache)
 
     const visit = (node: ts.Node) => {
       if (ts.isVariableDeclaration(node)) {

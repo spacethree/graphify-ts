@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import * as ts from 'typescript'
@@ -12,6 +12,7 @@ import { extractJs } from '../../src/pipeline/extract.js'
 import { inspectReduxModuleExports } from '../../src/pipeline/extract/frameworks/redux.js'
 
 const FIXTURES_DIR = join(process.cwd(), 'tests', 'fixtures')
+const TEST_ARTIFACTS_DIR = join(process.cwd(), '.test-artifacts', 'framework-adapter-tests')
 
 function createFrameworkContext(filePath: string, sourceText: string, baseExtraction: ExtractionFragment): JsFrameworkContext {
   const scriptKind = filePath.endsWith('.tsx') ? ts.ScriptKind.TSX : filePath.endsWith('.jsx') ? ts.ScriptKind.JSX : ts.ScriptKind.TS
@@ -50,6 +51,15 @@ function graphNodeIdForLabel(graph: ReturnType<typeof build>, label: string): st
     }
   }
   throw new Error(`Missing graph node for label: ${label}`)
+}
+
+function writeScratchFiles(rootDir: string, files: Record<string, string>): void {
+  mkdirSync(rootDir, { recursive: true })
+  for (const [relativePath, sourceText] of Object.entries(files)) {
+    const filePath = join(rootDir, relativePath)
+    mkdirSync(join(filePath, '..'), { recursive: true })
+    writeFileSync(filePath, sourceText)
+  }
 }
 
 describe('js framework extraction contract', () => {
@@ -1421,6 +1431,61 @@ describe('js framework extraction contract', () => {
     )
   })
 
+  it('re-analyzes imported redux slices on later extraction runs instead of reusing stale module cache', () => {
+    const scratchDir = join(TEST_ARTIFACTS_DIR, 'redux-cache-freshness')
+    const sliceFilePath = join(scratchDir, 'slice.ts')
+    const storeFilePath = join(scratchDir, 'store.ts')
+
+    try {
+      writeScratchFiles(scratchDir, {
+        'slice.ts': [
+          "import { createSlice } from '@reduxjs/toolkit'",
+          '',
+          'const authSlice = createSlice({',
+          "  name: 'auth',",
+          '  initialState: { token: null as string | null },',
+          '  reducers: {},',
+          '})',
+          '',
+          'export default authSlice.reducer',
+        ].join('\n'),
+        'store.ts': [
+          "import { configureStore } from '@reduxjs/toolkit'",
+          "import authReducer from './slice'",
+          '',
+          'export const store = configureStore({',
+          '  reducer: {',
+          '    auth: authReducer,',
+          '  },',
+          '})',
+        ].join('\n'),
+      })
+
+      const initialStoreResult = extractJs(storeFilePath)
+      expect(initialStoreResult.nodes).toEqual(expect.arrayContaining([expect.objectContaining({ label: 'auth slice' })]))
+
+      writeScratchFiles(scratchDir, {
+        'slice.ts': [
+          "import { createSlice } from '@reduxjs/toolkit'",
+          '',
+          'const sessionSlice = createSlice({',
+          "  name: 'session',",
+          '  initialState: { token: null as string | null },',
+          '  reducers: {},',
+          '})',
+          '',
+          'export default sessionSlice.reducer',
+        ].join('\n'),
+      })
+
+      const updatedStoreResult = extractJs(storeFilePath)
+      expect(updatedStoreResult.nodes).toEqual(expect.arrayContaining([expect.objectContaining({ label: 'session slice' })]))
+      expect(updatedStoreResult.nodes.find((node) => node.label === 'auth slice')).toBeUndefined()
+    } finally {
+      rmSync(scratchDir, { recursive: true, force: true })
+    }
+  })
+
   it('resolves redux slices registered in stores across files when reducers are default exported', () => {
     const sliceFilePath = join(FIXTURES_DIR, 'redux-cross-file-default-slice.ts')
     const storeFilePath = join(FIXTURES_DIR, 'redux-cross-file-default-store.ts')
@@ -1522,6 +1587,53 @@ describe('js framework extraction contract', () => {
         expect.objectContaining({ source: settingsRouteId, target: settingsActionNode?.id, relation: 'submits_route' }),
       ]),
     )
+  })
+
+  it('re-analyzes imported react router modules between runs and labels anonymous default exports with the local alias', () => {
+    const scratchDir = join(TEST_ARTIFACTS_DIR, 'react-router-cache-freshness')
+    const moduleFilePath = join(scratchDir, 'page.tsx')
+    const routerFilePath = join(scratchDir, 'router.tsx')
+
+    try {
+      writeScratchFiles(scratchDir, {
+        'page.tsx': [
+          'export default () => null',
+          'export const settingsLoader = async () => null',
+        ].join('\n'),
+        'router.tsx': [
+          "import { createBrowserRouter } from 'react-router-dom'",
+          "import SettingsPage, { settingsLoader } from './page'",
+          '',
+          'export const router = createBrowserRouter([{',
+          "  path: '/settings',",
+          '  Component: SettingsPage,',
+          '  loader: settingsLoader,',
+          '}])',
+        ].join('\n'),
+      })
+
+      const initialRouterResult = extractJs(routerFilePath)
+      expect(initialRouterResult.nodes).toEqual(
+        expect.arrayContaining([expect.objectContaining({ label: 'SettingsPage()', source_file: moduleFilePath })]),
+      )
+
+      writeScratchFiles(scratchDir, {
+        'page.tsx': [
+          'export default function AccountPage() {',
+          '  return null',
+          '}',
+          'export const settingsLoader = async () => null',
+        ].join('\n'),
+      })
+
+      const updatedRouterResult = extractJs(routerFilePath)
+      expect(updatedRouterResult.nodes).toEqual(
+        expect.arrayContaining([expect.objectContaining({ label: 'AccountPage()', source_file: moduleFilePath })]),
+      )
+      expect(updatedRouterResult.nodes.find((node) => node.label === 'SettingsPage()' && node.source_file === moduleFilePath)).toBeUndefined()
+    } finally {
+      rmSync(scratchDir, { recursive: true, force: true })
+    }
   })
 
   it('keeps imported react router references distinct for same-named source modules', () => {
