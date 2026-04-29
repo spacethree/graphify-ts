@@ -337,7 +337,7 @@ function buildFrameworkQuestionProfile(question: string, questionTokens: readonl
   const uppercaseQuestion = question.toUpperCase()
   const hasHttpVerb = /\b(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD|USE|ALL)\b/.test(uppercaseQuestion)
   const hasRoutePath = /\/[A-Za-z0-9:_-]*/.test(question)
-  const routeIntent = hasHttpVerb || hasRoutePath || includesAnyToken(questionTokens, ['route', 'routes', 'router', 'endpoint', 'endpoints', 'path'])
+  const routeIntent = hasHttpVerb || hasRoutePath || includesAnyToken(questionTokens, ['route', 'routes', 'router', 'endpoint', 'endpoints'])
   const middlewareIntent = includesAnyToken(questionTokens, ['middleware', 'guard'])
   const handlerIntent = includesAnyToken(questionTokens, ['handler', 'handlers', 'controller', 'controllers'])
   const selectorIntent = includesAnyToken(questionTokens, ['selector', 'selectors'])

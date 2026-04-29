@@ -873,6 +873,38 @@ describe('retrieve', () => {
       )
     })
 
+    it('does not treat a generic path query as framework-shaped', () => {
+      const graph = new KnowledgeGraph({ directed: true })
+      graph.addNode('path_builder', {
+        label: 'PathBuilder',
+        source_file: '/src/utils/path-builder.ts',
+        line_number: 3,
+        node_kind: 'function',
+        file_type: 'code',
+        community: 0,
+      })
+      graph.addNode('settings_route', {
+        label: '/settings/path',
+        source_file: '/src/routes/settings.tsx',
+        line_number: 12,
+        node_kind: 'route',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_route',
+        community: 0,
+      })
+
+      const result = retrieveContext(graph, {
+        question: 'path',
+        budget: 5000,
+        fileType: 'code',
+      })
+
+      expect(result.matched_nodes.slice(0, 2).map((node) => node.label)).toEqual(['PathBuilder', '/settings/path'])
+      expect(result.matched_nodes.find((node) => node.label === 'PathBuilder')?.relevance_band).toBe('direct')
+      expect(result.matched_nodes.find((node) => node.label === '/settings/path')?.relevance_band).toBe('direct')
+    })
+
     it('answers route rendering questions with extracted react router route semantics', () => {
       const routerFilePath = join(process.cwd(), 'tests', 'fixtures', 'react-router-imported-router.tsx')
       const moduleFilePath = join(process.cwd(), 'tests', 'fixtures', 'react-router-imported-module.tsx')
@@ -981,6 +1013,65 @@ describe('retrieve', () => {
         expect.arrayContaining(['router', 'SettingsPage()', 'settingsLoader()', 'settingsAction()']),
       )
       expect(semanticLowLevelMatches.length).toBeLessThan(baselineLowLevelMatches.length)
+    })
+
+    it('keeps framework boosts for framework-shaped react router path questions', () => {
+      const graph = new KnowledgeGraph({ directed: true })
+      graph.addNode('settings_route', {
+        label: '/settings/path',
+        source_file: '/src/routes/settings.tsx',
+        line_number: 12,
+        node_kind: 'route',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_route',
+        community: 0,
+      })
+      graph.addNode('settings_page', {
+        label: 'SettingsPage',
+        source_file: '/src/routes/settings-page.tsx',
+        line_number: 20,
+        node_kind: 'function',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_component',
+        community: 0,
+      })
+      graph.addNode('path_builder', {
+        label: 'PathBuilder',
+        source_file: '/src/utils/path-builder.ts',
+        line_number: 3,
+        node_kind: 'function',
+        file_type: 'code',
+        community: 0,
+      })
+      graph.addEdge('settings_route', 'settings_page', {
+        relation: 'renders',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/settings.tsx',
+      })
+
+      const result = retrieveContext(graph, {
+        question: 'which react router path renders settings page',
+        budget: 5000,
+        fileType: 'code',
+      })
+
+      expect(result.matched_nodes[0]).toEqual(
+        expect.objectContaining({
+          label: '/settings/path',
+          node_kind: 'route',
+          relevance_band: 'direct',
+        }),
+      )
+      expect(result.relationships).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ from: '/settings/path', to: 'SettingsPage', relation: 'renders' }),
+        ]),
+      )
+      expect(result.matched_nodes.findIndex((node) => node.label === '/settings/path')).toBeLessThan(
+        result.matched_nodes.findIndex((node) => node.label === 'PathBuilder'),
+      )
     })
 
     it('keeps direct symbol matches above path-only matches after structural boosts', () => {
