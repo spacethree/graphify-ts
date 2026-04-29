@@ -569,6 +569,49 @@ describe('impact', () => {
       ])
     })
 
+    it('sorts framework-aware direct dependents ahead of generic functions', () => {
+      const graph = new KnowledgeGraph({ directed: true })
+
+      graph.addNode('dashboard_loader_service', {
+        label: 'dashboardLoaderService',
+        source_file: '/src/services/dashboardLoaderService.ts',
+        node_kind: 'function',
+        file_type: 'code',
+        community: 0,
+      })
+      graph.addNode('coerce_dashboard_data', {
+        label: 'coerceDashboardData',
+        source_file: '/src/routes/dashboard.tsx',
+        node_kind: 'function',
+        file_type: 'code',
+        community: 1,
+      })
+      graph.addNode('dashboard_loader', {
+        label: 'dashboardLoader',
+        source_file: '/src/routes/dashboard.tsx',
+        node_kind: 'function',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_loader',
+        community: 1,
+      })
+
+      graph.addEdge('coerce_dashboard_data', 'dashboard_loader_service', {
+        relation: 'calls',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/dashboard.tsx',
+      })
+      graph.addEdge('dashboard_loader', 'dashboard_loader_service', {
+        relation: 'calls',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/dashboard.tsx',
+      })
+
+      const result = analyzeImpact(graph, { 0: 'Data', 1: 'Routes' }, { label: 'dashboardLoaderService', depth: 2 })
+
+      expect(result.direct_dependents.map((node) => node.label)).toEqual(['dashboardLoader', 'coerceDashboardData'])
+    })
+
     it('compacts repeated dependent metadata for default payloads', () => {
       const graph = buildTestGraph()
       const rawResult = analyzeImpact(graph, { 0: 'Auth', 1: 'Data', 2: 'API', 3: 'Observability' }, {

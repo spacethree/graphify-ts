@@ -14,6 +14,7 @@ export interface ImpactNode {
   label: string
   source_file: string
   node_kind: string
+  framework_role: string | null
   file_type: string
   community: number | null
   community_label: string | null
@@ -33,7 +34,7 @@ export interface ImpactResult {
   total_affected: number
 }
 
-export interface CompactImpactNode extends Omit<ImpactNode, 'community_label' | 'file_type'> {
+export interface CompactImpactNode extends Omit<ImpactNode, 'community_label' | 'file_type' | 'framework_role'> {
   file_type?: string
 }
 
@@ -205,6 +206,7 @@ export function analyzeImpact(
         label: String(attributes.label ?? neighborId),
         source_file: String(attributes.source_file ?? ''),
         node_kind: String(attributes.node_kind ?? ''),
+        framework_role: String(attributes.framework_role ?? '') || null,
         file_type: String(attributes.file_type ?? ''),
         community,
         community_label: community !== null ? (communityLabels[community] ?? null) : null,
@@ -243,7 +245,7 @@ export function analyzeImpact(
       const existing = topPathsByCommunity.get(node.community)
       const summaryRank = frameworkSummaryRank({
         node_kind: node.node_kind,
-        framework_role: String(graph.nodeAttributes(discovered.nodeId).framework_role ?? '') || null,
+        framework_role: node.framework_role,
       })
       const shouldReplace =
         !existing ||
@@ -279,10 +281,14 @@ export function analyzeImpact(
     target: String(targetAttributes.label ?? targetNodeId),
     target_file: String(targetAttributes.source_file ?? ''),
     depth: maxDepth,
-    direct_dependents: directDependents.sort((a, b) => frameworkSummaryRank({ node_kind: b.node_kind }) - frameworkSummaryRank({ node_kind: a.node_kind }) || a.label.localeCompare(b.label)),
+    direct_dependents: directDependents.sort(
+      (a, b) =>
+        frameworkSummaryRank(b) - frameworkSummaryRank(a) ||
+        a.label.localeCompare(b.label),
+    ),
     transitive_dependents: transitiveDependents.sort(
       (a, b) =>
-        frameworkSummaryRank({ node_kind: b.node_kind }) - frameworkSummaryRank({ node_kind: a.node_kind }) ||
+        frameworkSummaryRank(b) - frameworkSummaryRank(a) ||
         a.distance - b.distance ||
         a.label.localeCompare(b.label),
     ),
@@ -299,7 +305,7 @@ export function compactImpactResult(result: ImpactResult): CompactImpactResult {
     dependents.length > 0 && dependents.every((node) => node.file_type === dependents[0]?.file_type)
       ? dependents[0]?.file_type
       : undefined
-  const compactNode = ({ community_label: _communityLabel, file_type: fileType, ...node }: ImpactNode): CompactImpactNode => ({
+  const compactNode = ({ community_label: _communityLabel, file_type: fileType, framework_role: _frameworkRole, ...node }: ImpactNode): CompactImpactNode => ({
     ...node,
     ...(sharedFileType ? {} : { file_type: fileType }),
   })

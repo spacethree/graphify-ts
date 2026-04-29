@@ -542,6 +542,155 @@ describe('retrieve', () => {
       )
     })
 
+    it('does not boost react router routes for express-shaped questions in mixed-framework graphs', () => {
+      const graph = new KnowledgeGraph({ directed: true })
+      graph.addNode('express_route', {
+        label: 'GET /users',
+        source_file: '/src/server/users.ts',
+        line_number: 10,
+        node_kind: 'route',
+        file_type: 'code',
+        framework: 'express',
+        framework_role: 'express_route',
+        community: 0,
+      })
+      graph.addNode('require_auth', {
+        label: 'requireAuth',
+        source_file: '/src/server/auth.ts',
+        line_number: 4,
+        node_kind: 'function',
+        file_type: 'code',
+        framework: 'express',
+        framework_role: 'express_middleware',
+        community: 0,
+      })
+      graph.addNode('show_user', {
+        label: 'showUser',
+        source_file: '/src/server/users.ts',
+        line_number: 20,
+        node_kind: 'function',
+        file_type: 'code',
+        framework: 'express',
+        framework_role: 'express_handler',
+        community: 0,
+      })
+      graph.addNode('react_route', {
+        label: '/users',
+        source_file: '/src/app/routes.tsx',
+        line_number: 12,
+        node_kind: 'route',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_route',
+        community: 1,
+      })
+      graph.addNode('users_page', {
+        label: 'UsersPage',
+        source_file: '/src/app/users-page.tsx',
+        line_number: 3,
+        node_kind: 'component',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_component',
+        community: 1,
+      })
+      graph.addEdge('express_route', 'require_auth', {
+        relation: 'depends_on',
+        confidence: 'EXTRACTED',
+        source_file: '/src/server/users.ts',
+      })
+      graph.addEdge('express_route', 'show_user', {
+        relation: 'depends_on',
+        confidence: 'EXTRACTED',
+        source_file: '/src/server/users.ts',
+      })
+      graph.addEdge('react_route', 'users_page', {
+        relation: 'renders',
+        confidence: 'EXTRACTED',
+        source_file: '/src/app/routes.tsx',
+      })
+
+      const result = retrieveContext(graph, {
+        question: 'which express route uses auth middleware for users',
+        budget: 5000,
+        fileType: 'code',
+      })
+
+      expect(result.matched_nodes.findIndex((node) => node.label === 'GET /users')).toBeLessThan(
+        result.matched_nodes.findIndex((node) => node.label === '/users'),
+      )
+      expect(result.matched_nodes.findIndex((node) => node.label === 'requireAuth')).toBeLessThan(
+        result.matched_nodes.findIndex((node) => node.label === '/users'),
+      )
+    })
+
+    it('does not boost express routes for react-router-shaped questions in mixed-framework graphs', () => {
+      const graph = new KnowledgeGraph({ directed: true })
+      graph.addNode('express_route', {
+        label: 'GET /users',
+        source_file: '/src/server/users.ts',
+        line_number: 10,
+        node_kind: 'route',
+        file_type: 'code',
+        framework: 'express',
+        framework_role: 'express_route',
+        community: 0,
+      })
+      graph.addNode('show_user', {
+        label: 'showUser',
+        source_file: '/src/server/users.ts',
+        line_number: 20,
+        node_kind: 'function',
+        file_type: 'code',
+        framework: 'express',
+        framework_role: 'express_handler',
+        community: 0,
+      })
+      graph.addNode('react_route', {
+        label: '/users',
+        source_file: '/src/app/routes.tsx',
+        line_number: 12,
+        node_kind: 'route',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_route',
+        community: 1,
+      })
+      graph.addNode('users_page', {
+        label: 'UsersPage',
+        source_file: '/src/app/users-page.tsx',
+        line_number: 3,
+        node_kind: 'component',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_component',
+        community: 1,
+      })
+      graph.addEdge('express_route', 'show_user', {
+        relation: 'depends_on',
+        confidence: 'EXTRACTED',
+        source_file: '/src/server/users.ts',
+      })
+      graph.addEdge('react_route', 'users_page', {
+        relation: 'renders',
+        confidence: 'EXTRACTED',
+        source_file: '/src/app/routes.tsx',
+      })
+
+      const result = retrieveContext(graph, {
+        question: 'which react router route renders users page',
+        budget: 5000,
+        fileType: 'code',
+      })
+
+      expect(result.matched_nodes.findIndex((node) => node.label === '/users')).toBeLessThan(
+        result.matched_nodes.findIndex((node) => node.label === 'GET /users'),
+      )
+      expect(result.matched_nodes.findIndex((node) => node.label === 'UsersPage')).toBeLessThan(
+        result.matched_nodes.findIndex((node) => node.label === 'GET /users'),
+      )
+    })
+
     it('ranks mounted express route nodes by their propagated prefix', () => {
       const fixturesDir = join(process.cwd(), 'tests', 'fixtures')
       const graph = build([
@@ -1468,6 +1617,120 @@ describe('retrieve', () => {
       expect(compactResult.shared_file_type).toBe('code')
       expect(compactResult.matched_nodes[0]).not.toHaveProperty('file_type')
       expect(compactResult.matched_nodes[0]).not.toHaveProperty('community_label')
+    })
+
+    it('keeps raw framework retrieval budget-driven and caps only compact serialization', () => {
+      const graph = new KnowledgeGraph({ directed: true })
+      graph.addNode('dashboard_route', {
+        label: '/dashboard',
+        source_file: '/src/routes/dashboard.tsx',
+        line_number: 5,
+        node_kind: 'route',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_route',
+        community: 0,
+      })
+      graph.addNode('dashboard_layout', {
+        label: 'DashboardLayout',
+        source_file: '/src/routes/dashboard-layout.tsx',
+        line_number: 9,
+        node_kind: 'component',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_layout',
+        community: 0,
+      })
+      graph.addNode('dashboard_page', {
+        label: 'DashboardPage',
+        source_file: '/src/routes/dashboard-page.tsx',
+        line_number: 12,
+        node_kind: 'component',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_component',
+        community: 0,
+      })
+      graph.addNode('dashboard_loader', {
+        label: 'dashboardLoader',
+        source_file: '/src/routes/dashboard-loader.ts',
+        line_number: 18,
+        node_kind: 'function',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_loader',
+        community: 0,
+      })
+      graph.addNode('dashboard_action', {
+        label: 'dashboardAction',
+        source_file: '/src/routes/dashboard-action.ts',
+        line_number: 24,
+        node_kind: 'function',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_action',
+        community: 0,
+      })
+      graph.addNode('dashboard_router', {
+        label: 'dashboardRouter',
+        source_file: '/src/routes/router.tsx',
+        line_number: 30,
+        node_kind: 'router',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router',
+        community: 0,
+      })
+      graph.addNode('dashboard_helper', {
+        label: 'dashboardHelper',
+        source_file: '/src/routes/dashboard-helper.ts',
+        line_number: 36,
+        node_kind: 'function',
+        file_type: 'code',
+        community: 0,
+      })
+      graph.addEdge('dashboard_route', 'dashboard_layout', {
+        relation: 'renders',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/dashboard.tsx',
+      })
+      graph.addEdge('dashboard_route', 'dashboard_page', {
+        relation: 'renders',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/dashboard.tsx',
+      })
+      graph.addEdge('dashboard_route', 'dashboard_loader', {
+        relation: 'loads_route',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/dashboard.tsx',
+      })
+      graph.addEdge('dashboard_route', 'dashboard_action', {
+        relation: 'submits_route',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/dashboard.tsx',
+      })
+      graph.addEdge('dashboard_router', 'dashboard_route', {
+        relation: 'contains',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/router.tsx',
+      })
+      graph.addEdge('dashboard_helper', 'dashboard_loader', {
+        relation: 'calls',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/dashboard-helper.ts',
+      })
+
+      const rawResult = retrieveContext(graph, {
+        question: 'which react router route renders dashboard page',
+        budget: 5000,
+        fileType: 'code',
+      })
+      const compactResult = compactRetrieveResult(rawResult)
+
+      expect(rawResult.matched_nodes.length).toBeGreaterThan(5)
+      expect(rawResult.matched_nodes.map((node) => node.label)).toEqual(expect.arrayContaining(['dashboardHelper']))
+      expect(compactResult.matched_nodes).toHaveLength(5)
+      expect(compactResult.matched_nodes.length).toBeLessThan(rawResult.matched_nodes.length)
     })
 
     it('assigns higher match_score to direct matches than neighbors', () => {

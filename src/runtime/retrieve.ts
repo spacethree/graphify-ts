@@ -34,6 +34,7 @@ export interface RetrieveMatchedNode {
   source_file: string
   line_number: number
   node_kind: string
+  framework_boost?: number
   file_type: string
   snippet: string | null
   match_score: number
@@ -66,7 +67,7 @@ export interface RetrieveResult {
   }
 }
 
-export interface CompactRetrieveMatchedNode extends Omit<RetrieveMatchedNode, 'community_label' | 'file_type'> {
+export interface CompactRetrieveMatchedNode extends Omit<RetrieveMatchedNode, 'community_label' | 'file_type' | 'framework_boost'> {
   file_type?: string
 }
 
@@ -347,6 +348,9 @@ function buildFrameworkQuestionProfile(question: string, questionTokens: readonl
   const hasHttpVerb = /\b(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD|USE|ALL)\b/.test(uppercaseQuestion)
   const hasRoutePath = /\/[A-Za-z0-9:_-]*/.test(question)
   const routeIntent = hasHttpVerb || hasRoutePath || includesAnyToken(questionTokens, ['route', 'routes', 'router', 'endpoint', 'endpoints'])
+  const explicitExpress = includesAnyToken(questionTokens, ['express'])
+  const explicitRedux = includesAnyToken(questionTokens, ['redux', 'toolkit'])
+  const explicitReactRouter = includesAnyToken(questionTokens, ['react', 'router', 'routing'])
   const middlewareIntent = includesAnyToken(questionTokens, ['middleware', 'guard'])
   const handlerIntent = includesAnyToken(questionTokens, ['handler', 'handlers', 'controller', 'controllers'])
   const selectorIntent = includesAnyToken(questionTokens, ['selector', 'selectors'])
@@ -355,9 +359,9 @@ function buildFrameworkQuestionProfile(question: string, questionTokens: readonl
   const renderIntent = includesAnyToken(questionTokens, ['render', 'renders', 'page', 'pages', 'component', 'components'])
   const loaderIntent = includesAnyToken(questionTokens, ['loader', 'loaders', 'load'])
   const actionIntent = includesAnyToken(questionTokens, ['action', 'actions', 'submit', 'submits', 'dispatch'])
-  const express = includesAnyToken(questionTokens, ['express']) || routeIntent || middlewareIntent || handlerIntent
-  const redux = includesAnyToken(questionTokens, ['redux', 'toolkit']) || selectorIntent || sliceIntent || storeIntent || actionIntent
-  const reactRouter = includesAnyToken(questionTokens, ['react', 'router', 'routing']) || routeIntent || renderIntent || loaderIntent || actionIntent
+  const express = explicitExpress || hasHttpVerb || middlewareIntent || handlerIntent
+  const redux = explicitRedux || selectorIntent || sliceIntent || storeIntent
+  const reactRouter = explicitReactRouter || renderIntent || loaderIntent || (actionIntent && (explicitReactRouter || routeIntent))
 
   return {
     frameworkShaped: express || redux || reactRouter,
@@ -388,7 +392,7 @@ function frameworkBoostForNode(
   let boost = 0
 
   if (profile.express) {
-    if (nodeKind === 'route' || frameworkRole === 'express_route') {
+    if (frameworkRole === 'express_route') {
       boost += profile.routeIntent || profile.middlewareIntent || profile.handlerIntent ? 4 : 2.5
     }
     if (frameworkRole === 'express_middleware') {
@@ -397,7 +401,7 @@ function frameworkBoostForNode(
     if (frameworkRole === 'express_handler') {
       boost += profile.handlerIntent ? 2.5 : 1.25
     }
-    if (nodeKind === 'router' || frameworkRole === 'express_router' || frameworkRole === 'express_app') {
+    if (frameworkRole === 'express_router' || frameworkRole === 'express_app') {
       boost += profile.routeIntent ? 1.5 : 0.5
     }
   }
@@ -418,7 +422,7 @@ function frameworkBoostForNode(
   }
 
   if (profile.reactRouter) {
-    if (nodeKind === 'route' || frameworkRole === 'react_router_route' || frameworkRole === 'react_router_layout') {
+    if (frameworkRole === 'react_router_route' || frameworkRole === 'react_router_layout') {
       boost += profile.routeIntent || profile.renderIntent || profile.loaderIntent || profile.actionIntent ? 3.5 : 2
     }
     if (frameworkRole === 'react_router_component') {
@@ -430,7 +434,7 @@ function frameworkBoostForNode(
     if (frameworkRole === 'react_router_action') {
       boost += profile.actionIntent ? 2.5 : 1
     }
-    if (nodeKind === 'router' || frameworkRole === 'react_router') {
+    if (frameworkRole === 'react_router') {
       boost += profile.routeIntent ? 1.5 : 0.5
     }
   }
@@ -687,6 +691,7 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
       source_file: node.sourceFile,
       line_number: node.lineNumber,
       node_kind: node.nodeKind,
+      framework_boost: node.frameworkBoost,
       file_type: node.fileType,
       snippet,
       match_score: node.score,
@@ -698,9 +703,6 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
     includedIds.add(node.id)
     tokenCount += nodeTokens
 
-    if (matchedNodes.length >= compactFrameworkLimit) {
-      break
-    }
   }
 
   // Collect relationships between included nodes
@@ -753,21 +755,32 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
 }
 
 export function compactRetrieveResult(result: RetrieveResult): CompactRetrieveResult {
+  const frameworkProfile = buildFrameworkQuestionProfile(result.question, tokenizeQuestion(result.question))
+  const compactFrameworkLimit =
+    frameworkProfile.frameworkShaped && result.matched_nodes.some((node) => (node.framework_boost ?? 0) > 0) ? 5 : Number.POSITIVE_INFINITY
+  const compactMatchedNodes = Number.isFinite(compactFrameworkLimit)
+    ? result.matched_nodes.slice(0, compactFrameworkLimit)
+    : result.matched_nodes
+  const includedLabels = new Set(compactMatchedNodes.map((node) => node.label))
+  const includedCommunities = new Set(compactMatchedNodes.flatMap((node) => (node.community === null ? [] : [node.community])))
   const sharedFileType =
-    result.matched_nodes.length > 0 && result.matched_nodes.every((node) => node.file_type === result.matched_nodes[0]?.file_type)
-      ? result.matched_nodes[0]?.file_type
+    compactMatchedNodes.length > 0 && compactMatchedNodes.every((node) => node.file_type === compactMatchedNodes[0]?.file_type)
+      ? compactMatchedNodes[0]?.file_type
       : undefined
 
   return {
     question: result.question,
     token_count: result.token_count,
-    matched_nodes: result.matched_nodes.map(({ community_label: _communityLabel, file_type: fileType, ...node }) => ({
+    matched_nodes: compactMatchedNodes.map(({ community_label: _communityLabel, file_type: fileType, framework_boost: _frameworkBoost, ...node }) => ({
       ...node,
       ...(sharedFileType ? {} : { file_type: fileType }),
     })),
-    relationships: result.relationships,
-    community_context: result.community_context,
-    graph_signals: result.graph_signals,
+    relationships: result.relationships.filter((edge) => includedLabels.has(edge.from) && includedLabels.has(edge.to)),
+    community_context: result.community_context.filter((community) => includedCommunities.has(community.id)),
+    graph_signals: {
+      god_nodes: result.graph_signals.god_nodes.filter((label) => includedLabels.has(label)),
+      bridge_nodes: result.graph_signals.bridge_nodes.filter((label) => includedLabels.has(label)),
+    },
     ...(sharedFileType ? { shared_file_type: sharedFileType } : {}),
   }
 }
