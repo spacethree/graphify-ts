@@ -31,7 +31,7 @@ interface ReduxReference {
   line: number
   nodeKind: NonNullable<ExtractionNode['node_kind']>
   frameworkRole: string
-  kind: 'slice' | 'thunk' | 'action'
+  kind: 'slice' | 'thunk' | 'action' | 'selector'
 }
 
 interface ReduxModuleAnalysis {
@@ -150,6 +150,37 @@ function actionReference(filePath: string, name: string, line: number, framework
   }
 }
 
+function selectorReference(filePath: string, name: string, line: number): ReduxReference {
+  return {
+    id: _makeId(filePath, name, 'redux_selector'),
+    label: name,
+    sourceFile: filePath,
+    line,
+    nodeKind: 'function',
+    frameworkRole: 'redux_selector',
+    kind: 'selector',
+  }
+}
+
+function exportedSliceMemberReference(
+  filePath: string,
+  name: string,
+  line: number,
+  frameworkRole: 'redux_action' | 'redux_selector',
+  aliased: boolean,
+): ReduxReference {
+  const suffix = aliased ? (frameworkRole === 'redux_action' ? 'action' : 'selector') : frameworkRole
+  return frameworkRole === 'redux_selector'
+    ? {
+        ...selectorReference(filePath, name, line),
+        id: _makeId(filePath, name, suffix),
+      }
+    : {
+        ...actionReference(filePath, name, line, 'redux_action'),
+        id: _makeId(filePath, name, suffix),
+      }
+}
+
 function sliceActionReference(
   context: JsFrameworkContext,
   slice: ReduxReference,
@@ -197,10 +228,47 @@ function analyzeReduxModule(filePath: string): ReduxModuleAnalysis {
   const slicesByBinding = new Map<string, SliceRecord>()
   const thunkBindings = new Map<string, ReduxReference>()
   const actionBindings = new Map<string, ReduxReference>()
+  const selectorBindings = new Map<string, ReduxReference>()
   const aliases = new Map<string, ReduxReference>()
 
   const lookupBinding = (name: string): ReduxReference | null =>
-    thunkBindings.get(name) ?? actionBindings.get(name) ?? aliases.get(name) ?? (slicesByBinding.get(name) ? sliceReference(slicesByBinding.get(name)!) : null) ?? importedBindings.get(name) ?? null
+    thunkBindings.get(name)
+    ?? actionBindings.get(name)
+    ?? selectorBindings.get(name)
+    ?? aliases.get(name)
+    ?? (slicesByBinding.get(name) ? sliceReference(slicesByBinding.get(name)!) : null)
+    ?? importedBindings.get(name)
+    ?? null
+
+  const resolveSliceMemberBinding = (initializer: ts.Expression): ReduxReference | null => {
+    const candidate = unparenthesizeExpression(initializer)
+    if (!ts.isPropertyAccessExpression(candidate) || !ts.isIdentifier(candidate.expression)) {
+      return null
+    }
+
+    const sliceBinding = lookupBinding(candidate.expression.text)
+    if (sliceBinding?.kind !== 'slice') {
+      return null
+    }
+
+    if (candidate.name.text === 'actions') {
+      return {
+        ...actionReference(sliceBinding.sourceFile, '__placeholder__', sliceBinding.line, 'redux_action'),
+        id: '',
+        label: '',
+      }
+    }
+
+    if (candidate.name.text === 'selectors') {
+      return {
+        ...selectorReference(sliceBinding.sourceFile, '__placeholder__', sliceBinding.line),
+        id: '',
+        label: '',
+      }
+    }
+
+    return null
+  }
 
   const resolveBindingReference = (expression: ts.Expression | undefined): ReduxReference | null => {
     if (!expression) {
@@ -287,13 +355,50 @@ function analyzeReduxModule(filePath: string): ReduxModuleAnalysis {
     }
 
     for (const declaration of statement.declarationList.declarations) {
-      if (!ts.isIdentifier(declaration.name) || !declaration.initializer) {
+      if (!declaration.initializer) {
+        continue
+      }
+
+      const initializer = unparenthesizeExpression(declaration.initializer)
+      if (ts.isObjectBindingPattern(declaration.name)) {
+        const sliceMemberBinding = resolveSliceMemberBinding(initializer)
+        if (sliceMemberBinding) {
+          for (const element of declaration.name.elements) {
+            if (!ts.isIdentifier(element.name)) {
+              continue
+            }
+
+            const bindingName = element.name.text
+            const aliased = !!element.propertyName
+            const bindingLine = lineOf(element.name, sourceFile)
+            const binding = exportedSliceMemberReference(
+              sliceMemberBinding.sourceFile,
+              bindingName,
+              bindingLine,
+              sliceMemberBinding.frameworkRole as 'redux_action' | 'redux_selector',
+              aliased,
+            )
+
+            if (binding.frameworkRole === 'redux_selector') {
+              selectorBindings.set(bindingName, binding)
+            } else {
+              actionBindings.set(bindingName, binding)
+            }
+
+            if (exported) {
+              analysis.exports.set(bindingName, binding)
+            }
+          }
+        }
+        continue
+      }
+
+      if (!ts.isIdentifier(declaration.name)) {
         continue
       }
 
       const bindingName = declaration.name.text
       const bindingLine = lineOf(declaration.name, sourceFile)
-      const initializer = unparenthesizeExpression(declaration.initializer)
 
       if (isCreateCall(initializer, 'createSlice')) {
         const options = ts.isCallExpression(initializer) ? initializer.arguments[0] : null
@@ -330,6 +435,10 @@ function analyzeReduxModule(filePath: string): ReduxModuleAnalysis {
   }
 
   return analysis
+}
+
+export function inspectReduxModuleExports(filePath: string): ReadonlyMap<string, ReduxReference> {
+  return analyzeReduxModule(filePath).exports
 }
 
 function collectImportedReduxBindings(filePath: string, sourceFile: ts.SourceFile): Map<string, ReduxReference> {
@@ -677,10 +786,14 @@ function handleExportedMembers(
       continue
     }
 
-    const nodeId = addNamedNode(context, nodes, seenIds, exportName, lineOf(element.name, context.sourceFile), {
-      nodeKind: 'function',
-      frameworkRole: kind.frameworkRole,
-      fallbackSuffix: kind.fallbackSuffix,
+    const nodeId = _makeId(context.filePath, exportName, element.propertyName ? kind.fallbackSuffix : kind.frameworkRole)
+    const baseNode = findBaseNode(context, exportName)
+    addNode(nodes, seenIds, {
+      ...(baseNode ?? createNode(nodeId, exportName, context.filePath, lineOf(element.name, context.sourceFile))),
+      id: nodeId,
+      node_kind: 'function',
+      framework: 'redux-toolkit',
+      framework_role: kind.frameworkRole,
     })
     addUniqueEdge(edges, seenEdges, createEdge(slice.nodeId, nodeId, kind.relation, context.filePath, lineOf(element, context.sourceFile)))
   }

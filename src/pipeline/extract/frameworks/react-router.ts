@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { basename, extname, resolve } from 'node:path'
+import { resolve } from 'node:path'
 
 import * as ts from 'typescript'
 
@@ -56,10 +56,6 @@ function findBaseNode(context: JsFrameworkContext, name: string) {
   return context.baseExtraction.nodes?.find((node) => candidates.has(node.label)) ?? null
 }
 
-function moduleStem(filePath: string): string {
-  return basename(filePath, extname(filePath))
-}
-
 function createExportedReference(
   filePath: string,
   name: string,
@@ -68,7 +64,7 @@ function createExportedReference(
   nodeKind: NonNullable<ExtractionNode['node_kind']>,
 ): ImportedRouteReference {
   return {
-    id: _makeId(moduleStem(filePath), name),
+    id: _makeId(resolve(filePath), name),
     label,
     sourceFile: filePath,
     line,

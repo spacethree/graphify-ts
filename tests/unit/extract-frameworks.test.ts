@@ -9,6 +9,7 @@ import { applyJsFrameworkAdapters } from '../../src/pipeline/extract/frameworks/
 import type { ExtractionFragment } from '../../src/pipeline/extract/dispatch.js'
 import type { JsFrameworkAdapter, JsFrameworkContext } from '../../src/pipeline/extract/frameworks/types.js'
 import { extractJs } from '../../src/pipeline/extract.js'
+import { inspectReduxModuleExports } from '../../src/pipeline/extract/frameworks/redux.js'
 
 const FIXTURES_DIR = join(process.cwd(), 'tests', 'fixtures')
 
@@ -1499,25 +1500,108 @@ describe('js framework extraction contract', () => {
     const moduleFilePath = join(FIXTURES_DIR, 'react-router-imported-module.tsx')
     const routerFilePath = join(FIXTURES_DIR, 'react-router-imported-router.tsx')
 
-    const moduleResult = extractJs(moduleFilePath)
     const routerResult = extractJs(routerFilePath)
     const settingsRouteId = nodeIdForLabel(routerResult, '/settings')
-    const settingsPageNodeId = nodeIdForLabel(moduleResult, 'SettingsPage()')
-    const settingsLoaderNodeId = nodeIdForLabel(moduleResult, 'settingsLoader()')
-    const settingsActionNodeId = nodeIdForLabel(moduleResult, 'settingsAction()')
-
-    expect(routerResult.nodes).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ id: settingsPageNodeId, label: 'SettingsPage()', source_file: moduleFilePath, framework_role: 'react_router_component' }),
-        expect.objectContaining({ id: settingsLoaderNodeId, label: 'settingsLoader()', source_file: moduleFilePath, framework_role: 'react_router_loader' }),
-        expect.objectContaining({ id: settingsActionNodeId, label: 'settingsAction()', source_file: moduleFilePath, framework_role: 'react_router_action' }),
-      ]),
+    const settingsPageNode = routerResult.nodes.find(
+      (node) => node.label === 'SettingsPage()' && node.source_file === moduleFilePath && node.framework_role === 'react_router_component',
     )
+    const settingsLoaderNode = routerResult.nodes.find(
+      (node) => node.label === 'settingsLoader()' && node.source_file === moduleFilePath && node.framework_role === 'react_router_loader',
+    )
+    const settingsActionNode = routerResult.nodes.find(
+      (node) => node.label === 'settingsAction()' && node.source_file === moduleFilePath && node.framework_role === 'react_router_action',
+    )
+
+    expect(settingsPageNode).toEqual(expect.objectContaining({ label: 'SettingsPage()', source_file: moduleFilePath }))
+    expect(settingsLoaderNode).toEqual(expect.objectContaining({ label: 'settingsLoader()', source_file: moduleFilePath }))
+    expect(settingsActionNode).toEqual(expect.objectContaining({ label: 'settingsAction()', source_file: moduleFilePath }))
     expect(routerResult.edges).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ source: settingsRouteId, target: settingsPageNodeId, relation: 'renders' }),
-        expect.objectContaining({ source: settingsRouteId, target: settingsLoaderNodeId, relation: 'loads_route' }),
-        expect.objectContaining({ source: settingsRouteId, target: settingsActionNodeId, relation: 'submits_route' }),
+        expect.objectContaining({ source: settingsRouteId, target: settingsPageNode?.id, relation: 'renders' }),
+        expect.objectContaining({ source: settingsRouteId, target: settingsLoaderNode?.id, relation: 'loads_route' }),
+        expect.objectContaining({ source: settingsRouteId, target: settingsActionNode?.id, relation: 'submits_route' }),
+      ]),
+    )
+  })
+
+  it('keeps imported react router references distinct for same-named source modules', () => {
+    const adminModuleFilePath = join(FIXTURES_DIR, 'react-router-colliding-routes', 'admin', 'index.tsx')
+    const settingsModuleFilePath = join(FIXTURES_DIR, 'react-router-colliding-routes', 'settings', 'index.tsx')
+    const routerFilePath = join(FIXTURES_DIR, 'react-router-colliding-router.tsx')
+
+    const routerResult = extractJs(routerFilePath)
+
+    const adminRouteId = nodeIdForLabel(routerResult, '/admin')
+    const settingsRouteId = nodeIdForLabel(routerResult, '/settings')
+    const importedNodes = routerResult.nodes.filter((node) =>
+      node.framework?.toString() === 'react-router' &&
+      (node.source_file === adminModuleFilePath || node.source_file === settingsModuleFilePath),
+    )
+    const adminPageNode = importedNodes.find((node) => node.label === 'RouteComponent()' && node.source_file === adminModuleFilePath)
+    const adminLoaderNode = importedNodes.find((node) => node.label === 'routeLoader()' && node.source_file === adminModuleFilePath)
+    const adminActionNode = importedNodes.find((node) => node.label === 'routeAction()' && node.source_file === adminModuleFilePath)
+    const settingsPageNode = importedNodes.find((node) => node.label === 'RouteComponent()' && node.source_file === settingsModuleFilePath)
+    const settingsLoaderNode = importedNodes.find((node) => node.label === 'routeLoader()' && node.source_file === settingsModuleFilePath)
+    const settingsActionNode = importedNodes.find((node) => node.label === 'routeAction()' && node.source_file === settingsModuleFilePath)
+
+    expect(importedNodes).toHaveLength(6)
+    expect(new Set(importedNodes.map((node) => node.id)).size).toBe(6)
+    expect(routerResult.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: adminRouteId, target: adminPageNode?.id, relation: 'renders' }),
+        expect.objectContaining({ source: adminRouteId, target: adminLoaderNode?.id, relation: 'loads_route' }),
+        expect.objectContaining({ source: adminRouteId, target: adminActionNode?.id, relation: 'submits_route' }),
+        expect.objectContaining({ source: settingsRouteId, target: settingsPageNode?.id, relation: 'renders' }),
+        expect.objectContaining({ source: settingsRouteId, target: settingsLoaderNode?.id, relation: 'loads_route' }),
+        expect.objectContaining({ source: settingsRouteId, target: settingsActionNode?.id, relation: 'submits_route' }),
+      ]),
+    )
+  })
+
+  it('exports destructured redux actions and selectors for cross-file resolution', () => {
+    const sliceFilePath = join(FIXTURES_DIR, 'redux-destructured-exports.ts')
+    const consumerFilePath = join(FIXTURES_DIR, 'redux-destructured-exports-consumer.ts')
+
+    const exportedBindings = inspectReduxModuleExports(sliceFilePath)
+    const sliceResult = extractJs(sliceFilePath)
+    const consumerResult = extractJs(consumerFilePath)
+    const authSliceNodeId = nodeIdForLabel(sliceResult, 'auth slice')
+    const sessionSliceNodeId = nodeIdForLabel(consumerResult, 'session slice')
+    const logoutNodeId = nodeIdForLabel(sliceResult, 'logout')
+    const signInSucceededNodeId = nodeIdForLabel(sliceResult, 'signInSucceeded')
+    const selectTokenNodeId = nodeIdForLabel(sliceResult, 'selectToken')
+    const selectAuthStatusNodeId = nodeIdForLabel(sliceResult, 'selectAuthStatus')
+
+    expect(exportedBindings.get('logout')).toEqual(
+      expect.objectContaining({ id: logoutNodeId, frameworkRole: 'redux_action', sourceFile: sliceFilePath }),
+    )
+    expect(exportedBindings.get('signInSucceeded')).toEqual(
+      expect.objectContaining({ id: signInSucceededNodeId, frameworkRole: 'redux_action', sourceFile: sliceFilePath }),
+    )
+    expect(exportedBindings.get('selectToken')).toEqual(
+      expect.objectContaining({ id: selectTokenNodeId, frameworkRole: 'redux_selector', sourceFile: sliceFilePath }),
+    )
+    expect(exportedBindings.get('selectAuthStatus')).toEqual(
+      expect.objectContaining({ id: selectAuthStatusNodeId, frameworkRole: 'redux_selector', sourceFile: sliceFilePath }),
+    )
+    expect(consumerResult.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: logoutNodeId, label: 'logout', source_file: sliceFilePath, framework_role: 'redux_action' }),
+        expect.objectContaining({ id: signInSucceededNodeId, label: 'signInSucceeded', source_file: sliceFilePath, framework_role: 'redux_action' }),
+      ]),
+    )
+    expect(sliceResult.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: authSliceNodeId, target: logoutNodeId, relation: 'defines_action' }),
+        expect.objectContaining({ source: authSliceNodeId, target: signInSucceededNodeId, relation: 'defines_action' }),
+        expect.objectContaining({ source: authSliceNodeId, target: selectTokenNodeId, relation: 'defines_selector' }),
+        expect.objectContaining({ source: authSliceNodeId, target: selectAuthStatusNodeId, relation: 'defines_selector' }),
+      ]),
+    )
+    expect(consumerResult.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: logoutNodeId, target: sessionSliceNodeId, relation: 'updates_slice' }),
+        expect.objectContaining({ source: signInSucceededNodeId, target: sessionSliceNodeId, relation: 'updates_slice' }),
       ]),
     )
   })
