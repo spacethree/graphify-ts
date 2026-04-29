@@ -15,6 +15,10 @@ import { inspectReduxModuleExports } from '../../src/pipeline/extract/frameworks
 const FIXTURES_DIR = join(process.cwd(), 'tests', 'fixtures')
 const TEST_ARTIFACTS_DIR = join(process.cwd(), '.test-artifacts', 'framework-adapter-tests')
 
+function normalizeFileNameForAssertion(filePath: string): string {
+  return filePath.replaceAll('\\', '/')
+}
+
 function createFrameworkContext(filePath: string, sourceText: string, baseExtraction: ExtractionFragment): JsFrameworkContext {
   const scriptKind = filePath.endsWith('.tsx') ? ts.ScriptKind.TSX : filePath.endsWith('.jsx') ? ts.ScriptKind.JSX : ts.ScriptKind.TS
 
@@ -93,7 +97,7 @@ describe('js framework extraction contract', () => {
       extract(context) {
         expect(context.filePath).toBe(filePath)
         expect(context.sourceText).toBe(sourceText)
-        expect(context.sourceFile.fileName).toBe(filePath)
+        expect(normalizeFileNameForAssertion(context.sourceFile.fileName)).toBe(normalizeFileNameForAssertion(filePath))
         expect(ts.isSourceFile(context.sourceFile)).toBe(true)
         expect(context.baseExtraction).toEqual(baseExtraction)
 
@@ -113,6 +117,13 @@ describe('js framework extraction contract', () => {
     expect(result.nodes.find((node) => node.id === routeNodeId)?.label).toBe('AppRoute')
     expect(graph.hasNode(routeNodeId)).toBe(true)
     expect(graph.edgeAttributes(fileNodeId, routeNodeId).relation).toBe('framework_declares_route')
+  })
+
+  it('treats TypeScript SourceFile names as equivalent across path separators', () => {
+    const filePath = 'D:\\a\\graphify-ts\\graphify-ts\\tests\\fixtures\\app.tsx'
+    const sourceFile = ts.createSourceFile(filePath, 'export function App() { return null }', ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+
+    expect(normalizeFileNameForAssertion(sourceFile.fileName)).toBe(normalizeFileNameForAssertion(filePath))
   })
 
   it('allows adapters to augment existing nodes with additional attributes', () => {
