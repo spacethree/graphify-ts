@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { KnowledgeGraph } from '../../src/contracts/graph.js'
 import { build } from '../../src/pipeline/build.js'
 import { extractJs } from '../../src/pipeline/extract.js'
+import { inspectReduxModuleExports } from '../../src/pipeline/extract/frameworks/redux.js'
 import { retrieveContext, scoreNode, tokenWeightsForQuestion, tokenizeLabel, tokenizeQuestion } from '../../src/runtime/retrieve.js'
 
 describe('retrieve', () => {
@@ -270,6 +271,104 @@ describe('retrieve', () => {
       return graph
     }
 
+    function stripFileNodes(extraction: ReturnType<typeof extractJs>): ReturnType<typeof extractJs> {
+      const nodeIds = new Set(extraction.nodes.filter((node) => String(node.node_kind ?? '') !== '').map((node) => node.id))
+      return {
+        ...extraction,
+        nodes: extraction.nodes.filter((node) => nodeIds.has(node.id)),
+        edges: extraction.edges.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target)),
+      }
+    }
+
+    function buildReduxAliasBaselineGraph(
+      sliceExtraction: ReturnType<typeof extractJs>,
+      storeExtraction: ReturnType<typeof extractJs>,
+      sliceFilePath: string,
+    ): KnowledgeGraph {
+      const exportedBindings = inspectReduxModuleExports(sliceFilePath)
+      const semanticSliceNode = sliceExtraction.nodes.find((node) => node.label === 'auth slice')
+      const semanticSelectorNode = sliceExtraction.nodes.find((node) => node.label === 'selectAuthStatus')
+      const semanticStoreNode = storeExtraction.nodes.find((node) => node.label === 'store')
+
+      expect(semanticSliceNode).toBeDefined()
+      expect(semanticSelectorNode).toBeDefined()
+      expect(semanticStoreNode).toBeDefined()
+      expect(exportedBindings.get('authSlice')).toBeDefined()
+      expect(exportedBindings.get('authReducer')).toBeDefined()
+      expect(exportedBindings.get('selectAuthStatus')).toBeDefined()
+
+      const authSliceBinding = exportedBindings.get('authSlice')!
+      const authReducerBinding = exportedBindings.get('authReducer')!
+      const selectAuthStatusBinding = exportedBindings.get('selectAuthStatus')!
+
+      return build(
+        [
+          {
+            nodes: [
+              {
+                ...semanticStoreNode!,
+                framework: undefined,
+                framework_role: undefined,
+              },
+              {
+                ...semanticSliceNode!,
+                id: `${semanticSliceNode!.id}__authSlice`,
+                label: 'authSlice',
+                node_kind: 'function',
+                framework: undefined,
+                framework_role: undefined,
+                line_number: authSliceBinding.line,
+              },
+              {
+                ...semanticSliceNode!,
+                id: `${semanticSliceNode!.id}__authReducer`,
+                label: 'authReducer',
+                node_kind: 'function',
+                framework: undefined,
+                framework_role: undefined,
+                line_number: authReducerBinding.line,
+              },
+              {
+                ...semanticSelectorNode!,
+                id: `${semanticSelectorNode!.id}__selectAuthStatus`,
+                label: 'selectAuthStatus',
+                framework: undefined,
+                framework_role: undefined,
+                line_number: selectAuthStatusBinding.line,
+              },
+            ],
+            edges: [
+              {
+                source: semanticStoreNode!.id,
+                target: `${semanticSliceNode!.id}__authReducer`,
+                relation: 'uses',
+                confidence: 'INFERRED',
+                source_file: semanticStoreNode!.source_file,
+                line_number: semanticStoreNode!.line_number,
+              },
+              {
+                source: `${semanticSliceNode!.id}__authSlice`,
+                target: `${semanticSliceNode!.id}__authReducer`,
+                relation: 'defines',
+                confidence: 'INFERRED',
+                source_file: authSliceBinding.sourceFile,
+                line_number: authReducerBinding.line,
+              },
+              {
+                source: `${semanticSliceNode!.id}__authSlice`,
+                target: `${semanticSelectorNode!.id}__selectAuthStatus`,
+                relation: 'uses',
+                confidence: 'INFERRED',
+                source_file: authSliceBinding.sourceFile,
+                line_number: selectAuthStatusBinding.line,
+              },
+            ],
+          },
+        ],
+        { directed: true },
+      )
+    }
+
     it('returns empty result for no matching tokens', () => {
       const graph = buildTestGraph()
       const result = retrieveContext(graph, { question: 'how does the', budget: 5000 })
@@ -501,91 +600,13 @@ describe('retrieve', () => {
       )
     })
 
-    it('answers auth slice questions with compact semantic matches', () => {
-      const semanticGraph = new KnowledgeGraph({ directed: true })
-      semanticGraph.addNode('auth_slice', {
-        label: 'auth slice',
-        source_file: '/src/features/auth/authSlice.ts',
-        line_number: 5,
-        node_kind: 'slice',
-        file_type: 'code',
-        community: 0,
-      })
-      semanticGraph.addNode('auth_store', {
-        label: 'store',
-        source_file: '/src/app/store.ts',
-        line_number: 3,
-        node_kind: 'store',
-        file_type: 'code',
-        community: 0,
-      })
-      semanticGraph.addNode('select_auth_status', {
-        label: 'selectAuthStatus',
-        source_file: '/src/features/auth/authSlice.ts',
-        line_number: 22,
-        node_kind: 'function',
-        file_type: 'code',
-        community: 0,
-      })
-      semanticGraph.addEdge('auth_slice', 'auth_store', {
-        relation: 'registered_in_store',
-        confidence: 'EXTRACTED',
-        source_file: '/src/app/store.ts',
-      })
-      semanticGraph.addEdge('auth_slice', 'select_auth_status', {
-        relation: 'defines_selector',
-        confidence: 'EXTRACTED',
-        source_file: '/src/features/auth/authSlice.ts',
-      })
-
-      const baselineGraph = new KnowledgeGraph({ directed: true })
-      baselineGraph.addNode('auth_state_type', {
-        label: 'AuthState',
-        source_file: '/src/features/auth/types.ts',
-        line_number: 1,
-        node_kind: 'type',
-        file_type: 'code',
-        community: 0,
-      })
-      baselineGraph.addNode('auth_reducer', {
-        label: 'authReducer',
-        source_file: '/src/features/auth/authSlice.ts',
-        line_number: 30,
-        node_kind: 'function',
-        file_type: 'code',
-        community: 0,
-      })
-      baselineGraph.addNode('configure_store', {
-        label: 'configureStore',
-        source_file: '/src/app/store.ts',
-        line_number: 3,
-        node_kind: 'function',
-        file_type: 'code',
-        community: 0,
-      })
-      baselineGraph.addNode('select_auth_status_baseline', {
-        label: 'selectAuthStatus',
-        source_file: '/src/features/auth/selectors.ts',
-        line_number: 4,
-        node_kind: 'function',
-        file_type: 'code',
-        community: 0,
-      })
-      baselineGraph.addEdge('configure_store', 'auth_reducer', {
-        relation: 'calls',
-        confidence: 'EXTRACTED',
-        source_file: '/src/app/store.ts',
-      })
-      baselineGraph.addEdge('auth_reducer', 'auth_state_type', {
-        relation: 'defines',
-        confidence: 'EXTRACTED',
-        source_file: '/src/features/auth/authSlice.ts',
-      })
-      baselineGraph.addEdge('auth_reducer', 'select_auth_status_baseline', {
-        relation: 'uses',
-        confidence: 'EXTRACTED',
-        source_file: '/src/features/auth/authSlice.ts',
-      })
+    it('answers auth slice questions from extracted redux toolkit graphs with fewer low-level baseline matches', () => {
+      const sliceFilePath = join(process.cwd(), 'tests', 'fixtures', 'redux-retrieve-auth-slice.ts')
+      const storeFilePath = join(process.cwd(), 'tests', 'fixtures', 'redux-retrieve-auth-store.ts')
+      const semanticSliceExtraction = stripFileNodes(extractJs(sliceFilePath))
+      const semanticStoreExtraction = stripFileNodes(extractJs(storeFilePath))
+      const semanticGraph = build([semanticSliceExtraction, semanticStoreExtraction], { directed: true })
+      const baselineGraph = buildReduxAliasBaselineGraph(semanticSliceExtraction, semanticStoreExtraction, sliceFilePath)
 
       const semanticResult = retrieveContext(semanticGraph, {
         question: 'which slice owns auth state',
@@ -598,6 +619,13 @@ describe('retrieve', () => {
         fileType: 'code',
       })
 
+      const isLowLevelMatch = (label: string, nodeKind: string): boolean =>
+        nodeKind !== 'slice' &&
+        nodeKind !== 'store' &&
+        tokenizeLabel(label).some((token) => ['auth', 'state', 'slice'].some((queryToken) => token.startsWith(queryToken) || queryToken.startsWith(token)))
+      const semanticLowLevelMatches = semanticResult.matched_nodes.filter((node) => isLowLevelMatch(node.label, node.node_kind))
+      const baselineLowLevelMatches = baselineResult.matched_nodes.filter((node) => isLowLevelMatch(node.label, node.node_kind))
+
       expect(semanticResult.matched_nodes[0]).toEqual(
         expect.objectContaining({
           label: 'auth slice',
@@ -605,8 +633,20 @@ describe('retrieve', () => {
           relevance_band: 'direct',
         }),
       )
-      expect(semanticResult.matched_nodes.length).toBeLessThan(baselineResult.matched_nodes.length)
-      expect(semanticResult.matched_nodes.filter((node) => node.node_kind !== 'slice')).toHaveLength(2)
+      expect(semanticResult.relationships).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            from: 'auth slice',
+            to: 'store',
+            relation: 'registered_in_store',
+          }),
+        ]),
+      )
+      expect(semanticLowLevelMatches.map((node) => node.label)).toEqual(expect.arrayContaining(['selectAuthStatus']))
+      expect(baselineLowLevelMatches.map((node) => node.label)).toEqual(
+        expect.arrayContaining(['authSlice', 'authReducer', 'selectAuthStatus']),
+      )
+      expect(semanticLowLevelMatches.length).toBeLessThan(baselineLowLevelMatches.length)
     })
 
     it('answers route rendering questions with extracted react router route semantics', () => {
