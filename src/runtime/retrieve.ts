@@ -380,11 +380,26 @@ function containsUrlLikeRoutePath(question: string): boolean {
   )
 }
 
-function buildFrameworkQuestionProfile(question: string, questionTokens: readonly string[]): FrameworkQuestionProfile {
+function hasHttpVerbIntent(question: string, questionTokens: readonly string[], hasRoutePath: boolean, hasRouteKeyword: boolean): boolean {
   const uppercaseQuestion = question.toUpperCase()
-  const hasHttpVerb = /\b(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD|USE|ALL)\b/.test(uppercaseQuestion)
+  const hasUnambiguousHttpVerb = /\b(GET|POST|PUT|PATCH|DELETE|OPTIONS)\b/.test(uppercaseQuestion)
+  if (hasUnambiguousHttpVerb) {
+    return true
+  }
+
+  const hasAmbiguousHttpVerb = /\b(HEAD|USE|ALL)\b/.test(uppercaseQuestion)
+  if (!hasAmbiguousHttpVerb) {
+    return false
+  }
+
+  return hasRoutePath || hasRouteKeyword || includesAnyToken(questionTokens, ['express', 'http', 'https', 'method', 'methods', 'verb', 'verbs'])
+}
+
+function buildFrameworkQuestionProfile(question: string, questionTokens: readonly string[]): FrameworkQuestionProfile {
   const hasRoutePath = containsUrlLikeRoutePath(question)
-  const routeIntent = hasHttpVerb || hasRoutePath || includesAnyToken(questionTokens, ['route', 'routes', 'router', 'endpoint', 'endpoints'])
+  const hasRouteKeyword = includesAnyToken(questionTokens, ['route', 'routes', 'router', 'endpoint', 'endpoints'])
+  const hasHttpVerb = hasHttpVerbIntent(question, questionTokens, hasRoutePath, hasRouteKeyword)
+  const routeIntent = hasHttpVerb || hasRoutePath || hasRouteKeyword
   const explicitExpress = includesAnyToken(questionTokens, ['express'])
   const explicitRedux = includesAnyToken(questionTokens, ['redux', 'toolkit'])
   const mentionsReact = includesAnyToken(questionTokens, ['react'])
@@ -431,7 +446,7 @@ function frameworkBoostForNode(
 
   if (profile.express) {
     if (frameworkRole === 'express_route') {
-      boost += profile.routeIntent || profile.middlewareIntent || profile.handlerIntent ? 4 : 2.5
+      boost += profile.routeIntent ? 4 : 0
     }
     if (frameworkRole === 'express_middleware') {
       boost += profile.middlewareIntent ? 2.5 : 1

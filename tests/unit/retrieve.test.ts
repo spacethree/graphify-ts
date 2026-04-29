@@ -767,6 +767,166 @@ describe('retrieve', () => {
       )
     })
 
+    it('does not route-boost free-text middleware usage questions because of "use"', () => {
+      const graph = new KnowledgeGraph({ directed: true })
+      graph.addNode('auth_middleware_route', {
+        label: 'USE /auth',
+        source_file: '/src/server/auth.ts',
+        line_number: 12,
+        node_kind: 'route',
+        file_type: 'code',
+        framework: 'express',
+        framework_role: 'express_route',
+        community: 0,
+      })
+      graph.addNode('auth_middleware', {
+        label: 'authMiddleware',
+        source_file: '/src/server/auth-middleware.ts',
+        line_number: 4,
+        node_kind: 'function',
+        file_type: 'code',
+        framework: 'express',
+        framework_role: 'express_middleware',
+        community: 0,
+      })
+      graph.addNode('apply_auth_middleware', {
+        label: 'applyAuthMiddleware',
+        source_file: '/src/server/bootstrap.ts',
+        line_number: 20,
+        node_kind: 'function',
+        file_type: 'code',
+        community: 0,
+      })
+      graph.addEdge('auth_middleware_route', 'auth_middleware', {
+        relation: 'depends_on',
+        confidence: 'EXTRACTED',
+        source_file: '/src/server/auth.ts',
+      })
+      graph.addEdge('apply_auth_middleware', 'auth_middleware', {
+        relation: 'calls',
+        confidence: 'EXTRACTED',
+        source_file: '/src/server/bootstrap.ts',
+      })
+
+      const result = retrieveContext(graph, {
+        question: 'Where do we use auth middleware?',
+        budget: 5000,
+        fileType: 'code',
+      })
+
+      expect(result.matched_nodes[0]).toEqual(
+        expect.objectContaining({
+          label: 'authMiddleware',
+          framework_boost: 2.5,
+        }),
+      )
+      expect(result.matched_nodes.find((node) => node.label === 'USE /auth')).toEqual(
+        expect.objectContaining({
+          framework_boost: 0,
+        }),
+      )
+    })
+
+    it('does not infer express route intent from "all" in redux selector questions', () => {
+      const graph = new KnowledgeGraph({ directed: true })
+      graph.addNode('all_auth_route', {
+        label: 'ALL /auth',
+        source_file: '/src/server/auth.ts',
+        line_number: 12,
+        node_kind: 'route',
+        file_type: 'code',
+        framework: 'express',
+        framework_role: 'express_route',
+        community: 0,
+      })
+      graph.addNode('auth_slice', {
+        label: 'auth slice',
+        source_file: '/src/state/authSlice.ts',
+        line_number: 5,
+        node_kind: 'slice',
+        file_type: 'code',
+        framework: 'redux-toolkit',
+        framework_role: 'redux_slice',
+        community: 1,
+      })
+      graph.addNode('select_auth_state', {
+        label: 'selectAuthState',
+        source_file: '/src/state/authSlice.ts',
+        line_number: 14,
+        node_kind: 'function',
+        file_type: 'code',
+        framework: 'redux-toolkit',
+        framework_role: 'redux_selector',
+        community: 1,
+      })
+      graph.addEdge('auth_slice', 'select_auth_state', {
+        relation: 'defines_selector',
+        confidence: 'EXTRACTED',
+        source_file: '/src/state/authSlice.ts',
+      })
+
+      const result = retrieveContext(graph, {
+        question: 'show all selectors for auth state',
+        budget: 5000,
+        fileType: 'code',
+      })
+
+      expect(result.matched_nodes[0]).toEqual(
+        expect.objectContaining({
+          label: 'selectAuthState',
+          framework_boost: 3.5,
+        }),
+      )
+      expect(result.matched_nodes.find((node) => node.label === 'ALL /auth')).toEqual(
+        expect.objectContaining({
+          framework_boost: 0,
+        }),
+      )
+    })
+
+    it('still route-boosts real HEAD route questions', () => {
+      const graph = new KnowledgeGraph({ directed: true })
+      graph.addNode('head_health', {
+        label: 'HEAD /health',
+        source_file: '/src/server/health.ts',
+        line_number: 8,
+        node_kind: 'route',
+        file_type: 'code',
+        framework: 'express',
+        framework_role: 'express_route',
+        community: 0,
+      })
+      graph.addNode('health_handler', {
+        label: 'healthHandler',
+        source_file: '/src/server/health.ts',
+        line_number: 16,
+        node_kind: 'function',
+        file_type: 'code',
+        framework: 'express',
+        framework_role: 'express_handler',
+        community: 0,
+      })
+      graph.addEdge('head_health', 'health_handler', {
+        relation: 'depends_on',
+        confidence: 'EXTRACTED',
+        source_file: '/src/server/health.ts',
+      })
+
+      const result = retrieveContext(graph, {
+        question: 'where is HEAD /health defined',
+        budget: 5000,
+        fileType: 'code',
+      })
+
+      expect(result.matched_nodes[0]).toEqual(
+        expect.objectContaining({
+          label: 'HEAD /health',
+          node_kind: 'route',
+          framework_boost: 4,
+        }),
+      )
+    })
+
     it('ranks routes registered on imported express owners without local express imports', () => {
       const fixturesDir = join(process.cwd(), 'tests', 'fixtures')
       const graph = build([
