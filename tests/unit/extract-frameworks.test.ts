@@ -42,6 +42,15 @@ function nodeIdForLabel(fragment: ExtractionFragment, label: string): string {
   return nodeId!
 }
 
+function graphNodeIdForLabel(graph: ReturnType<typeof build>, label: string): string {
+  for (const [nodeId, attributes] of graph.nodeEntries()) {
+    if (attributes.label === label) {
+      return nodeId
+    }
+  }
+  throw new Error(`Missing graph node for label: ${label}`)
+}
+
 describe('js framework extraction contract', () => {
   it('returns no extra nodes for plain ts utility files', () => {
     const filePath = join(FIXTURES_DIR, 'sample.ts')
@@ -468,20 +477,8 @@ describe('js framework extraction contract', () => {
   it('preserves imported express router mounts until the mounted router node is available', () => {
     const appFilePath = join(FIXTURES_DIR, 'virtual-express-parent.ts')
     const routesFilePath = join(FIXTURES_DIR, 'virtual-express-child.ts')
-    const appSourceText = [
-      "import express from 'express'",
-      "import { apiRouter } from './virtual-express-child.ts'",
-      '',
-      'const app = express()',
-      "app.use('/api', apiRouter)",
-    ].join('\n')
-    const routesSourceText = [
-      "import express from 'express'",
-      '',
-      'function listUser() {}',
-      'export const apiRouter = express.Router()',
-      "apiRouter.get('/users/:id', listUser)",
-    ].join('\n')
+    const appSourceText = readFileSync(appFilePath, 'utf8')
+    const routesSourceText = readFileSync(routesFilePath, 'utf8')
     const appBaseExtraction = createBaseExtraction(appFilePath, 'virtual-express-parent', [])
     const routesBaseExtraction = createBaseExtraction(routesFilePath, 'virtual-express-child', ['listUser'])
 
@@ -572,5 +569,64 @@ describe('js framework extraction contract', () => {
         expect.objectContaining({ source: requireAppNodeId, target: requireRouterNodeId, relation: 'mounts_router' }),
       ]),
     )
+  })
+
+  it('extractJs preserves named middleware and method handlers with real base labels', () => {
+    const filePath = join(FIXTURES_DIR, 'express-named-handlers.ts')
+    const result = extractJs(filePath)
+
+    const routeId = nodeIdForLabel(result, 'GET /users/:id')
+    const middlewareId = nodeIdForLabel(result, 'requireAuth()')
+    const handlerId = nodeIdForLabel(result, '.showUser()')
+
+    expect(result.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: middlewareId, target: routeId, relation: 'middleware' }),
+        expect.objectContaining({ source: handlerId, target: routeId, relation: 'handles_route' }),
+      ]),
+    )
+  })
+
+  it('treats imported middleware passed to use() as middleware instead of a mounted router', () => {
+    const middlewareFilePath = join(FIXTURES_DIR, 'express-imported-middleware.ts')
+    const parentFilePath = join(FIXTURES_DIR, 'express-imported-middleware-parent.ts')
+
+    const middlewareResult = extractJs(middlewareFilePath)
+    const parentResult = extractJs(parentFilePath)
+
+    const routeId = nodeIdForLabel(parentResult, 'USE /api')
+    const middlewareId = nodeIdForLabel(middlewareResult, 'requireAuth()')
+
+    expect(parentResult.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: middlewareId, target: routeId, relation: 'middleware' }),
+      ]),
+    )
+    expect(parentResult.edges).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ relation: 'mounts_router', target: middlewareId }),
+      ]),
+    )
+  })
+
+  it('propagates mount prefixes and inherited middleware to mounted child router routes', () => {
+    const parentFilePath = join(FIXTURES_DIR, 'express-mounted-router-parent.ts')
+    const childFilePath = join(FIXTURES_DIR, 'express-mounted-router-child.ts')
+
+    const graph = build([extractJs(parentFilePath), extractJs(childFilePath)], { directed: true })
+
+    const mountedRouteId = graphNodeIdForLabel(graph, 'GET /api/users/:id')
+    const middlewareId = graphNodeIdForLabel(graph, 'requireAuth()')
+    const handlerId = graphNodeIdForLabel(graph, 'showUser()')
+
+    expect(graph.nodeAttributes(mountedRouteId)).toEqual(
+      expect.objectContaining({
+        label: 'GET /api/users/:id',
+        node_kind: 'route',
+        route_path: '/api/users/:id',
+      }),
+    )
+    expect(graph.edgeAttributes(middlewareId, mountedRouteId)).toEqual(expect.objectContaining({ relation: 'middleware' }))
+    expect(graph.edgeAttributes(handlerId, mountedRouteId)).toEqual(expect.objectContaining({ relation: 'handles_route' }))
   })
 })

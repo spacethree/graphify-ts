@@ -1,4 +1,8 @@
+import { join } from 'node:path'
+
 import { KnowledgeGraph } from '../../src/contracts/graph.js'
+import { build } from '../../src/pipeline/build.js'
+import { extractJs } from '../../src/pipeline/extract.js'
 import { retrieveContext, scoreNode, tokenWeightsForQuestion, tokenizeLabel, tokenizeQuestion } from '../../src/runtime/retrieve.js'
 
 describe('retrieve', () => {
@@ -341,6 +345,28 @@ describe('retrieve', () => {
       expect(result.matched_nodes[0]).toEqual(
         expect.objectContaining({
           label: 'GET /users/:id',
+          node_kind: 'route',
+          relevance_band: 'direct',
+        }),
+      )
+    })
+
+    it('ranks mounted express route nodes by their propagated prefix', () => {
+      const fixturesDir = join(process.cwd(), 'tests', 'fixtures')
+      const graph = build([
+        extractJs(join(fixturesDir, 'express-mounted-router-parent.ts')),
+        extractJs(join(fixturesDir, 'express-mounted-router-child.ts')),
+      ])
+
+      const result = retrieveContext(graph, {
+        question: 'where is GET /api/users/:id defined',
+        budget: 5000,
+        fileType: 'code',
+      })
+
+      expect(result.matched_nodes[0]).toEqual(
+        expect.objectContaining({
+          label: 'GET /api/users/:id',
           node_kind: 'route',
           relevance_band: 'direct',
         }),

@@ -5,6 +5,7 @@ import type { JsFrameworkAdapter, JsFrameworkContext } from './types.js'
 
 const JS_FRAMEWORK_ADAPTERS: readonly JsFrameworkAdapter[] = [expressAdapter]
 const EXTERNAL_TARGET_RELATIONS = new Set(['imports', 'imports_from', 'handles_route', 'middleware', 'mounts_router'])
+const EXTERNAL_SOURCE_RELATIONS = new Set(['handles_route', 'middleware'])
 
 function mergeNodeAttributes(existing: ExtractionNode, incoming: ExtractionNode): ExtractionNode {
   return {
@@ -86,7 +87,7 @@ function filterJsExtractionEdges(nodes: readonly ExtractionNode[], edges: readon
 
   return edges.filter(
     (edge) =>
-      validNodeIds.has(edge.source) &&
+      (validNodeIds.has(edge.source) || EXTERNAL_SOURCE_RELATIONS.has(edge.relation)) &&
       (validNodeIds.has(edge.target) ||
         isFrameworkScopedEdge(edge) ||
         EXTERNAL_TARGET_RELATIONS.has(edge.relation) ||

@@ -1,4 +1,8 @@
+import { join } from 'node:path'
+
 import { KnowledgeGraph } from '../../src/contracts/graph.js'
+import { build } from '../../src/pipeline/build.js'
+import { extractJs } from '../../src/pipeline/extract.js'
 import { analyzeImpact, callChains } from '../../src/runtime/impact.js'
 
 function buildTestGraph(): KnowledgeGraph {
@@ -178,6 +182,29 @@ describe('impact', () => {
           relation: 'depends_on',
         }),
       ])
+    })
+
+    it('shows mounted child routes as direct dependents of inherited mount middleware', () => {
+      const fixturesDir = join(process.cwd(), 'tests', 'fixtures')
+      const graph = build([
+        extractJs(join(fixturesDir, 'express-mounted-router-parent.ts')),
+        extractJs(join(fixturesDir, 'express-mounted-router-child.ts')),
+      ])
+
+      const result = analyzeImpact(graph, {}, { label: 'requireAuth' })
+
+      expect(result.direct_dependents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            label: 'USE /api',
+            relation: 'depends_on',
+          }),
+          expect.objectContaining({
+            label: 'GET /api/users/:id',
+            relation: 'depends_on',
+          }),
+        ]),
+      )
     })
   })
 
