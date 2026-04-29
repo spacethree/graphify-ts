@@ -234,6 +234,28 @@ describe('impact', () => {
       )
     })
 
+    it('shows patch and all express routes as direct dependents of middleware and handlers', () => {
+      const fixturesDir = join(process.cwd(), 'tests', 'fixtures')
+      const graph = build([extractJs(join(fixturesDir, 'express-patch-all.ts'))], { directed: true })
+
+      const middlewareImpact = analyzeImpact(graph, {}, { label: 'requireAuth' })
+      const patchHandlerImpact = analyzeImpact(graph, {}, { label: 'patchUser' })
+      const allHandlerImpact = analyzeImpact(graph, {}, { label: 'handleAudit' })
+
+      expect(middlewareImpact.direct_dependents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ label: 'PATCH /users/:id/profile', relation: 'depends_on' }),
+          expect.objectContaining({ label: 'ALL /users/:id/audit', relation: 'depends_on' }),
+        ]),
+      )
+      expect(patchHandlerImpact.direct_dependents).toEqual(
+        expect.arrayContaining([expect.objectContaining({ label: 'PATCH /users/:id/profile', relation: 'depends_on' })]),
+      )
+      expect(allHandlerImpact.direct_dependents).toEqual(
+        expect.arrayContaining([expect.objectContaining({ label: 'ALL /users/:id/audit', relation: 'depends_on' })]),
+      )
+    })
+
     it('shows imported middleware routes as direct dependents across files', () => {
       const fixturesDir = join(process.cwd(), 'tests', 'fixtures')
       const graph = build(
@@ -275,6 +297,28 @@ describe('impact', () => {
             relation: 'depends_on',
           }),
         ]),
+      )
+    })
+
+    it('shows module-object mounted child routes as direct dependents of inherited mount middleware', () => {
+      const fixturesDir = join(process.cwd(), 'tests', 'fixtures')
+      const namespaceGraph = build([
+        extractJs(join(fixturesDir, 'express-namespace-module-parent.ts')),
+        extractJs(join(fixturesDir, 'express-namespace-module-child.ts')),
+      ])
+      const commonjsGraph = build([
+        extractJs(join(fixturesDir, 'express-commonjs-module-parent.ts')),
+        extractJs(join(fixturesDir, 'express-commonjs-module-child.ts')),
+      ])
+
+      const namespaceResult = analyzeImpact(namespaceGraph, {}, { label: 'requireAuth' })
+      const commonjsResult = analyzeImpact(commonjsGraph, {}, { label: 'requireAuth' })
+
+      expect(namespaceResult.direct_dependents).toEqual(
+        expect.arrayContaining([expect.objectContaining({ label: 'GET /api/users/:id', relation: 'depends_on' })]),
+      )
+      expect(commonjsResult.direct_dependents).toEqual(
+        expect.arrayContaining([expect.objectContaining({ label: 'GET /api/users/:id', relation: 'depends_on' })]),
       )
     })
   })

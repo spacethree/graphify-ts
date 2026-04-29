@@ -8,8 +8,8 @@ import type { ExtractionFragment } from '../dispatch.js'
 import { unparenthesizeExpression } from '../typescript-utils.js'
 import type { JsFrameworkAdapter, JsFrameworkContext } from './types.js'
 
-const HTTP_ROUTE_METHODS = new Set(['get', 'post', 'put', 'delete'])
-const EXPRESS_ROUTE_METHODS = new Set(['get', 'post', 'put', 'delete', 'use'])
+const HTTP_ROUTE_METHODS = new Set(['get', 'post', 'put', 'patch', 'delete', 'all'])
+const EXPRESS_ROUTE_METHODS = new Set(['get', 'post', 'put', 'patch', 'delete', 'all', 'use'])
 const JS_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts', '.mjs', '.cjs']
 
 type ExtractionNodeRecord = NonNullable<ExtractionFragment['nodes']>[number]
@@ -214,6 +214,50 @@ function identifierName(expression: ts.Expression): string | null {
   return null
 }
 
+function resolveImportedBindingTarget(
+  expression: ts.Expression,
+  importedBindingsByLocalName: ReadonlyMap<string, ImportedBindingTarget>,
+  importedModulePathsByLocalName: ReadonlyMap<string, string>,
+): ImportedBindingTarget | null {
+  const unwrapped = unparenthesizeExpression(expression)
+  if (ts.isIdentifier(unwrapped)) {
+    return importedBindingsByLocalName.get(unwrapped.text) ?? null
+  }
+
+  if (ts.isPropertyAccessExpression(unwrapped) && ts.isIdentifier(unwrapped.expression)) {
+    const importedModulePath = importedModulePathsByLocalName.get(unwrapped.expression.text)
+    if (!importedModulePath) {
+      return null
+    }
+    return analyzeExpressModule(importedModulePath).exportedBindings.get(unwrapped.name.text) ?? null
+  }
+
+  return null
+}
+
+function resolveRouterTarget(
+  expression: ts.Expression,
+  expressEntities: ReadonlyMap<string, ExpressEntity>,
+  importedBindingsByLocalName: ReadonlyMap<string, ImportedBindingTarget>,
+  importedModulePathsByLocalName: ReadonlyMap<string, string>,
+  filePath: string,
+): MountRecord['routerTarget'] | null {
+  const candidate = unparenthesizeExpression(expression)
+  if (ts.isIdentifier(candidate)) {
+    const localRouter = expressEntities.get(candidate.text)
+    if (localRouter && (localRouter.kind === 'router' || localRouter.kind === 'app')) {
+      return { id: localRouter.id, sourceFile: filePath }
+    }
+  }
+
+  const importedTarget = resolveImportedBindingTarget(candidate, importedBindingsByLocalName, importedModulePathsByLocalName)
+  if (importedTarget && (importedTarget.kind === 'router' || importedTarget.kind === 'app')) {
+    return { id: importedTarget.id, sourceFile: importedTarget.sourceFile }
+  }
+
+  return null
+}
+
 function createExpressEntityNode(
   entity: ExpressEntity,
   context: JsFrameworkContext,
@@ -393,6 +437,8 @@ function resolveLocalRouteAttachment(
   sourceFile: ts.SourceFile,
   filePath: string,
   functionInfoByName: ReadonlyMap<string, FunctionInfo>,
+  importedBindingsByLocalName: ReadonlyMap<string, ImportedBindingTarget>,
+  importedModulePathsByLocalName: ReadonlyMap<string, string>,
 ): RouteAttachment | null {
   const candidate = resolveWrappedTargetExpression(expression)
   if (!candidate) {
@@ -404,6 +450,14 @@ function resolveLocalRouteAttachment(
     return {
       relation,
       targetId: functionNodeId(filePath, label),
+    }
+  }
+
+  const importedBinding = resolveImportedBindingTarget(candidate, importedBindingsByLocalName, importedModulePathsByLocalName)
+  if (importedBinding?.kind === 'function') {
+    return {
+      relation,
+      targetId: importedBinding.id,
     }
   }
 
@@ -437,6 +491,7 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
   const expressFactoryAliases = new Set<string>()
   const expressRouterAliases = new Set<string>()
   const importedBindingsByLocalName = new Map<string, ImportedBindingTarget>()
+  const importedModulePathsByLocalName = new Map<string, string>()
   const expressEntities = new Map<string, ExpressEntity>()
   const functionInfoByName = new Map<string, FunctionInfo>()
   const routeRecords: RouteRecord[] = []
@@ -532,6 +587,9 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
           }
         }
         const bindings = importClause?.namedBindings
+        if (resolvedImportPath && bindings && ts.isNamespaceImport(bindings)) {
+          importedModulePathsByLocalName.set(bindings.name.text, resolvedImportPath)
+        }
         if (resolvedImportPath && importedModule && bindings && ts.isNamedImports(bindings)) {
           for (const element of bindings.elements) {
             const importedName = element.propertyName && ts.isIdentifier(element.propertyName) ? element.propertyName.text : element.name.text
@@ -553,15 +611,18 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
       node.initializer.expression.text === 'require' &&
       ts.isStringLiteral(node.initializer.arguments[0]!)
     ) {
-      const requiredModule = node.initializer.arguments[0]!.text
-      if (requiredModule !== 'express') {
-        const resolvedImportPath = resolveImportPath(filePath, requiredModule)
-        const importedModule = resolvedImportPath ? analyzeExpressModule(resolvedImportPath) : null
-        if (resolvedImportPath && importedModule) {
-          const importedTarget = importedModule.exportedBindings.get('default')
-          if (importedTarget) {
-            importedBindingsByLocalName.set(node.name.text, importedTarget)
+        const requiredModule = node.initializer.arguments[0]!.text
+        if (requiredModule !== 'express') {
+          const resolvedImportPath = resolveImportPath(filePath, requiredModule)
+          const importedModule = resolvedImportPath ? analyzeExpressModule(resolvedImportPath) : null
+          if (resolvedImportPath) {
+            importedModulePathsByLocalName.set(node.name.text, resolvedImportPath)
           }
+          if (resolvedImportPath && importedModule) {
+            const importedTarget = importedModule.exportedBindings.get('default')
+            if (importedTarget) {
+              importedBindingsByLocalName.set(node.name.text, importedTarget)
+            }
         }
       }
     }
@@ -679,15 +740,13 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
 
         if (parsedRoute.method === 'use') {
           for (const argument of flattenedArgs) {
-            const routerName = ts.isIdentifier(argument) ? argument.text : null
-            const localRouter = routerName ? expressEntities.get(routerName) : null
-            const importedRouter = routerName ? importedBindingsByLocalName.get(routerName) ?? null : null
-            const routerTarget =
-              localRouter && (localRouter.kind === 'router' || localRouter.kind === 'app')
-                ? { id: localRouter.id, sourceFile: filePath }
-                : importedRouter && (importedRouter.kind === 'router' || importedRouter.kind === 'app')
-                  ? { id: importedRouter.id, sourceFile: importedRouter.sourceFile }
-                  : null
+            const routerTarget = resolveRouterTarget(
+              argument,
+              expressEntities,
+              importedBindingsByLocalName,
+              importedModulePathsByLocalName,
+              filePath,
+            )
 
             if (routerTarget) {
               mountRecords.push({
@@ -704,12 +763,14 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
               argument,
               routeLabel,
               'middleware',
-              sourceFile,
-              filePath,
-              functionInfoByName,
-            )
-            if (attachment) {
-              attachments.push(attachment)
+                sourceFile,
+                filePath,
+                functionInfoByName,
+                importedBindingsByLocalName,
+                importedModulePathsByLocalName,
+              )
+              if (attachment) {
+                attachments.push(attachment)
             }
           }
         } else if (HTTP_ROUTE_METHODS.has(parsedRoute.method) && flattenedArgs.length > 0) {
@@ -722,6 +783,8 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
               sourceFile,
               filePath,
               functionInfoByName,
+              importedBindingsByLocalName,
+              importedModulePathsByLocalName,
             )
             if (attachment) {
               attachments.push(attachment)
@@ -847,6 +910,7 @@ function resolveTargetNodeId(
   baseNodesById: ReadonlyMap<string, ExtractionNodeRecord>,
   functionInfoByName: ReadonlyMap<string, FunctionInfo>,
   importedBindingsByLocalName: ReadonlyMap<string, ImportedBindingTarget>,
+  importedModulePathsByLocalName: ReadonlyMap<string, string>,
   nodes: ReturnType<NonNullable<ExtractionFragment['nodes']>['slice']>,
   seenNodeIds: Set<string>,
 ): RouteAttachment | null {
@@ -876,7 +940,7 @@ function resolveTargetNodeId(
       return { relation, targetId: nodeId }
     }
 
-    const importedBinding = ts.isIdentifier(candidate) ? importedBindingsByLocalName.get(label) ?? null : null
+    const importedBinding = resolveImportedBindingTarget(candidate, importedBindingsByLocalName, importedModulePathsByLocalName)
     if (importedBinding?.kind === 'function') {
       return { relation, targetId: importedBinding.id }
     }
@@ -1010,6 +1074,7 @@ export const expressAdapter: JsFrameworkAdapter = {
     const expressFactoryAliases = new Set<string>()
     const expressRouterAliases = new Set<string>()
     const importedBindingsByLocalName = new Map<string, ImportedBindingTarget>()
+    const importedModulePathsByLocalName = new Map<string, string>()
     const expressEntities = new Map<string, ExpressEntity>()
     const functionInfoByName = new Map<string, FunctionInfo>()
     const routeRecords: RouteRecord[] = []
@@ -1059,6 +1124,9 @@ export const expressAdapter: JsFrameworkAdapter = {
             }
           }
           const bindings = importClause?.namedBindings
+          if (resolvedImportPath && bindings && ts.isNamespaceImport(bindings)) {
+            importedModulePathsByLocalName.set(bindings.name.text, resolvedImportPath)
+          }
           if (resolvedImportPath && importedModule && bindings && ts.isNamedImports(bindings)) {
             for (const element of bindings.elements) {
               const importedName = element.propertyName && ts.isIdentifier(element.propertyName) ? element.propertyName.text : element.name.text
@@ -1086,6 +1154,9 @@ export const expressAdapter: JsFrameworkAdapter = {
         } else {
           const resolvedImportPath = resolveImportPath(context.filePath, requiredModule)
           const importedModule = resolvedImportPath ? analyzeExpressModule(resolvedImportPath) : null
+          if (resolvedImportPath) {
+            importedModulePathsByLocalName.set(node.name.text, resolvedImportPath)
+          }
           if (resolvedImportPath && importedModule) {
             const importedTarget = importedModule.exportedBindings.get('default')
             if (importedTarget) {
@@ -1224,17 +1295,15 @@ export const expressAdapter: JsFrameworkAdapter = {
           if (parsedRoute.method === 'use') {
             const inheritedMiddleware: RouteAttachment[] = []
             for (const argument of flattenedArgs) {
-              const routerName = ts.isIdentifier(argument) ? argument.text : null
-              const localRouter = routerName ? expressEntities.get(routerName) : null
-              const importedRouter = routerName ? importedBindingsByLocalName.get(routerName) ?? null : null
-              const routerTarget =
-                localRouter && (localRouter.kind === 'router' || localRouter.kind === 'app')
-                  ? { id: localRouter.id, sourceFile: context.filePath }
-                  : importedRouter && (importedRouter.kind === 'router' || importedRouter.kind === 'app')
-                    ? { id: importedRouter.id, sourceFile: importedRouter.sourceFile }
-                    : null
+                const routerTarget = resolveRouterTarget(
+                  argument,
+                  expressEntities,
+                  importedBindingsByLocalName,
+                  importedModulePathsByLocalName,
+                  context.filePath,
+                )
 
-              if (routerTarget) {
+                if (routerTarget) {
                 addUniqueEdge(edges, seenEdges, createEdge(parsedRoute.owner.id, routerTarget.id, 'mounts_router', context.filePath, routeLine))
                 mountRecords.push({
                   owner: parsedRoute.owner,
@@ -1255,6 +1324,7 @@ export const expressAdapter: JsFrameworkAdapter = {
                 baseNodesById,
                 functionInfoByName,
                 importedBindingsByLocalName,
+                importedModulePathsByLocalName,
                 nodes,
                 seenNodeIds,
               )
@@ -1277,6 +1347,7 @@ export const expressAdapter: JsFrameworkAdapter = {
                 baseNodesById,
                 functionInfoByName,
                 importedBindingsByLocalName,
+                importedModulePathsByLocalName,
                 nodes,
                 seenNodeIds,
               )

@@ -384,8 +384,10 @@ describe('js framework extraction contract', () => {
       'function showUser() {}',
       'function createUser() {}',
       'function updateUser() {}',
+      'function patchUser() {}',
       'function replaceUser() {}',
       'function removeUser() {}',
+      'function fallbackHandler() {}',
       '',
       'const app = express()',
       'const router = express.Router()',
@@ -393,8 +395,10 @@ describe('js framework extraction contract', () => {
       "app.use('/api', requireAuth, [auditTrail], router)",
       "app.get('/health', (_req: unknown, _res: unknown) => {})",
       "app.post('/users', requireAuth, createUser)",
+      "app.patch('/users/:id/profile', requireAuth, patchUser)",
       "app.put('/users/:id/profile', requireAuth, replaceUser)",
       "app.delete('/users/:id/profile', requireAuth, removeUser)",
+      "app.all('/users/:id/audit', requireAuth, fallbackHandler)",
       "app.route('/users/:id').put([requireAuth], updateUser).delete(controller(showUser))",
       '',
       "router.get('/profile/:id', auditTrail, showUser)",
@@ -409,8 +413,10 @@ describe('js framework extraction contract', () => {
       'showUser',
       'createUser',
       'updateUser',
+      'patchUser',
       'replaceUser',
       'removeUser',
+      'fallbackHandler',
     ])
 
     const result = applyJsFrameworkAdapters(baseExtraction, createFrameworkContext(filePath, sourceText, baseExtraction))
@@ -426,8 +432,10 @@ describe('js framework extraction contract', () => {
         expect.objectContaining({ label: 'USE /api', node_kind: 'route', http_method: 'USE', route_path: '/api' }),
         expect.objectContaining({ label: 'GET /health', node_kind: 'route', http_method: 'GET', route_path: '/health' }),
         expect.objectContaining({ label: 'POST /users', node_kind: 'route', http_method: 'POST', route_path: '/users' }),
+        expect.objectContaining({ label: 'PATCH /users/:id/profile', node_kind: 'route', http_method: 'PATCH', route_path: '/users/:id/profile' }),
         expect.objectContaining({ label: 'PUT /users/:id/profile', node_kind: 'route', http_method: 'PUT', route_path: '/users/:id/profile' }),
         expect.objectContaining({ label: 'DELETE /users/:id/profile', node_kind: 'route', http_method: 'DELETE', route_path: '/users/:id/profile' }),
+        expect.objectContaining({ label: 'ALL /users/:id/audit', node_kind: 'route', http_method: 'ALL', route_path: '/users/:id/audit' }),
         expect.objectContaining({ label: 'PUT /users/:id', node_kind: 'route', http_method: 'PUT', route_path: '/users/:id' }),
         expect.objectContaining({ label: 'DELETE /users/:id', node_kind: 'route', http_method: 'DELETE', route_path: '/users/:id' }),
         expect.objectContaining({ label: 'GET /profile/:id', node_kind: 'route', http_method: 'GET', route_path: '/profile/:id' }),
@@ -442,8 +450,10 @@ describe('js framework extraction contract', () => {
     const getHealthRouteId = nodeIdForLabel(result, 'GET /health')
     const getHealthInlineHandlerId = nodeIdForLabel(result, 'inline handles_route GET /health')
     const postUsersRouteId = nodeIdForLabel(result, 'POST /users')
+    const patchProfileRouteId = nodeIdForLabel(result, 'PATCH /users/:id/profile')
     const putProfileRouteId = nodeIdForLabel(result, 'PUT /users/:id/profile')
     const deleteProfileRouteId = nodeIdForLabel(result, 'DELETE /users/:id/profile')
+    const allAuditRouteId = nodeIdForLabel(result, 'ALL /users/:id/audit')
     const putUsersRouteId = nodeIdForLabel(result, 'PUT /users/:id')
     const deleteUsersRouteId = nodeIdForLabel(result, 'DELETE /users/:id')
     const getProfileRouteId = nodeIdForLabel(result, 'GET /profile/:id')
@@ -459,10 +469,14 @@ describe('js framework extraction contract', () => {
         expect.objectContaining({ source: getHealthRouteId, target: getHealthInlineHandlerId, relation: 'contains' }),
         expect.objectContaining({ source: nodeIdForLabel(result, 'requireAuth'), target: postUsersRouteId, relation: 'middleware' }),
         expect.objectContaining({ source: nodeIdForLabel(result, 'createUser'), target: postUsersRouteId, relation: 'handles_route' }),
+        expect.objectContaining({ source: nodeIdForLabel(result, 'requireAuth'), target: patchProfileRouteId, relation: 'middleware' }),
+        expect.objectContaining({ source: nodeIdForLabel(result, 'patchUser'), target: patchProfileRouteId, relation: 'handles_route' }),
         expect.objectContaining({ source: nodeIdForLabel(result, 'requireAuth'), target: putProfileRouteId, relation: 'middleware' }),
         expect.objectContaining({ source: nodeIdForLabel(result, 'replaceUser'), target: putProfileRouteId, relation: 'handles_route' }),
         expect.objectContaining({ source: nodeIdForLabel(result, 'requireAuth'), target: deleteProfileRouteId, relation: 'middleware' }),
         expect.objectContaining({ source: nodeIdForLabel(result, 'removeUser'), target: deleteProfileRouteId, relation: 'handles_route' }),
+        expect.objectContaining({ source: nodeIdForLabel(result, 'requireAuth'), target: allAuditRouteId, relation: 'middleware' }),
+        expect.objectContaining({ source: nodeIdForLabel(result, 'fallbackHandler'), target: allAuditRouteId, relation: 'handles_route' }),
         expect.objectContaining({ source: nodeIdForLabel(result, 'requireAuth'), target: putUsersRouteId, relation: 'middleware' }),
         expect.objectContaining({ source: nodeIdForLabel(result, 'updateUser'), target: putUsersRouteId, relation: 'handles_route' }),
         expect.objectContaining({ source: nodeIdForLabel(result, 'showUser'), target: deleteUsersRouteId, relation: 'handles_route' }),
@@ -573,6 +587,43 @@ describe('js framework extraction contract', () => {
         expect.objectContaining({ source: requireAppNodeId, target: requireRouterNodeId, relation: 'mounts_router' }),
       ]),
     )
+  })
+
+  it('resolves imported express router mounts from namespace and CommonJS module-object bindings', () => {
+    const namespaceParentFilePath = join(FIXTURES_DIR, 'express-namespace-module-parent.ts')
+    const namespaceChildFilePath = join(FIXTURES_DIR, 'express-namespace-module-child.ts')
+    const commonjsParentFilePath = join(FIXTURES_DIR, 'express-commonjs-module-parent.ts')
+    const commonjsChildFilePath = join(FIXTURES_DIR, 'express-commonjs-module-child.ts')
+
+    const namespaceParentResult = extractJs(namespaceParentFilePath)
+    const namespaceChildResult = extractJs(namespaceChildFilePath)
+    const commonjsParentResult = extractJs(commonjsParentFilePath)
+    const commonjsChildResult = extractJs(commonjsChildFilePath)
+
+    expect(namespaceParentResult.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: nodeIdForLabel(namespaceParentResult, 'app'),
+          target: nodeIdForLabel(namespaceChildResult, 'router'),
+          relation: 'mounts_router',
+        }),
+      ]),
+    )
+    expect(commonjsParentResult.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: nodeIdForLabel(commonjsParentResult, 'app'),
+          target: nodeIdForLabel(commonjsChildResult, 'router'),
+          relation: 'mounts_router',
+        }),
+      ]),
+    )
+
+    const namespaceGraph = build([namespaceParentResult, namespaceChildResult])
+    const commonjsGraph = build([commonjsParentResult, commonjsChildResult])
+
+    expect(graphNodeIdForLabel(namespaceGraph, 'GET /api/users/:id')).toBeDefined()
+    expect(graphNodeIdForLabel(commonjsGraph, 'GET /api/users/:id')).toBeDefined()
   })
 
   it('recognizes direct CommonJS express app and router construction', () => {

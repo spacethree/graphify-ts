@@ -396,6 +396,75 @@ describe('retrieve', () => {
       )
     })
 
+    it('ranks patch and all express route nodes by their verb labels', () => {
+      const fixturesDir = join(process.cwd(), 'tests', 'fixtures')
+      const graph = build([extractJs(join(fixturesDir, 'express-patch-all.ts'))])
+
+      const patchResult = retrieveContext(graph, {
+        question: 'where is PATCH /users/:id/profile defined',
+        budget: 5000,
+        fileType: 'code',
+      })
+      const allResult = retrieveContext(graph, {
+        question: 'where is ALL /users/:id/audit defined',
+        budget: 5000,
+        fileType: 'code',
+      })
+
+      expect(patchResult.matched_nodes[0]).toEqual(
+        expect.objectContaining({
+          label: 'PATCH /users/:id/profile',
+          node_kind: 'route',
+          relevance_band: 'direct',
+        }),
+      )
+      expect(allResult.matched_nodes[0]).toEqual(
+        expect.objectContaining({
+          label: 'ALL /users/:id/audit',
+          node_kind: 'route',
+          relevance_band: 'direct',
+        }),
+      )
+    })
+
+    it('ranks module-object mounted express route nodes by their propagated prefixes', () => {
+      const fixturesDir = join(process.cwd(), 'tests', 'fixtures')
+      const namespaceGraph = build([
+        extractJs(join(fixturesDir, 'express-namespace-module-parent.ts')),
+        extractJs(join(fixturesDir, 'express-namespace-module-child.ts')),
+      ])
+      const commonjsGraph = build([
+        extractJs(join(fixturesDir, 'express-commonjs-module-parent.ts')),
+        extractJs(join(fixturesDir, 'express-commonjs-module-child.ts')),
+      ])
+
+      const namespaceResult = retrieveContext(namespaceGraph, {
+        question: 'where is GET /api/users/:id defined',
+        budget: 5000,
+        fileType: 'code',
+      })
+      const commonjsResult = retrieveContext(commonjsGraph, {
+        question: 'where is GET /api/users/:id defined',
+        budget: 5000,
+        fileType: 'code',
+      })
+
+      expect(namespaceResult.matched_nodes[0]).toEqual(
+        expect.objectContaining({
+          label: 'GET /api/users/:id',
+          node_kind: 'route',
+          relevance_band: 'direct',
+        }),
+      )
+      expect(commonjsResult.matched_nodes[0]).toEqual(
+        expect.objectContaining({
+          label: 'GET /api/users/:id',
+          node_kind: 'route',
+          relevance_band: 'direct',
+        }),
+      )
+    })
+
     it('keeps direct symbol matches above path-only matches after structural boosts', () => {
       const graph = new KnowledgeGraph()
       graph.addNode('direct_symbol', {
