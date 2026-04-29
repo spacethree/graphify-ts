@@ -178,6 +178,30 @@ function isRequireCall(expression: ts.Expression, moduleName: string): boolean {
   )
 }
 
+function importEqualsModuleSpecifier(node: ts.Node): { localName: string; moduleSpecifier: string } | null {
+  if (
+    ts.isImportEqualsDeclaration(node) &&
+    ts.isExternalModuleReference(node.moduleReference) &&
+    node.moduleReference.expression &&
+    ts.isStringLiteralLike(node.moduleReference.expression)
+  ) {
+    return {
+      localName: node.name.text,
+      moduleSpecifier: node.moduleReference.expression.text,
+    }
+  }
+
+  return null
+}
+
+function propertyNameText(name: ts.PropertyName): string | null {
+  if (ts.isIdentifier(name) || ts.isStringLiteralLike(name) || ts.isNumericLiteral(name)) {
+    return name.text
+  }
+
+  return null
+}
+
 function isExpressFactoryCallee(expression: ts.Expression, expressFactoryAliases: ReadonlySet<string>): boolean {
   const unwrapped = unparenthesizeExpression(expression)
   return (ts.isIdentifier(unwrapped) && expressFactoryAliases.has(unwrapped.text)) || isRequireCall(unwrapped, 'express')
@@ -543,6 +567,11 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
       }
     }
 
+    const importEqualsSpecifier = importEqualsModuleSpecifier(node)
+    if (importEqualsSpecifier?.moduleSpecifier === 'express') {
+      expressFactoryAliases.add(importEqualsSpecifier.localName)
+    }
+
     if (
       ts.isVariableDeclaration(node) &&
       ts.isIdentifier(node.name) &&
@@ -609,6 +638,21 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
               importedBindingsByLocalName.set(element.name.text, importedTarget)
             }
           }
+        }
+      }
+    }
+
+    const importEqualsSpecifier = importEqualsModuleSpecifier(node)
+    if (importEqualsSpecifier && importEqualsSpecifier.moduleSpecifier !== 'express') {
+      const resolvedImportPath = resolveImportPath(filePath, importEqualsSpecifier.moduleSpecifier)
+      const importedModule = resolvedImportPath ? analyzeExpressModule(resolvedImportPath) : null
+      if (resolvedImportPath) {
+        importedModulePathsByLocalName.set(importEqualsSpecifier.localName, resolvedImportPath)
+      }
+      if (resolvedImportPath && importedModule) {
+        const importedTarget = importedModule.exportedBindings.get('default')
+        if (importedTarget) {
+          importedBindingsByLocalName.set(importEqualsSpecifier.localName, importedTarget)
         }
       }
     }
@@ -874,6 +918,36 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
         const exportName = identifierName(right)
         if (exportName) {
           addExportedBinding('default', exportName)
+        } else if (ts.isObjectLiteralExpression(right)) {
+          for (const property of right.properties) {
+            if (ts.isShorthandPropertyAssignment(property)) {
+              addExportedBinding(property.name.text, property.name.text)
+              continue
+            }
+
+            if (!ts.isPropertyAssignment(property)) {
+              continue
+            }
+
+            const exportPropertyName = propertyNameText(property.name)
+            const localName = identifierName(property.initializer)
+            if (exportPropertyName && localName) {
+              addExportedBinding(exportPropertyName, localName)
+            }
+          }
+        }
+      }
+
+      if (
+        ts.isPropertyAccessExpression(left) &&
+        ts.isPropertyAccessExpression(left.expression) &&
+        ts.isIdentifier(left.expression.expression) &&
+        left.expression.expression.text === 'module' &&
+        left.expression.name.text === 'exports'
+      ) {
+        const exportName = identifierName(right)
+        if (exportName) {
+          addExportedBinding(left.name.text, exportName)
         }
       }
 
@@ -1145,6 +1219,25 @@ export const expressAdapter: JsFrameworkAdapter = {
               if (importedTarget) {
                 importedBindingsByLocalName.set(element.name.text, importedTarget)
               }
+            }
+          }
+        }
+      }
+
+      const importEqualsSpecifier = importEqualsModuleSpecifier(node)
+      if (importEqualsSpecifier) {
+        if (importEqualsSpecifier.moduleSpecifier === 'express') {
+          expressFactoryAliases.add(importEqualsSpecifier.localName)
+        } else {
+          const resolvedImportPath = resolveImportPath(context.filePath, importEqualsSpecifier.moduleSpecifier)
+          const importedModule = resolvedImportPath ? analyzeExpressModule(resolvedImportPath) : null
+          if (resolvedImportPath) {
+            importedModulePathsByLocalName.set(importEqualsSpecifier.localName, resolvedImportPath)
+          }
+          if (resolvedImportPath && importedModule) {
+            const importedTarget = importedModule.exportedBindings.get('default')
+            if (importedTarget) {
+              importedBindingsByLocalName.set(importEqualsSpecifier.localName, importedTarget)
             }
           }
         }

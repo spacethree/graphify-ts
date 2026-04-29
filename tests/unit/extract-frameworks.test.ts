@@ -667,6 +667,51 @@ describe('js framework extraction contract', () => {
     )
   })
 
+  it('recognizes TypeScript import-equals express app construction', () => {
+    const filePath = join(FIXTURES_DIR, 'express-import-equals-app.ts')
+
+    const result = extractJs(filePath)
+
+    const appNodeId = nodeIdForLabel(result, 'app')
+    const routeId = nodeIdForLabel(result, 'GET /health')
+    const handlerId = nodeIdForLabel(result, 'listHealth()')
+
+    expect(result.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: 'app', node_kind: 'router', framework_role: 'express_app' }),
+        expect.objectContaining({ label: 'GET /health', node_kind: 'route', route_path: '/health' }),
+      ]),
+    )
+    expect(result.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: appNodeId, target: routeId, relation: 'registers_route' }),
+        expect.objectContaining({ source: handlerId, target: routeId, relation: 'handles_route' }),
+      ]),
+    )
+  })
+
+  it('resolves import-equals child routers exported through module.exports properties', () => {
+    const parentFilePath = join(FIXTURES_DIR, 'express-import-equals-parent.ts')
+    const childFilePath = join(FIXTURES_DIR, 'express-import-equals-child.ts')
+
+    const graph = build([extractJs(parentFilePath), extractJs(childFilePath)], { directed: true })
+
+    expect(graph.nodeAttributes(graphNodeIdForLabel(graph, 'GET /api/users/:id'))).toEqual(
+      expect.objectContaining({ route_path: '/api/users/:id' }),
+    )
+  })
+
+  it('resolves child routers exported through module.exports object literals', () => {
+    const parentFilePath = join(FIXTURES_DIR, 'express-commonjs-object-parent.ts')
+    const childFilePath = join(FIXTURES_DIR, 'express-commonjs-object-child.ts')
+
+    const graph = build([extractJs(parentFilePath), extractJs(childFilePath)], { directed: true })
+
+    expect(graph.nodeAttributes(graphNodeIdForLabel(graph, 'GET /api/users/:id'))).toEqual(
+      expect.objectContaining({ route_path: '/api/users/:id' }),
+    )
+  })
+
   it('ignores malformed direct CommonJS expressions without crashing', () => {
     const filePath = join(FIXTURES_DIR, 'virtual-express-malformed.ts')
     const sourceText = [
