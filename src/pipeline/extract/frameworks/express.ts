@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { basename, dirname, extname, resolve } from 'node:path'
 
 import * as ts from 'typescript'
@@ -97,22 +97,27 @@ function resolveImportPath(filePath: string, specifier: string): string | null {
   }
 
   const resolvedSpecifier = resolve(dirname(filePath), specifier)
-  if (existsSync(resolvedSpecifier)) {
+  const resolvedSpecifierExists = existsSync(resolvedSpecifier)
+  if (resolvedSpecifierExists && statSync(resolvedSpecifier).isFile()) {
     return resolvedSpecifier
   }
 
   for (const extension of JS_EXTENSIONS) {
     const candidate = `${resolvedSpecifier}${extension}`
-    if (existsSync(candidate)) {
+    if (existsSync(candidate) && statSync(candidate).isFile()) {
       return candidate
     }
   }
 
   for (const extension of JS_EXTENSIONS) {
     const candidate = resolve(resolvedSpecifier, `index${extension}`)
-    if (existsSync(candidate)) {
+    if (existsSync(candidate) && statSync(candidate).isFile()) {
       return candidate
     }
+  }
+
+  if (resolvedSpecifierExists) {
+    return null
   }
 
   return resolvedSpecifier
@@ -415,11 +420,18 @@ function resolveLocalRouteAttachment(
 }
 
 function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
-  const sourceText = existsSync(filePath) ? readFileSync(filePath, 'utf8') : ''
+  const sourceText = existsSync(filePath) && statSync(filePath).isFile() ? readFileSync(filePath, 'utf8') : ''
   const cached = expressModuleAnalysisCache.get(filePath)
   if (cached && cached.sourceText === sourceText) {
     return cached
   }
+
+  const analysis: ExpressModuleAnalysis = {
+    sourceText,
+    exportedBindings: new Map<string, ImportedBindingTarget>(),
+    routeRecords: [],
+  }
+  expressModuleAnalysisCache.set(filePath, analysis)
 
   const sourceFile = ts.createSourceFile(filePath, sourceText, ts.ScriptTarget.Latest, true, scriptKindForPath(filePath))
   const expressFactoryAliases = new Set<string>()
@@ -429,7 +441,7 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
   const functionInfoByName = new Map<string, FunctionInfo>()
   const routeRecords: RouteRecord[] = []
   const mountRecords: MountRecord[] = []
-  const exportedBindings = new Map<string, ImportedBindingTarget>()
+  const exportedBindings = analysis.exportedBindings
 
   const registerExpressEntity = (name: string, kind: ExpressEntity['kind']): void => {
     if (expressEntities.has(name)) {
@@ -442,7 +454,7 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
     })
   }
 
-  const registerImports = (node: ts.Node): void => {
+  const collectImportAliases = (node: ts.Node): void => {
     if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
       const moduleSpecifier = node.moduleSpecifier.text
       const importClause = node.importClause
@@ -462,7 +474,55 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
             }
           }
         }
-      } else {
+      }
+    }
+
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer &&
+      ts.isCallExpression(node.initializer) &&
+      ts.isIdentifier(node.initializer.expression) &&
+      node.initializer.expression.text === 'require' &&
+      ts.isStringLiteral(node.initializer.arguments[0]!)
+    ) {
+      const requiredModule = node.initializer.arguments[0]!.text
+      if (requiredModule === 'express') {
+        expressFactoryAliases.add(node.name.text)
+      }
+    }
+
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isObjectBindingPattern(node.name) &&
+      node.initializer &&
+      ts.isCallExpression(node.initializer) &&
+      ts.isIdentifier(node.initializer.expression) &&
+      node.initializer.expression.text === 'require' &&
+      ts.isStringLiteral(node.initializer.arguments[0]!)
+    ) {
+      const requiredModule = node.initializer.arguments[0]!.text
+      if (requiredModule === 'express') {
+        for (const element of node.name.elements) {
+          const importedName =
+            element.propertyName && ts.isIdentifier(element.propertyName)
+              ? element.propertyName.text
+              : element.name.getText(sourceFile)
+          if (importedName === 'Router' && ts.isIdentifier(element.name)) {
+            expressRouterAliases.add(element.name.text)
+          }
+        }
+      }
+    }
+
+    ts.forEachChild(node, collectImportAliases)
+  }
+
+  const resolveImportedBindings = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
+      const moduleSpecifier = node.moduleSpecifier.text
+      const importClause = node.importClause
+      if (moduleSpecifier !== 'express') {
         const resolvedImportPath = resolveImportPath(filePath, moduleSpecifier)
         const importedModule = resolvedImportPath ? analyzeExpressModule(resolvedImportPath) : null
         if (resolvedImportPath && importedModule && importClause?.name) {
@@ -494,9 +554,7 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
       ts.isStringLiteral(node.initializer.arguments[0]!)
     ) {
       const requiredModule = node.initializer.arguments[0]!.text
-      if (requiredModule === 'express') {
-        expressFactoryAliases.add(node.name.text)
-      } else {
+      if (requiredModule !== 'express') {
         const resolvedImportPath = resolveImportPath(filePath, requiredModule)
         const importedModule = resolvedImportPath ? analyzeExpressModule(resolvedImportPath) : null
         if (resolvedImportPath && importedModule) {
@@ -518,17 +576,7 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
       ts.isStringLiteral(node.initializer.arguments[0]!)
     ) {
       const requiredModule = node.initializer.arguments[0]!.text
-      if (requiredModule === 'express') {
-        for (const element of node.name.elements) {
-          const importedName =
-            element.propertyName && ts.isIdentifier(element.propertyName)
-              ? element.propertyName.text
-              : element.name.getText(sourceFile)
-          if (importedName === 'Router' && ts.isIdentifier(element.name)) {
-            expressRouterAliases.add(element.name.text)
-          }
-        }
-      } else {
+      if (requiredModule !== 'express') {
         const resolvedImportPath = resolveImportPath(filePath, requiredModule)
         const importedModule = resolvedImportPath ? analyzeExpressModule(resolvedImportPath) : null
         if (resolvedImportPath && importedModule) {
@@ -549,7 +597,7 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
       }
     }
 
-    ts.forEachChild(node, registerImports)
+    ts.forEachChild(node, resolveImportedBindings)
   }
 
   const collectFunctionInfo = (node: ts.Node): void => {
@@ -619,10 +667,6 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
       exportedBindings.set(exportName, binding)
     }
   }
-
-  registerImports(sourceFile)
-  collectFunctionInfo(sourceFile)
-  registerBindings(sourceFile)
 
   const collectRoutes = (node: ts.Node): void => {
     if (ts.isCallExpression(node)) {
@@ -774,18 +818,22 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
     ts.forEachChild(node, collectExports)
   }
 
-  collectRoutes(sourceFile)
+  collectImportAliases(sourceFile)
+  collectFunctionInfo(sourceFile)
+  registerBindings(sourceFile)
   collectExports(sourceFile)
+  resolveImportedBindings(sourceFile)
+  collectRoutes(sourceFile)
+  analysis.routeRecords = routeRecords
 
   const resolveRouteRecords = createRouteRecordResolver(filePath, routeRecords, mountRecords, (routerTarget) =>
     analyzeExpressModule(routerTarget.sourceFile).routeRecords.filter((record) => record.ownerId === routerTarget.id),
   )
-  const expandedRouteRecords = dedupeRouteRecords([
+  analysis.routeRecords = dedupeRouteRecords([
     ...routeRecords,
     ...mountRecords.flatMap((mountRecord) => resolveRouteRecords(mountRecord.routerTarget).map((record) => createMountedRouteRecord(mountRecord, record))),
   ])
 
-  const analysis = { sourceText, exportedBindings, routeRecords: expandedRouteRecords }
   expressModuleAnalysisCache.set(filePath, analysis)
   return analysis
 }

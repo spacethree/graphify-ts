@@ -715,6 +715,32 @@ describe('js framework extraction contract', () => {
     expect(graph.edgeAttributes(handlerId, mountedRouteId)).toEqual(expect.objectContaining({ relation: 'handles_route' }))
   })
 
+  it('handles circular cross-file router imports without recursing indefinitely', () => {
+    const appFilePath = join(FIXTURES_DIR, 'express-cross-file-cycle-app.ts')
+    const routerAFilePath = join(FIXTURES_DIR, 'express-cross-file-cycle-router-a.ts')
+    const routerBFilePath = join(FIXTURES_DIR, 'express-cross-file-cycle-router-b.ts')
+
+    const graph = build([extractJs(appFilePath), extractJs(routerAFilePath), extractJs(routerBFilePath)], { directed: true })
+
+    expect(graph.nodeAttributes(graphNodeIdForLabel(graph, 'GET /api/local'))).toEqual(
+      expect.objectContaining({ route_path: '/api/local' }),
+    )
+    expect(graph.nodeAttributes(graphNodeIdForLabel(graph, 'GET /api/b/leaf'))).toEqual(
+      expect.objectContaining({ route_path: '/api/b/leaf' }),
+    )
+  })
+
+  it('resolves directory router imports to index files before extraction', () => {
+    const parentFilePath = join(FIXTURES_DIR, 'express-directory-import-parent.ts')
+    const routesFilePath = join(FIXTURES_DIR, 'express-directory-routes', 'index.ts')
+
+    const graph = build([extractJs(parentFilePath), extractJs(routesFilePath)], { directed: true })
+
+    expect(graph.nodeAttributes(graphNodeIdForLabel(graph, 'GET /api/users'))).toEqual(
+      expect.objectContaining({ route_path: '/api/users' }),
+    )
+  })
+
   it('does not let recursive mount cycle detection poison sibling mounted router expansions', () => {
     const filePath = join(FIXTURES_DIR, 'virtual-express-cycle.ts')
     const sourceText = [
