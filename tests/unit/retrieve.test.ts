@@ -808,6 +808,71 @@ describe('retrieve', () => {
       )
     })
 
+    it('does not boost redux metadata for non-framework-shaped questions', () => {
+      const graph = new KnowledgeGraph({ directed: true })
+      graph.addNode('auth_status_helper', {
+        label: 'AuthStatus',
+        source_file: '/src/utils/auth-status.ts',
+        line_number: 8,
+        node_kind: 'function',
+        file_type: 'code',
+        community: 0,
+      })
+      graph.addNode('auth_status_selector', {
+        label: 'AuthStatus',
+        source_file: '/src/state/auth-status.ts',
+        line_number: 12,
+        node_kind: 'function',
+        file_type: 'code',
+        framework: 'redux-toolkit',
+        framework_role: 'redux_selector',
+        community: 0,
+      })
+      graph.addNode('status_formatter', {
+        label: 'StatusFormatter',
+        source_file: '/src/utils/status-formatter.ts',
+        line_number: 18,
+        node_kind: 'function',
+        file_type: 'code',
+        community: 0,
+      })
+      graph.addNode('status_labels', {
+        label: 'statusLabels',
+        source_file: '/src/utils/status-labels.ts',
+        line_number: 4,
+        node_kind: 'variable',
+        file_type: 'code',
+        community: 0,
+      })
+
+      graph.addEdge('status_formatter', 'auth_status_helper', {
+        relation: 'calls',
+        confidence: 'EXTRACTED',
+        source_file: '/src/utils/status-formatter.ts',
+      })
+      graph.addEdge('status_labels', 'auth_status_helper', {
+        relation: 'uses',
+        confidence: 'EXTRACTED',
+        source_file: '/src/utils/status-labels.ts',
+      })
+
+      const result = retrieveContext(graph, {
+        question: 'auth status',
+        budget: 5000,
+        fileType: 'code',
+      })
+
+      expect(result.matched_nodes[0]).toEqual(
+        expect.objectContaining({
+          label: 'AuthStatus',
+          source_file: '/src/utils/auth-status.ts',
+        }),
+      )
+      expect(result.matched_nodes.findIndex((node) => node.source_file === '/src/utils/auth-status.ts')).toBeLessThan(
+        result.matched_nodes.findIndex((node) => node.source_file === '/src/state/auth-status.ts'),
+      )
+    })
+
     it('answers route rendering questions with extracted react router route semantics', () => {
       const routerFilePath = join(process.cwd(), 'tests', 'fixtures', 'react-router-imported-router.tsx')
       const moduleFilePath = join(process.cwd(), 'tests', 'fixtures', 'react-router-imported-module.tsx')

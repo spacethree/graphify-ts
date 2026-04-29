@@ -370,9 +370,12 @@ function buildFrameworkQuestionProfile(question: string, questionTokens: readonl
 function frameworkBoostForNode(
   profile: FrameworkQuestionProfile,
   nodeKind: string,
-  framework: string,
   frameworkRole: string,
 ): number {
+  if (!profile.frameworkShaped) {
+    return 0
+  }
+
   let boost = 0
 
   if (profile.express) {
@@ -390,7 +393,7 @@ function frameworkBoostForNode(
     }
   }
 
-  if (profile.redux || framework === 'redux-toolkit') {
+  if (profile.redux) {
     if (nodeKind === 'slice' || frameworkRole === 'redux_slice') {
       boost += profile.sliceIntent || profile.selectorIntent ? 3.5 : 2.5
     }
@@ -405,7 +408,7 @@ function frameworkBoostForNode(
     }
   }
 
-  if (profile.reactRouter || framework === 'react-router') {
+  if (profile.reactRouter) {
     if (nodeKind === 'route' || frameworkRole === 'react_router_route' || frameworkRole === 'react_router_layout') {
       boost += profile.routeIntent || profile.renderIntent || profile.loaderIntent || profile.actionIntent ? 3.5 : 2
     }
@@ -469,7 +472,6 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
     const label = String(attributes.label ?? '')
     const sourceFile = String(attributes.source_file ?? '')
     const nodeKind = String(attributes.node_kind ?? '')
-    const framework = String(attributes.framework ?? '')
     const frameworkRole = String(attributes.framework_role ?? '')
     const score = scoreSeedCandidate(
       question,
@@ -489,13 +491,13 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
         nodeKind,
         fileType,
         community,
-        frameworkBoost: frameworkBoostForNode(frameworkProfile, nodeKind, framework, frameworkRole),
-        exactLabelMatch: score.labelExactScore > 0,
-        sourcePathMatch: score.sourcePathScore > 0,
-        evidenceTier: evidenceTierForSeedScore(score),
-        score: score.total + frameworkBoostForNode(frameworkProfile, nodeKind, framework, frameworkRole),
-        relevanceBand: score.labelExactScore > 0 || score.labelTokenScore > 0 ? 'direct' : 'related',
-      })
+      frameworkBoost: frameworkBoostForNode(frameworkProfile, nodeKind, frameworkRole),
+      exactLabelMatch: score.labelExactScore > 0,
+      sourcePathMatch: score.sourcePathScore > 0,
+      evidenceTier: evidenceTierForSeedScore(score),
+      score: score.total + frameworkBoostForNode(frameworkProfile, nodeKind, frameworkRole),
+      relevanceBand: score.labelExactScore > 0 || score.labelTokenScore > 0 ? 'direct' : 'related',
+    })
     }
   }
 

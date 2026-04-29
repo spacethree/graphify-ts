@@ -498,6 +498,76 @@ describe('impact', () => {
         },
       ])
     })
+
+    it('prefers higher-level route summaries for loader blast radius within a community', () => {
+      const graph = new KnowledgeGraph({ directed: true })
+
+      graph.addNode('dashboard_loader_service', {
+        label: 'dashboardLoaderService',
+        source_file: '/src/services/dashboardLoaderService.ts',
+        node_kind: 'function',
+        file_type: 'code',
+        community: 0,
+      })
+      graph.addNode('coerce_dashboard_data', {
+        label: 'coerceDashboardData',
+        source_file: '/src/routes/dashboard.tsx',
+        node_kind: 'function',
+        file_type: 'code',
+        community: 1,
+      })
+      graph.addNode('dashboard_loader', {
+        label: 'dashboardLoader',
+        source_file: '/src/routes/dashboard.tsx',
+        node_kind: 'function',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_loader',
+        community: 1,
+      })
+      graph.addNode('dashboard_route', {
+        label: '/dashboard',
+        source_file: '/src/routes/dashboard.tsx',
+        node_kind: 'route',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_route',
+        community: 1,
+      })
+
+      graph.addEdge('coerce_dashboard_data', 'dashboard_loader_service', {
+        relation: 'calls',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/dashboard.tsx',
+      })
+      graph.addEdge('dashboard_loader', 'dashboard_loader_service', {
+        relation: 'calls',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/dashboard.tsx',
+      })
+      graph.addEdge('dashboard_route', 'dashboard_loader', {
+        relation: 'loads_route',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/dashboard.tsx',
+      })
+
+      const result = analyzeImpact(graph, { 0: 'Data', 1: 'Routes' }, { label: 'dashboardLoaderService', depth: 4 })
+
+      expect(result.direct_dependents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ label: 'coerceDashboardData' }),
+          expect.objectContaining({ label: 'dashboardLoader' }),
+        ]),
+      )
+      expect(result.top_paths_per_community).toEqual([
+        {
+          id: 1,
+          label: 'Routes',
+          distance: 2,
+          path: ['dashboardLoaderService', 'dashboardLoader', '/dashboard'],
+        },
+      ])
+    })
   })
 
   describe('callChains', () => {
