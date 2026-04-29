@@ -450,6 +450,91 @@ describe('retrieve', () => {
       )
     })
 
+    it('prefers express route summaries for middleware-shaped questions over helper functions', () => {
+      const graph = new KnowledgeGraph({ directed: true })
+      graph.addNode('route_users_show', {
+        label: 'GET /users/:id',
+        source_file: '/src/routes/users.ts',
+        line_number: 12,
+        node_kind: 'route',
+        file_type: 'code',
+        framework: 'express',
+        framework_role: 'express_route',
+        community: 0,
+      })
+      graph.addNode('require_auth', {
+        label: 'requireAuth',
+        source_file: '/src/middleware/auth.ts',
+        line_number: 3,
+        node_kind: 'function',
+        file_type: 'code',
+        framework: 'express',
+        framework_role: 'express_middleware',
+        community: 0,
+      })
+      graph.addNode('show_user', {
+        label: 'showUser',
+        source_file: '/src/controllers/users.ts',
+        line_number: 7,
+        node_kind: 'function',
+        file_type: 'code',
+        framework: 'express',
+        framework_role: 'express_handler',
+        community: 0,
+      })
+      graph.addNode('auth_users_helper', {
+        label: 'authUsersMiddlewareHelper',
+        source_file: '/src/utils/auth-users.ts',
+        line_number: 20,
+        node_kind: 'function',
+        file_type: 'code',
+        community: 0,
+      })
+      graph.addEdge('require_auth', 'route_users_show', {
+        relation: 'middleware',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/users.ts',
+      })
+      graph.addEdge('show_user', 'route_users_show', {
+        relation: 'handles_route',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/users.ts',
+      })
+      graph.addEdge('route_users_show', 'require_auth', {
+        relation: 'depends_on',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/users.ts',
+      })
+      graph.addEdge('route_users_show', 'show_user', {
+        relation: 'depends_on',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/users.ts',
+      })
+      graph.addEdge('auth_users_helper', 'require_auth', {
+        relation: 'calls',
+        confidence: 'EXTRACTED',
+        source_file: '/src/utils/auth-users.ts',
+      })
+
+      const result = retrieveContext(graph, {
+        question: 'which express route uses auth middleware for users',
+        budget: 5000,
+        fileType: 'code',
+      })
+
+      expect(result.matched_nodes[0]).toEqual(
+        expect.objectContaining({
+          label: 'GET /users/:id',
+          node_kind: 'route',
+          relevance_band: 'direct',
+        }),
+      )
+      expect(result.matched_nodes.slice(0, 3).map((node) => node.label)).toEqual(expect.arrayContaining(['requireAuth']))
+      expect(result.matched_nodes.findIndex((node) => node.label === 'GET /users/:id')).toBeLessThan(
+        result.matched_nodes.findIndex((node) => node.label === 'authUsersMiddlewareHelper'),
+      )
+    })
+
     it('ranks mounted express route nodes by their propagated prefix', () => {
       const fixturesDir = join(process.cwd(), 'tests', 'fixtures')
       const graph = build([
@@ -647,6 +732,80 @@ describe('retrieve', () => {
         expect.arrayContaining(['authSlice', 'authReducer', 'selectAuthStatus']),
       )
       expect(semanticLowLevelMatches.length).toBeLessThan(baselineLowLevelMatches.length)
+      expect(semanticResult.token_count).toBeLessThan(baselineResult.token_count)
+    })
+
+    it('prefers redux slice and selector summaries over utility helpers for redux-shaped questions', () => {
+      const graph = new KnowledgeGraph({ directed: true })
+      graph.addNode('auth_slice', {
+        label: 'auth slice',
+        source_file: '/src/state/authSlice.ts',
+        line_number: 5,
+        node_kind: 'slice',
+        file_type: 'code',
+        framework: 'redux-toolkit',
+        framework_role: 'redux_slice',
+        community: 0,
+      })
+      graph.addNode('select_auth_status', {
+        label: 'selectAuthStatus',
+        source_file: '/src/state/authSlice.ts',
+        line_number: 24,
+        node_kind: 'function',
+        file_type: 'code',
+        framework: 'redux-toolkit',
+        framework_role: 'redux_selector',
+        community: 0,
+      })
+      graph.addNode('store', {
+        label: 'store',
+        source_file: '/src/state/store.ts',
+        line_number: 3,
+        node_kind: 'store',
+        file_type: 'code',
+        framework: 'redux-toolkit',
+        framework_role: 'redux_store',
+        community: 0,
+      })
+      graph.addNode('auth_state_helpers', {
+        label: 'authStateHelpers',
+        source_file: '/src/utils/authStateHelpers.ts',
+        line_number: 9,
+        node_kind: 'function',
+        file_type: 'code',
+        community: 1,
+      })
+      graph.addEdge('auth_slice', 'select_auth_status', {
+        relation: 'defines_selector',
+        confidence: 'EXTRACTED',
+        source_file: '/src/state/authSlice.ts',
+      })
+      graph.addEdge('auth_slice', 'store', {
+        relation: 'registered_in_store',
+        confidence: 'EXTRACTED',
+        source_file: '/src/state/store.ts',
+      })
+      graph.addEdge('auth_state_helpers', 'select_auth_status', {
+        relation: 'uses',
+        confidence: 'EXTRACTED',
+        source_file: '/src/utils/authStateHelpers.ts',
+      })
+
+      const result = retrieveContext(graph, {
+        question: 'which redux selector reads auth state',
+        budget: 5000,
+        fileType: 'code',
+      })
+
+      expect(result.matched_nodes.slice(0, 2).map((node) => node.label)).toEqual(
+        expect.arrayContaining(['auth slice', 'selectAuthStatus']),
+      )
+      expect(result.matched_nodes.findIndex((node) => node.label === 'auth slice')).toBeLessThan(
+        result.matched_nodes.findIndex((node) => node.label === 'authStateHelpers'),
+      )
+      expect(result.matched_nodes.findIndex((node) => node.label === 'selectAuthStatus')).toBeLessThan(
+        result.matched_nodes.findIndex((node) => node.label === 'authStateHelpers'),
+      )
     })
 
     it('answers route rendering questions with extracted react router route semantics', () => {

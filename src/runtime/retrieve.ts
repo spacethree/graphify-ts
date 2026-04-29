@@ -206,11 +206,28 @@ interface ScoredNode {
   nodeKind: string
   fileType: string
   community: number | null
+  frameworkBoost: number
   exactLabelMatch: boolean
   sourcePathMatch: boolean
   evidenceTier: 0 | 1 | 2
   score: number
   relevanceBand: 'direct' | 'related' | 'peripheral'
+}
+
+interface FrameworkQuestionProfile {
+  frameworkShaped: boolean
+  express: boolean
+  redux: boolean
+  reactRouter: boolean
+  routeIntent: boolean
+  middlewareIntent: boolean
+  handlerIntent: boolean
+  selectorIntent: boolean
+  sliceIntent: boolean
+  storeIntent: boolean
+  renderIntent: boolean
+  loaderIntent: boolean
+  actionIntent: boolean
 }
 
 function normalizeSeedText(value: string): string {
@@ -230,6 +247,7 @@ function evidenceTierForSeedScore(score: SeedScoreBreakdown): 0 | 1 | 2 {
 function compareScoredNodes(graph: KnowledgeGraph, left: ScoredNode, right: ScoredNode): number {
   return (
     right.evidenceTier - left.evidenceTier ||
+    right.frameworkBoost - left.frameworkBoost ||
     right.score - left.score ||
     graph.degree(right.id) - graph.degree(left.id)
   )
@@ -310,6 +328,107 @@ function isPrimaryExpansionRelation(relation: string): boolean {
     relation === 'updates_slice'
   )
 }
+
+function includesAnyToken(tokens: readonly string[], candidates: readonly string[]): boolean {
+  return candidates.some((candidate) => tokens.includes(candidate))
+}
+
+function buildFrameworkQuestionProfile(question: string, questionTokens: readonly string[]): FrameworkQuestionProfile {
+  const uppercaseQuestion = question.toUpperCase()
+  const hasHttpVerb = /\b(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD|USE|ALL)\b/.test(uppercaseQuestion)
+  const hasRoutePath = /\/[A-Za-z0-9:_-]*/.test(question)
+  const routeIntent = hasHttpVerb || hasRoutePath || includesAnyToken(questionTokens, ['route', 'routes', 'router', 'endpoint', 'endpoints', 'path'])
+  const middlewareIntent = includesAnyToken(questionTokens, ['middleware', 'guard'])
+  const handlerIntent = includesAnyToken(questionTokens, ['handler', 'handlers', 'controller', 'controllers'])
+  const selectorIntent = includesAnyToken(questionTokens, ['selector', 'selectors'])
+  const sliceIntent = includesAnyToken(questionTokens, ['slice', 'slices', 'state'])
+  const storeIntent = includesAnyToken(questionTokens, ['store', 'stores', 'reducer', 'reducers'])
+  const renderIntent = includesAnyToken(questionTokens, ['render', 'renders', 'page', 'pages', 'component', 'components'])
+  const loaderIntent = includesAnyToken(questionTokens, ['loader', 'loaders', 'load'])
+  const actionIntent = includesAnyToken(questionTokens, ['action', 'actions', 'submit', 'submits', 'dispatch'])
+  const express = includesAnyToken(questionTokens, ['express']) || routeIntent || middlewareIntent || handlerIntent
+  const redux = includesAnyToken(questionTokens, ['redux', 'toolkit']) || selectorIntent || sliceIntent || storeIntent || actionIntent
+  const reactRouter = includesAnyToken(questionTokens, ['react', 'router', 'routing']) || routeIntent || renderIntent || loaderIntent || actionIntent
+
+  return {
+    frameworkShaped: express || redux || reactRouter,
+    express,
+    redux,
+    reactRouter,
+    routeIntent,
+    middlewareIntent,
+    handlerIntent,
+    selectorIntent,
+    sliceIntent,
+    storeIntent,
+    renderIntent,
+    loaderIntent,
+    actionIntent,
+  }
+}
+
+function frameworkBoostForNode(
+  profile: FrameworkQuestionProfile,
+  nodeKind: string,
+  framework: string,
+  frameworkRole: string,
+): number {
+  let boost = 0
+
+  if (profile.express) {
+    if (nodeKind === 'route' || frameworkRole === 'express_route') {
+      boost += profile.routeIntent || profile.middlewareIntent || profile.handlerIntent ? 4 : 2.5
+    }
+    if (frameworkRole === 'express_middleware') {
+      boost += profile.middlewareIntent ? 2.5 : 1
+    }
+    if (frameworkRole === 'express_handler') {
+      boost += profile.handlerIntent ? 2.5 : 1.25
+    }
+    if (nodeKind === 'router' || frameworkRole === 'express_router' || frameworkRole === 'express_app') {
+      boost += profile.routeIntent ? 1.5 : 0.5
+    }
+  }
+
+  if (profile.redux || framework === 'redux-toolkit') {
+    if (nodeKind === 'slice' || frameworkRole === 'redux_slice') {
+      boost += profile.sliceIntent || profile.selectorIntent ? 3.5 : 2.5
+    }
+    if (frameworkRole === 'redux_selector') {
+      boost += profile.selectorIntent ? 3.5 : 2
+    }
+    if (nodeKind === 'store' || frameworkRole === 'redux_store') {
+      boost += profile.storeIntent || profile.sliceIntent ? 2.25 : 1.5
+    }
+    if (frameworkRole === 'redux_action' || frameworkRole === 'redux_thunk') {
+      boost += profile.actionIntent ? 2 : 0.75
+    }
+  }
+
+  if (profile.reactRouter || framework === 'react-router') {
+    if (nodeKind === 'route' || frameworkRole === 'react_router_route' || frameworkRole === 'react_router_layout') {
+      boost += profile.routeIntent || profile.renderIntent || profile.loaderIntent || profile.actionIntent ? 3.5 : 2
+    }
+    if (frameworkRole === 'react_router_component') {
+      boost += profile.renderIntent ? 2.5 : 1
+    }
+    if (frameworkRole === 'react_router_loader') {
+      boost += profile.loaderIntent ? 2.5 : 1
+    }
+    if (frameworkRole === 'react_router_action') {
+      boost += profile.actionIntent ? 2.5 : 1
+    }
+    if (nodeKind === 'router' || frameworkRole === 'react_router') {
+      boost += profile.routeIntent ? 1.5 : 0.5
+    }
+  }
+
+  if (profile.frameworkShaped && boost === 0 && ['function', 'class', 'variable'].includes(nodeKind)) {
+    boost -= 0.5
+  }
+
+  return boost
+}
 export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions): RetrieveResult {
   const { question, budget } = options
   const questionTokens = tokenizeQuestion(question)
@@ -327,6 +446,7 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
 
   // Pre-compute community labels so seed scoring can treat them as secondary evidence.
   const communities = communitiesFromGraph(graph)
+  const frameworkProfile = buildFrameworkQuestionProfile(question, questionTokens)
   const communityLabels: Record<number, string> = {
     ...buildCommunityLabels(graph, communities),
     ...storedCommunityLabelsFromGraph(graph),
@@ -348,6 +468,9 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
 
     const label = String(attributes.label ?? '')
     const sourceFile = String(attributes.source_file ?? '')
+    const nodeKind = String(attributes.node_kind ?? '')
+    const framework = String(attributes.framework ?? '')
+    const frameworkRole = String(attributes.framework_role ?? '')
     const score = scoreSeedCandidate(
       question,
       questionTokens,
@@ -363,13 +486,14 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
         label,
         sourceFile,
         lineNumber: typeof attributes.line_number === 'number' ? attributes.line_number : 0,
-        nodeKind: String(attributes.node_kind ?? ''),
+        nodeKind,
         fileType,
         community,
+        frameworkBoost: frameworkBoostForNode(frameworkProfile, nodeKind, framework, frameworkRole),
         exactLabelMatch: score.labelExactScore > 0,
         sourcePathMatch: score.sourcePathScore > 0,
         evidenceTier: evidenceTierForSeedScore(score),
-        score: score.total,
+        score: score.total + frameworkBoostForNode(frameworkProfile, nodeKind, framework, frameworkRole),
         relevanceBand: score.labelExactScore > 0 || score.labelTokenScore > 0 ? 'direct' : 'related',
       })
     }
@@ -483,6 +607,7 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
       nodeKind: String(attributes.node_kind ?? ''),
       fileType,
       community,
+      frameworkBoost: 0,
       exactLabelMatch: false,
       sourcePathMatch: false,
       evidenceTier: hopDistances.get(nodeId) === 1 ? (hopEvidenceTiers.get(nodeId) ?? 0) : 0,
@@ -511,10 +636,16 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
   const matchedNodes: RetrieveMatchedNode[] = []
   const includedIds = new Set<string>()
   let tokenCount = 0
-  const inclusionOrder = [
-    ...scored.filter((node) => (seedIds.has(node.id) || hopScores.has(node.id)) && node.relevanceBand !== 'peripheral'),
-    ...scored.filter((node) => (seedIds.has(node.id) || hopScores.has(node.id)) && node.relevanceBand === 'peripheral'),
-  ]
+  const primaryCandidates = scored.filter((node) => (seedIds.has(node.id) || hopScores.has(node.id)) && node.relevanceBand !== 'peripheral')
+  const peripheralCandidates = scored.filter((node) => (seedIds.has(node.id) || hopScores.has(node.id)) && node.relevanceBand === 'peripheral')
+  const prioritizedFrameworkCandidates = frameworkProfile.frameworkShaped
+    ? primaryCandidates.filter((node) => node.frameworkBoost > 0)
+    : []
+  const secondaryCandidates = frameworkProfile.frameworkShaped
+    ? primaryCandidates.filter((node) => node.frameworkBoost <= 0)
+    : primaryCandidates
+  const inclusionOrder = [...prioritizedFrameworkCandidates, ...secondaryCandidates, ...peripheralCandidates]
+  const compactFrameworkLimit = frameworkProfile.frameworkShaped && prioritizedFrameworkCandidates.length > 0 ? 5 : Number.POSITIVE_INFINITY
 
   for (const node of inclusionOrder) {
     const snippet = readSnippet(node.sourceFile, node.lineNumber)
@@ -540,6 +671,10 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
 
     includedIds.add(node.id)
     tokenCount += nodeTokens
+
+    if (matchedNodes.length >= compactFrameworkLimit) {
+      break
+    }
   }
 
   // Collect relationships between included nodes

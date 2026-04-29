@@ -344,6 +344,160 @@ describe('impact', () => {
         expect.arrayContaining([expect.objectContaining({ label: 'GET /api/users/:id', relation: 'depends_on' })]),
       )
     })
+
+    it('shows redux slice blast radius through selectors, components, and routes', () => {
+      const graph = new KnowledgeGraph({ directed: true })
+
+      graph.addNode('auth_slice', {
+        label: 'auth slice',
+        source_file: '/src/state/authSlice.ts',
+        node_kind: 'slice',
+        file_type: 'code',
+        framework: 'redux-toolkit',
+        framework_role: 'redux_slice',
+        community: 0,
+      })
+      graph.addNode('select_auth_status', {
+        label: 'selectAuthStatus',
+        source_file: '/src/state/authSlice.ts',
+        node_kind: 'function',
+        file_type: 'code',
+        framework: 'redux-toolkit',
+        framework_role: 'redux_selector',
+        community: 0,
+      })
+      graph.addNode('store', {
+        label: 'store',
+        source_file: '/src/state/store.ts',
+        node_kind: 'store',
+        file_type: 'code',
+        framework: 'redux-toolkit',
+        framework_role: 'redux_store',
+        community: 0,
+      })
+      graph.addNode('auth_status_badge', {
+        label: 'AuthStatusBadge',
+        source_file: '/src/components/AuthStatusBadge.tsx',
+        node_kind: 'component',
+        file_type: 'code',
+        community: 1,
+      })
+      graph.addNode('settings_route', {
+        label: '/settings',
+        source_file: '/src/routes/settings.tsx',
+        node_kind: 'route',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_route',
+        community: 1,
+      })
+
+      graph.addEdge('auth_slice', 'select_auth_status', {
+        relation: 'defines_selector',
+        confidence: 'EXTRACTED',
+        source_file: '/src/state/authSlice.ts',
+      })
+      graph.addEdge('auth_slice', 'store', {
+        relation: 'registered_in_store',
+        confidence: 'EXTRACTED',
+        source_file: '/src/state/store.ts',
+      })
+      graph.addEdge('auth_status_badge', 'select_auth_status', {
+        relation: 'uses',
+        confidence: 'EXTRACTED',
+        source_file: '/src/components/AuthStatusBadge.tsx',
+      })
+      graph.addEdge('settings_route', 'auth_status_badge', {
+        relation: 'renders',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/settings.tsx',
+      })
+
+      const result = analyzeImpact(graph, { 0: 'State', 1: 'UI' }, { label: 'auth slice', depth: 4 })
+
+      expect(result.direct_dependents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ label: 'selectAuthStatus' }),
+          expect.objectContaining({ label: 'store' }),
+        ]),
+      )
+      expect(result.transitive_dependents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ label: 'AuthStatusBadge' }),
+          expect.objectContaining({ label: '/settings' }),
+        ]),
+      )
+    })
+
+    it('prefers higher-level route summaries for service blast radius within a community', () => {
+      const graph = new KnowledgeGraph({ directed: true })
+
+      graph.addNode('user_service', {
+        label: 'userService',
+        source_file: '/src/services/userService.ts',
+        node_kind: 'function',
+        file_type: 'code',
+        community: 0,
+      })
+      graph.addNode('normalize_user_record', {
+        label: 'normalizeUserRecord',
+        source_file: '/src/controllers/users.ts',
+        node_kind: 'function',
+        file_type: 'code',
+        community: 1,
+      })
+      graph.addNode('show_user', {
+        label: 'showUser',
+        source_file: '/src/controllers/users.ts',
+        node_kind: 'function',
+        file_type: 'code',
+        framework: 'express',
+        framework_role: 'express_handler',
+        community: 1,
+      })
+      graph.addNode('route_users_show', {
+        label: 'GET /users/:id',
+        source_file: '/src/routes/users.ts',
+        node_kind: 'route',
+        file_type: 'code',
+        framework: 'express',
+        framework_role: 'express_route',
+        community: 1,
+      })
+
+      graph.addEdge('normalize_user_record', 'user_service', {
+        relation: 'calls',
+        confidence: 'EXTRACTED',
+        source_file: '/src/controllers/users.ts',
+      })
+      graph.addEdge('show_user', 'user_service', {
+        relation: 'calls',
+        confidence: 'EXTRACTED',
+        source_file: '/src/controllers/users.ts',
+      })
+      graph.addEdge('route_users_show', 'show_user', {
+        relation: 'depends_on',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/users.ts',
+      })
+
+      const result = analyzeImpact(graph, { 0: 'Data', 1: 'Delivery' }, { label: 'userService', depth: 4 })
+
+      expect(result.direct_dependents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ label: 'normalizeUserRecord' }),
+          expect.objectContaining({ label: 'showUser' }),
+        ]),
+      )
+      expect(result.top_paths_per_community).toEqual([
+        {
+          id: 1,
+          label: 'Delivery',
+          distance: 2,
+          path: ['userService', 'showUser', 'GET /users/:id'],
+        },
+      ])
+    })
   })
 
   describe('callChains', () => {

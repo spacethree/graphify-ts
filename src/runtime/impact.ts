@@ -33,6 +33,63 @@ export interface ImpactResult {
   total_affected: number
 }
 
+interface TraversalCandidate {
+  neighborId: string
+  relation: string
+}
+
+interface CommunityPathSummary {
+  summary_rank: number
+  distance: number
+  path: string[]
+}
+
+function frameworkSummaryRank(node: Pick<ImpactNode, 'node_kind'> & { framework_role?: string | null }): number {
+  if (node.node_kind === 'route' || node.framework_role === 'express_route' || node.framework_role === 'react_router_route') {
+    return 4
+  }
+  if (node.node_kind === 'slice' || node.node_kind === 'store' || node.framework_role === 'redux_slice' || node.framework_role === 'redux_store') {
+    return 3
+  }
+  if (
+    node.framework_role === 'express_handler' ||
+    node.framework_role === 'express_middleware' ||
+    node.framework_role === 'redux_selector' ||
+    node.framework_role === 'redux_action' ||
+    node.framework_role === 'redux_thunk' ||
+    node.framework_role === 'react_router_loader' ||
+    node.framework_role === 'react_router_action' ||
+    node.framework_role === 'react_router_component'
+  ) {
+    return 2
+  }
+  return 0
+}
+
+function forwardImpactRelation(relation: string): boolean {
+  return relation === 'defines_action' || relation === 'defines_selector' || relation === 'registered_in_store'
+}
+
+function impactNeighbors(graph: KnowledgeGraph, nodeId: string, edgeTypes: string[] | undefined): TraversalCandidate[] {
+  const candidates = new Map<string, TraversalCandidate>()
+
+  for (const dependentId of graph.predecessors(nodeId)) {
+    const relation = edgeRelation(graph, dependentId, nodeId)
+    if (matchesEdgeType(relation, edgeTypes)) {
+      candidates.set(`pred:${dependentId}`, { neighborId: dependentId, relation })
+    }
+  }
+
+  for (const successorId of graph.successors(nodeId)) {
+    const relation = edgeRelation(graph, nodeId, successorId)
+    if (forwardImpactRelation(relation) && matchesEdgeType(relation, edgeTypes)) {
+      candidates.set(`succ:${successorId}`, { neighborId: successorId, relation })
+    }
+  }
+
+  return [...candidates.values()]
+}
+
 function findNodeByLabel(graph: KnowledgeGraph, label: string): string | null {
   const normalizedLabel = label.toLowerCase()
 
@@ -123,25 +180,19 @@ export function analyzeImpact(
       continue
     }
 
-    const dependents = graph.predecessors(current.nodeId)
-    for (const dependentId of dependents) {
-      if (visited.has(dependentId)) {
-        continue
-      }
-
-      const relation = edgeRelation(graph, dependentId, current.nodeId)
-      if (!matchesEdgeType(relation, options.edgeTypes)) {
+    for (const { neighborId, relation } of impactNeighbors(graph, current.nodeId, options.edgeTypes)) {
+      if (visited.has(neighborId)) {
         continue
       }
 
       const distance = current.distance + 1
-      const path = [...current.path, dependentId]
-      visited.set(dependentId, distance)
+      const path = [...current.path, neighborId]
+      visited.set(neighborId, distance)
 
-      const attributes = graph.nodeAttributes(dependentId)
+      const attributes = graph.nodeAttributes(neighborId)
       const community = parseCommunityId(attributes.community)
       const node: ImpactNode = {
-        label: String(attributes.label ?? dependentId),
+        label: String(attributes.label ?? neighborId),
         source_file: String(attributes.source_file ?? ''),
         node_kind: String(attributes.node_kind ?? ''),
         file_type: String(attributes.file_type ?? ''),
@@ -157,8 +208,8 @@ export function analyzeImpact(
         transitiveDependents.push(node)
       }
 
-      discoveredDependents.push({ nodeId: dependentId, path, node })
-      queue.push({ nodeId: dependentId, distance, path })
+      discoveredDependents.push({ nodeId: neighborId, path, node })
+      queue.push({ nodeId: neighborId, distance, path })
     }
   }
 
@@ -172,7 +223,7 @@ export function analyzeImpact(
 
   // Affected communities (deduplicated with counts)
   const communityMap = new Map<number, number>()
-  const topPathsByCommunity = new Map<number, { distance: number; path: string[] }>()
+  const topPathsByCommunity = new Map<number, CommunityPathSummary>()
   for (const discovered of discoveredDependents) {
     const { node, path } = discovered
     if (node.community !== null) {
@@ -180,13 +231,19 @@ export function analyzeImpact(
 
       const labeledPath = path.map((nodeId) => String(graph.nodeAttributes(nodeId).label ?? nodeId))
       const existing = topPathsByCommunity.get(node.community)
+      const summaryRank = frameworkSummaryRank({
+        node_kind: node.node_kind,
+        framework_role: String(graph.nodeAttributes(discovered.nodeId).framework_role ?? '') || null,
+      })
       const shouldReplace =
         !existing ||
-        node.distance < existing.distance ||
-        (node.distance === existing.distance && labeledPath.join('\u0000') < existing.path.join('\u0000'))
+        summaryRank > existing.summary_rank ||
+        (summaryRank === existing.summary_rank &&
+          (node.distance < existing.distance ||
+            (node.distance === existing.distance && labeledPath.join('\u0000') < existing.path.join('\u0000'))))
 
       if (shouldReplace) {
-        topPathsByCommunity.set(node.community, { distance: node.distance, path: labeledPath })
+        topPathsByCommunity.set(node.community, { summary_rank: summaryRank, distance: node.distance, path: labeledPath })
       }
     }
   }
@@ -212,8 +269,13 @@ export function analyzeImpact(
     target: String(targetAttributes.label ?? targetNodeId),
     target_file: String(targetAttributes.source_file ?? ''),
     depth: maxDepth,
-    direct_dependents: directDependents.sort((a, b) => a.label.localeCompare(b.label)),
-    transitive_dependents: transitiveDependents.sort((a, b) => a.distance - b.distance || a.label.localeCompare(b.label)),
+    direct_dependents: directDependents.sort((a, b) => frameworkSummaryRank({ node_kind: b.node_kind }) - frameworkSummaryRank({ node_kind: a.node_kind }) || a.label.localeCompare(b.label)),
+    transitive_dependents: transitiveDependents.sort(
+      (a, b) =>
+        frameworkSummaryRank({ node_kind: b.node_kind }) - frameworkSummaryRank({ node_kind: a.node_kind }) ||
+        a.distance - b.distance ||
+        a.label.localeCompare(b.label),
+    ),
     affected_files: [...fileSet].sort(),
     affected_communities: affectedCommunities,
     top_paths_per_community: topPathsPerCommunity,
