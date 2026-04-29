@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 
 import * as ts from 'typescript'
@@ -67,6 +67,19 @@ function resolveImportPath(filePath: string, specifier: string): string | null {
   return resolvedSpecifier
 }
 
+function scriptKindForPath(filePath: string): ts.ScriptKind {
+  if (filePath.endsWith('.tsx')) {
+    return ts.ScriptKind.TSX
+  }
+  if (filePath.endsWith('.jsx')) {
+    return ts.ScriptKind.JSX
+  }
+  if (filePath.endsWith('.js') || filePath.endsWith('.cjs') || filePath.endsWith('.mjs')) {
+    return ts.ScriptKind.JS
+  }
+  return ts.ScriptKind.TS
+}
+
 function lineOf(node: ts.Node, sourceFile: ts.SourceFile): number {
   return sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1
 }
@@ -109,6 +122,60 @@ function identifierName(expression: ts.Expression): string | null {
     return unwrapped.name.text
   }
   return null
+}
+
+function resolveImportedRouterBindingName(filePath: string, fallbackBindingName: string): string {
+  if (!existsSync(filePath)) {
+    return fallbackBindingName
+  }
+
+  try {
+    const sourceText = readFileSync(filePath, 'utf8')
+    const sourceFile = ts.createSourceFile(filePath, sourceText, ts.ScriptTarget.Latest, true, scriptKindForPath(filePath))
+    let resolvedBindingName: string | null = null
+
+    const visit = (node: ts.Node): void => {
+      if (resolvedBindingName) {
+        return
+      }
+
+      if (ts.isExportAssignment(node)) {
+        const exportName = identifierName(node.expression)
+        if (exportName) {
+          resolvedBindingName = exportName
+        }
+        return
+      }
+
+      if (
+        ts.isExpressionStatement(node) &&
+        ts.isBinaryExpression(node.expression) &&
+        node.expression.operatorToken.kind === ts.SyntaxKind.EqualsToken
+      ) {
+        const left = unparenthesizeExpression(node.expression.left)
+        if (
+          ts.isPropertyAccessExpression(left) &&
+          ts.isIdentifier(left.expression) &&
+          left.expression.text === 'module' &&
+          left.name.text === 'exports'
+        ) {
+          const exportName = identifierName(node.expression.right)
+          if (exportName) {
+            resolvedBindingName = exportName
+          }
+          return
+        }
+      }
+
+      ts.forEachChild(node, visit)
+    }
+
+    visit(sourceFile)
+
+    return resolvedBindingName ?? fallbackBindingName
+  } catch {
+    return fallbackBindingName
+  }
 }
 
 function createExpressEntityNode(
@@ -349,6 +416,10 @@ export const expressAdapter: JsFrameworkAdapter = {
           }
         } else {
           const resolvedImportPath = resolveImportPath(context.filePath, moduleSpecifier)
+          if (resolvedImportPath && importClause?.name) {
+            const importedName = resolveImportedRouterBindingName(resolvedImportPath, importClause.name.text)
+            importedRouterIdsByLocalName.set(importClause.name.text, expressEntityId(resolvedImportPath, importedName))
+          }
           const bindings = importClause?.namedBindings
           if (resolvedImportPath && bindings && ts.isNamedImports(bindings)) {
             for (const element of bindings.elements) {
@@ -371,6 +442,12 @@ export const expressAdapter: JsFrameworkAdapter = {
         const requiredModule = node.initializer.arguments[0]!.text
         if (requiredModule === 'express') {
           expressFactoryAliases.add(node.name.text)
+        } else {
+          const resolvedImportPath = resolveImportPath(context.filePath, requiredModule)
+          if (resolvedImportPath) {
+            const importedName = resolveImportedRouterBindingName(resolvedImportPath, node.name.text)
+            importedRouterIdsByLocalName.set(node.name.text, expressEntityId(resolvedImportPath, importedName))
+          }
         }
       }
 

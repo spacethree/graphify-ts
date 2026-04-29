@@ -375,6 +375,8 @@ describe('js framework extraction contract', () => {
       'function showUser() {}',
       'function createUser() {}',
       'function updateUser() {}',
+      'function replaceUser() {}',
+      'function removeUser() {}',
       '',
       'const app = express()',
       'const router = express.Router()',
@@ -382,6 +384,8 @@ describe('js framework extraction contract', () => {
       "app.use('/api', requireAuth, [auditTrail], router)",
       "app.get('/health', (_req: unknown, _res: unknown) => {})",
       "app.post('/users', requireAuth, createUser)",
+      "app.put('/users/:id/profile', requireAuth, replaceUser)",
+      "app.delete('/users/:id/profile', requireAuth, removeUser)",
       "app.route('/users/:id').put([requireAuth], updateUser).delete(controller(showUser))",
       '',
       "router.get('/profile/:id', auditTrail, showUser)",
@@ -396,6 +400,8 @@ describe('js framework extraction contract', () => {
       'showUser',
       'createUser',
       'updateUser',
+      'replaceUser',
+      'removeUser',
     ])
 
     const result = applyJsFrameworkAdapters(baseExtraction, createFrameworkContext(filePath, sourceText, baseExtraction))
@@ -410,6 +416,8 @@ describe('js framework extraction contract', () => {
         expect.objectContaining({ label: 'USE /api', node_kind: 'route', http_method: 'USE', route_path: '/api' }),
         expect.objectContaining({ label: 'GET /health', node_kind: 'route', http_method: 'GET', route_path: '/health' }),
         expect.objectContaining({ label: 'POST /users', node_kind: 'route', http_method: 'POST', route_path: '/users' }),
+        expect.objectContaining({ label: 'PUT /users/:id/profile', node_kind: 'route', http_method: 'PUT', route_path: '/users/:id/profile' }),
+        expect.objectContaining({ label: 'DELETE /users/:id/profile', node_kind: 'route', http_method: 'DELETE', route_path: '/users/:id/profile' }),
         expect.objectContaining({ label: 'PUT /users/:id', node_kind: 'route', http_method: 'PUT', route_path: '/users/:id' }),
         expect.objectContaining({ label: 'DELETE /users/:id', node_kind: 'route', http_method: 'DELETE', route_path: '/users/:id' }),
         expect.objectContaining({ label: 'GET /profile/:id', node_kind: 'route', http_method: 'GET', route_path: '/profile/:id' }),
@@ -423,6 +431,8 @@ describe('js framework extraction contract', () => {
     const useApiRouteId = nodeIdForLabel(result, 'USE /api')
     const getHealthRouteId = nodeIdForLabel(result, 'GET /health')
     const postUsersRouteId = nodeIdForLabel(result, 'POST /users')
+    const putProfileRouteId = nodeIdForLabel(result, 'PUT /users/:id/profile')
+    const deleteProfileRouteId = nodeIdForLabel(result, 'DELETE /users/:id/profile')
     const putUsersRouteId = nodeIdForLabel(result, 'PUT /users/:id')
     const deleteUsersRouteId = nodeIdForLabel(result, 'DELETE /users/:id')
     const getProfileRouteId = nodeIdForLabel(result, 'GET /profile/:id')
@@ -436,6 +446,10 @@ describe('js framework extraction contract', () => {
         expect.objectContaining({ source: nodeIdForLabel(result, 'auditTrail'), target: useApiRouteId, relation: 'middleware' }),
         expect.objectContaining({ source: nodeIdForLabel(result, 'requireAuth'), target: postUsersRouteId, relation: 'middleware' }),
         expect.objectContaining({ source: nodeIdForLabel(result, 'createUser'), target: postUsersRouteId, relation: 'handles_route' }),
+        expect.objectContaining({ source: nodeIdForLabel(result, 'requireAuth'), target: putProfileRouteId, relation: 'middleware' }),
+        expect.objectContaining({ source: nodeIdForLabel(result, 'replaceUser'), target: putProfileRouteId, relation: 'handles_route' }),
+        expect.objectContaining({ source: nodeIdForLabel(result, 'requireAuth'), target: deleteProfileRouteId, relation: 'middleware' }),
+        expect.objectContaining({ source: nodeIdForLabel(result, 'removeUser'), target: deleteProfileRouteId, relation: 'handles_route' }),
         expect.objectContaining({ source: nodeIdForLabel(result, 'requireAuth'), target: putUsersRouteId, relation: 'middleware' }),
         expect.objectContaining({ source: nodeIdForLabel(result, 'updateUser'), target: putUsersRouteId, relation: 'handles_route' }),
         expect.objectContaining({ source: nodeIdForLabel(result, 'showUser'), target: deleteUsersRouteId, relation: 'handles_route' }),
@@ -507,6 +521,56 @@ describe('js framework extraction contract', () => {
       expect.objectContaining({
         relation: 'mounts_router',
       }),
+    )
+  })
+
+  it('preserves imported express router mounts for default imports and CommonJS require bindings', () => {
+    const defaultAppFilePath = join(FIXTURES_DIR, 'express-default-import-parent.ts')
+    const defaultRoutesFilePath = join(FIXTURES_DIR, 'express-default-import-child.ts')
+    const requireAppFilePath = join(FIXTURES_DIR, 'express-commonjs-parent.ts')
+    const requireRoutesFilePath = join(FIXTURES_DIR, 'express-commonjs-child.ts')
+
+    const defaultAppSourceText = readFileSync(defaultAppFilePath, 'utf8')
+    const defaultRoutesSourceText = readFileSync(defaultRoutesFilePath, 'utf8')
+    const requireAppSourceText = readFileSync(requireAppFilePath, 'utf8')
+    const requireRoutesSourceText = readFileSync(requireRoutesFilePath, 'utf8')
+
+    const defaultAppBaseExtraction = createBaseExtraction(defaultAppFilePath, 'virtual-express-default-parent', [])
+    const defaultRoutesBaseExtraction = createBaseExtraction(defaultRoutesFilePath, 'virtual-express-default-child', ['listUser'])
+    const requireAppBaseExtraction = createBaseExtraction(requireAppFilePath, 'virtual-express-require-parent', [])
+    const requireRoutesBaseExtraction = createBaseExtraction(requireRoutesFilePath, 'virtual-express-require-child', ['listUser'])
+
+    const defaultAppResult = applyJsFrameworkAdapters(
+      defaultAppBaseExtraction,
+      createFrameworkContext(defaultAppFilePath, defaultAppSourceText, defaultAppBaseExtraction),
+    )
+    const defaultRoutesResult = applyJsFrameworkAdapters(
+      defaultRoutesBaseExtraction,
+      createFrameworkContext(defaultRoutesFilePath, defaultRoutesSourceText, defaultRoutesBaseExtraction),
+    )
+    const requireAppResult = applyJsFrameworkAdapters(
+      requireAppBaseExtraction,
+      createFrameworkContext(requireAppFilePath, requireAppSourceText, requireAppBaseExtraction),
+    )
+    const requireRoutesResult = applyJsFrameworkAdapters(
+      requireRoutesBaseExtraction,
+      createFrameworkContext(requireRoutesFilePath, requireRoutesSourceText, requireRoutesBaseExtraction),
+    )
+
+    const defaultAppNodeId = nodeIdForLabel(defaultAppResult, 'app')
+    const defaultRouterNodeId = nodeIdForLabel(defaultRoutesResult, 'apiRouter')
+    const requireAppNodeId = nodeIdForLabel(requireAppResult, 'app')
+    const requireRouterNodeId = nodeIdForLabel(requireRoutesResult, 'router')
+
+    expect(defaultAppResult.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: defaultAppNodeId, target: defaultRouterNodeId, relation: 'mounts_router' }),
+      ]),
+    )
+    expect(requireAppResult.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: requireAppNodeId, target: requireRouterNodeId, relation: 'mounts_router' }),
+      ]),
     )
   })
 })
