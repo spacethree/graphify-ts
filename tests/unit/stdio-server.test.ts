@@ -548,7 +548,7 @@ describe('stdio runtime', () => {
     }
   })
 
-  it('keeps stdio retrieve and impact payload fields while compacting content', async () => {
+  it('keeps default retrieve and impact payloads backward-compatible and exposes compact mode explicitly', async () => {
     const root = createGraphFixtureRoot()
     try {
       const graphPath = join(root, 'graph.json')
@@ -588,7 +588,7 @@ describe('stdio runtime', () => {
         'utf8',
       )
 
-      const retrieve = await Promise.resolve(handleStdioRequest(graphPath, {
+      const retrieveDefault = await Promise.resolve(handleStdioRequest(graphPath, {
         id: 1,
         method: 'tools/call',
         params: {
@@ -600,8 +600,21 @@ describe('stdio runtime', () => {
           },
         },
       }))
-      const impact = await Promise.resolve(handleStdioRequest(graphPath, {
+      const retrieveCompact = await Promise.resolve(handleStdioRequest(graphPath, {
         id: 2,
+        method: 'tools/call',
+        params: {
+          name: 'retrieve',
+          arguments: {
+            question: 'which react router route renders dashboard page',
+            budget: 5000,
+            file_type: 'code',
+            compact: true,
+          },
+        },
+      }))
+      const impactDefault = await Promise.resolve(handleStdioRequest(graphPath, {
+        id: 3,
         method: 'tools/call',
         params: {
           name: 'impact',
@@ -611,30 +624,47 @@ describe('stdio runtime', () => {
           },
         },
       }))
+      const impactCompact = await Promise.resolve(handleStdioRequest(graphPath, {
+        id: 4,
+        method: 'tools/call',
+        params: {
+          name: 'impact',
+          arguments: {
+            label: 'auth slice',
+            depth: 4,
+            compact: true,
+          },
+        },
+      }))
 
-      const retrievePayload = JSON.parse((retrieve?.result as { content: Array<{ text: string }> }).content[0]!.text)
-      const impactPayload = JSON.parse((impact?.result as { content: Array<{ text: string }> }).content[0]!.text)
+      const retrieveDefaultPayload = JSON.parse((retrieveDefault?.result as { content: Array<{ text: string }> }).content[0]!.text)
+      const retrieveCompactPayload = JSON.parse((retrieveCompact?.result as { content: Array<{ text: string }> }).content[0]!.text)
+      const impactDefaultPayload = JSON.parse((impactDefault?.result as { content: Array<{ text: string }> }).content[0]!.text)
+      const impactCompactPayload = JSON.parse((impactCompact?.result as { content: Array<{ text: string }> }).content[0]!.text)
 
-      expect(retrievePayload.matched_nodes).toHaveLength(5)
-      expect(retrievePayload.shared_file_type).toBeUndefined()
-      expect(retrievePayload.matched_nodes[0]).toEqual(
+      expect(retrieveDefaultPayload.matched_nodes).toHaveLength(5)
+      expect(retrieveDefaultPayload.shared_file_type).toBeUndefined()
+      expect(retrieveDefaultPayload.matched_nodes[0]).toEqual(
         expect.objectContaining({
           file_type: 'code',
           community_label: expect.any(String),
           framework_boost: expect.any(Number),
         }),
       )
-      expect(retrievePayload.relationships.length).toBeGreaterThan(0)
-      expect(retrievePayload.relationships[0]).toEqual(
+      expect(retrieveDefaultPayload.matched_nodes[0]).not.toHaveProperty('node_id')
+      expect(retrieveDefaultPayload.relationships.length).toBeGreaterThan(0)
+      expect(retrieveDefaultPayload.relationships[0]).toEqual(
         expect.objectContaining({
           from: expect.any(String),
           to: expect.any(String),
           relation: expect.any(String),
         }),
       )
+      expect(retrieveDefaultPayload.relationships[0]).not.toHaveProperty('from_id')
+      expect(retrieveDefaultPayload.relationships[0]).not.toHaveProperty('to_id')
 
-      expect(impactPayload.shared_file_type).toBeUndefined()
-      expect(impactPayload.direct_dependents).toEqual(
+      expect(impactDefaultPayload.shared_file_type).toBeUndefined()
+      expect(impactDefaultPayload.direct_dependents).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             label: 'selectAuthStatus',
@@ -650,6 +680,27 @@ describe('stdio runtime', () => {
           }),
         ]),
       )
+
+      expect(retrieveCompactPayload.matched_nodes).toHaveLength(5)
+      expect(retrieveCompactPayload.shared_file_type).toBe('code')
+      expect(retrieveCompactPayload.matched_nodes[0]).not.toHaveProperty('file_type')
+      expect(retrieveCompactPayload.matched_nodes[0]).not.toHaveProperty('community_label')
+      expect(retrieveCompactPayload.matched_nodes[0]).not.toHaveProperty('framework_boost')
+
+      expect(impactCompactPayload.shared_file_type).toBe('code')
+      expect(impactCompactPayload.direct_dependents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            label: 'selectAuthStatus',
+          }),
+          expect.objectContaining({
+            label: 'store',
+          }),
+        ]),
+      )
+      expect(impactCompactPayload.direct_dependents[0]).not.toHaveProperty('file_type')
+      expect(impactCompactPayload.direct_dependents[0]).not.toHaveProperty('framework_role')
+      expect(impactCompactPayload.direct_dependents[0]).not.toHaveProperty('community_label')
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
