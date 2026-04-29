@@ -20,6 +20,55 @@ function buildTestGraph(): KnowledgeGraph {
   return graph
 }
 
+function buildExpressRouteGraph(): KnowledgeGraph {
+  const graph = new KnowledgeGraph({ directed: true })
+
+  graph.addNode('require_auth', {
+    label: 'requireAuth',
+    source_file: '/src/middleware/auth.ts',
+    node_kind: 'function',
+    file_type: 'code',
+    community: 0,
+  })
+  graph.addNode('show_user', {
+    label: 'showUser',
+    source_file: '/src/controllers/users.ts',
+    node_kind: 'function',
+    file_type: 'code',
+    community: 0,
+  })
+  graph.addNode('route_users_show', {
+    label: 'GET /users/:id',
+    source_file: '/src/routes/users.ts',
+    node_kind: 'route',
+    file_type: 'code',
+    community: 1,
+  })
+
+  graph.addEdge('require_auth', 'route_users_show', {
+    relation: 'middleware',
+    confidence: 'EXTRACTED',
+    source_file: '/src/routes/users.ts',
+  })
+  graph.addEdge('show_user', 'route_users_show', {
+    relation: 'handles_route',
+    confidence: 'EXTRACTED',
+    source_file: '/src/routes/users.ts',
+  })
+  graph.addEdge('route_users_show', 'require_auth', {
+    relation: 'depends_on',
+    confidence: 'EXTRACTED',
+    source_file: '/src/routes/users.ts',
+  })
+  graph.addEdge('route_users_show', 'show_user', {
+    relation: 'depends_on',
+    confidence: 'EXTRACTED',
+    source_file: '/src/routes/users.ts',
+  })
+
+  return graph
+}
+
 describe('impact', () => {
   describe('analyzeImpact', () => {
     it('finds direct dependents of a node', () => {
@@ -108,6 +157,26 @@ describe('impact', () => {
           distance: 2,
           path: ['SessionManager', 'authenticateUser', 'ApiHandler'],
         },
+      ])
+    })
+
+    it('shows express routes as direct dependents of middleware and handlers', () => {
+      const graph = buildExpressRouteGraph()
+
+      const middlewareImpact = analyzeImpact(graph, {}, { label: 'requireAuth' })
+      const handlerImpact = analyzeImpact(graph, {}, { label: 'showUser' })
+
+      expect(middlewareImpact.direct_dependents).toEqual([
+        expect.objectContaining({
+          label: 'GET /users/:id',
+          relation: 'depends_on',
+        }),
+      ])
+      expect(handlerImpact.direct_dependents).toEqual([
+        expect.objectContaining({
+          label: 'GET /users/:id',
+          relation: 'depends_on',
+        }),
       ])
     })
   })

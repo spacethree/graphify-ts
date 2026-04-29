@@ -1,9 +1,10 @@
 import type { ExtractionEdge, ExtractionNode } from '../../../contracts/types.js'
 import type { ExtractionFragment } from '../dispatch.js'
+import { expressAdapter } from './express.js'
 import type { JsFrameworkAdapter, JsFrameworkContext } from './types.js'
 
-const JS_FRAMEWORK_ADAPTERS: readonly JsFrameworkAdapter[] = []
-const EXTERNAL_TARGET_RELATIONS = new Set(['imports', 'imports_from'])
+const JS_FRAMEWORK_ADAPTERS: readonly JsFrameworkAdapter[] = [expressAdapter]
+const EXTERNAL_TARGET_RELATIONS = new Set(['imports', 'imports_from', 'handles_route', 'middleware', 'mounts_router'])
 
 function mergeNodeAttributes(existing: ExtractionNode, incoming: ExtractionNode): ExtractionNode {
   return {

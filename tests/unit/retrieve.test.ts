@@ -285,6 +285,68 @@ describe('retrieve', () => {
       expect(labels).toContain('authenticateUser')
     })
 
+    it('ranks express route nodes first for route-shaped questions', () => {
+      const graph = new KnowledgeGraph({ directed: true })
+      graph.addNode('route_users_show', {
+        label: 'GET /users/:id',
+        source_file: '/src/routes/users.ts',
+        line_number: 12,
+        node_kind: 'route',
+        file_type: 'code',
+        community: 0,
+      })
+      graph.addNode('require_auth', {
+        label: 'requireAuth',
+        source_file: '/src/middleware/auth.ts',
+        line_number: 3,
+        node_kind: 'function',
+        file_type: 'code',
+        community: 0,
+      })
+      graph.addNode('show_user', {
+        label: 'showUser',
+        source_file: '/src/controllers/users.ts',
+        line_number: 7,
+        node_kind: 'function',
+        file_type: 'code',
+        community: 0,
+      })
+      graph.addEdge('require_auth', 'route_users_show', {
+        relation: 'middleware',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/users.ts',
+      })
+      graph.addEdge('show_user', 'route_users_show', {
+        relation: 'handles_route',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/users.ts',
+      })
+      graph.addEdge('route_users_show', 'require_auth', {
+        relation: 'depends_on',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/users.ts',
+      })
+      graph.addEdge('route_users_show', 'show_user', {
+        relation: 'depends_on',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/users.ts',
+      })
+
+      const result = retrieveContext(graph, {
+        question: 'where is GET /users/:id defined',
+        budget: 5000,
+        fileType: 'code',
+      })
+
+      expect(result.matched_nodes[0]).toEqual(
+        expect.objectContaining({
+          label: 'GET /users/:id',
+          node_kind: 'route',
+          relevance_band: 'direct',
+        }),
+      )
+    })
+
     it('keeps direct symbol matches above path-only matches after structural boosts', () => {
       const graph = new KnowledgeGraph()
       graph.addNode('direct_symbol', {
