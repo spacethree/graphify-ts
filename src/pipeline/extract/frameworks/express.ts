@@ -29,6 +29,9 @@ interface ImportedBindingTarget {
   id: string
   kind: 'app' | 'router' | 'function'
   sourceFile: string
+  label?: string
+  line?: number
+  synthesizeNode?: boolean
 }
 
 interface RouteAttachment {
@@ -529,6 +532,7 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
   const importedModulePathsByLocalName = new Map<string, string>()
   const expressEntities = new Map<string, ExpressEntity>()
   const functionInfoByName = new Map<string, FunctionInfo>()
+  const callableClassNames = new Set<string>()
   const routeRecords: RouteRecord[] = []
   const mountRecords: MountRecord[] = []
   const exportedBindings = analysis.exportedBindings
@@ -724,6 +728,10 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
       })
     }
 
+    if (ts.isClassDeclaration(node) && node.name) {
+      callableClassNames.add(node.name.text)
+    }
+
     if (
       ts.isVariableDeclaration(node) &&
       ts.isIdentifier(node.name) &&
@@ -767,6 +775,14 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
     }
 
     if (functionInfoByName.has(localName)) {
+      return {
+        id: functionNodeId(filePath, localName),
+        kind: 'function',
+        sourceFile: filePath,
+      }
+    }
+
+    if (callableClassNames.has(localName)) {
       return {
         id: functionNodeId(filePath, localName),
         kind: 'function',
@@ -867,6 +883,51 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
       const modifiers = ts.canHaveModifiers(node) ? ts.getModifiers(node) : undefined
       if (modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)) {
         addExportedBinding(node.name.text, node.name.text)
+        if (modifiers.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword)) {
+          addExportedBinding('default', node.name.text)
+        }
+      }
+    }
+
+    if (ts.isFunctionDeclaration(node) && !node.name) {
+      const modifiers = ts.canHaveModifiers(node) ? ts.getModifiers(node) : undefined
+      if (
+        modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) &&
+        modifiers.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword)
+      ) {
+        exportedBindings.set('default', {
+          id: functionNodeId(filePath, 'default'),
+          kind: 'function',
+          sourceFile: filePath,
+          label: 'default()',
+          line: lineOf(node, sourceFile),
+        })
+      }
+    }
+
+    if (ts.isClassDeclaration(node) && node.name) {
+      const modifiers = ts.canHaveModifiers(node) ? ts.getModifiers(node) : undefined
+      if (modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)) {
+        addExportedBinding(node.name.text, node.name.text)
+        if (modifiers.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword)) {
+          addExportedBinding('default', node.name.text)
+        }
+      }
+    }
+
+    if (ts.isClassDeclaration(node) && !node.name) {
+      const modifiers = ts.canHaveModifiers(node) ? ts.getModifiers(node) : undefined
+      if (
+        modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) &&
+        modifiers.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword)
+      ) {
+        exportedBindings.set('default', {
+          id: functionNodeId(filePath, 'default'),
+          kind: 'function',
+          sourceFile: filePath,
+          label: 'default',
+          line: lineOf(node, sourceFile),
+        })
       }
     }
 
@@ -897,6 +958,16 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
           id: _makeId(moduleStem(filePath), 'default'),
           kind: 'function',
           sourceFile: filePath,
+          label: 'default()',
+          line: lineOf(node, sourceFile),
+        })
+      } else if (ts.isClassExpression(node.expression)) {
+        exportedBindings.set('default', {
+          id: _makeId(moduleStem(filePath), 'default'),
+          kind: 'function',
+          sourceFile: filePath,
+          label: 'default',
+          line: lineOf(node, sourceFile),
         })
       }
     }
@@ -918,6 +989,26 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
         const exportName = identifierName(right)
         if (exportName) {
           addExportedBinding('default', exportName)
+        } else if (ts.isFunctionExpression(right)) {
+          const bindingName = right.name?.text ?? 'default'
+          exportedBindings.set('default', {
+            id: functionNodeId(filePath, bindingName),
+            kind: 'function',
+            sourceFile: filePath,
+            label: `${bindingName}()`,
+            line: lineOf(node, sourceFile),
+            synthesizeNode: true,
+          })
+        } else if (ts.isClassExpression(right)) {
+          const bindingName = right.name?.text ?? 'default'
+          exportedBindings.set('default', {
+            id: functionNodeId(filePath, bindingName),
+            kind: 'function',
+            sourceFile: filePath,
+            label: bindingName,
+            line: lineOf(node, sourceFile),
+            synthesizeNode: true,
+          })
         } else if (ts.isObjectLiteralExpression(right)) {
           for (const property of right.properties) {
             if (ts.isShorthandPropertyAssignment(property)) {
@@ -1027,6 +1118,13 @@ function resolveTargetNodeId(
 
     const importedBinding = resolveImportedBindingTarget(candidate, importedBindingsByLocalName, importedModulePathsByLocalName)
     if (importedBinding?.kind === 'function') {
+      if (importedBinding.synthesizeNode && importedBinding.label) {
+        addNode(
+          nodes,
+          seenNodeIds,
+          createNode(importedBinding.id, importedBinding.label, importedBinding.sourceFile, importedBinding.line ?? 1),
+        )
+      }
       return { relation, targetId: importedBinding.id }
     }
   }

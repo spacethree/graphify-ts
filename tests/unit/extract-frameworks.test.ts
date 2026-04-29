@@ -827,6 +827,65 @@ describe('js framework extraction contract', () => {
     )
   })
 
+  it('resolves default-exported express callables from ESM imports and CommonJS bindings', () => {
+    const esmMiddlewareFilePath = join(FIXTURES_DIR, 'express-default-export-middleware.ts')
+    const esmHandlerFilePath = join(FIXTURES_DIR, 'express-default-export-handler-class.ts')
+    const esmParentFilePath = join(FIXTURES_DIR, 'express-default-export-callables-parent.ts')
+    const commonjsMiddlewareFilePath = join(FIXTURES_DIR, 'express-commonjs-default-middleware.ts')
+    const commonjsHandlerFilePath = join(FIXTURES_DIR, 'express-commonjs-default-handler-class.ts')
+    const commonjsParentFilePath = join(FIXTURES_DIR, 'express-commonjs-default-callables-parent.ts')
+
+    const esmMiddlewareResult = extractJs(esmMiddlewareFilePath)
+    const esmHandlerResult = extractJs(esmHandlerFilePath)
+    const esmParentResult = extractJs(esmParentFilePath)
+    const commonjsMiddlewareResult = extractJs(commonjsMiddlewareFilePath)
+    const commonjsHandlerResult = extractJs(commonjsHandlerFilePath)
+    const commonjsParentResult = extractJs(commonjsParentFilePath)
+
+    const esmRouteId = nodeIdForLabel(esmParentResult, 'GET /users/:id')
+    const commonjsRouteId = nodeIdForLabel(commonjsParentResult, 'GET /users/:id')
+    const commonjsMiddlewareId = nodeIdForLabel(commonjsParentResult, 'requireAuth()')
+    const commonjsHandlerId = nodeIdForLabel(commonjsParentResult, 'ShowUser')
+
+    expect(esmParentResult.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: nodeIdForLabel(esmMiddlewareResult, 'requireAuth()'),
+          target: esmRouteId,
+          relation: 'middleware',
+        }),
+        expect.objectContaining({
+          source: nodeIdForLabel(esmHandlerResult, 'ShowUser'),
+          target: esmRouteId,
+          relation: 'handles_route',
+        }),
+      ]),
+    )
+    expect(commonjsParentResult.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: nodeIdForLabel(commonjsParentResult, 'requireAuth()'),
+          target: commonjsRouteId,
+          relation: 'middleware',
+        }),
+        expect.objectContaining({
+          source: commonjsHandlerId,
+          target: commonjsRouteId,
+          relation: 'handles_route',
+        }),
+      ]),
+    )
+
+    const esmGraph = build([esmMiddlewareResult, esmHandlerResult, esmParentResult], { directed: true })
+    const commonjsGraph = build([commonjsMiddlewareResult, commonjsHandlerResult, commonjsParentResult], { directed: true })
+
+    expect(esmGraph.hasNode(nodeIdForLabel(esmMiddlewareResult, 'requireAuth()'))).toBe(true)
+    expect(commonjsGraph.hasNode(commonjsMiddlewareId)).toBe(true)
+    expect(commonjsGraph.edgeAttributes(commonjsHandlerId, commonjsRouteId)).toEqual(
+      expect.objectContaining({ relation: 'handles_route' }),
+    )
+  })
+
   it('propagates mount prefixes and inherited middleware to mounted child router routes', () => {
     const parentFilePath = join(FIXTURES_DIR, 'express-mounted-router-parent.ts')
     const childFilePath = join(FIXTURES_DIR, 'express-mounted-router-child.ts')
