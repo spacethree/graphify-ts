@@ -63,28 +63,21 @@ function mergeFrameworkEdges(
   frameworkEdges: readonly ExtractionEdge[],
 ): ExtractionEdge[] {
   const dedupedBaseEdges = dedupeEdges(baseEdges)
-  const seenPairs = new Set(dedupedBaseEdges.map((edge) => edgePairKey(edge)))
-  const seenFrameworkEdges = new Set<string>()
-  const acceptedFrameworkEdges: ExtractionEdge[] = []
+  const dedupedFrameworkEdges = dedupeEdges(frameworkEdges)
+  const basePairs = new Set(dedupedBaseEdges.map((edge) => edgePairKey(edge)))
+  const collidingFrameworkEdges: ExtractionEdge[] = []
+  const nonCollidingFrameworkEdges: ExtractionEdge[] = []
 
-  for (const edge of frameworkEdges) {
-    const dedupeKey = edgeDedupeKey(edge)
-    if (seenFrameworkEdges.has(dedupeKey)) {
+  for (const edge of dedupedFrameworkEdges) {
+    if (basePairs.has(edgePairKey(edge))) {
+      collidingFrameworkEdges.push(edge)
       continue
     }
 
-    seenFrameworkEdges.add(dedupeKey)
-
-    const pairKey = edgePairKey(edge)
-    if (seenPairs.has(pairKey)) {
-      continue
-    }
-
-    seenPairs.add(pairKey)
-    acceptedFrameworkEdges.push(edge)
+    nonCollidingFrameworkEdges.push(edge)
   }
 
-  return [...dedupedBaseEdges, ...acceptedFrameworkEdges]
+  return [...collidingFrameworkEdges, ...dedupedBaseEdges, ...nonCollidingFrameworkEdges]
 }
 
 function filterJsExtractionEdges(nodes: readonly ExtractionNode[], edges: readonly ExtractionEdge[]): ExtractionEdge[] {

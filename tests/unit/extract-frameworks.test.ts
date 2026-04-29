@@ -167,7 +167,7 @@ describe('js framework extraction contract', () => {
     )
   })
 
-  it('keeps the baseline edge when adapter edges reuse the same source and target pair', () => {
+  it('does not let same-pair framework edges replace baseline relations in the default undirected graph build', () => {
     const filePath = join(FIXTURES_DIR, 'router.tsx')
     const sourceText = ['export function App() {', '  return null', '}'].join('\n')
     const fileNodeId = _makeId('app')
@@ -196,9 +196,6 @@ describe('js framework extraction contract', () => {
       edges: result.edges,
     })
 
-    expect(result.edges.filter((edge) => edge.source === fileNodeId && edge.target === componentNodeId)).toEqual([
-      expect.objectContaining({ relation: 'declares' }),
-    ])
     expect(graph.edgeAttributes(fileNodeId, componentNodeId)).toEqual(
       expect.objectContaining({
         relation: 'declares',
@@ -206,7 +203,7 @@ describe('js framework extraction contract', () => {
     )
   })
 
-  it('keeps the baseline edge when adapter edges reuse the same pair in reverse direction', () => {
+  it('preserves reverse-direction framework edges in extraction output while keeping the baseline relation in the default undirected build', () => {
     const filePath = join(FIXTURES_DIR, 'router.tsx')
     const sourceText = ['export function App() {', '  return null', '}'].join('\n')
     const fileNodeId = _makeId('app')
@@ -235,17 +232,61 @@ describe('js framework extraction contract', () => {
       edges: result.edges,
     })
 
-    expect(
-      result.edges.filter(
-        (edge) =>
-          new Set([edge.source, edge.target]).size === 2 &&
-          [edge.source, edge.target].includes(fileNodeId) &&
-          [edge.source, edge.target].includes(componentNodeId),
-      ),
-    ).toEqual([expect.objectContaining({ source: fileNodeId, target: componentNodeId, relation: 'declares' })])
+    expect(result.edges.filter((edge) => new Set([edge.source, edge.target]).size === 2)).toEqual([
+      expect.objectContaining({ source: componentNodeId, target: fileNodeId, relation: 'framework_references_component' }),
+      expect.objectContaining({ source: fileNodeId, target: componentNodeId, relation: 'declares' }),
+    ])
     expect(graph.edgeAttributes(fileNodeId, componentNodeId)).toEqual(
       expect.objectContaining({
         relation: 'declares',
+      }),
+    )
+  })
+
+  it('preserves reverse-direction framework edges for directed graph builds', () => {
+    const filePath = join(FIXTURES_DIR, 'router.tsx')
+    const sourceText = ['export function App() {', '  return null', '}'].join('\n')
+    const fileNodeId = _makeId('app')
+    const componentNodeId = _makeId('app', 'component')
+    const baseExtraction: ExtractionFragment = {
+      nodes: [createNode(fileNodeId, 'app.tsx', filePath, 1), createNode(componentNodeId, 'App', filePath, 1)],
+      edges: [createEdge(fileNodeId, componentNodeId, 'declares', filePath, 1)],
+    }
+
+    const adapter: JsFrameworkAdapter = {
+      id: 'test:framework-directed-reverse-edge',
+      matches() {
+        return true
+      },
+      extract() {
+        return {
+          nodes: [],
+          edges: [createEdge(componentNodeId, fileNodeId, 'framework_references_component', filePath, 2)],
+        }
+      },
+    }
+
+    const result = applyJsFrameworkAdapters(baseExtraction, createFrameworkContext(filePath, sourceText, baseExtraction), [adapter])
+    const graph = buildFromJson(
+      {
+        nodes: result.nodes,
+        edges: result.edges,
+      },
+      { directed: true },
+    )
+
+    expect(result.edges.filter((edge) => new Set([edge.source, edge.target]).size === 2)).toEqual([
+      expect.objectContaining({ source: componentNodeId, target: fileNodeId, relation: 'framework_references_component' }),
+      expect.objectContaining({ source: fileNodeId, target: componentNodeId, relation: 'declares' }),
+    ])
+    expect(graph.edgeAttributes(fileNodeId, componentNodeId)).toEqual(
+      expect.objectContaining({
+        relation: 'declares',
+      }),
+    )
+    expect(graph.edgeAttributes(componentNodeId, fileNodeId)).toEqual(
+      expect.objectContaining({
+        relation: 'framework_references_component',
       }),
     )
   })
