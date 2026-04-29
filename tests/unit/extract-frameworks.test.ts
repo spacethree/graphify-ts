@@ -886,6 +886,102 @@ describe('js framework extraction contract', () => {
     )
   })
 
+  it('resolves callable CommonJS default exports through ES default imports', () => {
+    const middlewareFilePath = join(FIXTURES_DIR, 'express-commonjs-default-arrow-middleware.ts')
+    const handlerFilePath = join(FIXTURES_DIR, 'express-commonjs-default-function-handler.ts')
+    const parentFilePath = join(FIXTURES_DIR, 'express-commonjs-default-import-callables-parent.js')
+
+    const middlewareResult = extractJs(middlewareFilePath)
+    const handlerResult = extractJs(handlerFilePath)
+    const parentResult = extractJs(parentFilePath)
+
+    const routeId = nodeIdForLabel(parentResult, 'GET /users/:id')
+    const handlerId = nodeIdForLabel(parentResult, 'showUser()')
+    const middlewareEdge = parentResult.edges.find((edge) => edge.target === routeId && edge.relation === 'middleware')
+
+    expect(middlewareEdge).toBeDefined()
+
+    expect(parentResult.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: middlewareEdge!.source,
+          target: routeId,
+          relation: 'middleware',
+        }),
+        expect.objectContaining({
+          source: handlerId,
+          target: routeId,
+          relation: 'handles_route',
+        }),
+      ]),
+    )
+
+    const graph = build([middlewareResult, handlerResult, parentResult], { directed: true })
+
+    expect(graph.hasNode(middlewareEdge!.source)).toBe(true)
+    expect(graph.hasNode(handlerId)).toBe(true)
+  })
+
+  it('resolves callable CommonJS property exports through ES named imports and require destructuring', () => {
+    const moduleMiddlewareFilePath = join(FIXTURES_DIR, 'express-commonjs-module-callable-middleware.ts')
+    const moduleHandlerFilePath = join(FIXTURES_DIR, 'express-commonjs-module-callable-handler.ts')
+    const moduleParentFilePath = join(FIXTURES_DIR, 'express-commonjs-module-callables-parent.js')
+    const exportsMiddlewareFilePath = join(FIXTURES_DIR, 'express-commonjs-exports-callable-middleware.ts')
+    const exportsHandlerFilePath = join(FIXTURES_DIR, 'express-commonjs-exports-callable-handler.ts')
+    const exportsParentFilePath = join(FIXTURES_DIR, 'express-commonjs-exports-callables-parent.js')
+
+    const moduleMiddlewareResult = extractJs(moduleMiddlewareFilePath)
+    const moduleHandlerResult = extractJs(moduleHandlerFilePath)
+    const moduleParentResult = extractJs(moduleParentFilePath)
+    const exportsMiddlewareResult = extractJs(exportsMiddlewareFilePath)
+    const exportsHandlerResult = extractJs(exportsHandlerFilePath)
+    const exportsParentResult = extractJs(exportsParentFilePath)
+
+    const moduleRouteId = nodeIdForLabel(moduleParentResult, 'GET /users/:id')
+    const exportsRouteId = nodeIdForLabel(exportsParentResult, 'GET /users/:id')
+    const moduleMiddlewareId = nodeIdForLabel(moduleParentResult, 'requireAuth()')
+    const moduleHandlerId = nodeIdForLabel(moduleParentResult, 'showUser()')
+    const exportsMiddlewareId = nodeIdForLabel(exportsParentResult, 'requireAuth()')
+    const exportsHandlerId = nodeIdForLabel(exportsParentResult, 'showUser()')
+
+    expect(moduleParentResult.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: moduleMiddlewareId,
+          target: moduleRouteId,
+          relation: 'middleware',
+        }),
+        expect.objectContaining({
+          source: moduleHandlerId,
+          target: moduleRouteId,
+          relation: 'handles_route',
+        }),
+      ]),
+    )
+    expect(exportsParentResult.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: exportsMiddlewareId,
+          target: exportsRouteId,
+          relation: 'middleware',
+        }),
+        expect.objectContaining({
+          source: exportsHandlerId,
+          target: exportsRouteId,
+          relation: 'handles_route',
+        }),
+      ]),
+    )
+
+    const moduleGraph = build([moduleMiddlewareResult, moduleHandlerResult, moduleParentResult], { directed: true })
+    const exportsGraph = build([exportsMiddlewareResult, exportsHandlerResult, exportsParentResult], { directed: true })
+
+    expect(moduleGraph.hasNode(moduleMiddlewareId)).toBe(true)
+    expect(moduleGraph.hasNode(moduleHandlerId)).toBe(true)
+    expect(exportsGraph.hasNode(exportsMiddlewareId)).toBe(true)
+    expect(exportsGraph.hasNode(exportsHandlerId)).toBe(true)
+  })
+
   it('propagates mount prefixes and inherited middleware to mounted child router routes', () => {
     const parentFilePath = join(FIXTURES_DIR, 'express-mounted-router-parent.ts')
     const childFilePath = join(FIXTURES_DIR, 'express-mounted-router-child.ts')

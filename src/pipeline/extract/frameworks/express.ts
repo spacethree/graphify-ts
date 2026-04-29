@@ -800,6 +800,40 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
     }
   }
 
+  const addCallableExportedBinding = (exportName: string, expression: ts.Expression, fallbackBindingName = exportName): void => {
+    const exportExpression = unparenthesizeExpression(expression)
+    const exportIdentifier = identifierName(exportExpression)
+    if (exportIdentifier) {
+      addExportedBinding(exportName, exportIdentifier)
+      return
+    }
+
+    if (ts.isArrowFunction(exportExpression) || ts.isFunctionExpression(exportExpression)) {
+      const bindingName = exportExpression.name?.text ?? fallbackBindingName
+      exportedBindings.set(exportName, {
+        id: functionNodeId(filePath, bindingName),
+        kind: 'function',
+        sourceFile: filePath,
+        label: `${bindingName}()`,
+        line: lineOf(exportExpression, sourceFile),
+        synthesizeNode: true,
+      })
+      return
+    }
+
+    if (ts.isClassExpression(exportExpression)) {
+      const bindingName = exportExpression.name?.text ?? fallbackBindingName
+      exportedBindings.set(exportName, {
+        id: functionNodeId(filePath, bindingName),
+        kind: 'function',
+        sourceFile: filePath,
+        label: bindingName,
+        line: lineOf(exportExpression, sourceFile),
+        synthesizeNode: true,
+      })
+    }
+  }
+
   const collectRoutes = (node: ts.Node): void => {
     if (ts.isCallExpression(node)) {
       const parsedRoute = parseRouteCall(node, expressEntities)
@@ -950,26 +984,7 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
     }
 
     if (ts.isExportAssignment(node)) {
-      const exportName = identifierName(node.expression)
-      if (exportName) {
-        addExportedBinding('default', exportName)
-      } else if (ts.isArrowFunction(node.expression) || ts.isFunctionExpression(node.expression)) {
-        exportedBindings.set('default', {
-          id: _makeId(moduleStem(filePath), 'default'),
-          kind: 'function',
-          sourceFile: filePath,
-          label: 'default()',
-          line: lineOf(node, sourceFile),
-        })
-      } else if (ts.isClassExpression(node.expression)) {
-        exportedBindings.set('default', {
-          id: _makeId(moduleStem(filePath), 'default'),
-          kind: 'function',
-          sourceFile: filePath,
-          label: 'default',
-          line: lineOf(node, sourceFile),
-        })
-      }
+      addCallableExportedBinding('default', node.expression)
     }
 
     if (
@@ -986,30 +1001,7 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
         left.expression.text === 'module' &&
         left.name.text === 'exports'
       ) {
-        const exportName = identifierName(right)
-        if (exportName) {
-          addExportedBinding('default', exportName)
-        } else if (ts.isFunctionExpression(right)) {
-          const bindingName = right.name?.text ?? 'default'
-          exportedBindings.set('default', {
-            id: functionNodeId(filePath, bindingName),
-            kind: 'function',
-            sourceFile: filePath,
-            label: `${bindingName}()`,
-            line: lineOf(node, sourceFile),
-            synthesizeNode: true,
-          })
-        } else if (ts.isClassExpression(right)) {
-          const bindingName = right.name?.text ?? 'default'
-          exportedBindings.set('default', {
-            id: functionNodeId(filePath, bindingName),
-            kind: 'function',
-            sourceFile: filePath,
-            label: bindingName,
-            line: lineOf(node, sourceFile),
-            synthesizeNode: true,
-          })
-        } else if (ts.isObjectLiteralExpression(right)) {
+        if (ts.isObjectLiteralExpression(right)) {
           for (const property of right.properties) {
             if (ts.isShorthandPropertyAssignment(property)) {
               addExportedBinding(property.name.text, property.name.text)
@@ -1026,6 +1018,8 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
               addExportedBinding(exportPropertyName, localName)
             }
           }
+        } else {
+          addCallableExportedBinding('default', right)
         }
       }
 
@@ -1036,10 +1030,7 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
         left.expression.expression.text === 'module' &&
         left.expression.name.text === 'exports'
       ) {
-        const exportName = identifierName(right)
-        if (exportName) {
-          addExportedBinding(left.name.text, exportName)
-        }
+        addCallableExportedBinding(left.name.text, right, left.name.text)
       }
 
       if (
@@ -1047,10 +1038,7 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
         ts.isIdentifier(left.expression) &&
         left.expression.text === 'exports'
       ) {
-        const exportName = identifierName(right)
-        if (exportName) {
-          addExportedBinding(left.name.text, exportName)
-        }
+        addCallableExportedBinding(left.name.text, right, left.name.text)
       }
     }
 
