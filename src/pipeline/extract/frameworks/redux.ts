@@ -655,6 +655,113 @@ function sliceReducerTarget(
   return null
 }
 
+function ensureReduxUsageOwnerNode(
+  context: JsFrameworkContext,
+  nodes: NonNullable<ReturnType<JsFrameworkAdapter['extract']>['nodes']>,
+  seenIds: Set<string>,
+  name: string,
+  line: number,
+  label = `${name}()`,
+): string {
+  const baseNode = findBaseNode(context, name)
+  if (baseNode) {
+    return baseNode.id
+  }
+
+  const id = _makeId(context.filePath, name, 'redux_usage_owner')
+  addNode(nodes, seenIds, {
+    ...createNode(id, label, context.filePath, line),
+    id,
+    node_kind: 'function',
+  })
+  return id
+}
+
+function enclosingReduxUsageOwnerId(
+  context: JsFrameworkContext,
+  nodes: NonNullable<ReturnType<JsFrameworkAdapter['extract']>['nodes']>,
+  seenIds: Set<string>,
+  node: ts.Node,
+): string {
+  let current: ts.Node | undefined = node.parent
+  while (current) {
+    if (ts.isFunctionDeclaration(current) && current.name) {
+      return ensureReduxUsageOwnerNode(context, nodes, seenIds, current.name.text, lineOf(current.name, context.sourceFile))
+    }
+
+    if (
+      ts.isVariableDeclaration(current) &&
+      ts.isIdentifier(current.name) &&
+      current.initializer &&
+      (ts.isArrowFunction(current.initializer) || ts.isFunctionExpression(current.initializer))
+    ) {
+      return ensureReduxUsageOwnerNode(context, nodes, seenIds, current.name.text, lineOf(current.name, context.sourceFile))
+    }
+
+    if (
+      ts.isPropertyAssignment(current) &&
+      ts.isIdentifier(current.name) &&
+      (ts.isArrowFunction(current.initializer) || ts.isFunctionExpression(current.initializer))
+    ) {
+      return ensureReduxUsageOwnerNode(
+        context,
+        nodes,
+        seenIds,
+        current.name.text,
+        lineOf(current.name, context.sourceFile),
+        `.${current.name.text}()`,
+      )
+    }
+
+    if (ts.isMethodDeclaration(current)) {
+      const methodName = current.name ? propertyNameText(current.name) : null
+      if (methodName) {
+        return ensureReduxUsageOwnerNode(context, nodes, seenIds, methodName, lineOf(current.name, context.sourceFile), `.${methodName}()`)
+      }
+    }
+
+    current = current.parent
+  }
+
+  return context.fileNodeId
+}
+
+function recordImportedSelectorUsage(
+  context: JsFrameworkContext,
+  nodes: NonNullable<ReturnType<JsFrameworkAdapter['extract']>['nodes']>,
+  edges: NonNullable<ReturnType<JsFrameworkAdapter['extract']>['edges']>,
+  seenIds: Set<string>,
+  seenEdges: Set<string>,
+  importedBindings: ReadonlyMap<string, ReduxReference>,
+): void {
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) {
+      const callee = unparenthesizeExpression(node.expression)
+      if (ts.isIdentifier(callee)) {
+        const binding = importedBindings.get(callee.text)
+        if (binding?.kind === 'selector') {
+          const selectorId = addReduxReferenceNode(context, nodes, seenIds, binding)
+          addUniqueEdge(
+            edges,
+            seenEdges,
+            createEdge(
+              enclosingReduxUsageOwnerId(context, nodes, seenIds, node),
+              selectorId,
+              'uses',
+              context.filePath,
+              lineOf(node, context.sourceFile),
+            ),
+          )
+        }
+      }
+    }
+
+    ts.forEachChild(node, visit)
+  }
+
+  visit(context.sourceFile)
+}
+
 function handleStoreRegistration(
   context: JsFrameworkContext,
   nodes: NonNullable<ReturnType<JsFrameworkAdapter['extract']>['nodes']>,
@@ -931,6 +1038,7 @@ export const reduxAdapter: JsFrameworkAdapter = {
     }
 
     visit(context.sourceFile)
+    recordImportedSelectorUsage(context, nodes, edges, seenIds, seenEdges, importedBindings)
 
     return { nodes, edges }
   },

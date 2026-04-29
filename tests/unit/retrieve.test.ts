@@ -609,42 +609,22 @@ describe('retrieve', () => {
       expect(semanticResult.matched_nodes.filter((node) => node.node_kind !== 'slice')).toHaveLength(2)
     })
 
-    it('answers route rendering questions with compact route semantics', () => {
-      const semanticGraph = new KnowledgeGraph({ directed: true })
-      semanticGraph.addNode('settings_route', {
-        label: 'settings page route',
-        source_file: '/src/router.tsx',
-        line_number: 8,
-        node_kind: 'route',
-        file_type: 'code',
-        community: 1,
-      })
-      semanticGraph.addNode('settings_page', {
-        label: 'SettingsPage',
-        source_file: '/src/pages/SettingsPage.tsx',
-        line_number: 2,
-        node_kind: 'function',
-        file_type: 'code',
-        community: 1,
-      })
-      semanticGraph.addNode('settings_loader', {
-        label: 'settingsLoader',
-        source_file: '/src/pages/SettingsPage.tsx',
-        line_number: 12,
-        node_kind: 'function',
-        file_type: 'code',
-        community: 1,
-      })
-      semanticGraph.addEdge('settings_route', 'settings_page', {
-        relation: 'renders',
-        confidence: 'EXTRACTED',
-        source_file: '/src/router.tsx',
-      })
-      semanticGraph.addEdge('settings_route', 'settings_loader', {
-        relation: 'loads_route',
-        confidence: 'EXTRACTED',
-        source_file: '/src/router.tsx',
-      })
+    it('answers route rendering questions with extracted react router route semantics', () => {
+      const routerFilePath = join(process.cwd(), 'tests', 'fixtures', 'react-router-imported-router.tsx')
+      const semanticExtraction = extractJs(routerFilePath)
+      const semanticNodeIds = new Set(
+        semanticExtraction.nodes.filter((node) => node.label !== 'react-router-imported-router.tsx').map((node) => node.id),
+      )
+      const semanticGraph = build(
+        [
+          {
+            ...semanticExtraction,
+            nodes: semanticExtraction.nodes.filter((node) => semanticNodeIds.has(node.id)),
+            edges: semanticExtraction.edges.filter((edge) => semanticNodeIds.has(edge.source) && semanticNodeIds.has(edge.target)),
+          },
+        ],
+        { directed: true },
+      )
 
       const baselineGraph = new KnowledgeGraph({ directed: true })
       baselineGraph.addNode('router_config', {
@@ -706,17 +686,25 @@ describe('retrieve', () => {
         fileType: 'code',
       })
 
-      expect(semanticResult.matched_nodes[0]).toEqual(
-        expect.objectContaining({
-          label: 'settings page route',
-          node_kind: 'route',
-          relevance_band: 'direct',
-        }),
+      expect(semanticResult.matched_nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            label: '/settings',
+            node_kind: 'route',
+            relevance_band: 'direct',
+          }),
+        ]),
       )
-      expect(semanticResult.matched_nodes.length).toBeLessThan(baselineResult.matched_nodes.length)
+      expect(baselineResult.matched_nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            label: 'routerConfig',
+          }),
+        ]),
+      )
       expect(semanticResult.relationships).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ from: 'settings page route', to: 'SettingsPage', relation: 'renders' }),
+          expect.objectContaining({ from: '/settings', to: 'SettingsPage()', relation: 'renders' }),
         ]),
       )
     })

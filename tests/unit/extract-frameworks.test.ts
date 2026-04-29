@@ -1606,6 +1606,54 @@ describe('js framework extraction contract', () => {
     )
   })
 
+  it('surfaces imported destructured redux selectors when consumer files call them', () => {
+    const sliceFilePath = join(FIXTURES_DIR, 'redux-destructured-exports.ts')
+    const consumerFilePath = join(FIXTURES_DIR, 'redux-destructured-selector-consumer.ts')
+
+    const sliceResult = extractJs(sliceFilePath)
+    const consumerResult = extractJs(consumerFilePath)
+    const readSessionStateNodeId = nodeIdForLabel(consumerResult, 'readSessionState()')
+    const selectTokenNodeId = nodeIdForLabel(sliceResult, 'selectToken')
+    const selectAuthStatusNodeId = nodeIdForLabel(sliceResult, 'selectAuthStatus')
+
+    expect(consumerResult.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: selectTokenNodeId, label: 'selectToken', source_file: sliceFilePath, framework_role: 'redux_selector' }),
+        expect.objectContaining({
+          id: selectAuthStatusNodeId,
+          label: 'selectAuthStatus',
+          source_file: sliceFilePath,
+          framework_role: 'redux_selector',
+        }),
+      ]),
+    )
+    expect(consumerResult.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: readSessionStateNodeId, target: selectTokenNodeId, relation: 'uses' }),
+        expect.objectContaining({ source: readSessionStateNodeId, target: selectAuthStatusNodeId, relation: 'uses' }),
+      ]),
+    )
+  })
+
+  it('attributes imported destructured redux selector calls inside object property arrow functions', () => {
+    const sliceFilePath = join(FIXTURES_DIR, 'redux-destructured-exports.ts')
+    const consumerFilePath = join(FIXTURES_DIR, 'redux-destructured-selector-object-consumer.ts')
+
+    const sliceResult = extractJs(sliceFilePath)
+    const consumerResult = extractJs(consumerFilePath)
+    const readSessionStateNodeId = consumerResult.nodes.find((node) => ['readSessionState()', '.readSessionState()'].includes(node.label))?.id
+    const selectTokenNodeId = nodeIdForLabel(sliceResult, 'selectToken')
+    const selectAuthStatusNodeId = nodeIdForLabel(sliceResult, 'selectAuthStatus')
+
+    expect(readSessionStateNodeId).toBeDefined()
+    expect(consumerResult.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: readSessionStateNodeId, target: selectTokenNodeId, relation: 'uses' }),
+        expect.objectContaining({ source: readSessionStateNodeId, target: selectAuthStatusNodeId, relation: 'uses' }),
+      ]),
+    )
+  })
+
   it('extracts react router jsx route declarations wrapped in fragments', () => {
     const filePath = join(FIXTURES_DIR, 'react-router-fragment-routes.tsx')
     const result = extractJs(filePath)
