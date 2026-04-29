@@ -392,7 +392,11 @@ function hasHttpVerbIntent(question: string, questionTokens: readonly string[], 
     return false
   }
 
-  return hasRoutePath || hasRouteKeyword || includesAnyToken(questionTokens, ['express', 'http', 'https', 'method', 'methods', 'verb', 'verbs'])
+  return (
+    hasRoutePath ||
+    hasRouteKeyword ||
+    includesAnyToken(questionTokens, ['express', 'http', 'https', 'method', 'methods', 'verb', 'verbs', 'request', 'requests'])
+  )
 }
 
 function buildFrameworkQuestionProfile(question: string, questionTokens: readonly string[]): FrameworkQuestionProfile {

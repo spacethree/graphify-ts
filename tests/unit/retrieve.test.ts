@@ -927,6 +927,49 @@ describe('retrieve', () => {
       )
     })
 
+    it('still route-boosts HEAD request questions without an explicit route path', () => {
+      const graph = new KnowledgeGraph({ directed: true })
+      graph.addNode('head_health', {
+        label: 'HEAD /health',
+        source_file: '/src/server/health.ts',
+        line_number: 8,
+        node_kind: 'route',
+        file_type: 'code',
+        framework: 'express',
+        framework_role: 'express_route',
+        community: 0,
+      })
+      graph.addNode('health_handler', {
+        label: 'healthHandler',
+        source_file: '/src/server/health.ts',
+        line_number: 16,
+        node_kind: 'function',
+        file_type: 'code',
+        framework: 'express',
+        framework_role: 'express_handler',
+        community: 0,
+      })
+      graph.addEdge('head_health', 'health_handler', {
+        relation: 'depends_on',
+        confidence: 'EXTRACTED',
+        source_file: '/src/server/health.ts',
+      })
+
+      const result = retrieveContext(graph, {
+        question: 'which HEAD requests are defined',
+        budget: 5000,
+        fileType: 'code',
+      })
+
+      expect(result.matched_nodes[0]).toEqual(
+        expect.objectContaining({
+          label: 'HEAD /health',
+          node_kind: 'route',
+          framework_boost: 4,
+        }),
+      )
+    })
+
     it('ranks routes registered on imported express owners without local express imports', () => {
       const fixturesDir = join(process.cwd(), 'tests', 'fixtures')
       const graph = build([
