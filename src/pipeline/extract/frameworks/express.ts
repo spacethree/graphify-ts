@@ -1134,11 +1134,13 @@ function parseRouteCall(
     return null
   }
 
+  const directPath = stringLiteralPath(call.arguments[0])
+
   return {
     owner: routeTarget.owner,
     method,
-    path: routeTarget.path,
-    routeArgs: call.arguments,
+    path: directPath ?? routeTarget.path,
+    routeArgs: call.arguments.slice(directPath ? 1 : 0),
   }
 }
 

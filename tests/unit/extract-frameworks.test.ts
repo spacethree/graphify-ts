@@ -667,6 +667,67 @@ describe('js framework extraction contract', () => {
     )
   })
 
+  it('uses each literal path for direct chained app and router verb calls', () => {
+    const filePath = join(FIXTURES_DIR, 'virtual-express-direct-chained.ts')
+    const sourceText = [
+      "import express from 'express'",
+      '',
+      'function first() {}',
+      'function second() {}',
+      'function showUser() {}',
+      'function createUser() {}',
+      '',
+      'const app = express()',
+      'const router = express.Router()',
+      '',
+      "app.get('/a', first).post('/b', second)",
+      "router.get('/users/:id', showUser).post('/users', createUser)",
+    ].join('\n')
+    const baseExtraction = createBaseExtraction(filePath, 'virtual-express-direct-chained', [
+      'first',
+      'second',
+      'showUser',
+      'createUser',
+    ])
+
+    const result = applyJsFrameworkAdapters(baseExtraction, createFrameworkContext(filePath, sourceText, baseExtraction))
+
+    expect(result.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: 'GET /a', node_kind: 'route', route_path: '/a' }),
+        expect.objectContaining({ label: 'POST /b', node_kind: 'route', route_path: '/b' }),
+        expect.objectContaining({ label: 'GET /users/:id', node_kind: 'route', route_path: '/users/:id' }),
+        expect.objectContaining({ label: 'POST /users', node_kind: 'route', route_path: '/users' }),
+      ]),
+    )
+    expect(result.nodes).not.toEqual(expect.arrayContaining([expect.objectContaining({ label: 'POST /', node_kind: 'route' })]))
+
+    expect(result.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: nodeIdForLabel(result, 'first'),
+          target: nodeIdForLabel(result, 'GET /a'),
+          relation: 'handles_route',
+        }),
+        expect.objectContaining({
+          source: nodeIdForLabel(result, 'second'),
+          target: nodeIdForLabel(result, 'POST /b'),
+          relation: 'handles_route',
+        }),
+        expect.objectContaining({
+          source: nodeIdForLabel(result, 'showUser'),
+          target: nodeIdForLabel(result, 'GET /users/:id'),
+          relation: 'handles_route',
+        }),
+        expect.objectContaining({
+          source: nodeIdForLabel(result, 'createUser'),
+          target: nodeIdForLabel(result, 'POST /users'),
+          relation: 'handles_route',
+        }),
+      ]),
+    )
+  })
+
   it('recognizes TypeScript import-equals express app construction', () => {
     const filePath = join(FIXTURES_DIR, 'express-import-equals-app.ts')
 
