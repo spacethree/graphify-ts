@@ -642,26 +642,29 @@ describe('stdio runtime', () => {
       const impactDefaultPayload = JSON.parse((impactDefault?.result as { content: Array<{ text: string }> }).content[0]!.text)
       const impactCompactPayload = JSON.parse((impactCompact?.result as { content: Array<{ text: string }> }).content[0]!.text)
 
-      expect(retrieveDefaultPayload.matched_nodes).toHaveLength(5)
+      expect(retrieveDefaultPayload.matched_nodes.length).toBeGreaterThan(retrieveCompactPayload.matched_nodes.length)
+      expect(retrieveDefaultPayload.matched_nodes.map((node: { label: string }) => node.label)).toEqual(
+        expect.arrayContaining(['dashboardRouter', 'DashboardPage']),
+      )
       expect(retrieveDefaultPayload.shared_file_type).toBeUndefined()
       expect(retrieveDefaultPayload.matched_nodes[0]).toEqual(
         expect.objectContaining({
+          node_id: expect.any(String),
           file_type: 'code',
           community_label: expect.any(String),
           framework_boost: expect.any(Number),
         }),
       )
-      expect(retrieveDefaultPayload.matched_nodes[0]).not.toHaveProperty('node_id')
       expect(retrieveDefaultPayload.relationships.length).toBeGreaterThan(0)
       expect(retrieveDefaultPayload.relationships[0]).toEqual(
         expect.objectContaining({
+          from_id: expect.any(String),
           from: expect.any(String),
+          to_id: expect.any(String),
           to: expect.any(String),
           relation: expect.any(String),
         }),
       )
-      expect(retrieveDefaultPayload.relationships[0]).not.toHaveProperty('from_id')
-      expect(retrieveDefaultPayload.relationships[0]).not.toHaveProperty('to_id')
 
       expect(impactDefaultPayload.shared_file_type).toBeUndefined()
       expect(impactDefaultPayload.direct_dependents).toEqual(
@@ -683,6 +686,11 @@ describe('stdio runtime', () => {
 
       expect(retrieveCompactPayload.matched_nodes).toHaveLength(5)
       expect(retrieveCompactPayload.shared_file_type).toBe('code')
+      expect(retrieveCompactPayload.matched_nodes[0]).toEqual(
+        expect.objectContaining({
+          node_id: expect.any(String),
+        }),
+      )
       expect(retrieveCompactPayload.matched_nodes[0]).not.toHaveProperty('file_type')
       expect(retrieveCompactPayload.matched_nodes[0]).not.toHaveProperty('community_label')
       expect(retrieveCompactPayload.matched_nodes[0]).not.toHaveProperty('framework_boost')
