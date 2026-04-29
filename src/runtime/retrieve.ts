@@ -387,16 +387,19 @@ function hasHttpVerbIntent(question: string, questionTokens: readonly string[], 
     return true
   }
 
-  const hasAmbiguousHttpVerb = /\b(HEAD|USE|ALL)\b/.test(uppercaseQuestion)
-  if (!hasAmbiguousHttpVerb) {
+  const hasHeadVerb = /\bHEAD\b/.test(uppercaseQuestion)
+  const hasUseVerb = /\bUSE\b/.test(uppercaseQuestion)
+  const hasAllVerb = /\bALL\b/.test(uppercaseQuestion)
+  if (!hasHeadVerb && !hasUseVerb && !hasAllVerb) {
     return false
   }
 
-  return (
-    hasRoutePath ||
-    hasRouteKeyword ||
-    includesAnyToken(questionTokens, ['express', 'http', 'https', 'method', 'methods', 'verb', 'verbs', 'request', 'requests'])
-  )
+  const hasHttpContext = includesAnyToken(questionTokens, ['express', 'http', 'https', 'method', 'methods', 'verb', 'verbs'])
+  if (hasRoutePath || hasRouteKeyword || hasHttpContext) {
+    return true
+  }
+
+  return hasHeadVerb && includesAnyToken(questionTokens, ['request', 'requests'])
 }
 
 function buildFrameworkQuestionProfile(question: string, questionTokens: readonly string[]): FrameworkQuestionProfile {

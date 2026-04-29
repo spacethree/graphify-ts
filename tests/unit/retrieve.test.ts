@@ -970,6 +970,63 @@ describe('retrieve', () => {
       )
     })
 
+    it('does not infer express route intent from "all requests" in redux questions', () => {
+      const graph = new KnowledgeGraph({ directed: true })
+      graph.addNode('all_auth_route', {
+        label: 'ALL /auth',
+        source_file: '/src/server/auth.ts',
+        line_number: 12,
+        node_kind: 'route',
+        file_type: 'code',
+        framework: 'express',
+        framework_role: 'express_route',
+        community: 0,
+      })
+      graph.addNode('auth_slice', {
+        label: 'auth slice',
+        source_file: '/src/state/authSlice.ts',
+        line_number: 5,
+        node_kind: 'slice',
+        file_type: 'code',
+        framework: 'redux-toolkit',
+        framework_role: 'redux_slice',
+        community: 1,
+      })
+      graph.addNode('select_auth_state', {
+        label: 'selectAuthState',
+        source_file: '/src/state/authSlice.ts',
+        line_number: 14,
+        node_kind: 'function',
+        file_type: 'code',
+        framework: 'redux-toolkit',
+        framework_role: 'redux_selector',
+        community: 1,
+      })
+      graph.addEdge('auth_slice', 'select_auth_state', {
+        relation: 'defines_selector',
+        confidence: 'EXTRACTED',
+        source_file: '/src/state/authSlice.ts',
+      })
+
+      const result = retrieveContext(graph, {
+        question: 'show all requests for auth state',
+        budget: 5000,
+        fileType: 'code',
+      })
+
+      expect(result.matched_nodes[0]).toEqual(
+        expect.objectContaining({
+          label: 'auth slice',
+          framework_boost: 3.5,
+        }),
+      )
+      expect(result.matched_nodes.find((node) => node.label === 'ALL /auth')).toEqual(
+        expect.objectContaining({
+          framework_boost: 0,
+        }),
+      )
+    })
+
     it('ranks routes registered on imported express owners without local express imports', () => {
       const fixturesDir = join(process.cwd(), 'tests', 'fixtures')
       const graph = build([
