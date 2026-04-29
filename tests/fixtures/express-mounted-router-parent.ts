@@ -1,5 +1,5 @@
 import express from 'express'
-import { apiRouter } from './express-mounted-router-child'
+import { apiRouter } from './express-mounted-router-child.js'
 
 function requireAuth(_req: unknown, _res: unknown, next: () => void) {
   next()

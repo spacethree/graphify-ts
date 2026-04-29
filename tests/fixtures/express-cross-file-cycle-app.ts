@@ -1,6 +1,6 @@
 import express from 'express'
 
-import { routerA } from './express-cross-file-cycle-router-a'
+import { routerA } from './express-cross-file-cycle-router-a.js'
 
 const app = express()
 

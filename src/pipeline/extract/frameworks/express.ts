@@ -102,6 +102,17 @@ function resolveImportPath(filePath: string, specifier: string): string | null {
     return resolvedSpecifier
   }
 
+  const declaredExtension = extname(resolvedSpecifier)
+  if (JS_EXTENSIONS.includes(declaredExtension)) {
+    const specifierStem = resolvedSpecifier.slice(0, -declaredExtension.length)
+    for (const extension of JS_EXTENSIONS) {
+      const candidate = `${specifierStem}${extension}`
+      if (existsSync(candidate) && statSync(candidate).isFile()) {
+        return candidate
+      }
+    }
+  }
+
   for (const extension of JS_EXTENSIONS) {
     const candidate = `${resolvedSpecifier}${extension}`
     if (existsSync(candidate) && statSync(candidate).isFile()) {

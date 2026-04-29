@@ -1,5 +1,5 @@
 const express = require('express')
-import * as child from './express-namespace-module-child'
+import * as child from './express-namespace-module-child.js'
 
 function requireAuth(_req: unknown, _res: unknown, next: () => void) {
   next()

@@ -1,6 +1,6 @@
 import express from 'express'
 
-import { routerB } from './express-cross-file-cycle-router-b'
+import { routerB } from './express-cross-file-cycle-router-b.js'
 
 export const routerA = express.Router()
 

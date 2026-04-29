@@ -1,5 +1,5 @@
 import express from 'express'
-import { requireAuth } from './express-imported-middleware'
+import { requireAuth } from './express-imported-middleware.js'
 
 const app = express()
 

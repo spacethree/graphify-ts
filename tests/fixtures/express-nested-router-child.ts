@@ -1,5 +1,5 @@
 import express from 'express'
-import { usersRouter } from './express-nested-router-grandchild'
+import { usersRouter } from './express-nested-router-grandchild.js'
 
 function auditTrail(_req: unknown, _res: unknown, next: () => void) {
   next()
