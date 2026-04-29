@@ -150,6 +150,23 @@ function actionReference(filePath: string, name: string, line: number, framework
   }
 }
 
+function sliceActionReference(
+  context: JsFrameworkContext,
+  slice: ReduxReference,
+  actionName: string,
+): ReduxReference {
+  const baseNode = slice.sourceFile === context.filePath ? findBaseNode(context, actionName) : null
+  return {
+    id: baseNode?.id ?? _makeId(slice.sourceFile, actionName, 'redux_action'),
+    label: actionName,
+    sourceFile: slice.sourceFile,
+    line: slice.line,
+    nodeKind: 'function',
+    frameworkRole: 'redux_action',
+    kind: 'action',
+  }
+}
+
 function isCreateCall(initializer: ts.Expression, calleeName: string): boolean {
   const candidate = unparenthesizeExpression(initializer)
   const callee = ts.isCallExpression(candidate) ? unparenthesizeExpression(candidate.expression) : null
@@ -243,6 +260,13 @@ function analyzeReduxModule(filePath: string): ReduxModuleAnalysis {
     ) ?? false
 
     if (!ts.isVariableStatement(statement)) {
+      if (ts.isExportAssignment(statement) && !statement.isExportEquals) {
+        const binding = resolveBindingReference(statement.expression)
+        if (binding) {
+          analysis.exports.set('default', binding)
+        }
+      }
+
       if (ts.isExportDeclaration(statement) && statement.exportClause && ts.isNamedExports(statement.exportClause)) {
         const targetFilePath =
           statement.moduleSpecifier && ts.isStringLiteralLike(statement.moduleSpecifier)
@@ -429,6 +453,31 @@ function recordThunkReferences(
     return
   }
 
+  const resolveAddCaseBinding = (expression: ts.Expression): ReduxReference | null => {
+    const candidate = unparenthesizeExpression(expression)
+    if (ts.isIdentifier(candidate)) {
+      return lookupReduxBinding(candidate.text, slicesByBinding, thunkBindings, actionBindings, importedBindings)
+    }
+
+    if (!ts.isPropertyAccessExpression(candidate)) {
+      return null
+    }
+
+    const owner = unparenthesizeExpression(candidate.expression)
+    if (ts.isIdentifier(owner)) {
+      return lookupReduxBinding(owner.text, slicesByBinding, thunkBindings, actionBindings, importedBindings)
+    }
+
+    if (ts.isPropertyAccessExpression(owner) && owner.name.text === 'actions' && ts.isIdentifier(owner.expression)) {
+      const sliceBinding = lookupReduxBinding(owner.expression.text, slicesByBinding, thunkBindings, actionBindings, importedBindings)
+      if (sliceBinding?.kind === 'slice') {
+        return sliceActionReference(context, sliceBinding, candidate.name.text)
+      }
+    }
+
+    return null
+  }
+
   const visit = (node: ts.Node) => {
     if (
       ts.isCallExpression(node) &&
@@ -438,24 +487,14 @@ function recordThunkReferences(
       })() &&
       node.arguments.length > 0
     ) {
-      const firstArgument = unparenthesizeExpression(node.arguments[0]!)
-      const bindingName =
-        ts.isPropertyAccessExpression(firstArgument) && ts.isIdentifier(firstArgument.expression)
-          ? firstArgument.expression.text
-          : ts.isIdentifier(firstArgument)
-            ? firstArgument.text
-            : null
-
-      if (bindingName) {
-        const binding = lookupReduxBinding(bindingName, slicesByBinding, thunkBindings, actionBindings, importedBindings)
-        if (binding?.kind === 'thunk' || binding?.kind === 'action') {
-          const bindingId = addReduxReferenceNode(context, nodes, seenIds, binding)
-          addUniqueEdge(
-            edges,
-            seenEdges,
-            createEdge(bindingId, slice.nodeId, 'updates_slice', context.filePath, lineOf(node, context.sourceFile)),
-          )
-        }
+      const binding = resolveAddCaseBinding(node.arguments[0]!)
+      if (binding?.kind === 'thunk' || binding?.kind === 'action') {
+        const bindingId = addReduxReferenceNode(context, nodes, seenIds, binding)
+        addUniqueEdge(
+          edges,
+          seenEdges,
+          createEdge(bindingId, slice.nodeId, 'updates_slice', context.filePath, lineOf(node, context.sourceFile)),
+        )
       }
     }
 

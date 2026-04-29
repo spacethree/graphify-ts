@@ -1420,6 +1420,34 @@ describe('js framework extraction contract', () => {
     )
   })
 
+  it('resolves redux slices registered in stores across files when reducers are default exported', () => {
+    const sliceFilePath = join(FIXTURES_DIR, 'redux-cross-file-default-slice.ts')
+    const storeFilePath = join(FIXTURES_DIR, 'redux-cross-file-default-store.ts')
+
+    const sliceResult = extractJs(sliceFilePath)
+    const storeResult = extractJs(storeFilePath)
+    const graph = build([sliceResult, storeResult], { directed: true })
+
+    const sliceNodeId = nodeIdForLabel(sliceResult, 'auth slice')
+    const storeNodeId = nodeIdForLabel(storeResult, 'store')
+
+    expect(storeResult.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: sliceNodeId, label: 'auth slice', source_file: sliceFilePath, framework_role: 'redux_slice' }),
+      ]),
+    )
+    expect(storeResult.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: sliceNodeId, target: storeNodeId, relation: 'registered_in_store' }),
+      ]),
+    )
+    expect(graph.edgeAttributes(sliceNodeId, storeNodeId)).toEqual(
+      expect.objectContaining({
+        relation: 'registered_in_store',
+      }),
+    )
+  })
+
   it('only marks createAsyncThunk addCase targets as redux thunks', () => {
     const filePath = join(FIXTURES_DIR, 'redux-cross-file-slice.ts')
     const result = extractJs(filePath)
@@ -1435,6 +1463,34 @@ describe('js framework extraction contract', () => {
       expect.arrayContaining([
         expect.objectContaining({ source: nodeIdForLabel(result, 'fetchProfile'), target: sliceNodeId, relation: 'updates_slice' }),
         expect.objectContaining({ source: nodeIdForLabel(result, 'refreshProfile'), target: sliceNodeId, relation: 'updates_slice' }),
+      ]),
+    )
+  })
+
+  it('resolves slice.actions addCase targets for local slices and imported slice aliases', () => {
+    const sliceFilePath = join(FIXTURES_DIR, 'redux-cross-file-default-slice.ts')
+    const consumerFilePath = join(FIXTURES_DIR, 'redux-cross-file-slice-actions-consumer.ts')
+
+    const sliceResult = extractJs(sliceFilePath)
+    const consumerResult = extractJs(consumerFilePath)
+
+    const logoutActionNodeId = nodeIdForLabel(sliceResult, 'logout')
+    const auditSliceNodeId = nodeIdForLabel(sliceResult, 'audit slice')
+    const sessionSliceNodeId = nodeIdForLabel(consumerResult, 'session slice')
+
+    expect(sliceResult.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: logoutActionNodeId, target: auditSliceNodeId, relation: 'updates_slice' }),
+      ]),
+    )
+    expect(consumerResult.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: logoutActionNodeId, label: 'logout', source_file: sliceFilePath, framework_role: 'redux_action' }),
+      ]),
+    )
+    expect(consumerResult.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: logoutActionNodeId, target: sessionSliceNodeId, relation: 'updates_slice' }),
       ]),
     )
   })
@@ -1462,6 +1518,34 @@ describe('js framework extraction contract', () => {
         expect.objectContaining({ source: settingsRouteId, target: settingsPageNodeId, relation: 'renders' }),
         expect.objectContaining({ source: settingsRouteId, target: settingsLoaderNodeId, relation: 'loads_route' }),
         expect.objectContaining({ source: settingsRouteId, target: settingsActionNodeId, relation: 'submits_route' }),
+      ]),
+    )
+  })
+
+  it('extracts react router jsx route declarations wrapped in fragments', () => {
+    const filePath = join(FIXTURES_DIR, 'react-router-fragment-routes.tsx')
+    const result = extractJs(filePath)
+
+    expect(result.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: '/', node_kind: 'route', route_path: '/', framework_role: 'react_router_route', framework: 'react-router' }),
+        expect.objectContaining({ label: '/ (index)', node_kind: 'route', route_path: '/', framework_role: 'react_router_route', framework: 'react-router' }),
+        expect.objectContaining({ label: '/settings', node_kind: 'route', route_path: '/settings', framework_role: 'react_router_route', framework: 'react-router' }),
+      ]),
+    )
+
+    const rootRouteId = nodeIdForLabel(result, '/')
+    const indexRouteId = nodeIdForLabel(result, '/ (index)')
+    const settingsRouteId = nodeIdForLabel(result, '/settings')
+
+    expect(result.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: nodeIdForLabel(result, 'router'), target: rootRouteId, relation: 'registers_route' }),
+        expect.objectContaining({ source: rootRouteId, target: nodeIdForLabel(result, 'AppLayout()'), relation: 'renders' }),
+        expect.objectContaining({ source: indexRouteId, target: nodeIdForLabel(result, 'HomePage()'), relation: 'renders' }),
+        expect.objectContaining({ source: settingsRouteId, target: nodeIdForLabel(result, 'SettingsPage()'), relation: 'renders' }),
+        expect.objectContaining({ source: rootRouteId, target: indexRouteId, relation: 'contains' }),
+        expect.objectContaining({ source: rootRouteId, target: settingsRouteId, relation: 'contains' }),
       ]),
     )
   })

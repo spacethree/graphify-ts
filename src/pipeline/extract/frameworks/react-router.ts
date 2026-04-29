@@ -514,10 +514,19 @@ function routeNodeFromJsxElement(
   seenIds: Set<string>,
   seenEdges: Set<string>,
   routerId: string,
-  element: ts.JsxElement | ts.JsxSelfClosingElement,
+  element: ts.JsxElement | ts.JsxSelfClosingElement | ts.JsxFragment,
   parentRoute: RouteNodeRecord | null,
   importedBindings: ReadonlyMap<string, ImportedRouteReference>,
 ): RouteNodeRecord | null {
+  if (ts.isJsxFragment(element)) {
+    for (const child of element.children) {
+      if (ts.isJsxElement(child) || ts.isJsxSelfClosingElement(child) || ts.isJsxFragment(child)) {
+        routeNodeFromJsxElement(context, nodes, edges, seenIds, seenEdges, routerId, child, parentRoute, importedBindings)
+      }
+    }
+    return null
+  }
+
   const openingElement = ts.isJsxElement(element) ? element.openingElement : element
   if (!ts.isIdentifier(openingElement.tagName) || openingElement.tagName.text !== 'Route') {
     return null
@@ -562,7 +571,7 @@ function routeNodeFromJsxElement(
 
   if (ts.isJsxElement(element)) {
     for (const child of element.children) {
-      if (ts.isJsxElement(child) || ts.isJsxSelfClosingElement(child)) {
+      if (ts.isJsxElement(child) || ts.isJsxSelfClosingElement(child) || ts.isJsxFragment(child)) {
         routeNodeFromJsxElement(context, nodes, edges, seenIds, seenEdges, routerId, child, route, importedBindings)
       }
     }
@@ -675,7 +684,7 @@ export const reactRouterAdapter: JsFrameworkAdapter = {
               const rootElement = routesExpression.arguments[0]
                 ? resolveInitializerExpression(routesExpression.arguments[0], initializers)
                 : null
-              if (rootElement && (ts.isJsxElement(rootElement) || ts.isJsxSelfClosingElement(rootElement))) {
+              if (rootElement && (ts.isJsxElement(rootElement) || ts.isJsxSelfClosingElement(rootElement) || ts.isJsxFragment(rootElement))) {
                 routeNodeFromJsxElement(context, nodes, edges, seenIds, seenEdges, routerId, rootElement, null, importedBindings)
               }
             }
