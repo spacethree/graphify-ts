@@ -1256,6 +1256,76 @@ describe('js framework extraction contract', () => {
     )
   })
 
+  it('extracts redux store registration through aliased reducer object variables', () => {
+    const filePath = join(FIXTURES_DIR, 'virtual-redux-reducer-alias.ts')
+    const sourceText = [
+      "import { createSlice, configureStore } from '@reduxjs/toolkit'",
+      '',
+      'const authSlice = createSlice({',
+      "  name: 'auth',",
+      '  initialState: { token: null as string | null },',
+      '  reducers: {},',
+      '})',
+      '',
+      'const reducer = {',
+      '  auth: authSlice.reducer,',
+      '}',
+      '',
+      'export const store = configureStore({ reducer })',
+    ].join('\n')
+    const baseExtraction = createBaseExtraction(filePath, 'virtual-redux-reducer-alias', ['authSlice', 'store', 'reducer'])
+
+    const result = applyJsFrameworkAdapters(baseExtraction, createFrameworkContext(filePath, sourceText, baseExtraction))
+
+    expect(result.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: 'auth slice', node_kind: 'slice', framework_role: 'redux_slice', framework: 'redux-toolkit' }),
+        expect.objectContaining({ label: 'store', node_kind: 'store', framework_role: 'redux_store', framework: 'redux-toolkit' }),
+      ]),
+    )
+    expect(result.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: nodeIdForLabel(result, 'auth slice'), target: nodeIdForLabel(result, 'store'), relation: 'registered_in_store' }),
+      ]),
+    )
+  })
+
+  it('keeps redux reducer alias resolution scoped to the store declaration context', () => {
+    const filePath = join(FIXTURES_DIR, 'virtual-redux-reducer-shadowing.ts')
+    const sourceText = [
+      "import { createSlice, configureStore } from '@reduxjs/toolkit'",
+      '',
+      'const authSlice = createSlice({',
+      "  name: 'auth',",
+      '  initialState: { token: null as string | null },',
+      '  reducers: {},',
+      '})',
+      '',
+      'const reducer = {',
+      '  auth: authSlice.reducer,',
+      '}',
+      '',
+      'function shadowReducer() {',
+      '  const reducer = {',
+      '    wrong: null,',
+      '  }',
+      '  return reducer',
+      '}',
+      '',
+      'shadowReducer()',
+      'export const store = configureStore({ reducer })',
+    ].join('\n')
+    const baseExtraction = createBaseExtraction(filePath, 'virtual-redux-reducer-shadowing', ['authSlice', 'shadowReducer', 'store', 'reducer'])
+
+    const result = applyJsFrameworkAdapters(baseExtraction, createFrameworkContext(filePath, sourceText, baseExtraction))
+
+    expect(result.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: nodeIdForLabel(result, 'auth slice'), target: nodeIdForLabel(result, 'store'), relation: 'registered_in_store' }),
+      ]),
+    )
+  })
+
   it('extracts aliased redux toolkit helpers without classifying same-named local helpers', () => {
     const filePath = join(FIXTURES_DIR, 'virtual-redux-aliased.ts')
     const sourceText = [
@@ -1484,6 +1554,213 @@ describe('js framework extraction contract', () => {
         expect.objectContaining({ source: settingsRouteId, target: nodeIdForLabel(result, 'SettingsPage'), relation: 'renders' }),
         expect.objectContaining({ source: settingsRouteId, target: nodeIdForLabel(result, 'settingsLoader'), relation: 'loads_route' }),
         expect.objectContaining({ source: settingsRouteId, target: nodeIdForLabel(result, 'settingsAction'), relation: 'submits_route' }),
+      ]),
+    )
+  })
+
+  it('extracts plain react router jsx route trees rendered through Routes components', () => {
+    const filePath = join(FIXTURES_DIR, 'virtual-react-router-routes-component.tsx')
+    const sourceText = [
+      "import { Route, Routes } from 'react-router-dom'",
+      '',
+      'function HomePage() {',
+      '  return null',
+      '}',
+      '',
+      'function SettingsPage() {',
+      '  return null',
+      '}',
+      '',
+      'function settingsLoader() {',
+      '  return null',
+      '}',
+      '',
+      'function settingsAction() {',
+      '  return null',
+      '}',
+      '',
+      'export function AppRoutes() {',
+      '  return (',
+      '    <Routes>',
+      '      <Route path="/" element={<HomePage />} />',
+      '      <Route path="/settings" loader={settingsLoader} action={settingsAction} Component={SettingsPage} />',
+      '    </Routes>',
+      '  )',
+      '}',
+    ].join('\n')
+    const baseExtraction = createBaseExtraction(filePath, 'virtual-react-router-routes-component', [
+      'HomePage',
+      'SettingsPage',
+      'settingsLoader',
+      'settingsAction',
+      'AppRoutes',
+    ])
+
+    const result = applyJsFrameworkAdapters(baseExtraction, createFrameworkContext(filePath, sourceText, baseExtraction))
+
+    expect(result.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: '/', node_kind: 'route', route_path: '/', framework_role: 'react_router_route', framework: 'react-router' }),
+        expect.objectContaining({ label: '/settings', node_kind: 'route', route_path: '/settings', framework_role: 'react_router_route', framework: 'react-router' }),
+      ]),
+    )
+    expect(result.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: nodeIdForLabel(result, 'AppRoutes'), target: nodeIdForLabel(result, '/'), relation: 'registers_route' }),
+        expect.objectContaining({ source: nodeIdForLabel(result, 'AppRoutes'), target: nodeIdForLabel(result, '/settings'), relation: 'registers_route' }),
+        expect.objectContaining({ source: nodeIdForLabel(result, '/'), target: nodeIdForLabel(result, 'HomePage'), relation: 'renders' }),
+        expect.objectContaining({ source: nodeIdForLabel(result, '/settings'), target: nodeIdForLabel(result, 'SettingsPage'), relation: 'renders' }),
+        expect.objectContaining({ source: nodeIdForLabel(result, '/settings'), target: nodeIdForLabel(result, 'settingsLoader'), relation: 'loads_route' }),
+        expect.objectContaining({ source: nodeIdForLabel(result, '/settings'), target: nodeIdForLabel(result, 'settingsAction'), relation: 'submits_route' }),
+      ]),
+    )
+  })
+
+  it('extracts react router useRoutes object trees from component hooks', () => {
+    const filePath = join(FIXTURES_DIR, 'virtual-react-router-use-routes.tsx')
+    const sourceText = [
+      "import { useRoutes } from 'react-router-dom'",
+      '',
+      'function DashboardPage() {',
+      '  return null',
+      '}',
+      '',
+      'function SettingsPage() {',
+      '  return null',
+      '}',
+      '',
+      'function settingsLoader() {',
+      '  return null',
+      '}',
+      '',
+      'export function AppRoutes() {',
+      '  return useRoutes([',
+      '    {',
+      "      path: '/',",
+      '      Component: DashboardPage,',
+      '    },',
+      '    {',
+      "      path: '/settings',",
+      '      loader: settingsLoader,',
+      '      Component: SettingsPage,',
+      '    },',
+      '  ])',
+      '}',
+    ].join('\n')
+    const baseExtraction = createBaseExtraction(filePath, 'virtual-react-router-use-routes', [
+      'DashboardPage',
+      'SettingsPage',
+      'settingsLoader',
+      'AppRoutes',
+    ])
+
+    const result = applyJsFrameworkAdapters(baseExtraction, createFrameworkContext(filePath, sourceText, baseExtraction))
+
+    expect(result.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: '/', node_kind: 'route', route_path: '/', framework_role: 'react_router_route', framework: 'react-router' }),
+        expect.objectContaining({ label: '/settings', node_kind: 'route', route_path: '/settings', framework_role: 'react_router_route', framework: 'react-router' }),
+      ]),
+    )
+    expect(result.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: nodeIdForLabel(result, 'AppRoutes'), target: nodeIdForLabel(result, '/'), relation: 'registers_route' }),
+        expect.objectContaining({ source: nodeIdForLabel(result, 'AppRoutes'), target: nodeIdForLabel(result, '/settings'), relation: 'registers_route' }),
+        expect.objectContaining({ source: nodeIdForLabel(result, '/'), target: nodeIdForLabel(result, 'DashboardPage'), relation: 'renders' }),
+        expect.objectContaining({ source: nodeIdForLabel(result, '/settings'), target: nodeIdForLabel(result, 'SettingsPage'), relation: 'renders' }),
+        expect.objectContaining({ source: nodeIdForLabel(result, '/settings'), target: nodeIdForLabel(result, 'settingsLoader'), relation: 'loads_route' }),
+      ]),
+    )
+  })
+
+  it('extracts react router routes from default exported routers', () => {
+    const filePath = join(FIXTURES_DIR, 'virtual-react-router-default-export.tsx')
+    const sourceText = [
+      "import { createBrowserRouter } from 'react-router-dom'",
+      '',
+      'function HomePage() {',
+      '  return null',
+      '}',
+      '',
+      'function SettingsPage() {',
+      '  return null',
+      '}',
+      '',
+      'export default createBrowserRouter([',
+      '  {',
+      "    path: '/',",
+      '    Component: HomePage,',
+      '  },',
+      '  {',
+      "    path: '/settings',",
+      '    Component: SettingsPage,',
+      '  },',
+      '])',
+    ].join('\n')
+    const baseExtraction = createBaseExtraction(filePath, 'virtual-react-router-default-export', [
+      'HomePage',
+      'SettingsPage',
+    ])
+
+    const result = applyJsFrameworkAdapters(baseExtraction, createFrameworkContext(filePath, sourceText, baseExtraction))
+
+    expect(result.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: 'default', node_kind: 'router', framework_role: 'react_router', framework: 'react-router' }),
+        expect.objectContaining({ label: '/', node_kind: 'route', route_path: '/', framework_role: 'react_router_route', framework: 'react-router' }),
+        expect.objectContaining({ label: '/settings', node_kind: 'route', route_path: '/settings', framework_role: 'react_router_route', framework: 'react-router' }),
+      ]),
+    )
+    expect(result.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: nodeIdForLabel(result, 'default'), target: nodeIdForLabel(result, '/'), relation: 'registers_route' }),
+        expect.objectContaining({ source: nodeIdForLabel(result, 'default'), target: nodeIdForLabel(result, '/settings'), relation: 'registers_route' }),
+        expect.objectContaining({ source: nodeIdForLabel(result, '/'), target: nodeIdForLabel(result, 'HomePage'), relation: 'renders' }),
+        expect.objectContaining({ source: nodeIdForLabel(result, '/settings'), target: nodeIdForLabel(result, 'SettingsPage'), relation: 'renders' }),
+      ]),
+    )
+  })
+
+  it('keeps react router route alias resolution scoped to the hook call context', () => {
+    const filePath = join(FIXTURES_DIR, 'virtual-react-router-shadowed-routes.tsx')
+    const sourceText = [
+      "import { useRoutes } from 'react-router-dom'",
+      '',
+      'function HomePage() {',
+      '  return null',
+      '}',
+      '',
+      'const routes = [',
+      '  {',
+      "    path: '/',",
+      '    Component: HomePage,',
+      '  },',
+      ']',
+      '',
+      'function shadowRoutes() {',
+      '  const routes = []',
+      '  return routes',
+      '}',
+      '',
+      'shadowRoutes()',
+      '',
+      'export function AppRoutes() {',
+      '  return useRoutes(routes)',
+      '}',
+    ].join('\n')
+    const baseExtraction = createBaseExtraction(filePath, 'virtual-react-router-shadowed-routes', ['HomePage', 'shadowRoutes', 'AppRoutes', 'routes'])
+
+    const result = applyJsFrameworkAdapters(baseExtraction, createFrameworkContext(filePath, sourceText, baseExtraction))
+
+    expect(result.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: '/', node_kind: 'route', route_path: '/', framework_role: 'react_router_route', framework: 'react-router' }),
+      ]),
+    )
+    expect(result.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: nodeIdForLabel(result, 'AppRoutes'), target: nodeIdForLabel(result, '/'), relation: 'registers_route' }),
+        expect.objectContaining({ source: nodeIdForLabel(result, '/'), target: nodeIdForLabel(result, 'HomePage'), relation: 'renders' }),
       ]),
     )
   })
@@ -2126,6 +2403,78 @@ describe('js framework extraction contract', () => {
         expect.objectContaining({ source: readSessionStateNodeId, target: selectAuthStatusNodeId, relation: 'uses' }),
       ]),
     )
+  })
+
+  it('surfaces imported redux selectors passed to selector hooks', () => {
+    const scratchDir = join(TEST_ARTIFACTS_DIR, 'redux-selector-hooks')
+    const sliceFilePath = join(scratchDir, 'slice.ts')
+    const consumerFilePath = join(scratchDir, 'consumer.tsx')
+
+    try {
+      writeScratchFiles(scratchDir, {
+        'slice.ts': [
+          "import { createSlice } from '@reduxjs/toolkit'",
+          '',
+          'const authSlice = createSlice({',
+          "  name: 'auth',",
+          '  initialState: { token: null as string | null, status: \'idle\' as \'idle\' | \'ready\' },',
+          '  reducers: {},',
+          '  selectors: {',
+          '    selectToken: (state) => state.token,',
+          '    selectAuthStatus: (state) => state.status,',
+          '  },',
+          '})',
+          '',
+          'export const { selectToken, selectAuthStatus } = authSlice.selectors',
+        ].join('\n'),
+        'consumer.tsx': [
+          "import { createSlice } from '@reduxjs/toolkit'",
+          "import { useSelector } from 'react-redux'",
+          "import { selectAuthStatus, selectToken as tokenSelector } from './slice'",
+          '',
+          'const useAppSelector = useSelector',
+          '',
+          'export function SessionPanel() {',
+          '  const token = useAppSelector(tokenSelector)',
+          '  const status = useSelector(selectAuthStatus)',
+          '  return token ?? status ?? null',
+          '}',
+          '',
+          'export const sessionSlice = createSlice({',
+          "  name: 'session',",
+          '  initialState: { ready: false },',
+          '  reducers: {},',
+          '})',
+        ].join('\n'),
+      })
+
+      const sliceResult = extractJs(sliceFilePath)
+      const consumerResult = extractJs(consumerFilePath)
+      const sessionPanelNodeId = consumerResult.nodes.find((node) => ['SessionPanel', 'SessionPanel()', '.SessionPanel()'].includes(node.label))?.id
+      const selectTokenNodeId = nodeIdForLabel(sliceResult, 'selectToken')
+      const selectAuthStatusNodeId = nodeIdForLabel(sliceResult, 'selectAuthStatus')
+
+      expect(sessionPanelNodeId).toBeDefined()
+      expect(consumerResult.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: selectTokenNodeId, label: 'selectToken', source_file: sliceFilePath, framework_role: 'redux_selector' }),
+          expect.objectContaining({
+            id: selectAuthStatusNodeId,
+            label: 'selectAuthStatus',
+            source_file: sliceFilePath,
+            framework_role: 'redux_selector',
+          }),
+        ]),
+      )
+      expect(consumerResult.edges).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ source: sessionPanelNodeId, target: selectTokenNodeId, relation: 'uses' }),
+          expect.objectContaining({ source: sessionPanelNodeId, target: selectAuthStatusNodeId, relation: 'uses' }),
+        ]),
+      )
+    } finally {
+      rmSync(scratchDir, { recursive: true, force: true })
+    }
   })
 
   it('attributes imported destructured redux selector calls inside object property arrow functions', () => {

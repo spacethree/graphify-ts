@@ -9,7 +9,7 @@ import { unparenthesizeExpression } from '../typescript-utils.js'
 import { resolveImportPath, scriptKindForPath } from './js-import-paths.js'
 import type { JsFrameworkAdapter, JsFrameworkContext } from './types.js'
 
-const REACT_ROUTER_MATCH_PATTERN = /\bcreateBrowserRouter\b|\bcreateRoutesFromElements\b|<Route\b/
+const REACT_ROUTER_MATCH_PATTERN = /\bcreateBrowserRouter\b|\bcreateRoutesFromElements\b|\buseRoutes\b|<Route\b|<Routes\b/
 const REACT_ROUTER_MODULE_SPECIFIERS = new Set(['react-router', 'react-router-dom'])
 
 interface RouteNodeRecord {
@@ -21,7 +21,9 @@ interface RouteNodeRecord {
 interface ReactRouterImportBindings {
   createBrowserRouter: Set<string>
   createRoutesFromElements: Set<string>
+  useRoutes: Set<string>
   route: Set<string>
+  routes: Set<string>
   namespaces: Set<string>
 }
 
@@ -45,6 +47,11 @@ interface JsModuleAnalysis {
 }
 
 type RouteObjectProperty = ts.PropertyAssignment | ts.MethodDeclaration | ts.ShorthandPropertyAssignment
+interface InitializerBinding {
+  expression: ts.Expression
+  scope: ts.Node
+  pos: number
+}
 
 function lineOf(node: ts.Node, sourceFile: ts.SourceFile): number {
   return sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1
@@ -325,7 +332,9 @@ function createReactRouterImportBindings(): ReactRouterImportBindings {
   return {
     createBrowserRouter: new Set<string>(),
     createRoutesFromElements: new Set<string>(),
+    useRoutes: new Set<string>(),
     route: new Set<string>(),
+    routes: new Set<string>(),
     namespaces: new Set<string>(),
   }
 }
@@ -356,8 +365,12 @@ function collectReactRouterImportBindings(sourceFile: ts.SourceFile): ReactRoute
           bindings.createBrowserRouter.add(localName)
         } else if (importedName === 'createRoutesFromElements') {
           bindings.createRoutesFromElements.add(localName)
+        } else if (importedName === 'useRoutes') {
+          bindings.useRoutes.add(localName)
         } else if (importedName === 'Route') {
           bindings.route.add(localName)
+        } else if (importedName === 'Routes') {
+          bindings.routes.add(localName)
         }
       }
     }
@@ -370,7 +383,7 @@ function isReactRouterBindingCall(
   expression: ts.Expression,
   bindings: ReactRouterImportBindings,
   localBindings: ReadonlySet<string>,
-  memberName: 'createBrowserRouter' | 'createRoutesFromElements',
+  memberName: 'createBrowserRouter' | 'createRoutesFromElements' | 'useRoutes',
 ): boolean {
   const candidate = unparenthesizeExpression(expression)
   if (ts.isIdentifier(candidate)) {
@@ -398,6 +411,19 @@ function isReactRouterRouteTag(tagName: ts.JsxTagNameExpression, bindings: React
   )
 }
 
+function isReactRouterRoutesTag(tagName: ts.JsxTagNameExpression, bindings: ReactRouterImportBindings): boolean {
+  if (ts.isIdentifier(tagName)) {
+    return bindings.routes.has(tagName.text)
+  }
+
+  return (
+    ts.isPropertyAccessExpression(tagName) &&
+    ts.isIdentifier(tagName.expression) &&
+    bindings.namespaces.has(tagName.expression.text) &&
+    tagName.name.text === 'Routes'
+  )
+}
+
 function addNamedReference(
   context: JsFrameworkContext,
   nodes: NonNullable<ReturnType<JsFrameworkAdapter['extract']>['nodes']>,
@@ -419,6 +445,70 @@ function addNamedReference(
     framework_role: options.frameworkRole,
   })
   return id
+}
+
+function ensureRouteOwnerNode(
+  context: JsFrameworkContext,
+  nodes: NonNullable<ReturnType<JsFrameworkAdapter['extract']>['nodes']>,
+  seenIds: Set<string>,
+  name: string,
+  line: number,
+  label = `${name}()`,
+): string {
+  const baseNode = findBaseNode(context, name)
+  if (baseNode) {
+    return baseNode.id
+  }
+
+  const id = _makeId(context.filePath, name, 'react_router_owner')
+  addNode(nodes, seenIds, {
+    ...createNode(id, label, context.filePath, line),
+    id,
+    node_kind: 'function',
+  })
+  return id
+}
+
+function enclosingRouteOwnerId(
+  context: JsFrameworkContext,
+  nodes: NonNullable<ReturnType<JsFrameworkAdapter['extract']>['nodes']>,
+  seenIds: Set<string>,
+  node: ts.Node,
+): string {
+  let current: ts.Node | undefined = node.parent
+  while (current) {
+    if (ts.isFunctionDeclaration(current) && current.name) {
+      return ensureRouteOwnerNode(context, nodes, seenIds, current.name.text, lineOf(current.name, context.sourceFile))
+    }
+
+    if (
+      ts.isVariableDeclaration(current) &&
+      ts.isIdentifier(current.name) &&
+      current.initializer &&
+      (ts.isArrowFunction(current.initializer) || ts.isFunctionExpression(current.initializer))
+    ) {
+      return ensureRouteOwnerNode(context, nodes, seenIds, current.name.text, lineOf(current.name, context.sourceFile))
+    }
+
+    if (
+      ts.isPropertyAssignment(current) &&
+      ts.isIdentifier(current.name) &&
+      (ts.isArrowFunction(current.initializer) || ts.isFunctionExpression(current.initializer))
+    ) {
+      return ensureRouteOwnerNode(context, nodes, seenIds, current.name.text, lineOf(current.name, context.sourceFile), `.${current.name.text}()`)
+    }
+
+    if (ts.isMethodDeclaration(current)) {
+      const methodName = current.name ? propertyNameText(current.name) : null
+      if (methodName) {
+        return ensureRouteOwnerNode(context, nodes, seenIds, methodName, lineOf(current.name, context.sourceFile), `.${methodName}()`)
+      }
+    }
+
+    current = current.parent
+  }
+
+  return context.fileNodeId
 }
 
 function joinRoutePath(parentPath: string | null, currentPath: string | null, isIndex: boolean): string {
@@ -661,6 +751,17 @@ function routeNodeFromJsxElement(
   }
 
   const openingElement = ts.isJsxElement(element) ? element.openingElement : element
+  if (isReactRouterRoutesTag(openingElement.tagName, reactRouterBindings)) {
+    if (ts.isJsxElement(element)) {
+      for (const child of element.children) {
+        if (ts.isJsxElement(child) || ts.isJsxSelfClosingElement(child) || ts.isJsxFragment(child)) {
+          routeNodeFromJsxElement(context, nodes, edges, seenIds, seenEdges, routerId, child, parentRoute, importedBindings, reactRouterBindings)
+        }
+      }
+    }
+    return null
+  }
+
   if (!isReactRouterRouteTag(openingElement.tagName, reactRouterBindings)) {
     return null
   }
@@ -764,12 +865,131 @@ function routeNodeFromObjectLiteral(
   return route
 }
 
+function lexicalScope(node: ts.Node): ts.Node | null {
+  let current: ts.Node | undefined = node
+  while (current) {
+    if (
+      ts.isSourceFile(current) ||
+      ts.isBlock(current) ||
+      ts.isModuleBlock(current) ||
+      ts.isCaseBlock(current) ||
+      ts.isCatchClause(current) ||
+      ts.isForStatement(current) ||
+      ts.isForInStatement(current) ||
+      ts.isForOfStatement(current)
+    ) {
+      return current
+    }
+    current = current.parent
+  }
+  return null
+}
+
+function resolveInitializerBinding(
+  name: string,
+  fromNode: ts.Node,
+  initializers: ReadonlyMap<string, readonly InitializerBinding[]>,
+): InitializerBinding | null {
+  const bindings = initializers.get(name)
+  if (!bindings) {
+    return null
+  }
+
+  let scope = lexicalScope(fromNode)
+  while (scope) {
+    const candidates = bindings.filter((binding) => binding.scope === scope && binding.pos < fromNode.pos)
+    if (candidates.length > 0) {
+      return candidates[candidates.length - 1] ?? null
+    }
+    scope = scope.parent ? lexicalScope(scope.parent) : null
+  }
+
+  return null
+}
+
 function resolveInitializerExpression(
   expression: ts.Expression,
-  initializers: ReadonlyMap<string, ts.Expression>,
+  initializers: ReadonlyMap<string, readonly InitializerBinding[]>,
+  fromNode: ts.Node,
 ): ts.Expression {
-  const candidate = unparenthesizeExpression(expression)
-  return ts.isIdentifier(candidate) ? unparenthesizeExpression(initializers.get(candidate.text) ?? candidate) : candidate
+  const seen = new Set<string>()
+  let current = unparenthesizeExpression(expression)
+  let currentNode: ts.Node = fromNode
+
+  while (ts.isIdentifier(current) && !seen.has(current.text)) {
+    seen.add(current.text)
+    const initializer = resolveInitializerBinding(current.text, currentNode, initializers)
+    if (!initializer) {
+      break
+    }
+    current = unparenthesizeExpression(initializer.expression)
+    currentNode = initializer.expression
+  }
+
+  return current
+}
+
+function extractRoutesFromExpression(
+  context: JsFrameworkContext,
+  nodes: NonNullable<ReturnType<JsFrameworkAdapter['extract']>['nodes']>,
+  edges: NonNullable<ReturnType<JsFrameworkAdapter['extract']>['edges']>,
+  seenIds: Set<string>,
+  seenEdges: Set<string>,
+  ownerId: string,
+  routesExpression: ts.Expression | null,
+  importedBindings: ReadonlyMap<string, ImportedRouteReference>,
+  reactRouterBindings: ReactRouterImportBindings,
+  initializers: ReadonlyMap<string, readonly InitializerBinding[]>,
+): void {
+  const resolvedRoutesExpression = routesExpression ? resolveInitializerExpression(routesExpression, initializers, routesExpression) : null
+  if (!resolvedRoutesExpression) {
+    return
+  }
+
+  if (ts.isArrayLiteralExpression(resolvedRoutesExpression)) {
+    for (const element of resolvedRoutesExpression.elements) {
+      const candidate = unparenthesizeExpression(element)
+      if (ts.isObjectLiteralExpression(candidate)) {
+        routeNodeFromObjectLiteral(context, nodes, edges, seenIds, seenEdges, ownerId, candidate, null, importedBindings)
+      }
+    }
+    return
+  }
+
+  if (ts.isCallExpression(resolvedRoutesExpression)) {
+    const routeFactory = unparenthesizeExpression(resolvedRoutesExpression.expression)
+    if (
+      isReactRouterBindingCall(
+        routeFactory,
+        reactRouterBindings,
+        reactRouterBindings.createRoutesFromElements,
+        'createRoutesFromElements',
+      )
+    ) {
+      const rootElement = resolvedRoutesExpression.arguments[0]
+        ? resolveInitializerExpression(resolvedRoutesExpression.arguments[0], initializers, resolvedRoutesExpression.arguments[0])
+        : null
+      if (rootElement && (ts.isJsxElement(rootElement) || ts.isJsxSelfClosingElement(rootElement) || ts.isJsxFragment(rootElement))) {
+        routeNodeFromJsxElement(context, nodes, edges, seenIds, seenEdges, ownerId, rootElement, null, importedBindings, reactRouterBindings)
+      }
+    }
+    return
+  }
+
+  if (ts.isJsxElement(resolvedRoutesExpression) || ts.isJsxSelfClosingElement(resolvedRoutesExpression) || ts.isJsxFragment(resolvedRoutesExpression)) {
+    routeNodeFromJsxElement(
+      context,
+      nodes,
+      edges,
+      seenIds,
+      seenEdges,
+      ownerId,
+      resolvedRoutesExpression,
+      null,
+      importedBindings,
+      reactRouterBindings,
+    )
+  }
 }
 
 export const reactRouterAdapter: JsFrameworkAdapter = {
@@ -782,14 +1002,20 @@ export const reactRouterAdapter: JsFrameworkAdapter = {
     const edges: NonNullable<ReturnType<JsFrameworkAdapter['extract']>['edges']> = []
     const seenIds = new Set<string>()
     const seenEdges = new Set<string>()
-    const initializers = new Map<string, ts.Expression>()
+    const initializers = new Map<string, InitializerBinding[]>()
     const moduleAnalysisCache = new Map<string, JsModuleAnalysis>()
     const importedBindings = collectImportedRouteBindings(context.filePath, context.sourceFile, moduleAnalysisCache)
     const reactRouterBindings = collectReactRouterImportBindings(context.sourceFile)
 
     const collectInitializers = (node: ts.Node) => {
       if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
-        initializers.set(node.name.text, node.initializer)
+        const bindings = initializers.get(node.name.text) ?? []
+        bindings.push({
+          expression: node.initializer,
+          scope: lexicalScope(node) ?? context.sourceFile,
+          pos: node.pos,
+        })
+        initializers.set(node.name.text, bindings)
       }
       ts.forEachChild(node, collectInitializers)
     }
@@ -809,46 +1035,87 @@ export const reactRouterAdapter: JsFrameworkAdapter = {
             frameworkRole: 'react_router',
             fallbackSuffix: 'router',
           })
-          const routesExpression = initializer.arguments[0]
-            ? resolveInitializerExpression(initializer.arguments[0], initializers)
-            : null
+          extractRoutesFromExpression(
+            context,
+            nodes,
+            edges,
+            seenIds,
+            seenEdges,
+            routerId,
+            initializer.arguments[0] ?? null,
+            importedBindings,
+            reactRouterBindings,
+            initializers,
+          )
+        }
+      }
 
-          if (routesExpression && ts.isArrayLiteralExpression(routesExpression)) {
-            for (const element of routesExpression.elements) {
-              const candidate = unparenthesizeExpression(element)
-              if (ts.isObjectLiteralExpression(candidate)) {
-                routeNodeFromObjectLiteral(context, nodes, edges, seenIds, seenEdges, routerId, candidate, null, importedBindings)
-              }
-            }
-          } else if (routesExpression && ts.isCallExpression(routesExpression)) {
-            const routeFactory = unparenthesizeExpression(routesExpression.expression)
-            if (
-              isReactRouterBindingCall(
-                routeFactory,
-                reactRouterBindings,
-                reactRouterBindings.createRoutesFromElements,
-                'createRoutesFromElements',
-              )
-            ) {
-              const rootElement = routesExpression.arguments[0]
-                ? resolveInitializerExpression(routesExpression.arguments[0], initializers)
-                : null
-              if (rootElement && (ts.isJsxElement(rootElement) || ts.isJsxSelfClosingElement(rootElement) || ts.isJsxFragment(rootElement))) {
-                routeNodeFromJsxElement(
-                  context,
-                  nodes,
-                  edges,
-                  seenIds,
-                  seenEdges,
-                  routerId,
-                  rootElement,
-                  null,
-                  importedBindings,
-                  reactRouterBindings,
-                )
-              }
-            }
-          }
+      if (ts.isCallExpression(node)) {
+        const callee = unparenthesizeExpression(node.expression)
+        if (isReactRouterBindingCall(callee, reactRouterBindings, reactRouterBindings.useRoutes, 'useRoutes')) {
+          extractRoutesFromExpression(
+            context,
+            nodes,
+            edges,
+            seenIds,
+            seenEdges,
+            enclosingRouteOwnerId(context, nodes, seenIds, node),
+            node.arguments[0] ?? null,
+            importedBindings,
+            reactRouterBindings,
+            initializers,
+          )
+        }
+      }
+
+      if (ts.isExportAssignment(node) && !node.isExportEquals) {
+        const expression = unparenthesizeExpression(node.expression)
+        if (!ts.isCallExpression(expression)) {
+          ts.forEachChild(node, visit)
+          return
+        }
+        const initializer = expression
+        const callee = unparenthesizeExpression(initializer.expression)
+        if (isReactRouterBindingCall(callee, reactRouterBindings, reactRouterBindings.createBrowserRouter, 'createBrowserRouter')) {
+          const routerId = addNamedReference(context, nodes, seenIds, 'default', lineOf(node, context.sourceFile), {
+            nodeKind: 'router',
+            frameworkRole: 'react_router',
+            fallbackSuffix: 'router',
+          })
+          extractRoutesFromExpression(
+            context,
+            nodes,
+            edges,
+            seenIds,
+            seenEdges,
+            routerId,
+            initializer.arguments[0] ?? null,
+            importedBindings,
+            reactRouterBindings,
+            initializers,
+          )
+        }
+      }
+
+      if (
+        (ts.isJsxElement(node) || ts.isJsxSelfClosingElement(node) || ts.isJsxFragment(node)) &&
+        !ts.isCallExpression(node.parent) &&
+        !ts.isExportAssignment(node.parent)
+      ) {
+        const openingElement = ts.isJsxFragment(node) ? null : ts.isJsxElement(node) ? node.openingElement : node
+        if (openingElement && isReactRouterRoutesTag(openingElement.tagName, reactRouterBindings)) {
+          routeNodeFromJsxElement(
+            context,
+            nodes,
+            edges,
+            seenIds,
+            seenEdges,
+            enclosingRouteOwnerId(context, nodes, seenIds, node),
+            node,
+            null,
+            importedBindings,
+            reactRouterBindings,
+          )
         }
       }
 

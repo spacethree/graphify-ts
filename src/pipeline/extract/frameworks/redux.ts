@@ -39,6 +39,12 @@ interface ReduxModuleAnalysis {
   exports: Map<string, ReduxReference>
 }
 
+interface InitializerBinding {
+  expression: ts.Expression
+  scope: ts.Node
+  pos: number
+}
+
 interface ReduxToolkitImportBindings {
   createSlice: Set<string>
   configureStore: Set<string>
@@ -747,6 +753,75 @@ function sliceReducerTarget(
   return null
 }
 
+function lexicalScope(node: ts.Node): ts.Node | null {
+  let current: ts.Node | undefined = node
+  while (current) {
+    if (
+      ts.isSourceFile(current) ||
+      ts.isBlock(current) ||
+      ts.isModuleBlock(current) ||
+      ts.isCaseBlock(current) ||
+      ts.isCatchClause(current) ||
+      ts.isForStatement(current) ||
+      ts.isForInStatement(current) ||
+      ts.isForOfStatement(current)
+    ) {
+      return current
+    }
+    current = current.parent
+  }
+  return null
+}
+
+function resolveInitializerBinding(
+  name: string,
+  fromNode: ts.Node,
+  initializers: ReadonlyMap<string, readonly InitializerBinding[]>,
+): InitializerBinding | null {
+  const bindings = initializers.get(name)
+  if (!bindings) {
+    return null
+  }
+
+  let scope = lexicalScope(fromNode)
+  while (scope) {
+    const candidates = bindings.filter((binding) => binding.scope === scope && binding.pos < fromNode.pos)
+    if (candidates.length > 0) {
+      return candidates[candidates.length - 1] ?? null
+    }
+    scope = scope.parent ? lexicalScope(scope.parent) : null
+  }
+
+  return null
+}
+
+function resolveReduxInitializerExpression(
+  expression: ts.Expression,
+  initializers: ReadonlyMap<string, readonly InitializerBinding[]>,
+  fromNode: ts.Node,
+): ts.Expression {
+  const seen = new Set<string>()
+  let current = unparenthesizeExpression(expression)
+  let currentNode: ts.Node = fromNode
+
+  while (ts.isIdentifier(current) && !seen.has(current.text)) {
+    seen.add(current.text)
+    const initializer = resolveInitializerBinding(current.text, currentNode, initializers)
+    if (!initializer) {
+      break
+    }
+    current = unparenthesizeExpression(initializer.expression)
+    currentNode = initializer.expression
+  }
+
+  return current
+}
+
+function isReduxSelectorHookCall(callee: ts.Expression): boolean {
+  const candidate = unparenthesizeExpression(callee)
+  return ts.isIdentifier(candidate) && /^use(?:[A-Za-z0-9_$]*?)Selector$/.test(candidate.text)
+}
+
 function ensureReduxUsageOwnerNode(
   context: JsFrameworkContext,
   nodes: NonNullable<ReturnType<JsFrameworkAdapter['extract']>['nodes']>,
@@ -846,6 +921,27 @@ function recordImportedSelectorUsage(
           )
         }
       }
+
+      if (isReduxSelectorHookCall(callee)) {
+        const selectorArgument = node.arguments[0] ? unparenthesizeExpression(node.arguments[0]) : null
+        if (selectorArgument && ts.isIdentifier(selectorArgument)) {
+          const binding = importedBindings.get(selectorArgument.text)
+          if (binding?.kind === 'selector') {
+            const selectorId = addReduxReferenceNode(context, nodes, seenIds, binding)
+            addUniqueEdge(
+              edges,
+              seenEdges,
+              createEdge(
+                enclosingReduxUsageOwnerId(context, nodes, seenIds, node),
+                selectorId,
+                'uses',
+                context.filePath,
+                lineOf(node, context.sourceFile),
+              ),
+            )
+          }
+        }
+      }
     }
 
     ts.forEachChild(node, visit)
@@ -863,6 +959,7 @@ function handleStoreRegistration(
   toolkitBindings: ReduxToolkitImportBindings,
   slicesByBinding: ReadonlyMap<string, SliceRecord>,
   importedBindings: ReadonlyMap<string, ReduxReference>,
+  initializers: ReadonlyMap<string, readonly InitializerBinding[]>,
   declaration: ts.VariableDeclaration,
 ): void {
   if (!ts.isIdentifier(declaration.name) || !declaration.initializer) {
@@ -897,15 +994,20 @@ function handleStoreRegistration(
   const reducerInitializer = ts.isShorthandPropertyAssignment(reducerProperty)
     ? reducerProperty.name
     : unparenthesizeExpression(reducerProperty.initializer)
+  const resolvedReducerInitializer = resolveReduxInitializerExpression(reducerInitializer, initializers, reducerInitializer)
 
-  if (ts.isObjectLiteralExpression(reducerInitializer)) {
-    for (const property of reducerInitializer.properties) {
+  if (ts.isObjectLiteralExpression(resolvedReducerInitializer)) {
+    for (const property of resolvedReducerInitializer.properties) {
       if (!(ts.isPropertyAssignment(property) || ts.isShorthandPropertyAssignment(property))) {
         continue
       }
 
       const targetSlice = sliceReducerTarget(
-        ts.isShorthandPropertyAssignment(property) ? property.name : property.initializer,
+        resolveReduxInitializerExpression(
+          ts.isShorthandPropertyAssignment(property) ? property.name : property.initializer,
+          initializers,
+          ts.isShorthandPropertyAssignment(property) ? property.name : property.initializer,
+        ),
         slicesByBinding,
         importedBindings,
       )
@@ -923,7 +1025,7 @@ function handleStoreRegistration(
     return
   }
 
-  const targetSlice = sliceReducerTarget(reducerInitializer, slicesByBinding, importedBindings)
+  const targetSlice = sliceReducerTarget(resolvedReducerInitializer, slicesByBinding, importedBindings)
   if (!targetSlice) {
     return
   }
@@ -1112,9 +1214,24 @@ export const reduxAdapter: JsFrameworkAdapter = {
     const slicesByBinding = new Map<string, SliceRecord>()
     const thunkBindings = new Map<string, ReduxReference>()
     const actionBindings = new Map<string, ReduxReference>()
+    const initializers = new Map<string, InitializerBinding[]>()
     const moduleAnalysisCache = new Map<string, ReduxModuleAnalysis>()
     const importedBindings = collectImportedReduxBindings(context.filePath, context.sourceFile, moduleAnalysisCache)
     const toolkitBindings = collectReduxToolkitImportBindings(context.sourceFile)
+
+    const collectInitializers = (node: ts.Node) => {
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+        const bindings = initializers.get(node.name.text) ?? []
+        bindings.push({
+          expression: node.initializer,
+          scope: lexicalScope(node) ?? context.sourceFile,
+          pos: node.pos,
+        })
+        initializers.set(node.name.text, bindings)
+      }
+      ts.forEachChild(node, collectInitializers)
+    }
+    collectInitializers(context.sourceFile)
 
     const visit = (node: ts.Node) => {
       if (ts.isVariableDeclaration(node)) {
@@ -1131,7 +1248,7 @@ export const reduxAdapter: JsFrameworkAdapter = {
           importedBindings,
           node,
         )
-        handleStoreRegistration(context, nodes, edges, seenIds, seenEdges, toolkitBindings, slicesByBinding, importedBindings, node)
+        handleStoreRegistration(context, nodes, edges, seenIds, seenEdges, toolkitBindings, slicesByBinding, importedBindings, initializers, node)
         handleExportedMembers(context, nodes, edges, seenIds, seenEdges, slicesByBinding, node)
       }
 
