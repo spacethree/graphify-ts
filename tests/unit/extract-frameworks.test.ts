@@ -1152,4 +1152,243 @@ describe('js framework extraction contract', () => {
       expect.objectContaining({ route_path: '/b/leaf' }),
     )
   })
+
+  it('extracts redux toolkit slices, actions, selectors, thunks, and store registration', () => {
+    const filePath = join(FIXTURES_DIR, 'virtual-redux-store.ts')
+    const sourceText = [
+      "import { createAsyncThunk, createSlice, configureStore } from '@reduxjs/toolkit'",
+      '',
+      "const fetchProfile = createAsyncThunk('auth/fetchProfile', async () => ({ id: '1' }))",
+      '',
+      'const authSlice = createSlice({',
+      "  name: 'auth',",
+      '  initialState: { token: null as string | null, status: \'idle\' as \'idle\' | \'ready\' },',
+      '  reducers: {',
+      '    loginSucceeded(state, action: { payload: string }) {',
+      '      state.token = action.payload',
+      '    },',
+      '    logout(state) {',
+      '      state.token = null',
+      '    },',
+      '  },',
+      '  selectors: {',
+      '    selectToken: (state) => state.token,',
+      '    selectStatus: (state) => state.status,',
+      '  },',
+      '  extraReducers: (builder) => {',
+      '    builder.addCase(fetchProfile.fulfilled, (state) => {',
+      "      state.status = 'ready'",
+      '    })',
+      '  },',
+      '})',
+      '',
+      'export const { loginSucceeded, logout } = authSlice.actions',
+      'export const { selectToken, selectStatus } = authSlice.selectors',
+      'export const store = configureStore({',
+      '  reducer: {',
+      '    auth: authSlice.reducer,',
+      '  },',
+      '})',
+    ].join('\n')
+    const baseExtraction = createBaseExtraction(filePath, 'virtual-redux-store', [
+      'fetchProfile',
+      'authSlice',
+      'loginSucceeded',
+      'logout',
+      'selectToken',
+      'selectStatus',
+      'store',
+    ])
+
+    const result = applyJsFrameworkAdapters(baseExtraction, createFrameworkContext(filePath, sourceText, baseExtraction))
+    const graph = buildFromJson({
+      nodes: result.nodes,
+      edges: result.edges,
+    })
+
+    expect(result.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: 'auth slice', node_kind: 'slice', framework_role: 'redux_slice', framework: 'redux-toolkit' }),
+        expect.objectContaining({ label: 'fetchProfile', framework_role: 'redux_thunk', framework: 'redux-toolkit' }),
+        expect.objectContaining({ label: 'loginSucceeded', framework_role: 'redux_action', framework: 'redux-toolkit' }),
+        expect.objectContaining({ label: 'logout', framework_role: 'redux_action', framework: 'redux-toolkit' }),
+        expect.objectContaining({ label: 'selectToken', framework_role: 'redux_selector', framework: 'redux-toolkit' }),
+        expect.objectContaining({ label: 'selectStatus', framework_role: 'redux_selector', framework: 'redux-toolkit' }),
+        expect.objectContaining({ label: 'store', node_kind: 'store', framework_role: 'redux_store', framework: 'redux-toolkit' }),
+      ]),
+    )
+
+    const sliceNodeId = nodeIdForLabel(result, 'auth slice')
+    const storeNodeId = nodeIdForLabel(result, 'store')
+
+    expect(result.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: sliceNodeId, target: nodeIdForLabel(result, 'loginSucceeded'), relation: 'defines_action' }),
+        expect.objectContaining({ source: sliceNodeId, target: nodeIdForLabel(result, 'logout'), relation: 'defines_action' }),
+        expect.objectContaining({ source: sliceNodeId, target: nodeIdForLabel(result, 'selectToken'), relation: 'defines_selector' }),
+        expect.objectContaining({ source: sliceNodeId, target: nodeIdForLabel(result, 'selectStatus'), relation: 'defines_selector' }),
+        expect.objectContaining({ source: sliceNodeId, target: storeNodeId, relation: 'registered_in_store' }),
+        expect.objectContaining({ source: nodeIdForLabel(result, 'fetchProfile'), target: sliceNodeId, relation: 'updates_slice' }),
+      ]),
+    )
+    expect(graph.nodeAttributes(sliceNodeId)).toEqual(
+      expect.objectContaining({
+        label: 'auth slice',
+        node_kind: 'slice',
+      }),
+    )
+    expect(graph.edgeAttributes(sliceNodeId, storeNodeId)).toEqual(
+      expect.objectContaining({
+        relation: 'registered_in_store',
+      }),
+    )
+  })
+
+  it('extracts react router object routes with nested loaders, actions, and component mappings', () => {
+    const filePath = join(FIXTURES_DIR, 'virtual-react-router-object.tsx')
+    const sourceText = [
+      "import { createBrowserRouter } from 'react-router-dom'",
+      '',
+      'function RootLayout() {',
+      '  return null',
+      '}',
+      '',
+      'function DashboardPage() {',
+      '  return null',
+      '}',
+      '',
+      'function SettingsPage() {',
+      '  return null',
+      '}',
+      '',
+      'function settingsLoader() {',
+      '  return null',
+      '}',
+      '',
+      'function settingsAction() {',
+      '  return null',
+      '}',
+      '',
+      'export const router = createBrowserRouter([',
+      '  {',
+      "    path: '/',",
+      '    Component: RootLayout,',
+      '    children: [',
+      '      {',
+      '        index: true,',
+      '        element: <DashboardPage />,',
+      '      },',
+      '      {',
+      "        path: 'settings',",
+      '        loader: settingsLoader,',
+      '        action: settingsAction,',
+      '        Component: SettingsPage,',
+      '      },',
+      '    ],',
+      '  },',
+      '])',
+    ].join('\n')
+    const baseExtraction = createBaseExtraction(filePath, 'virtual-react-router-object', [
+      'RootLayout',
+      'DashboardPage',
+      'SettingsPage',
+      'settingsLoader',
+      'settingsAction',
+      'router',
+    ])
+
+    const result = applyJsFrameworkAdapters(baseExtraction, createFrameworkContext(filePath, sourceText, baseExtraction))
+
+    expect(result.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: '/', node_kind: 'route', route_path: '/', framework_role: 'react_router_route', framework: 'react-router' }),
+        expect.objectContaining({ label: '/ (index)', node_kind: 'route', route_path: '/', framework_role: 'react_router_route', framework: 'react-router' }),
+        expect.objectContaining({ label: '/settings', node_kind: 'route', route_path: '/settings', framework_role: 'react_router_route', framework: 'react-router' }),
+      ]),
+    )
+
+    const rootRouteId = nodeIdForLabel(result, '/')
+    const indexRouteId = nodeIdForLabel(result, '/ (index)')
+    const settingsRouteId = nodeIdForLabel(result, '/settings')
+
+    expect(result.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: nodeIdForLabel(result, 'router'), target: rootRouteId, relation: 'registers_route' }),
+        expect.objectContaining({ source: rootRouteId, target: nodeIdForLabel(result, 'RootLayout'), relation: 'renders' }),
+        expect.objectContaining({ source: indexRouteId, target: nodeIdForLabel(result, 'DashboardPage'), relation: 'renders' }),
+        expect.objectContaining({ source: settingsRouteId, target: nodeIdForLabel(result, 'SettingsPage'), relation: 'renders' }),
+        expect.objectContaining({ source: settingsRouteId, target: nodeIdForLabel(result, 'settingsLoader'), relation: 'loads_route' }),
+        expect.objectContaining({ source: settingsRouteId, target: nodeIdForLabel(result, 'settingsAction'), relation: 'submits_route' }),
+        expect.objectContaining({ source: rootRouteId, target: indexRouteId, relation: 'contains' }),
+        expect.objectContaining({ source: rootRouteId, target: settingsRouteId, relation: 'contains' }),
+      ]),
+    )
+  })
+
+  it('extracts react router jsx route declarations and outlet layouts', () => {
+    const filePath = join(FIXTURES_DIR, 'virtual-react-router-jsx.tsx')
+    const sourceText = [
+      "import { Outlet, Route, createBrowserRouter, createRoutesFromElements } from 'react-router-dom'",
+      '',
+      'function AppLayout() {',
+      '  return <Outlet />',
+      '}',
+      '',
+      'function HomePage() {',
+      '  return null',
+      '}',
+      '',
+      'function SettingsPage() {',
+      '  return null',
+      '}',
+      '',
+      'function settingsLoader() {',
+      '  return null',
+      '}',
+      '',
+      'function settingsAction() {',
+      '  return null',
+      '}',
+      '',
+      'export const router = createBrowserRouter(',
+      '  createRoutesFromElements(',
+      '    <Route path="/" element={<AppLayout />}>',
+      '      <Route index element={<HomePage />} />',
+      '      <Route path="settings" loader={settingsLoader} action={settingsAction} Component={SettingsPage} />',
+      '    </Route>,',
+      '  ),',
+      ')',
+    ].join('\n')
+    const baseExtraction = createBaseExtraction(filePath, 'virtual-react-router-jsx', [
+      'AppLayout',
+      'HomePage',
+      'SettingsPage',
+      'settingsLoader',
+      'settingsAction',
+      'router',
+    ])
+
+    const result = applyJsFrameworkAdapters(baseExtraction, createFrameworkContext(filePath, sourceText, baseExtraction))
+
+    expect(result.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: '/', node_kind: 'route', route_path: '/', framework_role: 'react_router_route', framework: 'react-router' }),
+        expect.objectContaining({ label: '/ (index)', node_kind: 'route', route_path: '/', framework_role: 'react_router_route', framework: 'react-router' }),
+        expect.objectContaining({ label: '/settings', node_kind: 'route', route_path: '/settings', framework_role: 'react_router_route', framework: 'react-router' }),
+      ]),
+    )
+
+    const rootRouteId = nodeIdForLabel(result, '/')
+    const settingsRouteId = nodeIdForLabel(result, '/settings')
+
+    expect(result.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: rootRouteId, target: nodeIdForLabel(result, 'AppLayout'), relation: 'renders' }),
+        expect.objectContaining({ source: nodeIdForLabel(result, '/ (index)'), target: nodeIdForLabel(result, 'HomePage'), relation: 'renders' }),
+        expect.objectContaining({ source: settingsRouteId, target: nodeIdForLabel(result, 'SettingsPage'), relation: 'renders' }),
+        expect.objectContaining({ source: settingsRouteId, target: nodeIdForLabel(result, 'settingsLoader'), relation: 'loads_route' }),
+        expect.objectContaining({ source: settingsRouteId, target: nodeIdForLabel(result, 'settingsAction'), relation: 'submits_route' }),
+      ]),
+    )
+  })
 })

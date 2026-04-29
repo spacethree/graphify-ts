@@ -501,6 +501,226 @@ describe('retrieve', () => {
       )
     })
 
+    it('answers auth slice questions with compact semantic matches', () => {
+      const semanticGraph = new KnowledgeGraph({ directed: true })
+      semanticGraph.addNode('auth_slice', {
+        label: 'auth slice',
+        source_file: '/src/features/auth/authSlice.ts',
+        line_number: 5,
+        node_kind: 'slice',
+        file_type: 'code',
+        community: 0,
+      })
+      semanticGraph.addNode('auth_store', {
+        label: 'store',
+        source_file: '/src/app/store.ts',
+        line_number: 3,
+        node_kind: 'store',
+        file_type: 'code',
+        community: 0,
+      })
+      semanticGraph.addNode('select_auth_status', {
+        label: 'selectAuthStatus',
+        source_file: '/src/features/auth/authSlice.ts',
+        line_number: 22,
+        node_kind: 'function',
+        file_type: 'code',
+        community: 0,
+      })
+      semanticGraph.addEdge('auth_slice', 'auth_store', {
+        relation: 'registered_in_store',
+        confidence: 'EXTRACTED',
+        source_file: '/src/app/store.ts',
+      })
+      semanticGraph.addEdge('auth_slice', 'select_auth_status', {
+        relation: 'defines_selector',
+        confidence: 'EXTRACTED',
+        source_file: '/src/features/auth/authSlice.ts',
+      })
+
+      const baselineGraph = new KnowledgeGraph({ directed: true })
+      baselineGraph.addNode('auth_state_type', {
+        label: 'AuthState',
+        source_file: '/src/features/auth/types.ts',
+        line_number: 1,
+        node_kind: 'type',
+        file_type: 'code',
+        community: 0,
+      })
+      baselineGraph.addNode('auth_reducer', {
+        label: 'authReducer',
+        source_file: '/src/features/auth/authSlice.ts',
+        line_number: 30,
+        node_kind: 'function',
+        file_type: 'code',
+        community: 0,
+      })
+      baselineGraph.addNode('configure_store', {
+        label: 'configureStore',
+        source_file: '/src/app/store.ts',
+        line_number: 3,
+        node_kind: 'function',
+        file_type: 'code',
+        community: 0,
+      })
+      baselineGraph.addNode('select_auth_status_baseline', {
+        label: 'selectAuthStatus',
+        source_file: '/src/features/auth/selectors.ts',
+        line_number: 4,
+        node_kind: 'function',
+        file_type: 'code',
+        community: 0,
+      })
+      baselineGraph.addEdge('configure_store', 'auth_reducer', {
+        relation: 'calls',
+        confidence: 'EXTRACTED',
+        source_file: '/src/app/store.ts',
+      })
+      baselineGraph.addEdge('auth_reducer', 'auth_state_type', {
+        relation: 'defines',
+        confidence: 'EXTRACTED',
+        source_file: '/src/features/auth/authSlice.ts',
+      })
+      baselineGraph.addEdge('auth_reducer', 'select_auth_status_baseline', {
+        relation: 'uses',
+        confidence: 'EXTRACTED',
+        source_file: '/src/features/auth/authSlice.ts',
+      })
+
+      const semanticResult = retrieveContext(semanticGraph, {
+        question: 'which slice owns auth state',
+        budget: 5000,
+        fileType: 'code',
+      })
+      const baselineResult = retrieveContext(baselineGraph, {
+        question: 'which slice owns auth state',
+        budget: 5000,
+        fileType: 'code',
+      })
+
+      expect(semanticResult.matched_nodes[0]).toEqual(
+        expect.objectContaining({
+          label: 'auth slice',
+          node_kind: 'slice',
+          relevance_band: 'direct',
+        }),
+      )
+      expect(semanticResult.matched_nodes.length).toBeLessThan(baselineResult.matched_nodes.length)
+      expect(semanticResult.matched_nodes.filter((node) => node.node_kind !== 'slice')).toHaveLength(2)
+    })
+
+    it('answers route rendering questions with compact route semantics', () => {
+      const semanticGraph = new KnowledgeGraph({ directed: true })
+      semanticGraph.addNode('settings_route', {
+        label: 'settings page route',
+        source_file: '/src/router.tsx',
+        line_number: 8,
+        node_kind: 'route',
+        file_type: 'code',
+        community: 1,
+      })
+      semanticGraph.addNode('settings_page', {
+        label: 'SettingsPage',
+        source_file: '/src/pages/SettingsPage.tsx',
+        line_number: 2,
+        node_kind: 'function',
+        file_type: 'code',
+        community: 1,
+      })
+      semanticGraph.addNode('settings_loader', {
+        label: 'settingsLoader',
+        source_file: '/src/pages/SettingsPage.tsx',
+        line_number: 12,
+        node_kind: 'function',
+        file_type: 'code',
+        community: 1,
+      })
+      semanticGraph.addEdge('settings_route', 'settings_page', {
+        relation: 'renders',
+        confidence: 'EXTRACTED',
+        source_file: '/src/router.tsx',
+      })
+      semanticGraph.addEdge('settings_route', 'settings_loader', {
+        relation: 'loads_route',
+        confidence: 'EXTRACTED',
+        source_file: '/src/router.tsx',
+      })
+
+      const baselineGraph = new KnowledgeGraph({ directed: true })
+      baselineGraph.addNode('router_config', {
+        label: 'routerConfig',
+        source_file: '/src/router.tsx',
+        line_number: 1,
+        node_kind: 'variable',
+        file_type: 'code',
+        community: 1,
+      })
+      baselineGraph.addNode('settings_page_component', {
+        label: 'SettingsPage',
+        source_file: '/src/pages/SettingsPage.tsx',
+        line_number: 2,
+        node_kind: 'function',
+        file_type: 'code',
+        community: 1,
+      })
+      baselineGraph.addNode('settings_loader_baseline', {
+        label: 'settingsLoader',
+        source_file: '/src/pages/SettingsPage.tsx',
+        line_number: 12,
+        node_kind: 'function',
+        file_type: 'code',
+        community: 1,
+      })
+      baselineGraph.addNode('route_path_literal', {
+        label: 'settingsPath',
+        source_file: '/src/router.tsx',
+        line_number: 9,
+        node_kind: 'variable',
+        file_type: 'code',
+        community: 1,
+      })
+      baselineGraph.addEdge('router_config', 'settings_page_component', {
+        relation: 'uses',
+        confidence: 'EXTRACTED',
+        source_file: '/src/router.tsx',
+      })
+      baselineGraph.addEdge('router_config', 'settings_loader_baseline', {
+        relation: 'uses',
+        confidence: 'EXTRACTED',
+        source_file: '/src/router.tsx',
+      })
+      baselineGraph.addEdge('router_config', 'route_path_literal', {
+        relation: 'defines',
+        confidence: 'EXTRACTED',
+        source_file: '/src/router.tsx',
+      })
+
+      const semanticResult = retrieveContext(semanticGraph, {
+        question: 'which route renders settings page',
+        budget: 5000,
+        fileType: 'code',
+      })
+      const baselineResult = retrieveContext(baselineGraph, {
+        question: 'which route renders settings page',
+        budget: 5000,
+        fileType: 'code',
+      })
+
+      expect(semanticResult.matched_nodes[0]).toEqual(
+        expect.objectContaining({
+          label: 'settings page route',
+          node_kind: 'route',
+          relevance_band: 'direct',
+        }),
+      )
+      expect(semanticResult.matched_nodes.length).toBeLessThan(baselineResult.matched_nodes.length)
+      expect(semanticResult.relationships).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ from: 'settings page route', to: 'SettingsPage', relation: 'renders' }),
+        ]),
+      )
+    })
+
     it('keeps direct symbol matches above path-only matches after structural boosts', () => {
       const graph = new KnowledgeGraph()
       graph.addNode('direct_symbol', {

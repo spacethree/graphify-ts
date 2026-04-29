@@ -1,9 +1,11 @@
 import type { ExtractionEdge, ExtractionNode } from '../../../contracts/types.js'
 import type { ExtractionFragment } from '../dispatch.js'
 import { expressAdapter } from './express.js'
+import { reactRouterAdapter } from './react-router.js'
+import { reduxAdapter } from './redux.js'
 import type { JsFrameworkAdapter, JsFrameworkContext } from './types.js'
 
-const JS_FRAMEWORK_ADAPTERS: readonly JsFrameworkAdapter[] = [expressAdapter]
+const JS_FRAMEWORK_ADAPTERS: readonly JsFrameworkAdapter[] = [expressAdapter, reduxAdapter, reactRouterAdapter]
 const EXTERNAL_TARGET_RELATIONS = new Set(['depends_on', 'imports', 'imports_from', 'handles_route', 'middleware', 'mounts_router'])
 const EXTERNAL_SOURCE_RELATIONS = new Set(['handles_route', 'middleware', 'mounts_router', 'registers_route'])
 

@@ -264,9 +264,17 @@ function relationWeight(relation: string): number {
     case 'calls':
     case 'imports_from':
     case 'defines':
+    case 'defines_action':
+    case 'defines_selector':
       return 1
     case 'contains':
+    case 'renders':
       return 1.2
+    case 'loads_route':
+    case 'submits_route':
+    case 'registered_in_store':
+    case 'updates_slice':
+      return 1
     case 'uses':
     case 'depends_on':
       return 0.7
@@ -288,7 +296,19 @@ function relationBetweenNodes(graph: KnowledgeGraph, source: string, target: str
 }
 
 function isPrimaryExpansionRelation(relation: string): boolean {
-  return relation === 'calls' || relation === 'imports_from' || relation === 'defines' || relation === 'contains'
+  return (
+    relation === 'calls' ||
+    relation === 'imports_from' ||
+    relation === 'defines' ||
+    relation === 'defines_action' ||
+    relation === 'defines_selector' ||
+    relation === 'contains' ||
+    relation === 'renders' ||
+    relation === 'loads_route' ||
+    relation === 'submits_route' ||
+    relation === 'registered_in_store' ||
+    relation === 'updates_slice'
+  )
 }
 export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions): RetrieveResult {
   const { question, budget } = options
