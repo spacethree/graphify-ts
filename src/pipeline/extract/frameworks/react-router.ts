@@ -1,8 +1,12 @@
+import { readFileSync } from 'node:fs'
+import { basename, extname, resolve } from 'node:path'
+
 import * as ts from 'typescript'
 
 import type { ExtractionNode } from '../../../contracts/types.js'
 import { addNode, addUniqueEdge, createEdge, createNode, _makeId } from '../core.js'
 import { unparenthesizeExpression } from '../typescript-utils.js'
+import { resolveImportPath, scriptKindForPath } from './js-import-paths.js'
 import type { JsFrameworkAdapter, JsFrameworkContext } from './types.js'
 
 const REACT_ROUTER_MATCH_PATTERN = /\bcreateBrowserRouter\b|\bcreateRoutesFromElements\b|<Route\b/
@@ -19,7 +23,21 @@ interface AddReferenceOptions {
   fallbackSuffix: string
 }
 
+interface ImportedRouteReference {
+  id: string
+  label: string
+  sourceFile: string
+  line: number
+  nodeKind: NonNullable<ExtractionNode['node_kind']>
+}
+
+interface JsModuleAnalysis {
+  exports: Map<string, ImportedRouteReference>
+}
+
 type RouteObjectProperty = ts.PropertyAssignment | ts.MethodDeclaration | ts.ShorthandPropertyAssignment
+
+const jsModuleAnalysisCache = new Map<string, JsModuleAnalysis>()
 
 function lineOf(node: ts.Node, sourceFile: ts.SourceFile): number {
   return sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1
@@ -38,6 +56,227 @@ function findBaseNode(context: JsFrameworkContext, name: string) {
   return context.baseExtraction.nodes?.find((node) => candidates.has(node.label)) ?? null
 }
 
+function moduleStem(filePath: string): string {
+  return basename(filePath, extname(filePath))
+}
+
+function createExportedReference(
+  filePath: string,
+  name: string,
+  line: number,
+  label: string,
+  nodeKind: NonNullable<ExtractionNode['node_kind']>,
+): ImportedRouteReference {
+  return {
+    id: _makeId(moduleStem(filePath), name),
+    label,
+    sourceFile: filePath,
+    line,
+    nodeKind,
+  }
+}
+
+function referenceForVariableDeclaration(filePath: string, declaration: ts.VariableDeclaration, sourceFile: ts.SourceFile): ImportedRouteReference | null {
+  if (!ts.isIdentifier(declaration.name)) {
+    return null
+  }
+
+  const initializer = declaration.initializer ? unparenthesizeExpression(declaration.initializer) : null
+  const name = declaration.name.text
+  const line = lineOf(declaration.name, sourceFile)
+
+  if (initializer && (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer))) {
+    return createExportedReference(filePath, name, line, `${name}()`, 'function')
+  }
+
+  if (initializer && ts.isClassExpression(initializer)) {
+    return createExportedReference(filePath, name, line, name, 'class')
+  }
+
+  return createExportedReference(filePath, name, line, name, 'function')
+}
+
+function analyzeJsModule(filePath: string): JsModuleAnalysis {
+  const resolvedFilePath = resolve(filePath)
+  const cached = jsModuleAnalysisCache.get(resolvedFilePath)
+  if (cached) {
+    return cached
+  }
+
+  const analysis: JsModuleAnalysis = {
+    exports: new Map<string, ImportedRouteReference>(),
+  }
+  jsModuleAnalysisCache.set(resolvedFilePath, analysis)
+
+  let sourceText: string
+  try {
+    sourceText = readFileSync(resolvedFilePath, 'utf8')
+  } catch {
+    return analysis
+  }
+
+  const sourceFile = ts.createSourceFile(resolvedFilePath, sourceText, ts.ScriptTarget.Latest, true, scriptKindForPath(resolvedFilePath))
+  const importedBindings = new Map<string, ImportedRouteReference>()
+  const localBindings = new Map<string, ImportedRouteReference>()
+
+  const resolveLocalBinding = (name: string): ImportedRouteReference | null => localBindings.get(name) ?? importedBindings.get(name) ?? null
+
+  for (const statement of sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement) || !statement.importClause || !ts.isStringLiteralLike(statement.moduleSpecifier)) {
+      continue
+    }
+
+    const targetFilePath = resolveImportPath(resolvedFilePath, statement.moduleSpecifier.text)
+    if (!targetFilePath) {
+      continue
+    }
+
+    const exportedBindings = analyzeJsModule(targetFilePath).exports
+    if (statement.importClause.name) {
+      const binding = exportedBindings.get('default')
+      if (binding) {
+        importedBindings.set(statement.importClause.name.text, binding)
+      }
+    }
+
+    const namedBindings = statement.importClause.namedBindings
+    if (namedBindings && ts.isNamedImports(namedBindings)) {
+      for (const element of namedBindings.elements) {
+        const importedName = element.propertyName?.text ?? element.name.text
+        const binding = exportedBindings.get(importedName)
+        if (binding) {
+          importedBindings.set(element.name.text, binding)
+        }
+      }
+    }
+  }
+
+  for (const statement of sourceFile.statements) {
+    const modifiers = ts.canHaveModifiers(statement) ? ts.getModifiers(statement) : undefined
+    const exported = modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) ?? false
+    const defaultExport = modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword) ?? false
+
+    if (ts.isFunctionDeclaration(statement) && statement.name) {
+      const reference = createExportedReference(resolvedFilePath, statement.name.text, lineOf(statement.name, sourceFile), `${statement.name.text}()`, 'function')
+      localBindings.set(statement.name.text, reference)
+      if (exported) {
+        analysis.exports.set(statement.name.text, reference)
+      }
+      if (defaultExport) {
+        analysis.exports.set('default', reference)
+      }
+      continue
+    }
+
+    if (ts.isClassDeclaration(statement) && statement.name) {
+      const reference = createExportedReference(resolvedFilePath, statement.name.text, lineOf(statement.name, sourceFile), statement.name.text, 'class')
+      localBindings.set(statement.name.text, reference)
+      if (exported) {
+        analysis.exports.set(statement.name.text, reference)
+      }
+      if (defaultExport) {
+        analysis.exports.set('default', reference)
+      }
+      continue
+    }
+
+    if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        const reference = referenceForVariableDeclaration(resolvedFilePath, declaration, sourceFile)
+        if (!reference || !ts.isIdentifier(declaration.name)) {
+          continue
+        }
+
+        localBindings.set(declaration.name.text, reference)
+        if (exported) {
+          analysis.exports.set(declaration.name.text, reference)
+        }
+      }
+      continue
+    }
+
+    if (ts.isExportAssignment(statement) && !statement.isExportEquals) {
+      const expression = unparenthesizeExpression(statement.expression)
+      if (ts.isIdentifier(expression)) {
+        const reference = resolveLocalBinding(expression.text)
+        if (reference) {
+          analysis.exports.set('default', reference)
+        }
+      } else if ((ts.isFunctionExpression(expression) || ts.isArrowFunction(expression)) && expression.name?.text) {
+        analysis.exports.set(
+          'default',
+          createExportedReference(resolvedFilePath, expression.name.text, lineOf(expression, sourceFile), `${expression.name.text}()`, 'function'),
+        )
+      } else if (ts.isClassExpression(expression) && expression.name?.text) {
+        analysis.exports.set(
+          'default',
+          createExportedReference(resolvedFilePath, expression.name.text, lineOf(expression, sourceFile), expression.name.text, 'class'),
+        )
+      } else {
+        analysis.exports.set('default', createExportedReference(resolvedFilePath, 'default', lineOf(statement, sourceFile), 'default', 'function'))
+      }
+      continue
+    }
+
+    if (ts.isExportDeclaration(statement) && statement.exportClause && ts.isNamedExports(statement.exportClause)) {
+      const targetFilePath =
+        statement.moduleSpecifier && ts.isStringLiteralLike(statement.moduleSpecifier)
+          ? resolveImportPath(resolvedFilePath, statement.moduleSpecifier.text)
+          : null
+      const targetExports = targetFilePath ? analyzeJsModule(targetFilePath).exports : null
+
+      for (const element of statement.exportClause.elements) {
+        const exportName = element.name.text
+        const localName = element.propertyName?.text ?? element.name.text
+        const reference = targetExports?.get(localName) ?? resolveLocalBinding(localName)
+        if (reference) {
+          analysis.exports.set(exportName, reference)
+        }
+      }
+    }
+  }
+
+  return analysis
+}
+
+function collectImportedRouteBindings(filePath: string, sourceFile: ts.SourceFile): Map<string, ImportedRouteReference> {
+  const importedBindings = new Map<string, ImportedRouteReference>()
+
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node) && node.importClause && ts.isStringLiteralLike(node.moduleSpecifier)) {
+      const targetFilePath = resolveImportPath(filePath, node.moduleSpecifier.text)
+      const exportedBindings = targetFilePath ? analyzeJsModule(targetFilePath).exports : null
+      if (!exportedBindings) {
+        ts.forEachChild(node, visit)
+        return
+      }
+
+      if (node.importClause.name) {
+        const binding = exportedBindings.get('default')
+        if (binding) {
+          importedBindings.set(node.importClause.name.text, binding)
+        }
+      }
+
+      const namedBindings = node.importClause.namedBindings
+      if (namedBindings && ts.isNamedImports(namedBindings)) {
+        for (const element of namedBindings.elements) {
+          const importedName = element.propertyName?.text ?? element.name.text
+          const binding = exportedBindings.get(importedName)
+          if (binding) {
+            importedBindings.set(element.name.text, binding)
+          }
+        }
+      }
+    }
+
+    ts.forEachChild(node, visit)
+  }
+
+  visit(sourceFile)
+  return importedBindings
+}
+
 function addNamedReference(
   context: JsFrameworkContext,
   nodes: NonNullable<ReturnType<JsFrameworkAdapter['extract']>['nodes']>,
@@ -45,13 +284,16 @@ function addNamedReference(
   name: string,
   line: number,
   options: AddReferenceOptions,
+  importedReference: ImportedRouteReference | null = null,
 ): string {
   const baseNode = findBaseNode(context, name)
-  const id = baseNode?.id ?? _makeId(context.filePath, name, options.fallbackSuffix)
+  const id = importedReference?.id ?? baseNode?.id ?? _makeId(context.filePath, name, options.fallbackSuffix)
   addNode(nodes, seenIds, {
-    ...(baseNode ?? createNode(id, name, context.filePath, line)),
+    ...(importedReference
+      ? createNode(importedReference.id, importedReference.label, importedReference.sourceFile, importedReference.line)
+      : baseNode ?? createNode(id, name, context.filePath, line)),
     id,
-    node_kind: baseNode?.node_kind ?? options.nodeKind,
+    node_kind: importedReference?.nodeKind ?? baseNode?.node_kind ?? options.nodeKind,
     framework: 'react-router',
     framework_role: options.frameworkRole,
   })
@@ -186,34 +428,59 @@ function addRouteBindings(
   componentExpression: ts.Expression | null,
   loaderExpression: ts.Expression | null,
   actionExpression: ts.Expression | null,
+  importedBindings: ReadonlyMap<string, ImportedRouteReference>,
 ): void {
   const componentName = componentExpression ? componentNameFromElementExpression(componentExpression) : null
   if (componentName) {
-    const componentId = addNamedReference(context, nodes, seenIds, componentName, lineOf(componentExpression!, context.sourceFile), {
-      nodeKind: 'component',
-      frameworkRole: 'react_router_component',
-      fallbackSuffix: 'component',
-    })
+    const componentId = addNamedReference(
+      context,
+      nodes,
+      seenIds,
+      componentName,
+      lineOf(componentExpression!, context.sourceFile),
+      {
+        nodeKind: 'component',
+        frameworkRole: 'react_router_component',
+        fallbackSuffix: 'component',
+      },
+      importedBindings.get(componentName) ?? null,
+    )
     addUniqueEdge(edges, seenEdges, createEdge(route.id, componentId, 'renders', context.filePath, route.line))
   }
 
   const loaderName = loaderExpression ? identifierFromExpression(loaderExpression) : null
   if (loaderName) {
-    const loaderId = addNamedReference(context, nodes, seenIds, loaderName, lineOf(loaderExpression!, context.sourceFile), {
-      nodeKind: 'function',
-      frameworkRole: 'react_router_loader',
-      fallbackSuffix: 'loader',
-    })
+    const loaderId = addNamedReference(
+      context,
+      nodes,
+      seenIds,
+      loaderName,
+      lineOf(loaderExpression!, context.sourceFile),
+      {
+        nodeKind: 'function',
+        frameworkRole: 'react_router_loader',
+        fallbackSuffix: 'loader',
+      },
+      importedBindings.get(loaderName) ?? null,
+    )
     addUniqueEdge(edges, seenEdges, createEdge(route.id, loaderId, 'loads_route', context.filePath, route.line))
   }
 
   const actionName = actionExpression ? identifierFromExpression(actionExpression) : null
   if (actionName) {
-    const actionId = addNamedReference(context, nodes, seenIds, actionName, lineOf(actionExpression!, context.sourceFile), {
-      nodeKind: 'function',
-      frameworkRole: 'react_router_action',
-      fallbackSuffix: 'action',
-    })
+    const actionId = addNamedReference(
+      context,
+      nodes,
+      seenIds,
+      actionName,
+      lineOf(actionExpression!, context.sourceFile),
+      {
+        nodeKind: 'function',
+        frameworkRole: 'react_router_action',
+        fallbackSuffix: 'action',
+      },
+      importedBindings.get(actionName) ?? null,
+    )
     addUniqueEdge(edges, seenEdges, createEdge(route.id, actionId, 'submits_route', context.filePath, route.line))
   }
 }
@@ -249,6 +516,7 @@ function routeNodeFromJsxElement(
   routerId: string,
   element: ts.JsxElement | ts.JsxSelfClosingElement,
   parentRoute: RouteNodeRecord | null,
+  importedBindings: ReadonlyMap<string, ImportedRouteReference>,
 ): RouteNodeRecord | null {
   const openingElement = ts.isJsxElement(element) ? element.openingElement : element
   if (!ts.isIdentifier(openingElement.tagName) || openingElement.tagName.text !== 'Route') {
@@ -289,12 +557,13 @@ function routeNodeFromJsxElement(
       jsxAttributeExpression(jsxAttribute(openingElement, 'element')),
     jsxAttributeExpression(jsxAttribute(openingElement, 'loader')),
     jsxAttributeExpression(jsxAttribute(openingElement, 'action')),
+    importedBindings,
   )
 
   if (ts.isJsxElement(element)) {
     for (const child of element.children) {
       if (ts.isJsxElement(child) || ts.isJsxSelfClosingElement(child)) {
-        routeNodeFromJsxElement(context, nodes, edges, seenIds, seenEdges, routerId, child, route)
+        routeNodeFromJsxElement(context, nodes, edges, seenIds, seenEdges, routerId, child, route, importedBindings)
       }
     }
   }
@@ -311,6 +580,7 @@ function routeNodeFromObjectLiteral(
   routerId: string,
   routeObject: ts.ObjectLiteralExpression,
   parentRoute: RouteNodeRecord | null,
+  importedBindings: ReadonlyMap<string, ImportedRouteReference>,
 ): RouteNodeRecord {
   const isIndex = booleanProperty(routeObject, 'index')
   const path = stringProperty(routeObject, 'path')
@@ -333,6 +603,7 @@ function routeNodeFromObjectLiteral(
     expressionProperty(routeObject, 'Component') ?? expressionProperty(routeObject, 'element'),
     expressionProperty(routeObject, 'loader'),
     expressionProperty(routeObject, 'action'),
+    importedBindings,
   )
 
   const childrenExpression = expressionProperty(routeObject, 'children')
@@ -340,7 +611,7 @@ function routeNodeFromObjectLiteral(
     for (const child of childrenExpression.elements) {
       const candidate = unparenthesizeExpression(child)
       if (ts.isObjectLiteralExpression(candidate)) {
-        routeNodeFromObjectLiteral(context, nodes, edges, seenIds, seenEdges, routerId, candidate, route)
+        routeNodeFromObjectLiteral(context, nodes, edges, seenIds, seenEdges, routerId, candidate, route, importedBindings)
       }
     }
   }
@@ -367,6 +638,7 @@ export const reactRouterAdapter: JsFrameworkAdapter = {
     const seenIds = new Set<string>()
     const seenEdges = new Set<string>()
     const initializers = new Map<string, ts.Expression>()
+    const importedBindings = collectImportedRouteBindings(context.filePath, context.sourceFile)
 
     const collectInitializers = (node: ts.Node) => {
       if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
@@ -394,7 +666,7 @@ export const reactRouterAdapter: JsFrameworkAdapter = {
             for (const element of routesExpression.elements) {
               const candidate = unparenthesizeExpression(element)
               if (ts.isObjectLiteralExpression(candidate)) {
-                routeNodeFromObjectLiteral(context, nodes, edges, seenIds, seenEdges, routerId, candidate, null)
+                routeNodeFromObjectLiteral(context, nodes, edges, seenIds, seenEdges, routerId, candidate, null, importedBindings)
               }
             }
           } else if (routesExpression && ts.isCallExpression(routesExpression)) {
@@ -404,7 +676,7 @@ export const reactRouterAdapter: JsFrameworkAdapter = {
                 ? resolveInitializerExpression(routesExpression.arguments[0], initializers)
                 : null
               if (rootElement && (ts.isJsxElement(rootElement) || ts.isJsxSelfClosingElement(rootElement))) {
-                routeNodeFromJsxElement(context, nodes, edges, seenIds, seenEdges, routerId, rootElement, null)
+                routeNodeFromJsxElement(context, nodes, edges, seenIds, seenEdges, routerId, rootElement, null, importedBindings)
               }
             }
           }
