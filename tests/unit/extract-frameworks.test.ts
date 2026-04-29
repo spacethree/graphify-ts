@@ -78,6 +78,58 @@ describe('js framework extraction contract', () => {
     expect(graph.edgeAttributes(fileNodeId, routeNodeId).relation).toBe('framework_declares_route')
   })
 
+  it('allows adapters to augment existing nodes with additional attributes', () => {
+    const filePath = join(FIXTURES_DIR, 'app.tsx')
+    const sourceText = ['export function App() {', '  return null', '}'].join('\n')
+    const fileNodeId = _makeId('app')
+    const componentNodeId = _makeId('app', 'app')
+    const baseExtraction: ExtractionFragment = {
+      nodes: [createNode(fileNodeId, 'app.tsx', filePath, 1), createNode(componentNodeId, 'App', filePath, 1)],
+      edges: [],
+    }
+
+    const adapter: JsFrameworkAdapter = {
+      id: 'test:framework-augmentation',
+      matches() {
+        return true
+      },
+      extract() {
+        return {
+          nodes: [
+            {
+              ...createNode(componentNodeId, 'App', filePath, 1),
+              node_kind: 'component',
+              framework_role: 'root',
+            },
+          ],
+          edges: [],
+        }
+      },
+    }
+
+    const result = applyJsFrameworkAdapters(baseExtraction, createFrameworkContext(filePath, sourceText, baseExtraction), [adapter])
+    const graph = buildFromJson({
+      nodes: result.nodes,
+      edges: result.edges,
+    })
+
+    expect(result.nodes.find((node) => node.id === componentNodeId)).toEqual(
+      expect.objectContaining({
+        id: componentNodeId,
+        label: 'App',
+        node_kind: 'component',
+        framework_role: 'root',
+      }),
+    )
+    expect(graph.nodeAttributes(componentNodeId)).toEqual(
+      expect.objectContaining({
+        label: 'App',
+        node_kind: 'component',
+        framework_role: 'root',
+      }),
+    )
+  })
+
   it('preserves stable explicit relation names from framework adapters', () => {
     const filePath = join(FIXTURES_DIR, 'router.tsx')
     const sourceText = readFileSync(join(FIXTURES_DIR, 'sample.ts'), 'utf8')
@@ -112,6 +164,45 @@ describe('js framework extraction contract', () => {
         expect.objectContaining({ source: fileNodeId, target: routerNodeId, relation: 'framework_registers_router' }),
         expect.objectContaining({ source: routerNodeId, target: providerNodeId, relation: 'framework_renders_provider' }),
       ]),
+    )
+  })
+
+  it('keeps the baseline edge when adapter edges reuse the same source and target pair', () => {
+    const filePath = join(FIXTURES_DIR, 'router.tsx')
+    const sourceText = ['export function App() {', '  return null', '}'].join('\n')
+    const fileNodeId = _makeId('app')
+    const componentNodeId = _makeId('app', 'component')
+    const baseExtraction: ExtractionFragment = {
+      nodes: [createNode(fileNodeId, 'app.tsx', filePath, 1), createNode(componentNodeId, 'App', filePath, 1)],
+      edges: [createEdge(fileNodeId, componentNodeId, 'declares', filePath, 1)],
+    }
+
+    const adapter: JsFrameworkAdapter = {
+      id: 'test:framework-edge-collision',
+      matches() {
+        return true
+      },
+      extract() {
+        return {
+          nodes: [],
+          edges: [createEdge(fileNodeId, componentNodeId, 'framework_declares_component', filePath, 2)],
+        }
+      },
+    }
+
+    const result = applyJsFrameworkAdapters(baseExtraction, createFrameworkContext(filePath, sourceText, baseExtraction), [adapter])
+    const graph = buildFromJson({
+      nodes: result.nodes,
+      edges: result.edges,
+    })
+
+    expect(result.edges.filter((edge) => edge.source === fileNodeId && edge.target === componentNodeId)).toEqual([
+      expect.objectContaining({ relation: 'declares' }),
+    ])
+    expect(graph.edgeAttributes(fileNodeId, componentNodeId)).toEqual(
+      expect.objectContaining({
+        relation: 'declares',
+      }),
     )
   })
 })

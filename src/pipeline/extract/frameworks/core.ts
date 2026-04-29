@@ -5,20 +5,36 @@ import type { JsFrameworkAdapter, JsFrameworkContext } from './types.js'
 const JS_FRAMEWORK_ADAPTERS: readonly JsFrameworkAdapter[] = []
 const EXTERNAL_TARGET_RELATIONS = new Set(['imports', 'imports_from'])
 
-function dedupeNodes(nodes: readonly ExtractionNode[]): ExtractionNode[] {
-  const seenIds = new Set<string>()
-  const deduped: ExtractionNode[] = []
+function mergeNodeAttributes(existing: ExtractionNode, incoming: ExtractionNode): ExtractionNode {
+  return {
+    ...existing,
+    ...incoming,
+    id: existing.id,
+  }
+}
+
+function mergeNodes(nodes: readonly ExtractionNode[]): ExtractionNode[] {
+  const mergedNodes = new Map<string, ExtractionNode>()
 
   for (const node of nodes) {
-    if (seenIds.has(node.id)) {
+    const existingNode = mergedNodes.get(node.id)
+    if (existingNode) {
+      mergedNodes.set(node.id, mergeNodeAttributes(existingNode, node))
       continue
     }
 
-    seenIds.add(node.id)
-    deduped.push(node)
+    mergedNodes.set(node.id, node)
   }
 
-  return deduped
+  return [...mergedNodes.values()]
+}
+
+function edgeDedupeKey(edge: ExtractionEdge): string {
+  return `${edge.source}|${edge.target}|${edge.relation}|${edge.source_location ?? ''}`
+}
+
+function edgePairKey(edge: Pick<ExtractionEdge, 'source' | 'target'>): string {
+  return `${edge.source}|${edge.target}`
 }
 
 function dedupeEdges(edges: readonly ExtractionEdge[]): ExtractionEdge[] {
@@ -26,7 +42,7 @@ function dedupeEdges(edges: readonly ExtractionEdge[]): ExtractionEdge[] {
   const deduped: ExtractionEdge[] = []
 
   for (const edge of edges) {
-    const key = `${edge.source}|${edge.target}|${edge.relation}|${edge.source_location ?? ''}`
+    const key = edgeDedupeKey(edge)
     if (seenEdges.has(key)) {
       continue
     }
@@ -36,6 +52,35 @@ function dedupeEdges(edges: readonly ExtractionEdge[]): ExtractionEdge[] {
   }
 
   return deduped
+}
+
+function mergeFrameworkEdges(
+  baseEdges: readonly ExtractionEdge[],
+  frameworkEdges: readonly ExtractionEdge[],
+): ExtractionEdge[] {
+  const dedupedBaseEdges = dedupeEdges(baseEdges)
+  const seenPairs = new Set(dedupedBaseEdges.map((edge) => edgePairKey(edge)))
+  const seenFrameworkEdges = new Set<string>()
+  const acceptedFrameworkEdges: ExtractionEdge[] = []
+
+  for (const edge of frameworkEdges) {
+    const dedupeKey = edgeDedupeKey(edge)
+    if (seenFrameworkEdges.has(dedupeKey)) {
+      continue
+    }
+
+    seenFrameworkEdges.add(dedupeKey)
+
+    const pairKey = edgePairKey(edge)
+    if (seenPairs.has(pairKey)) {
+      continue
+    }
+
+    seenPairs.add(pairKey)
+    acceptedFrameworkEdges.push(edge)
+  }
+
+  return [...dedupedBaseEdges, ...acceptedFrameworkEdges]
 }
 
 function filterJsExtractionEdges(nodes: readonly ExtractionNode[], edges: readonly ExtractionEdge[]): ExtractionEdge[] {
@@ -51,8 +96,11 @@ function filterJsExtractionEdges(nodes: readonly ExtractionNode[], edges: readon
 }
 
 function mergeFrameworkFragments(baseExtraction: ExtractionFragment, fragments: readonly ExtractionFragment[]): ExtractionFragment {
-  const nodes = dedupeNodes([...(baseExtraction.nodes ?? []), ...fragments.flatMap((fragment) => fragment.nodes ?? [])])
-  const edges = dedupeEdges([...(baseExtraction.edges ?? []), ...fragments.flatMap((fragment) => fragment.edges ?? [])])
+  const nodes = mergeNodes([...(baseExtraction.nodes ?? []), ...fragments.flatMap((fragment) => fragment.nodes ?? [])])
+  const edges = mergeFrameworkEdges(
+    baseExtraction.edges ?? [],
+    fragments.flatMap((fragment) => fragment.edges ?? []),
+  )
 
   return {
     nodes,
