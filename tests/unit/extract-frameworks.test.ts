@@ -1,5 +1,5 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join, relative } from 'node:path'
 
 import * as ts from 'typescript'
 
@@ -7,6 +7,7 @@ import { build, buildFromJson } from '../../src/pipeline/build.js'
 import { _makeId, createEdge, createNode } from '../../src/pipeline/extract/core.js'
 import { applyJsFrameworkAdapters } from '../../src/pipeline/extract/frameworks/core.js'
 import type { ExtractionFragment } from '../../src/pipeline/extract/dispatch.js'
+import { resolveImportPath } from '../../src/pipeline/extract/frameworks/js-import-paths.js'
 import type { JsFrameworkAdapter, JsFrameworkContext } from '../../src/pipeline/extract/frameworks/types.js'
 import { extractJs } from '../../src/pipeline/extract.js'
 import { inspectReduxModuleExports } from '../../src/pipeline/extract/frameworks/redux.js'
@@ -1800,6 +1801,88 @@ describe('js framework extraction contract', () => {
     )
   })
 
+  it('rejects relative framework imports that resolve outside the workspace root', () => {
+    const scratchDir = join(TEST_ARTIFACTS_DIR, 'import-path-escape')
+    const filePath = join(scratchDir, 'nested', 'router.tsx')
+    const escapedFilePath = join(process.cwd(), '..', 'framework-import-escape-target.ts')
+
+    try {
+      writeScratchFiles(scratchDir, {
+        'nested/router.tsx': 'export const router = null\n',
+      })
+      writeFileSync(escapedFilePath, 'export const escaped = true\n', 'utf8')
+
+      const specifier = relative(dirname(filePath), escapedFilePath).replaceAll('\\', '/')
+
+      expect(resolveImportPath(filePath, specifier)).toBeNull()
+    } finally {
+      rmSync(scratchDir, { recursive: true, force: true })
+      rmSync(escapedFilePath, { force: true })
+    }
+  })
+
+  it('resolves redux bindings through wildcard barrel re-exports', () => {
+    const scratchDir = join(TEST_ARTIFACTS_DIR, 'redux-barrel-reexports')
+    const sliceFilePath = join(scratchDir, 'slice.ts')
+    const consumerFilePath = join(scratchDir, 'consumer.ts')
+
+    try {
+      writeScratchFiles(scratchDir, {
+        'slice.ts': [
+          "import { createSlice } from '@reduxjs/toolkit'",
+          '',
+          'const authSlice = createSlice({',
+          "  name: 'auth',",
+          "  initialState: { status: 'idle' as 'idle' | 'ready' },",
+          '  reducers: {',
+          '    logout(state) {',
+          "      state.status = 'idle'",
+          '    },',
+          '  },',
+          '})',
+          '',
+          'export const { logout } = authSlice.actions',
+        ].join('\n'),
+        'index.ts': "export * from './slice'\n",
+        'consumer.ts': [
+          "import { createSlice } from '@reduxjs/toolkit'",
+          "import { logout } from './index'",
+          '',
+          'const sessionSlice = createSlice({',
+          "  name: 'session',",
+          "  initialState: { status: 'idle' as 'idle' | 'ready' },",
+          '  reducers: {},',
+          '  extraReducers: (builder) => {',
+          '    builder.addCase(logout, (state) => {',
+          "      state.status = 'idle'",
+          '    })',
+          '  },',
+          '})',
+          '',
+          'export { sessionSlice }',
+        ].join('\n'),
+      })
+
+      const sliceResult = extractJs(sliceFilePath)
+      const consumerResult = extractJs(consumerFilePath)
+      const logoutNodeId = nodeIdForLabel(sliceResult, 'logout')
+      const sessionSliceNodeId = nodeIdForLabel(consumerResult, 'session slice')
+
+      expect(consumerResult.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: logoutNodeId, label: 'logout', source_file: sliceFilePath, framework_role: 'redux_action' }),
+        ]),
+      )
+      expect(consumerResult.edges).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ source: logoutNodeId, target: sessionSliceNodeId, relation: 'updates_slice' }),
+        ]),
+      )
+    } finally {
+      rmSync(scratchDir, { recursive: true, force: true })
+    }
+  })
+
   it('resolves imported react router modules to their source-file symbols', () => {
     const moduleFilePath = join(FIXTURES_DIR, 'react-router-imported-module.tsx')
     const routerFilePath = join(FIXTURES_DIR, 'react-router-imported-router.tsx')
@@ -1826,6 +1909,65 @@ describe('js framework extraction contract', () => {
         expect.objectContaining({ source: settingsRouteId, target: settingsActionNode?.id, relation: 'submits_route' }),
       ]),
     )
+  })
+
+  it('resolves react router route modules through wildcard barrel re-exports', () => {
+    const scratchDir = join(TEST_ARTIFACTS_DIR, 'react-router-barrel-reexports')
+    const routeModuleFilePath = join(scratchDir, 'route-module.tsx')
+    const routerFilePath = join(scratchDir, 'router.tsx')
+
+    try {
+      writeScratchFiles(scratchDir, {
+        'route-module.tsx': [
+          'export function SettingsPage() {',
+          '  return null',
+          '}',
+          'export async function settingsLoader() {',
+          '  return null',
+          '}',
+          'export async function settingsAction() {',
+          '  return null',
+          '}',
+        ].join('\n'),
+        'index.ts': "export * from './route-module'\n",
+        'router.tsx': [
+          "import { createBrowserRouter } from 'react-router-dom'",
+          "import { SettingsPage, settingsLoader, settingsAction } from './index'",
+          '',
+          'export const router = createBrowserRouter([{',
+          "  path: '/settings',",
+          '  Component: SettingsPage,',
+          '  loader: settingsLoader,',
+          '  action: settingsAction,',
+          '}])',
+        ].join('\n'),
+      })
+
+      const routerResult = extractJs(routerFilePath)
+      const settingsRouteId = nodeIdForLabel(routerResult, '/settings')
+      const settingsPageNode = routerResult.nodes.find(
+        (node) => node.label === 'SettingsPage()' && node.source_file === routeModuleFilePath && node.framework_role === 'react_router_component',
+      )
+      const settingsLoaderNode = routerResult.nodes.find(
+        (node) => node.label === 'settingsLoader()' && node.source_file === routeModuleFilePath && node.framework_role === 'react_router_loader',
+      )
+      const settingsActionNode = routerResult.nodes.find(
+        (node) => node.label === 'settingsAction()' && node.source_file === routeModuleFilePath && node.framework_role === 'react_router_action',
+      )
+
+      expect(settingsPageNode).toEqual(expect.objectContaining({ label: 'SettingsPage()', source_file: routeModuleFilePath }))
+      expect(settingsLoaderNode).toEqual(expect.objectContaining({ label: 'settingsLoader()', source_file: routeModuleFilePath }))
+      expect(settingsActionNode).toEqual(expect.objectContaining({ label: 'settingsAction()', source_file: routeModuleFilePath }))
+      expect(routerResult.edges).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ source: settingsRouteId, target: settingsPageNode?.id, relation: 'renders' }),
+          expect.objectContaining({ source: settingsRouteId, target: settingsLoaderNode?.id, relation: 'loads_route' }),
+          expect.objectContaining({ source: settingsRouteId, target: settingsActionNode?.id, relation: 'submits_route' }),
+        ]),
+      )
+    } finally {
+      rmSync(scratchDir, { recursive: true, force: true })
+    }
   })
 
   it('re-analyzes imported react router modules between runs and labels anonymous default exports with the local alias', () => {

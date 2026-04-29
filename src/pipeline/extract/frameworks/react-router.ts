@@ -250,19 +250,27 @@ function analyzeJsModule(filePath: string, cache: Map<string, JsModuleAnalysis>)
       continue
     }
 
-    if (ts.isExportDeclaration(statement) && statement.exportClause && ts.isNamedExports(statement.exportClause)) {
+    if (ts.isExportDeclaration(statement)) {
       const targetFilePath =
         statement.moduleSpecifier && ts.isStringLiteralLike(statement.moduleSpecifier)
           ? resolveImportPath(resolvedFilePath, statement.moduleSpecifier.text)
           : null
       const targetExports = targetFilePath ? analyzeJsModule(targetFilePath, cache).exports : null
 
-      for (const element of statement.exportClause.elements) {
-        const exportName = element.name.text
-        const localName = element.propertyName?.text ?? element.name.text
-        const reference = targetExports?.get(localName) ?? resolveLocalBinding(localName)
-        if (reference) {
-          analysis.exports.set(exportName, reference)
+      if (!statement.exportClause && targetExports) {
+        for (const [exportName, reference] of targetExports) {
+          if (exportName !== 'default' && !analysis.exports.has(exportName)) {
+            analysis.exports.set(exportName, reference)
+          }
+        }
+      } else if (statement.exportClause && ts.isNamedExports(statement.exportClause)) {
+        for (const element of statement.exportClause.elements) {
+          const exportName = element.name.text
+          const localName = element.propertyName?.text ?? element.name.text
+          const reference = targetExports?.get(localName) ?? resolveLocalBinding(localName)
+          if (reference) {
+            analysis.exports.set(exportName, reference)
+          }
         }
       }
     }

@@ -415,19 +415,27 @@ function analyzeReduxModule(filePath: string, cache: Map<string, ReduxModuleAnal
         }
       }
 
-      if (ts.isExportDeclaration(statement) && statement.exportClause && ts.isNamedExports(statement.exportClause)) {
+      if (ts.isExportDeclaration(statement)) {
         const targetFilePath =
           statement.moduleSpecifier && ts.isStringLiteralLike(statement.moduleSpecifier)
             ? resolveImportPath(resolvedFilePath, statement.moduleSpecifier.text)
             : null
         const targetExports = targetFilePath ? analyzeReduxModule(targetFilePath, cache).exports : null
 
-        for (const element of statement.exportClause.elements) {
-          const exportName = element.name.text
-          const localName = element.propertyName?.text ?? element.name.text
-          const binding = targetExports?.get(localName) ?? lookupBinding(localName)
-          if (binding) {
-            analysis.exports.set(exportName, binding)
+        if (!statement.exportClause && targetExports) {
+          for (const [exportName, binding] of targetExports) {
+            if (exportName !== 'default' && !analysis.exports.has(exportName)) {
+              analysis.exports.set(exportName, binding)
+            }
+          }
+        } else if (statement.exportClause && ts.isNamedExports(statement.exportClause)) {
+          for (const element of statement.exportClause.elements) {
+            const exportName = element.name.text
+            const localName = element.propertyName?.text ?? element.name.text
+            const binding = targetExports?.get(localName) ?? lookupBinding(localName)
+            if (binding) {
+              analysis.exports.set(exportName, binding)
+            }
           }
         }
       }
