@@ -626,6 +626,75 @@ describe('js framework extraction contract', () => {
     expect(graphNodeIdForLabel(commonjsGraph, 'GET /api/users/:id')).toBeDefined()
   })
 
+  it('extracts routes registered on imported express owners without local express imports', () => {
+    const namedChildFilePath = join(FIXTURES_DIR, 'express-imported-owner-router-child.ts')
+    const namedParentFilePath = join(FIXTURES_DIR, 'express-imported-owner-router-parent.ts')
+    const defaultChildFilePath = join(FIXTURES_DIR, 'express-imported-owner-app-child.ts')
+    const defaultParentFilePath = join(FIXTURES_DIR, 'express-imported-owner-app-parent.ts')
+    const commonjsChildFilePath = join(FIXTURES_DIR, 'express-imported-owner-commonjs-child.ts')
+    const commonjsParentFilePath = join(FIXTURES_DIR, 'express-imported-owner-commonjs-parent.ts')
+
+    const namedChildResult = extractJs(namedChildFilePath)
+    const namedParentResult = extractJs(namedParentFilePath)
+    const defaultChildResult = extractJs(defaultChildFilePath)
+    const defaultParentResult = extractJs(defaultParentFilePath)
+    const commonjsChildResult = extractJs(commonjsChildFilePath)
+    const commonjsParentResult = extractJs(commonjsParentFilePath)
+
+    expect(namedParentResult.nodes).toEqual(
+      expect.arrayContaining([expect.objectContaining({ label: 'GET /users/:id', node_kind: 'route', route_path: '/users/:id' })]),
+    )
+    expect(defaultParentResult.nodes).toEqual(
+      expect.arrayContaining([expect.objectContaining({ label: 'POST /users', node_kind: 'route', route_path: '/users' })]),
+    )
+    expect(commonjsParentResult.nodes).toEqual(
+      expect.arrayContaining([expect.objectContaining({ label: 'DELETE /users/:id', node_kind: 'route', route_path: '/users/:id' })]),
+    )
+
+    expect(namedParentResult.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: nodeIdForLabel(namedChildResult, 'apiRouter'),
+          target: nodeIdForLabel(namedParentResult, 'GET /users/:id'),
+          relation: 'registers_route',
+        }),
+        expect.objectContaining({
+          source: nodeIdForLabel(namedParentResult, 'showUser()'),
+          target: nodeIdForLabel(namedParentResult, 'GET /users/:id'),
+          relation: 'handles_route',
+        }),
+      ]),
+    )
+    expect(defaultParentResult.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: nodeIdForLabel(defaultChildResult, 'apiApp'),
+          target: nodeIdForLabel(defaultParentResult, 'POST /users'),
+          relation: 'registers_route',
+        }),
+        expect.objectContaining({
+          source: nodeIdForLabel(defaultParentResult, 'createUser()'),
+          target: nodeIdForLabel(defaultParentResult, 'POST /users'),
+          relation: 'handles_route',
+        }),
+      ]),
+    )
+    expect(commonjsParentResult.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: nodeIdForLabel(commonjsChildResult, 'apiRouter'),
+          target: nodeIdForLabel(commonjsParentResult, 'DELETE /users/:id'),
+          relation: 'registers_route',
+        }),
+        expect.objectContaining({
+          source: nodeIdForLabel(commonjsParentResult, 'removeUser()'),
+          target: nodeIdForLabel(commonjsParentResult, 'DELETE /users/:id'),
+          relation: 'handles_route',
+        }),
+      ]),
+    )
+  })
+
   it('recognizes direct CommonJS express app and router construction', () => {
     const directAppFilePath = join(FIXTURES_DIR, 'express-commonjs-direct-app.ts')
     const directRouterFilePath = join(FIXTURES_DIR, 'express-commonjs-direct-router.ts')

@@ -427,6 +427,42 @@ describe('retrieve', () => {
       )
     })
 
+    it('ranks routes registered on imported express owners without local express imports', () => {
+      const fixturesDir = join(process.cwd(), 'tests', 'fixtures')
+      const graph = build([
+        extractJs(join(fixturesDir, 'express-imported-owner-router-child.ts')),
+        extractJs(join(fixturesDir, 'express-imported-owner-router-parent.ts')),
+        extractJs(join(fixturesDir, 'express-imported-owner-app-child.ts')),
+        extractJs(join(fixturesDir, 'express-imported-owner-app-parent.ts')),
+      ])
+
+      const namedResult = retrieveContext(graph, {
+        question: 'where is GET /users/:id defined',
+        budget: 5000,
+        fileType: 'code',
+      })
+      const defaultResult = retrieveContext(graph, {
+        question: 'where is POST /users defined',
+        budget: 5000,
+        fileType: 'code',
+      })
+
+      expect(namedResult.matched_nodes[0]).toEqual(
+        expect.objectContaining({
+          label: 'GET /users/:id',
+          node_kind: 'route',
+          relevance_band: 'direct',
+        }),
+      )
+      expect(defaultResult.matched_nodes[0]).toEqual(
+        expect.objectContaining({
+          label: 'POST /users',
+          node_kind: 'route',
+          relevance_band: 'direct',
+        }),
+      )
+    })
+
     it('ranks module-object mounted express route nodes by their propagated prefixes', () => {
       const fixturesDir = join(process.cwd(), 'tests', 'fixtures')
       const namespaceGraph = build([

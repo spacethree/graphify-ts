@@ -11,6 +11,9 @@ import type { JsFrameworkAdapter, JsFrameworkContext } from './types.js'
 const HTTP_ROUTE_METHODS = new Set(['get', 'post', 'put', 'patch', 'delete', 'all'])
 const EXPRESS_ROUTE_METHODS = new Set(['get', 'post', 'put', 'patch', 'delete', 'all', 'use'])
 const JS_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts', '.mjs', '.cjs']
+const EXPRESS_MATCH_PATTERN = /\bexpress\b/
+const IMPORTED_OWNER_ROUTE_PATTERN = /\.(?:route|get|post|put|patch|delete|all|use)\s*\(/
+const MODULE_IMPORT_PATTERN = /\bimport\b|\brequire\s*\(/
 
 type ExtractionNodeRecord = NonNullable<ExtractionFragment['nodes']>[number]
 
@@ -273,24 +276,55 @@ function resolveImportedBindingTarget(
   return null
 }
 
+function resolveExpressOwnerTarget(
+  expression: ts.Expression,
+  sourceFile: ts.SourceFile,
+  filePath: string,
+  expressEntities: ReadonlyMap<string, ExpressEntity>,
+  importedBindingsByLocalName: ReadonlyMap<string, ImportedBindingTarget>,
+  importedModulePathsByLocalName: ReadonlyMap<string, string>,
+): { entity: ExpressEntity; sourceFile: string } | null {
+  const candidate = unparenthesizeExpression(expression)
+  if (ts.isIdentifier(candidate)) {
+    const localEntity = expressEntities.get(candidate.text)
+    if (localEntity) {
+      return { entity: localEntity, sourceFile: filePath }
+    }
+  }
+
+  const importedTarget = resolveImportedBindingTarget(candidate, importedBindingsByLocalName, importedModulePathsByLocalName)
+  if (!importedTarget || (importedTarget.kind !== 'router' && importedTarget.kind !== 'app')) {
+    return null
+  }
+
+  return {
+    entity: {
+      id: importedTarget.id,
+      name: candidate.getText(sourceFile),
+      kind: importedTarget.kind,
+    },
+    sourceFile: importedTarget.sourceFile,
+  }
+}
+
 function resolveRouterTarget(
   expression: ts.Expression,
+  sourceFile: ts.SourceFile,
   expressEntities: ReadonlyMap<string, ExpressEntity>,
   importedBindingsByLocalName: ReadonlyMap<string, ImportedBindingTarget>,
   importedModulePathsByLocalName: ReadonlyMap<string, string>,
   filePath: string,
 ): MountRecord['routerTarget'] | null {
-  const candidate = unparenthesizeExpression(expression)
-  if (ts.isIdentifier(candidate)) {
-    const localRouter = expressEntities.get(candidate.text)
-    if (localRouter && (localRouter.kind === 'router' || localRouter.kind === 'app')) {
-      return { id: localRouter.id, sourceFile: filePath }
-    }
-  }
-
-  const importedTarget = resolveImportedBindingTarget(candidate, importedBindingsByLocalName, importedModulePathsByLocalName)
-  if (importedTarget && (importedTarget.kind === 'router' || importedTarget.kind === 'app')) {
-    return { id: importedTarget.id, sourceFile: importedTarget.sourceFile }
+  const ownerTarget = resolveExpressOwnerTarget(
+    expression,
+    sourceFile,
+    filePath,
+    expressEntities,
+    importedBindingsByLocalName,
+    importedModulePathsByLocalName,
+  )
+  if (ownerTarget) {
+    return { id: ownerTarget.entity.id, sourceFile: ownerTarget.sourceFile }
   }
 
   return null
@@ -836,7 +870,14 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
 
   const collectRoutes = (node: ts.Node): void => {
     if (ts.isCallExpression(node)) {
-      const parsedRoute = parseRouteCall(node, expressEntities)
+      const parsedRoute = parseRouteCall(
+        node,
+        sourceFile,
+        filePath,
+        expressEntities,
+        importedBindingsByLocalName,
+        importedModulePathsByLocalName,
+      )
       if (parsedRoute) {
         const method = parsedRoute.method.toUpperCase()
         const routeLabel = `${method} ${parsedRoute.path}`
@@ -847,6 +888,7 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
           for (const argument of flattenedArgs) {
             const routerTarget = resolveRouterTarget(
               argument,
+              sourceFile,
               expressEntities,
               importedBindingsByLocalName,
               importedModulePathsByLocalName,
@@ -1153,7 +1195,11 @@ function addRouteAttachmentEdges(
 
 function parseRouteCall(
   call: ts.CallExpression,
+  sourceFile: ts.SourceFile,
+  filePath: string,
   expressEntities: ReadonlyMap<string, ExpressEntity>,
+  importedBindingsByLocalName: ReadonlyMap<string, ImportedBindingTarget>,
+  importedModulePathsByLocalName: ReadonlyMap<string, string>,
 ): { owner: ExpressEntity; method: string; path: string; routeArgs: readonly ts.Expression[] } | null {
   const callee = unparenthesizeExpression(call.expression)
   if (!ts.isPropertyAccessExpression(callee)) {
@@ -1167,9 +1213,16 @@ function parseRouteCall(
 
   const resolveRouteTarget = (expression: ts.Expression): { owner: ExpressEntity; path: string } | null => {
     const unwrapped = unparenthesizeExpression(expression)
-    if (ts.isIdentifier(unwrapped)) {
-      const owner = expressEntities.get(unwrapped.text)
-      return owner ? { owner, path: '/' } : null
+    const ownerTarget = resolveExpressOwnerTarget(
+      unwrapped,
+      sourceFile,
+      filePath,
+      expressEntities,
+      importedBindingsByLocalName,
+      importedModulePathsByLocalName,
+    )
+    if (ownerTarget) {
+      return { owner: ownerTarget.entity, path: '/' }
     }
 
     if (!ts.isCallExpression(unwrapped)) {
@@ -1178,14 +1231,16 @@ function parseRouteCall(
 
     const routeCallee = unparenthesizeExpression(unwrapped.expression)
     if (ts.isPropertyAccessExpression(routeCallee) && routeCallee.name.text === 'route') {
-      const routeOwnerExpression = unparenthesizeExpression(routeCallee.expression)
-      if (!ts.isIdentifier(routeOwnerExpression)) {
-        return null
-      }
-
-      const owner = expressEntities.get(routeOwnerExpression.text)
+      const ownerTarget = resolveExpressOwnerTarget(
+        routeCallee.expression,
+        sourceFile,
+        filePath,
+        expressEntities,
+        importedBindingsByLocalName,
+        importedModulePathsByLocalName,
+      )
       const path = stringLiteralPath(unwrapped.arguments[0])
-      return owner && path ? { owner, path } : null
+      return ownerTarget && path ? { owner: ownerTarget.entity, path } : null
     }
 
     if (ts.isPropertyAccessExpression(routeCallee) && EXPRESS_ROUTE_METHODS.has(routeCallee.name.text)) {
@@ -1196,19 +1251,22 @@ function parseRouteCall(
   }
 
   const ownerExpression = unparenthesizeExpression(callee.expression)
-  if (ts.isIdentifier(ownerExpression)) {
-    const owner = expressEntities.get(ownerExpression.text)
-    if (!owner) {
-      return null
-    }
-
+  const ownerTarget = resolveExpressOwnerTarget(
+    ownerExpression,
+    sourceFile,
+    filePath,
+    expressEntities,
+    importedBindingsByLocalName,
+    importedModulePathsByLocalName,
+  )
+  if (ownerTarget) {
     const path = stringLiteralPath(call.arguments[0]) ?? (method === 'use' ? '/' : null)
     if (!path) {
       return null
     }
 
     return {
-      owner,
+      owner: ownerTarget.entity,
       method,
       path,
       routeArgs: call.arguments.slice(stringLiteralPath(call.arguments[0]) ? 1 : 0),
@@ -1233,7 +1291,7 @@ function parseRouteCall(
 export const expressAdapter: JsFrameworkAdapter = {
   id: 'js:express',
   matches(_filePath, sourceText) {
-    return /\bexpress\b/.test(sourceText)
+    return EXPRESS_MATCH_PATTERN.test(sourceText) || (IMPORTED_OWNER_ROUTE_PATTERN.test(sourceText) && MODULE_IMPORT_PATTERN.test(sourceText))
   },
   extract(context) {
     const nodes: NonNullable<ExtractionFragment['nodes']> = []
@@ -1451,7 +1509,14 @@ export const expressAdapter: JsFrameworkAdapter = {
 
     const visitRoutes = (node: ts.Node): void => {
       if (ts.isCallExpression(node)) {
-        const parsedRoute = parseRouteCall(node, expressEntities)
+        const parsedRoute = parseRouteCall(
+          node,
+          context.sourceFile,
+          context.filePath,
+          expressEntities,
+          importedBindingsByLocalName,
+          importedModulePathsByLocalName,
+        )
         if (parsedRoute) {
           const method = parsedRoute.method.toUpperCase()
           const routeLabel = `${method} ${parsedRoute.path}`
@@ -1489,6 +1554,7 @@ export const expressAdapter: JsFrameworkAdapter = {
             for (const argument of flattenedArgs) {
                 const routerTarget = resolveRouterTarget(
                   argument,
+                  context.sourceFile,
                   expressEntities,
                   importedBindingsByLocalName,
                   importedModulePathsByLocalName,

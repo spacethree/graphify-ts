@@ -300,6 +300,29 @@ describe('impact', () => {
       )
     })
 
+    it('shows imported-owner express routes as direct dependents of cross-file handlers', () => {
+      const fixturesDir = join(process.cwd(), 'tests', 'fixtures')
+      const graph = build(
+        [
+          extractJs(join(fixturesDir, 'express-imported-owner-router-child.ts')),
+          extractJs(join(fixturesDir, 'express-imported-owner-router-parent.ts')),
+          extractJs(join(fixturesDir, 'express-imported-owner-app-child.ts')),
+          extractJs(join(fixturesDir, 'express-imported-owner-app-parent.ts')),
+        ],
+        { directed: true },
+      )
+
+      const routerResult = analyzeImpact(graph, {}, { label: 'showUser' })
+      const appResult = analyzeImpact(graph, {}, { label: 'createUser' })
+
+      expect(routerResult.direct_dependents).toEqual(
+        expect.arrayContaining([expect.objectContaining({ label: 'GET /users/:id', relation: 'depends_on' })]),
+      )
+      expect(appResult.direct_dependents).toEqual(
+        expect.arrayContaining([expect.objectContaining({ label: 'POST /users', relation: 'depends_on' })]),
+      )
+    })
+
     it('shows module-object mounted child routes as direct dependents of inherited mount middleware', () => {
       const fixturesDir = join(process.cwd(), 'tests', 'fixtures')
       const namespaceGraph = build([
