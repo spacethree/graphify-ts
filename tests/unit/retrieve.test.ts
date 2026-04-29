@@ -827,6 +827,66 @@ describe('retrieve', () => {
       )
     })
 
+    it('does not route-boost free-text handler questions', () => {
+      const graph = new KnowledgeGraph({ directed: true })
+      graph.addNode('auth_handler_route', {
+        label: 'GET /auth',
+        source_file: '/src/server/auth.ts',
+        line_number: 12,
+        node_kind: 'route',
+        file_type: 'code',
+        framework: 'express',
+        framework_role: 'express_route',
+        community: 0,
+      })
+      graph.addNode('auth_handler', {
+        label: 'authHandler',
+        source_file: '/src/server/auth-handler.ts',
+        line_number: 4,
+        node_kind: 'function',
+        file_type: 'code',
+        framework: 'express',
+        framework_role: 'express_handler',
+        community: 0,
+      })
+      graph.addNode('bind_auth_handler', {
+        label: 'bindAuthHandler',
+        source_file: '/src/server/bootstrap.ts',
+        line_number: 20,
+        node_kind: 'function',
+        file_type: 'code',
+        community: 0,
+      })
+      graph.addEdge('auth_handler_route', 'auth_handler', {
+        relation: 'depends_on',
+        confidence: 'EXTRACTED',
+        source_file: '/src/server/auth.ts',
+      })
+      graph.addEdge('bind_auth_handler', 'auth_handler', {
+        relation: 'calls',
+        confidence: 'EXTRACTED',
+        source_file: '/src/server/bootstrap.ts',
+      })
+
+      const result = retrieveContext(graph, {
+        question: 'Where is the auth handler used?',
+        budget: 5000,
+        fileType: 'code',
+      })
+
+      expect(result.matched_nodes[0]).toEqual(
+        expect.objectContaining({
+          label: 'authHandler',
+          framework_boost: 2.5,
+        }),
+      )
+      expect(result.matched_nodes.find((node) => node.label === 'GET /auth')).toEqual(
+        expect.objectContaining({
+          framework_boost: 0,
+        }),
+      )
+    })
+
     it('does not infer express route intent from "all" in redux selector questions', () => {
       const graph = new KnowledgeGraph({ directed: true })
       graph.addNode('all_auth_route', {
