@@ -1899,6 +1899,133 @@ describe('retrieve', () => {
       expect(compactResult.token_count).toBeLessThan(rawResult.token_count)
     })
 
+    it('drops relationships for truncated same-label nodes during compact serialization', () => {
+      const compactResult = compactRetrieveResult({
+        question: 'which react router route renders dashboard page',
+        token_count: 999,
+        matched_nodes: [
+          {
+            node_id: 'dashboard_route',
+            label: '/dashboard',
+            source_file: '/src/routes/dashboard.tsx',
+            line_number: 5,
+            node_kind: 'route',
+            framework_boost: 4,
+            file_type: 'code',
+            snippet: null,
+            match_score: 15,
+            relevance_band: 'direct',
+            community: 0,
+            community_label: 'Routes',
+          },
+          {
+            node_id: 'dashboard_layout',
+            label: 'DashboardLayout',
+            source_file: '/src/routes/dashboard-layout.tsx',
+            line_number: 9,
+            node_kind: 'component',
+            framework_boost: 3,
+            file_type: 'code',
+            snippet: null,
+            match_score: 14,
+            relevance_band: 'direct',
+            community: 0,
+            community_label: 'Routes',
+          },
+          {
+            node_id: 'dashboard_page_primary',
+            label: 'DashboardPage',
+            source_file: '/src/routes/dashboard-page.tsx',
+            line_number: 12,
+            node_kind: 'component',
+            framework_boost: 3,
+            file_type: 'code',
+            snippet: null,
+            match_score: 13,
+            relevance_band: 'direct',
+            community: 0,
+            community_label: 'Routes',
+          },
+          {
+            node_id: 'dashboard_loader',
+            label: 'dashboardLoader',
+            source_file: '/src/routes/dashboard-loader.ts',
+            line_number: 18,
+            node_kind: 'function',
+            framework_boost: 2,
+            file_type: 'code',
+            snippet: null,
+            match_score: 12,
+            relevance_band: 'related',
+            community: 0,
+            community_label: 'Routes',
+          },
+          {
+            node_id: 'dashboard_action',
+            label: 'dashboardAction',
+            source_file: '/src/routes/dashboard-action.ts',
+            line_number: 24,
+            node_kind: 'function',
+            framework_boost: 2,
+            file_type: 'code',
+            snippet: null,
+            match_score: 11,
+            relevance_band: 'related',
+            community: 0,
+            community_label: 'Routes',
+          },
+          {
+            node_id: 'dashboard_page_secondary',
+            label: 'DashboardPage',
+            source_file: '/src/legacy/dashboard-page.ts',
+            line_number: 30,
+            node_kind: 'function',
+            framework_boost: 0,
+            file_type: 'code',
+            snippet: null,
+            match_score: 2,
+            relevance_band: 'related',
+            community: 1,
+            community_label: 'Legacy',
+          },
+        ],
+        relationships: [
+          {
+            from: '/dashboard',
+            to: 'DashboardPage',
+            relation: 'renders',
+            from_id: 'dashboard_route',
+            to_id: 'dashboard_page_primary',
+          },
+          {
+            from: '/dashboard',
+            to: 'DashboardPage',
+            relation: 'uses',
+            from_id: 'dashboard_route',
+            to_id: 'dashboard_page_secondary',
+          },
+        ],
+        community_context: [
+          { id: 0, label: 'Routes', node_count: 5 },
+          { id: 1, label: 'Legacy', node_count: 1 },
+        ],
+        graph_signals: {
+          god_nodes: ['/dashboard'],
+          bridge_nodes: ['DashboardPage'],
+        },
+      } as unknown as Parameters<typeof compactRetrieveResult>[0])
+
+      expect(compactResult.matched_nodes).toHaveLength(5)
+      expect(compactResult.matched_nodes.filter((node) => node.label === 'DashboardPage')).toHaveLength(1)
+      expect(compactResult.relationships.map(({ from, to, relation }) => ({ from, to, relation }))).toEqual([
+        {
+          from: '/dashboard',
+          to: 'DashboardPage',
+          relation: 'renders',
+        },
+      ])
+    })
+
     it('assigns higher match_score to direct matches than neighbors', () => {
       const graph = buildTestGraph()
       const result = retrieveContext(graph, { question: 'auth', budget: 5000 })

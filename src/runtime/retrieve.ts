@@ -30,6 +30,7 @@ export interface RetrieveOptions {
 }
 
 export interface RetrieveMatchedNode {
+  node_id?: string
   label: string
   source_file: string
   line_number: number
@@ -44,7 +45,9 @@ export interface RetrieveMatchedNode {
 }
 
 export interface RetrieveRelationship {
+  from_id?: string
   from: string
+  to_id?: string
   to: string
   relation: string
 }
@@ -74,6 +77,20 @@ export interface CompactRetrieveMatchedNode extends Omit<RetrieveMatchedNode, 'c
 export interface CompactRetrieveResult extends Omit<RetrieveResult, 'matched_nodes'> {
   matched_nodes: CompactRetrieveMatchedNode[]
   shared_file_type?: string
+}
+
+function matchedNodeId(node: Pick<RetrieveMatchedNode, 'node_id'>): string | null {
+  return typeof node.node_id === 'string' && node.node_id.length > 0 ? node.node_id : null
+}
+
+function stripRetrieveMatchedNodeIdentity<T extends RetrieveMatchedNode | CompactRetrieveMatchedNode>(node: T): Omit<T, 'node_id'> {
+  const { node_id: _nodeId, ...rest } = node
+  return rest
+}
+
+function stripRetrieveRelationshipIdentity<T extends RetrieveRelationship>(relationship: T): Omit<T, 'from_id' | 'to_id'> {
+  const { from_id: _fromId, to_id: _toId, ...rest } = relationship
+  return rest
 }
 
 export function tokenizeQuestion(question: string): string[] {
@@ -700,6 +717,7 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
     }
 
     matchedNodes.push({
+      node_id: node.id,
       label: node.label,
       source_file: node.sourceFile,
       line_number: node.lineNumber,
@@ -721,12 +739,14 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
   // Collect relationships between included nodes
   const relationships: RetrieveRelationship[] = []
   for (const [source, target, attributes] of graph.edgeEntries()) {
-    if (includedIds.has(source) && includedIds.has(target)) {
-      relationships.push({
-        from: String(graph.nodeAttributes(source).label ?? source),
-        to: String(graph.nodeAttributes(target).label ?? target),
-        relation: String(attributes.relation ?? 'related_to'),
-      })
+      if (includedIds.has(source) && includedIds.has(target)) {
+        relationships.push({
+          from_id: source,
+          from: String(graph.nodeAttributes(source).label ?? source),
+          to_id: target,
+          to: String(graph.nodeAttributes(target).label ?? target),
+          relation: String(attributes.relation ?? 'related_to'),
+        })
     }
   }
 
@@ -774,6 +794,7 @@ export function compactRetrieveResult(result: RetrieveResult): CompactRetrieveRe
   const compactMatchedNodes = Number.isFinite(compactFrameworkLimit)
     ? result.matched_nodes.slice(0, compactFrameworkLimit)
     : result.matched_nodes
+  const includedNodeIds = new Set(compactMatchedNodes.map(matchedNodeId).filter((nodeId): nodeId is string => nodeId !== null))
   const includedLabels = new Set(compactMatchedNodes.map((node) => node.label))
   const includedCommunities = new Set(compactMatchedNodes.flatMap((node) => (node.community === null ? [] : [node.community])))
   const sharedFileType =
@@ -788,12 +809,56 @@ export function compactRetrieveResult(result: RetrieveResult): CompactRetrieveRe
       ...node,
       ...(sharedFileType ? {} : { file_type: fileType }),
     })),
-    relationships: result.relationships.filter((edge) => includedLabels.has(edge.from) && includedLabels.has(edge.to)),
+    relationships: result.relationships.filter((edge) => {
+      if (includedNodeIds.size > 0 && edge.from_id && edge.to_id) {
+        return includedNodeIds.has(edge.from_id) && includedNodeIds.has(edge.to_id)
+      }
+      return includedLabels.has(edge.from) && includedLabels.has(edge.to)
+    }),
     community_context: result.community_context.filter((community) => includedCommunities.has(community.id)),
     graph_signals: {
       god_nodes: result.graph_signals.god_nodes.filter((label) => includedLabels.has(label)),
       bridge_nodes: result.graph_signals.bridge_nodes.filter((label) => includedLabels.has(label)),
     },
     ...(sharedFileType ? { shared_file_type: sharedFileType } : {}),
+  }
+}
+
+export function compactRetrieveResultForStdio(result: RetrieveResult): RetrieveResult {
+  const compactResult = compactRetrieveResult(result)
+  const originalNodesById = new Map(
+    result.matched_nodes
+      .map((node) => [matchedNodeId(node), node] as const)
+      .filter(([nodeId]) => nodeId !== null) as Array<[string, RetrieveMatchedNode]>,
+  )
+
+  const matchedNodes: RetrieveResult['matched_nodes'] = compactResult.matched_nodes.map((node) => {
+    const original = matchedNodeId(node) !== null ? originalNodesById.get(matchedNodeId(node)!) : undefined
+    if (original) {
+      return stripRetrieveMatchedNodeIdentity(original)
+    }
+
+    return {
+      label: node.label,
+      source_file: node.source_file,
+      line_number: node.line_number,
+      node_kind: node.node_kind,
+      framework_boost: 0,
+      file_type: node.file_type ?? compactResult.shared_file_type ?? '',
+      snippet: node.snippet,
+      match_score: node.match_score,
+      relevance_band: node.relevance_band,
+      community: node.community,
+      community_label: null,
+    }
+  })
+
+  return {
+    question: result.question,
+    token_count: compactResult.token_count,
+    matched_nodes: matchedNodes,
+    relationships: compactResult.relationships.map(stripRetrieveRelationshipIdentity),
+    community_context: compactResult.community_context,
+    graph_signals: compactResult.graph_signals,
   }
 }
