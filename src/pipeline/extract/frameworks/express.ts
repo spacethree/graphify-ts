@@ -148,6 +148,40 @@ function stringLiteralPath(expression: ts.Expression | undefined): string | null
   return null
 }
 
+function isRequireCall(expression: ts.Expression, moduleName: string): boolean {
+  const unwrapped = unparenthesizeExpression(expression)
+  const firstArgument = ts.isCallExpression(unwrapped) ? unwrapped.arguments[0] : undefined
+  return (
+    ts.isCallExpression(unwrapped) &&
+    ts.isIdentifier(unwrapped.expression) &&
+    unwrapped.expression.text === 'require' &&
+    unwrapped.arguments.length === 1 &&
+    firstArgument !== undefined &&
+    ts.isStringLiteral(firstArgument) &&
+    firstArgument.text === moduleName
+  )
+}
+
+function isExpressFactoryCallee(expression: ts.Expression, expressFactoryAliases: ReadonlySet<string>): boolean {
+  const unwrapped = unparenthesizeExpression(expression)
+  return (ts.isIdentifier(unwrapped) && expressFactoryAliases.has(unwrapped.text)) || isRequireCall(unwrapped, 'express')
+}
+
+function isExpressRouterCallee(
+  expression: ts.Expression,
+  expressFactoryAliases: ReadonlySet<string>,
+  expressRouterAliases: ReadonlySet<string>,
+): boolean {
+  const unwrapped = unparenthesizeExpression(expression)
+  return (
+    ((ts.isPropertyAccessExpression(unwrapped) &&
+      unwrapped.name.text === 'Router' &&
+      ((ts.isIdentifier(unwrapped.expression) && expressFactoryAliases.has(unwrapped.expression.text)) ||
+        isRequireCall(unwrapped.expression, 'express'))) ||
+      (ts.isIdentifier(unwrapped) && expressRouterAliases.has(unwrapped.text)))
+  )
+}
+
 function flattenedExpressions(expression: ts.Expression): ts.Expression[] {
   const unwrapped = unparenthesizeExpression(expression)
   if (ts.isArrayLiteralExpression(unwrapped)) {
@@ -546,17 +580,11 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
       const initializer = node.initializer
       const callee = unparenthesizeExpression(initializer.expression)
 
-      if (ts.isIdentifier(callee) && expressFactoryAliases.has(callee.text)) {
+      if (isExpressFactoryCallee(callee, expressFactoryAliases)) {
         registerExpressEntity(node.name.text, 'app')
       }
 
-      if (
-        (ts.isPropertyAccessExpression(callee) &&
-          ts.isIdentifier(callee.expression) &&
-          expressFactoryAliases.has(callee.expression.text) &&
-          callee.name.text === 'Router') ||
-        (ts.isIdentifier(callee) && expressRouterAliases.has(callee.text))
-      ) {
+      if (isExpressRouterCallee(callee, expressFactoryAliases, expressRouterAliases)) {
         registerExpressEntity(node.name.text, 'router')
       }
     }
@@ -1096,17 +1124,11 @@ export const expressAdapter: JsFrameworkAdapter = {
         const callee = unparenthesizeExpression(initializer.expression)
         const line = lineOf(node, context.sourceFile)
 
-        if (ts.isIdentifier(callee) && expressFactoryAliases.has(callee.text)) {
+        if (isExpressFactoryCallee(callee, expressFactoryAliases)) {
           registerExpressEntity(node.name.text, 'app', line)
         }
 
-        if (
-          (ts.isPropertyAccessExpression(callee) &&
-            ts.isIdentifier(callee.expression) &&
-            expressFactoryAliases.has(callee.expression.text) &&
-            callee.name.text === 'Router') ||
-          (ts.isIdentifier(callee) && expressRouterAliases.has(callee.text))
-        ) {
+        if (isExpressRouterCallee(callee, expressFactoryAliases, expressRouterAliases)) {
           registerExpressEntity(node.name.text, 'router', line)
         }
       }

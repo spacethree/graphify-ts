@@ -4,7 +4,7 @@ import { expressAdapter } from './express.js'
 import type { JsFrameworkAdapter, JsFrameworkContext } from './types.js'
 
 const JS_FRAMEWORK_ADAPTERS: readonly JsFrameworkAdapter[] = [expressAdapter]
-const EXTERNAL_TARGET_RELATIONS = new Set(['imports', 'imports_from', 'handles_route', 'middleware', 'mounts_router'])
+const EXTERNAL_TARGET_RELATIONS = new Set(['depends_on', 'imports', 'imports_from', 'handles_route', 'middleware', 'mounts_router'])
 const EXTERNAL_SOURCE_RELATIONS = new Set(['handles_route', 'middleware'])
 
 function mergeNodeAttributes(existing: ExtractionNode, incoming: ExtractionNode): ExtractionNode {

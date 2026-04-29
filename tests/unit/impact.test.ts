@@ -233,6 +233,50 @@ describe('impact', () => {
         ]),
       )
     })
+
+    it('shows imported middleware routes as direct dependents across files', () => {
+      const fixturesDir = join(process.cwd(), 'tests', 'fixtures')
+      const graph = build(
+        [
+          extractJs(join(fixturesDir, 'express-imported-middleware.ts')),
+          extractJs(join(fixturesDir, 'express-imported-middleware-parent.ts')),
+        ],
+        { directed: true },
+      )
+
+      const result = analyzeImpact(graph, {}, { label: 'requireAuth' })
+
+      expect(result.direct_dependents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            label: 'USE /api',
+            relation: 'depends_on',
+          }),
+        ]),
+      )
+    })
+
+    it('shows mounted child routes as direct dependents of cross-file handlers', () => {
+      const fixturesDir = join(process.cwd(), 'tests', 'fixtures')
+      const graph = build(
+        [
+          extractJs(join(fixturesDir, 'express-mounted-router-parent.ts')),
+          extractJs(join(fixturesDir, 'express-mounted-router-child.ts')),
+        ],
+        { directed: true },
+      )
+
+      const result = analyzeImpact(graph, {}, { label: 'showUser' })
+
+      expect(result.direct_dependents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            label: 'GET /api/users/:id',
+            relation: 'depends_on',
+          }),
+        ]),
+      )
+    })
   })
 
   describe('callChains', () => {

@@ -575,6 +575,63 @@ describe('js framework extraction contract', () => {
     )
   })
 
+  it('recognizes direct CommonJS express app and router construction', () => {
+    const directAppFilePath = join(FIXTURES_DIR, 'express-commonjs-direct-app.ts')
+    const directRouterFilePath = join(FIXTURES_DIR, 'express-commonjs-direct-router.ts')
+
+    const directAppResult = extractJs(directAppFilePath)
+    const directRouterResult = extractJs(directRouterFilePath)
+
+    const appNodeId = nodeIdForLabel(directAppResult, 'app')
+    const appRouteId = nodeIdForLabel(directAppResult, 'GET /health')
+    const appHandlerId = nodeIdForLabel(directAppResult, 'listHealth()')
+    const routerNodeId = nodeIdForLabel(directRouterResult, 'router')
+    const routerRouteId = nodeIdForLabel(directRouterResult, 'GET /users/:id')
+    const routerHandlerId = nodeIdForLabel(directRouterResult, 'listUser()')
+
+    expect(directAppResult.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: 'app', node_kind: 'router', framework_role: 'express_app' }),
+        expect.objectContaining({ label: 'GET /health', node_kind: 'route', route_path: '/health' }),
+      ]),
+    )
+    expect(directRouterResult.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: 'router', node_kind: 'router', framework_role: 'express_router' }),
+        expect.objectContaining({ label: 'GET /users/:id', node_kind: 'route', route_path: '/users/:id' }),
+      ]),
+    )
+
+    expect(directAppResult.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: appNodeId, target: appRouteId, relation: 'registers_route' }),
+        expect.objectContaining({ source: appHandlerId, target: appRouteId, relation: 'handles_route' }),
+      ]),
+    )
+    expect(directRouterResult.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: routerNodeId, target: routerRouteId, relation: 'registers_route' }),
+        expect.objectContaining({ source: routerHandlerId, target: routerRouteId, relation: 'handles_route' }),
+      ]),
+    )
+  })
+
+  it('ignores malformed direct CommonJS expressions without crashing', () => {
+    const filePath = join(FIXTURES_DIR, 'virtual-express-malformed.ts')
+    const sourceText = [
+      "const express = require('express')",
+      'const app = require()()',
+      'const router = require().Router()',
+      "const extraArgApp = require('express', 'extra')()",
+      "const extraArgRouter = require('express', 'extra').Router()",
+    ].join('\n')
+    const baseExtraction = createBaseExtraction(filePath, 'virtual-express-malformed', [])
+
+    const result = applyJsFrameworkAdapters(baseExtraction, createFrameworkContext(filePath, sourceText, baseExtraction))
+
+    expect(result.nodes?.filter((node) => node.framework === 'express')).toEqual([])
+  })
+
   it('extractJs preserves named middleware and method handlers with real base labels', () => {
     const filePath = join(FIXTURES_DIR, 'express-named-handlers.ts')
     const result = extractJs(filePath)
