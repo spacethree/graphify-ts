@@ -1255,6 +1255,90 @@ describe('js framework extraction contract', () => {
     )
   })
 
+  it('extracts aliased redux toolkit helpers without classifying same-named local helpers', () => {
+    const filePath = join(FIXTURES_DIR, 'virtual-redux-aliased.ts')
+    const sourceText = [
+      "import { createAction as makeAction, createAsyncThunk as makeThunk, createSlice as makeSlice, configureStore as makeStore } from '@reduxjs/toolkit'",
+      '',
+      'const createAction = (type: string) => ({ type })',
+      'const createAsyncThunk = (_type: string, factory: () => Promise<unknown>) => factory',
+      'const createSlice = <T,>(value: T) => value',
+      'const configureStore = <T,>(value: T) => value',
+      '',
+      "const ignoredAction = createAction('ignored/localAction')",
+      "const ignoredThunk = createAsyncThunk('ignored/localThunk', async () => null)",
+      "const ignoredSlice = createSlice({ name: 'ignored' })",
+      'const ignoredStore = configureStore({ reducer: {} })',
+      '',
+      "const fetchProfile = makeThunk('auth/fetchProfile', async () => ({ id: '1' }))",
+      "const resetAuth = makeAction('auth/reset')",
+      'const authSlice = makeSlice({',
+      "  name: 'auth',",
+      '  initialState: { status: \'idle\' as \'idle\' | \'ready\' },',
+      '  reducers: {',
+      '    loginSucceeded(state) {',
+      "      state.status = 'ready'",
+      '    },',
+      '  },',
+      '  extraReducers: (builder) => {',
+      '    builder.addCase(fetchProfile.fulfilled, (state) => {',
+      "      state.status = 'ready'",
+      '    })',
+      '    builder.addCase(resetAuth, (state) => {',
+      "      state.status = 'idle'",
+      '    })',
+      '  },',
+      '})',
+      '',
+      'export const store = makeStore({',
+      '  reducer: {',
+      '    auth: authSlice.reducer,',
+      '  },',
+      '})',
+    ].join('\n')
+    const baseExtraction = createBaseExtraction(filePath, 'virtual-redux-aliased', [
+      'createAction',
+      'createAsyncThunk',
+      'createSlice',
+      'configureStore',
+      'ignoredAction',
+      'ignoredThunk',
+      'ignoredSlice',
+      'ignoredStore',
+      'fetchProfile',
+      'resetAuth',
+      'authSlice',
+      'loginSucceeded',
+      'store',
+    ])
+
+    const result = applyJsFrameworkAdapters(baseExtraction, createFrameworkContext(filePath, sourceText, baseExtraction))
+    const authSliceNodeId = nodeIdForLabel(result, 'auth slice')
+    const storeNodeId = nodeIdForLabel(result, 'store')
+
+    expect(result.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: 'auth slice', framework_role: 'redux_slice', framework: 'redux-toolkit' }),
+        expect.objectContaining({ label: 'fetchProfile', framework_role: 'redux_thunk', framework: 'redux-toolkit' }),
+        expect.objectContaining({ label: 'resetAuth', framework_role: 'redux_action', framework: 'redux-toolkit' }),
+        expect.objectContaining({ label: 'loginSucceeded', framework_role: 'redux_action', framework: 'redux-toolkit' }),
+        expect.objectContaining({ label: 'store', framework_role: 'redux_store', framework: 'redux-toolkit' }),
+      ]),
+    )
+    expect(result.nodes.find((node) => node.label === 'ignored slice')).toBeUndefined()
+    expect(result.nodes.find((node) => node.label === 'ignoredAction' && node.framework === 'redux-toolkit')).toBeUndefined()
+    expect(result.nodes.find((node) => node.label === 'ignoredThunk' && node.framework === 'redux-toolkit')).toBeUndefined()
+    expect(result.nodes.find((node) => node.label === 'ignoredStore' && node.framework === 'redux-toolkit')).toBeUndefined()
+    expect(result.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: authSliceNodeId, target: nodeIdForLabel(result, 'loginSucceeded'), relation: 'defines_action' }),
+        expect.objectContaining({ source: nodeIdForLabel(result, 'fetchProfile'), target: authSliceNodeId, relation: 'updates_slice' }),
+        expect.objectContaining({ source: nodeIdForLabel(result, 'resetAuth'), target: authSliceNodeId, relation: 'updates_slice' }),
+        expect.objectContaining({ source: authSliceNodeId, target: storeNodeId, relation: 'registered_in_store' }),
+      ]),
+    )
+  })
+
   it('extracts react router object routes with nested loaders, actions, and component mappings', () => {
     const filePath = join(FIXTURES_DIR, 'virtual-react-router-object.tsx')
     const sourceText = [
@@ -1399,6 +1483,161 @@ describe('js framework extraction contract', () => {
         expect.objectContaining({ source: settingsRouteId, target: nodeIdForLabel(result, 'SettingsPage'), relation: 'renders' }),
         expect.objectContaining({ source: settingsRouteId, target: nodeIdForLabel(result, 'settingsLoader'), relation: 'loads_route' }),
         expect.objectContaining({ source: settingsRouteId, target: nodeIdForLabel(result, 'settingsAction'), relation: 'submits_route' }),
+      ]),
+    )
+  })
+
+  it('extracts react router namespace and aliased bindings without classifying local Route components', () => {
+    const filePath = join(FIXTURES_DIR, 'virtual-react-router-aliased.tsx')
+    const sourceText = [
+      "import * as ReactRouter from 'react-router-dom'",
+      "import { Route as RouterRoute } from 'react-router-dom'",
+      '',
+      'function AppLayout() {',
+      '  return null',
+      '}',
+      '',
+      'function AccountPage() {',
+      '  return null',
+      '}',
+      '',
+      'function Route(_props: { children?: unknown }) {',
+      '  return null',
+      '}',
+      '',
+      'export const router = ReactRouter.createBrowserRouter(',
+      '  ReactRouter.createRoutesFromElements(',
+      '    <>',
+      '      <Route>',
+      '        <span>ignore local route component</span>',
+      '      </Route>',
+      '      <RouterRoute path="/" Component={AppLayout}>',
+      '        <ReactRouter.Route path="account" Component={AccountPage} />',
+      '      </RouterRoute>',
+      '    </>,',
+      '  ),',
+      ')',
+    ].join('\n')
+    const baseExtraction = createBaseExtraction(filePath, 'virtual-react-router-aliased', ['AppLayout', 'AccountPage', 'Route', 'router'])
+
+    const result = applyJsFrameworkAdapters(baseExtraction, createFrameworkContext(filePath, sourceText, baseExtraction))
+
+    expect(result.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: '/', node_kind: 'route', route_path: '/', framework_role: 'react_router_route', framework: 'react-router' }),
+        expect.objectContaining({ label: '/account', node_kind: 'route', route_path: '/account', framework_role: 'react_router_route', framework: 'react-router' }),
+      ]),
+    )
+    expect(result.nodes.filter((node) => node.framework_role === 'react_router_route')).toHaveLength(2)
+    expect(result.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: nodeIdForLabel(result, 'router'), target: nodeIdForLabel(result, '/'), relation: 'registers_route' }),
+        expect.objectContaining({ source: nodeIdForLabel(result, '/'), target: nodeIdForLabel(result, 'AppLayout'), relation: 'renders' }),
+        expect.objectContaining({ source: nodeIdForLabel(result, '/account'), target: nodeIdForLabel(result, 'AccountPage'), relation: 'renders' }),
+        expect.objectContaining({ source: nodeIdForLabel(result, '/'), target: nodeIdForLabel(result, '/account'), relation: 'contains' }),
+      ]),
+    )
+    expect(result.edges.find((edge) => edge.target === nodeIdForLabel(result, 'Route') && edge.relation === 'renders')).toBeUndefined()
+  })
+
+  it('does not extract react router semantics from same-named local helpers without router imports', () => {
+    const filePath = join(FIXTURES_DIR, 'virtual-react-router-local-collision.tsx')
+    const sourceText = [
+      'const createBrowserRouter = <T,>(value: T) => value',
+      'const createRoutesFromElements = <T,>(value: T) => value',
+      '',
+      'function Route(_props: { path?: string; children?: unknown }) {',
+      '  return null',
+      '}',
+      '',
+      'export const router = createBrowserRouter(',
+      '  createRoutesFromElements(',
+      '    <Route path="/">',
+      '      <Route path="settings" />',
+      '    </Route>,',
+      '  ),',
+      ')',
+    ].join('\n')
+    const baseExtraction = createBaseExtraction(filePath, 'virtual-react-router-local-collision', [
+      'createBrowserRouter',
+      'createRoutesFromElements',
+      'Route',
+      'router',
+    ])
+
+    const result = applyJsFrameworkAdapters(baseExtraction, createFrameworkContext(filePath, sourceText, baseExtraction))
+
+    expect(result.nodes.filter((node) => node.framework === 'react-router')).toHaveLength(0)
+    expect(result.edges.filter((edge) => ['registers_route', 'contains', 'renders', 'loads_route', 'submits_route'].includes(edge.relation))).toHaveLength(0)
+  })
+
+  it('represents pathless react router layout routes distinctly from real root routes', () => {
+    const filePath = join(FIXTURES_DIR, 'virtual-react-router-pathless-layout.tsx')
+    const sourceText = [
+      "import { createBrowserRouter } from 'react-router-dom'",
+      '',
+      'function RootLayout() {',
+      '  return null',
+      '}',
+      '',
+      'function AuthLayout() {',
+      '  return null',
+      '}',
+      '',
+      'function LoginPage() {',
+      '  return null',
+      '}',
+      '',
+      'export const router = createBrowserRouter([{',
+      "  path: '/',",
+      '  Component: RootLayout,',
+      '  children: [',
+      '    {',
+      '      Component: AuthLayout,',
+      '      children: [',
+      '        {',
+      "          path: 'login',",
+      '          Component: LoginPage,',
+      '        },',
+      '      ],',
+      '    },',
+      '  ],',
+      '}])',
+    ].join('\n')
+    const baseExtraction = createBaseExtraction(filePath, 'virtual-react-router-pathless-layout', [
+      'RootLayout',
+      'AuthLayout',
+      'LoginPage',
+      'router',
+    ])
+
+    const result = applyJsFrameworkAdapters(baseExtraction, createFrameworkContext(filePath, sourceText, baseExtraction))
+    const rootRouteId = nodeIdForLabel(result, '/')
+    const layoutRoute = result.nodes.find((node) => node.label === '/ (layout)')
+
+    expect(result.nodes.filter((node) => node.label === '/')).toHaveLength(1)
+    expect(layoutRoute).toEqual(
+      expect.objectContaining({
+        label: '/ (layout)',
+        node_kind: 'route',
+        framework: 'react-router',
+        framework_role: 'react_router_layout',
+      }),
+    )
+    expect(layoutRoute?.route_path).toBeUndefined()
+    expect(result.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: '/login', node_kind: 'route', route_path: '/login', framework_role: 'react_router_route' }),
+      ]),
+    )
+    expect(result.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: nodeIdForLabel(result, 'router'), target: rootRouteId, relation: 'registers_route' }),
+        expect.objectContaining({ source: rootRouteId, target: nodeIdForLabel(result, 'RootLayout'), relation: 'renders' }),
+        expect.objectContaining({ source: rootRouteId, target: layoutRoute?.id, relation: 'contains' }),
+        expect.objectContaining({ source: layoutRoute?.id, target: nodeIdForLabel(result, 'AuthLayout'), relation: 'renders' }),
+        expect.objectContaining({ source: layoutRoute?.id, target: nodeIdForLabel(result, '/login'), relation: 'contains' }),
+        expect.objectContaining({ source: nodeIdForLabel(result, '/login'), target: nodeIdForLabel(result, 'LoginPage'), relation: 'renders' }),
       ]),
     )
   })

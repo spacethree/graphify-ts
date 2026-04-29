@@ -9,7 +9,8 @@ import { unparenthesizeExpression } from '../typescript-utils.js'
 import { resolveImportPath, scriptKindForPath } from './js-import-paths.js'
 import type { JsFrameworkAdapter, JsFrameworkContext } from './types.js'
 
-const REDUX_MATCH_PATTERN = /\bcreateSlice\b|\bconfigureStore\b|\bcreateAsyncThunk\b/
+const REDUX_MATCH_PATTERN = /@reduxjs\/toolkit|\bcreateSlice\b|\bconfigureStore\b|\bcreateAsyncThunk\b|\bcreateAction\b/
+const REDUX_TOOLKIT_MODULE_SPECIFIERS = new Set(['@reduxjs/toolkit'])
 
 interface SliceRecord {
   nodeId: string
@@ -36,6 +37,14 @@ interface ReduxReference {
 
 interface ReduxModuleAnalysis {
   exports: Map<string, ReduxReference>
+}
+
+interface ReduxToolkitImportBindings {
+  createSlice: Set<string>
+  configureStore: Set<string>
+  createAsyncThunk: Set<string>
+  createAction: Set<string>
+  namespaces: Set<string>
 }
 
 function lineOf(node: ts.Node, sourceFile: ts.SourceFile): number {
@@ -196,10 +205,82 @@ function sliceActionReference(
   }
 }
 
-function isCreateCall(initializer: ts.Expression, calleeName: string): boolean {
+function createReduxToolkitImportBindings(): ReduxToolkitImportBindings {
+  return {
+    createSlice: new Set<string>(),
+    configureStore: new Set<string>(),
+    createAsyncThunk: new Set<string>(),
+    createAction: new Set<string>(),
+    namespaces: new Set<string>(),
+  }
+}
+
+function collectReduxToolkitImportBindings(sourceFile: ts.SourceFile): ReduxToolkitImportBindings {
+  const bindings = createReduxToolkitImportBindings()
+
+  for (const statement of sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement) || !statement.importClause || !ts.isStringLiteralLike(statement.moduleSpecifier)) {
+      continue
+    }
+
+    if (!REDUX_TOOLKIT_MODULE_SPECIFIERS.has(statement.moduleSpecifier.text)) {
+      continue
+    }
+
+    const namedBindings = statement.importClause.namedBindings
+    if (namedBindings && ts.isNamespaceImport(namedBindings)) {
+      bindings.namespaces.add(namedBindings.name.text)
+      continue
+    }
+
+    if (namedBindings && ts.isNamedImports(namedBindings)) {
+      for (const element of namedBindings.elements) {
+        const importedName = element.propertyName?.text ?? element.name.text
+        const localName = element.name.text
+        if (importedName === 'createSlice') {
+          bindings.createSlice.add(localName)
+        } else if (importedName === 'configureStore') {
+          bindings.configureStore.add(localName)
+        } else if (importedName === 'createAsyncThunk') {
+          bindings.createAsyncThunk.add(localName)
+        } else if (importedName === 'createAction') {
+          bindings.createAction.add(localName)
+        }
+      }
+    }
+  }
+
+  return bindings
+}
+
+function isReduxToolkitBindingCall(
+  expression: ts.Expression,
+  bindings: ReduxToolkitImportBindings,
+  localBindings: ReadonlySet<string>,
+  memberName: 'createSlice' | 'configureStore' | 'createAsyncThunk' | 'createAction',
+): boolean {
+  const candidate = unparenthesizeExpression(expression)
+  if (ts.isIdentifier(candidate)) {
+    return localBindings.has(candidate.text)
+  }
+
+  return (
+    ts.isPropertyAccessExpression(candidate) &&
+    ts.isIdentifier(candidate.expression) &&
+    bindings.namespaces.has(candidate.expression.text) &&
+    candidate.name.text === memberName
+  )
+}
+
+function isCreateCall(
+  initializer: ts.Expression,
+  bindings: ReduxToolkitImportBindings,
+  localBindings: ReadonlySet<string>,
+  calleeName: 'createSlice' | 'createAsyncThunk' | 'createAction',
+): boolean {
   const candidate = unparenthesizeExpression(initializer)
   const callee = ts.isCallExpression(candidate) ? unparenthesizeExpression(candidate.expression) : null
-  return ts.isCallExpression(candidate) && !!callee && ts.isIdentifier(callee) && callee.text === calleeName
+  return ts.isCallExpression(candidate) && !!callee && isReduxToolkitBindingCall(callee, bindings, localBindings, calleeName)
 }
 
 function analyzeReduxModule(filePath: string, cache: Map<string, ReduxModuleAnalysis>): ReduxModuleAnalysis {
@@ -222,6 +303,7 @@ function analyzeReduxModule(filePath: string, cache: Map<string, ReduxModuleAnal
   }
 
   const sourceFile = ts.createSourceFile(resolvedFilePath, sourceText, ts.ScriptTarget.Latest, true, scriptKindForPath(resolvedFilePath))
+  const toolkitBindings = collectReduxToolkitImportBindings(sourceFile)
   const importedBindings = new Map<string, ReduxReference>()
   const slicesByBinding = new Map<string, SliceRecord>()
   const thunkBindings = new Map<string, ReduxReference>()
@@ -398,7 +480,7 @@ function analyzeReduxModule(filePath: string, cache: Map<string, ReduxModuleAnal
       const bindingName = declaration.name.text
       const bindingLine = lineOf(declaration.name, sourceFile)
 
-      if (isCreateCall(initializer, 'createSlice')) {
+      if (isCreateCall(initializer, toolkitBindings, toolkitBindings.createSlice, 'createSlice')) {
         const options = ts.isCallExpression(initializer) ? initializer.arguments[0] : null
         const sliceOptions = options ? unparenthesizeExpression(options) : null
         const sliceName = sliceOptions && ts.isObjectLiteralExpression(sliceOptions)
@@ -410,9 +492,9 @@ function analyzeReduxModule(filePath: string, cache: Map<string, ReduxModuleAnal
           sourceFile: resolvedFilePath,
           line: bindingLine,
         })
-      } else if (isCreateCall(initializer, 'createAsyncThunk')) {
+      } else if (isCreateCall(initializer, toolkitBindings, toolkitBindings.createAsyncThunk, 'createAsyncThunk')) {
         thunkBindings.set(bindingName, actionReference(resolvedFilePath, bindingName, bindingLine, 'redux_thunk'))
-      } else if (isCreateCall(initializer, 'createAction')) {
+      } else if (isCreateCall(initializer, toolkitBindings, toolkitBindings.createAction, 'createAction')) {
         actionBindings.set(bindingName, actionReference(resolvedFilePath, bindingName, bindingLine, 'redux_action'))
       } else {
         const aliasTarget = resolveBindingReference(initializer)
@@ -770,6 +852,7 @@ function handleStoreRegistration(
   edges: NonNullable<ReturnType<JsFrameworkAdapter['extract']>['edges']>,
   seenIds: Set<string>,
   seenEdges: Set<string>,
+  toolkitBindings: ReduxToolkitImportBindings,
   slicesByBinding: ReadonlyMap<string, SliceRecord>,
   importedBindings: ReadonlyMap<string, ReduxReference>,
   declaration: ts.VariableDeclaration,
@@ -783,10 +866,7 @@ function handleStoreRegistration(
     return
   }
   const callee = unparenthesizeExpression(initializer.expression)
-  if (!ts.isIdentifier(callee)) {
-    return
-  }
-  if (callee.text !== 'configureStore') {
+  if (!isReduxToolkitBindingCall(callee, toolkitBindings, toolkitBindings.configureStore, 'configureStore')) {
     return
   }
 
@@ -914,6 +994,7 @@ function handleSliceDeclaration(
   edges: NonNullable<ReturnType<JsFrameworkAdapter['extract']>['edges']>,
   seenIds: Set<string>,
   seenEdges: Set<string>,
+  toolkitBindings: ReduxToolkitImportBindings,
   slicesByBinding: Map<string, SliceRecord>,
   thunkBindings: Map<string, ReduxReference>,
   actionBindings: Map<string, ReduxReference>,
@@ -929,11 +1010,7 @@ function handleSliceDeclaration(
     return
   }
   const callee = unparenthesizeExpression(initializer.expression)
-  if (!ts.isIdentifier(callee)) {
-    return
-  }
-
-  if (callee.text === 'createAsyncThunk') {
+  if (isReduxToolkitBindingCall(callee, toolkitBindings, toolkitBindings.createAsyncThunk, 'createAsyncThunk')) {
     thunkBindings.set(
       declaration.name.text,
       actionReference(context.filePath, declaration.name.text, lineOf(declaration.name, context.sourceFile), 'redux_thunk'),
@@ -941,7 +1018,7 @@ function handleSliceDeclaration(
     return
   }
 
-  if (callee.text === 'createAction') {
+  if (isReduxToolkitBindingCall(callee, toolkitBindings, toolkitBindings.createAction, 'createAction')) {
     actionBindings.set(
       declaration.name.text,
       actionReference(context.filePath, declaration.name.text, lineOf(declaration.name, context.sourceFile), 'redux_action'),
@@ -949,7 +1026,7 @@ function handleSliceDeclaration(
     return
   }
 
-  if (callee.text !== 'createSlice') {
+  if (!isReduxToolkitBindingCall(callee, toolkitBindings, toolkitBindings.createSlice, 'createSlice')) {
     return
   }
 
@@ -1029,11 +1106,24 @@ export const reduxAdapter: JsFrameworkAdapter = {
     const actionBindings = new Map<string, ReduxReference>()
     const moduleAnalysisCache = new Map<string, ReduxModuleAnalysis>()
     const importedBindings = collectImportedReduxBindings(context.filePath, context.sourceFile, moduleAnalysisCache)
+    const toolkitBindings = collectReduxToolkitImportBindings(context.sourceFile)
 
     const visit = (node: ts.Node) => {
       if (ts.isVariableDeclaration(node)) {
-        handleSliceDeclaration(context, nodes, edges, seenIds, seenEdges, slicesByBinding, thunkBindings, actionBindings, importedBindings, node)
-        handleStoreRegistration(context, nodes, edges, seenIds, seenEdges, slicesByBinding, importedBindings, node)
+        handleSliceDeclaration(
+          context,
+          nodes,
+          edges,
+          seenIds,
+          seenEdges,
+          toolkitBindings,
+          slicesByBinding,
+          thunkBindings,
+          actionBindings,
+          importedBindings,
+          node,
+        )
+        handleStoreRegistration(context, nodes, edges, seenIds, seenEdges, toolkitBindings, slicesByBinding, importedBindings, node)
         handleExportedMembers(context, nodes, edges, seenIds, seenEdges, slicesByBinding, node)
       }
 
