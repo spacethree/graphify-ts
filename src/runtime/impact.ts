@@ -33,6 +33,16 @@ export interface ImpactResult {
   total_affected: number
 }
 
+export interface CompactImpactNode extends Omit<ImpactNode, 'community_label' | 'file_type'> {
+  file_type?: string
+}
+
+export interface CompactImpactResult extends Omit<ImpactResult, 'direct_dependents' | 'transitive_dependents'> {
+  direct_dependents: CompactImpactNode[]
+  transitive_dependents: CompactImpactNode[]
+  shared_file_type?: string
+}
+
 interface TraversalCandidate {
   neighborId: string
   relation: string
@@ -280,6 +290,31 @@ export function analyzeImpact(
     affected_communities: affectedCommunities,
     top_paths_per_community: topPathsPerCommunity,
     total_affected: directDependents.length + transitiveDependents.length,
+  }
+}
+
+export function compactImpactResult(result: ImpactResult): CompactImpactResult {
+  const dependents = [...result.direct_dependents, ...result.transitive_dependents]
+  const sharedFileType =
+    dependents.length > 0 && dependents.every((node) => node.file_type === dependents[0]?.file_type)
+      ? dependents[0]?.file_type
+      : undefined
+  const compactNode = ({ community_label: _communityLabel, file_type: fileType, ...node }: ImpactNode): CompactImpactNode => ({
+    ...node,
+    ...(sharedFileType ? {} : { file_type: fileType }),
+  })
+
+  return {
+    target: result.target,
+    target_file: result.target_file,
+    depth: result.depth,
+    direct_dependents: result.direct_dependents.map(compactNode),
+    transitive_dependents: result.transitive_dependents.map(compactNode),
+    affected_files: result.affected_files,
+    affected_communities: result.affected_communities,
+    top_paths_per_community: result.top_paths_per_community,
+    total_affected: result.total_affected,
+    ...(sharedFileType ? { shared_file_type: sharedFileType } : {}),
   }
 }
 

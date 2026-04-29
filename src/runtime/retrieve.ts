@@ -66,6 +66,15 @@ export interface RetrieveResult {
   }
 }
 
+export interface CompactRetrieveMatchedNode extends Omit<RetrieveMatchedNode, 'community_label' | 'file_type'> {
+  file_type?: string
+}
+
+export interface CompactRetrieveResult extends Omit<RetrieveResult, 'matched_nodes'> {
+  matched_nodes: CompactRetrieveMatchedNode[]
+  shared_file_type?: string
+}
+
 export function tokenizeQuestion(question: string): string[] {
   return question
     .replace(/([a-z])([A-Z])/g, '$1 $2')
@@ -646,8 +655,23 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
   const secondaryCandidates = frameworkProfile.frameworkShaped
     ? primaryCandidates.filter((node) => node.frameworkBoost <= 0)
     : primaryCandidates
-  const inclusionOrder = [...prioritizedFrameworkCandidates, ...secondaryCandidates, ...peripheralCandidates]
   const compactFrameworkLimit = frameworkProfile.frameworkShaped && prioritizedFrameworkCandidates.length > 0 ? 5 : Number.POSITIVE_INFINITY
+  const reservedSupportingSlots =
+    Number.isFinite(compactFrameworkLimit) && secondaryCandidates.length > 0
+      ? Math.min(2, secondaryCandidates.length, compactFrameworkLimit - 1)
+      : 0
+  const prioritizedFrameworkHeadCount = Number.isFinite(compactFrameworkLimit)
+    ? Math.max(1, compactFrameworkLimit - reservedSupportingSlots)
+    : prioritizedFrameworkCandidates.length
+  const inclusionOrder = frameworkProfile.frameworkShaped
+    ? [
+        ...prioritizedFrameworkCandidates.slice(0, prioritizedFrameworkHeadCount),
+        ...secondaryCandidates.slice(0, reservedSupportingSlots),
+        ...prioritizedFrameworkCandidates.slice(prioritizedFrameworkHeadCount),
+        ...secondaryCandidates.slice(reservedSupportingSlots),
+        ...peripheralCandidates,
+      ]
+    : [...secondaryCandidates, ...peripheralCandidates]
 
   for (const node of inclusionOrder) {
     const snippet = readSnippet(node.sourceFile, node.lineNumber)
@@ -725,5 +749,25 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
       god_nodes: [...includedLabels].filter((label) => godNodeLabels.has(label)),
       bridge_nodes: [...includedLabels].filter((label) => bridgeNodeLabels.has(label)),
     },
+  }
+}
+
+export function compactRetrieveResult(result: RetrieveResult): CompactRetrieveResult {
+  const sharedFileType =
+    result.matched_nodes.length > 0 && result.matched_nodes.every((node) => node.file_type === result.matched_nodes[0]?.file_type)
+      ? result.matched_nodes[0]?.file_type
+      : undefined
+
+  return {
+    question: result.question,
+    token_count: result.token_count,
+    matched_nodes: result.matched_nodes.map(({ community_label: _communityLabel, file_type: fileType, ...node }) => ({
+      ...node,
+      ...(sharedFileType ? {} : { file_type: fileType }),
+    })),
+    relationships: result.relationships,
+    community_context: result.community_context,
+    graph_signals: result.graph_signals,
+    ...(sharedFileType ? { shared_file_type: sharedFileType } : {}),
   }
 }

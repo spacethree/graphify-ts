@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { KnowledgeGraph } from '../../src/contracts/graph.js'
 import { build } from '../../src/pipeline/build.js'
 import { extractJs } from '../../src/pipeline/extract.js'
-import { analyzeImpact, callChains } from '../../src/runtime/impact.js'
+import { analyzeImpact, callChains, compactImpactResult } from '../../src/runtime/impact.js'
 
 function buildTestGraph(): KnowledgeGraph {
   const graph = new KnowledgeGraph({ directed: true })
@@ -567,6 +567,21 @@ describe('impact', () => {
           path: ['dashboardLoaderService', 'dashboardLoader', '/dashboard'],
         },
       ])
+    })
+
+    it('compacts repeated dependent metadata for default payloads', () => {
+      const graph = buildTestGraph()
+      const rawResult = analyzeImpact(graph, { 0: 'Auth', 1: 'Data', 2: 'API', 3: 'Observability' }, {
+        label: 'DatabaseConnection',
+        depth: 3,
+      })
+
+      const compactResult = compactImpactResult(rawResult)
+
+      expect(JSON.stringify(compactResult).length).toBeLessThan(JSON.stringify(rawResult).length)
+      expect(compactResult.shared_file_type).toBe('code')
+      expect(compactResult.direct_dependents[0]).not.toHaveProperty('file_type')
+      expect(compactResult.direct_dependents[0]).not.toHaveProperty('community_label')
     })
   })
 

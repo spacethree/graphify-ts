@@ -4,7 +4,14 @@ import { KnowledgeGraph } from '../../src/contracts/graph.js'
 import { build } from '../../src/pipeline/build.js'
 import { extractJs } from '../../src/pipeline/extract.js'
 import { inspectReduxModuleExports } from '../../src/pipeline/extract/frameworks/redux.js'
-import { retrieveContext, scoreNode, tokenWeightsForQuestion, tokenizeLabel, tokenizeQuestion } from '../../src/runtime/retrieve.js'
+import {
+  compactRetrieveResult,
+  retrieveContext,
+  scoreNode,
+  tokenWeightsForQuestion,
+  tokenizeLabel,
+  tokenizeQuestion,
+} from '../../src/runtime/retrieve.js'
 
 describe('retrieve', () => {
   describe('tokenizeQuestion', () => {
@@ -1300,6 +1307,119 @@ describe('retrieve', () => {
       expect(labels).not.toContain('TaxRules')
     })
 
+    it('keeps supporting code nodes alongside top framework matches in compact framework-shaped retrievals', () => {
+      const graph = new KnowledgeGraph({ directed: true })
+
+      graph.addNode('settings_route', {
+        label: '/settings',
+        source_file: '/src/routes/settings.tsx',
+        line_number: 5,
+        node_kind: 'route',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_route',
+        community: 0,
+      })
+      graph.addNode('settings_loader', {
+        label: 'settingsLoader',
+        source_file: '/src/routes/settings.tsx',
+        line_number: 10,
+        node_kind: 'function',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_loader',
+        community: 0,
+      })
+      graph.addNode('settings_action', {
+        label: 'settingsAction',
+        source_file: '/src/routes/settings.tsx',
+        line_number: 16,
+        node_kind: 'function',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_action',
+        community: 0,
+      })
+      graph.addNode('settings_page', {
+        label: 'SettingsPage',
+        source_file: '/src/routes/settings.tsx',
+        line_number: 24,
+        node_kind: 'component',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_component',
+        community: 0,
+      })
+      graph.addNode('settings_layout', {
+        label: 'SettingsLayout',
+        source_file: '/src/routes/settings.tsx',
+        line_number: 30,
+        node_kind: 'route',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_layout',
+        community: 0,
+      })
+      graph.addNode('load_settings_data', {
+        label: 'loadSettingsData',
+        source_file: '/src/services/settings.ts',
+        line_number: 8,
+        node_kind: 'function',
+        file_type: 'code',
+        community: 1,
+      })
+      graph.addNode('save_settings_data', {
+        label: 'saveSettingsData',
+        source_file: '/src/services/settings.ts',
+        line_number: 18,
+        node_kind: 'function',
+        file_type: 'code',
+        community: 1,
+      })
+
+      graph.addEdge('settings_route', 'settings_loader', {
+        relation: 'loads_route',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/settings.tsx',
+      })
+      graph.addEdge('settings_route', 'settings_action', {
+        relation: 'submits_route',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/settings.tsx',
+      })
+      graph.addEdge('settings_route', 'settings_page', {
+        relation: 'renders',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/settings.tsx',
+      })
+      graph.addEdge('settings_layout', 'settings_route', {
+        relation: 'contains',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/settings.tsx',
+      })
+      graph.addEdge('settings_loader', 'load_settings_data', {
+        relation: 'calls',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/settings.tsx',
+      })
+      graph.addEdge('settings_action', 'save_settings_data', {
+        relation: 'calls',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/settings.tsx',
+      })
+
+      const result = retrieveContext(graph, {
+        question: 'which react router route loads settings data',
+        budget: 5000,
+        fileType: 'code',
+      })
+
+      expect(result.matched_nodes.slice(0, 5).map((node) => node.label)).toEqual(expect.arrayContaining(['/settings']))
+      expect(result.matched_nodes.slice(0, 5).map((node) => node.label)).toEqual(
+        expect.arrayContaining(['loadSettingsData']),
+      )
+    })
+
     it('respects community filter', () => {
       const graph = buildTestGraph()
       const result = retrieveContext(graph, { question: 'database', budget: 5000, community: 1 })
@@ -1335,6 +1455,19 @@ describe('retrieve', () => {
 
       expect(result.token_count).toBeGreaterThan(0)
       expect(result.token_count).toBeLessThanOrEqual(5000)
+    })
+
+    it('compacts repeated node metadata for default payloads', () => {
+      const graph = buildTestGraph()
+      graph.graph.community_labels = { 0: 'Auth', 1: 'Data', 2: 'Observability' }
+
+      const rawResult = retrieveContext(graph, { question: 'auth', budget: 5000, fileType: 'code' })
+      const compactResult = compactRetrieveResult(rawResult)
+
+      expect(JSON.stringify(compactResult).length).toBeLessThan(JSON.stringify(rawResult).length)
+      expect(compactResult.shared_file_type).toBe('code')
+      expect(compactResult.matched_nodes[0]).not.toHaveProperty('file_type')
+      expect(compactResult.matched_nodes[0]).not.toHaveProperty('community_label')
     })
 
     it('assigns higher match_score to direct matches than neighbors', () => {

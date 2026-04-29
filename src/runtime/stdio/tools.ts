@@ -4,9 +4,9 @@ import type { CompareRefsInput } from '../../infrastructure/time-travel.js'
 import { buildCommunityLabels } from '../../pipeline/community-naming.js'
 import { communityDetailsAtZoom, communityDetailsMicro, type CommunityZoomLevel } from '../../pipeline/community-details.js'
 import { validateGraphPath } from '../../shared/security.js'
-import { analyzeImpact, callChains } from '../impact.js'
+import { analyzeImpact, callChains, compactImpactResult } from '../impact.js'
 import { analyzePrImpact } from '../pr-impact.js'
-import { retrieveContext } from '../retrieve.js'
+import { compactRetrieveResult, retrieveContext } from '../retrieve.js'
 import type { TimeTravelView } from '../time-travel.js'
 import {
   communitiesFromGraph,
@@ -158,7 +158,7 @@ export function handleToolCall(id: string | number | null, graphPath: string, pa
         ...(impactDepth !== null ? { depth: impactDepth } : {}),
         ...(edgeTypes && edgeTypes.length > 0 ? { edgeTypes } : {}),
       })
-      return helpers.ok(id, helpers.textToolResult(JSON.stringify(impactResult)))
+      return helpers.ok(id, helpers.textToolResult(JSON.stringify(compactImpactResult(impactResult))))
     }
     case 'call_chain': {
       const chainSource = helpers.stringParam(toolArguments, 'source')
@@ -200,7 +200,7 @@ export function handleToolCall(id: string | number | null, graphPath: string, pa
         ...(retrieveCommunity !== null ? { community: retrieveCommunity } : {}),
         ...(retrieveFileType ? { fileType: retrieveFileType } : {}),
       })
-      return helpers.ok(id, helpers.textToolResult(JSON.stringify(result)))
+      return helpers.ok(id, helpers.textToolResult(JSON.stringify(compactRetrieveResult(result))))
     }
     case 'time_travel_compare': {
       const fromRef = helpers.stringParamAlias(toolArguments, ['from_ref', 'fromRef'])
