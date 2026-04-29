@@ -152,6 +152,19 @@ function estimateTokens(text: string): number {
   return Math.max(1, Math.floor(text.length / CHARS_PER_TOKEN))
 }
 
+function estimateRetrieveEntryTokens(label: string, sourceFile: string, lineNumber: number, snippet: string | null): number {
+  return estimateTokens(`${label} ${sourceFile}:${lineNumber} ${snippet ?? ''}`)
+}
+
+function tokenCountForMatchedNodes(
+  matchedNodes: readonly Pick<RetrieveMatchedNode, 'label' | 'source_file' | 'line_number' | 'snippet'>[],
+): number {
+  return matchedNodes.reduce(
+    (total, node) => total + estimateRetrieveEntryTokens(node.label, node.source_file, node.line_number, node.snippet),
+    0,
+  )
+}
+
 function readSnippet(sourceFile: string, lineNumber: number): string | null {
   if (!sourceFile || lineNumber <= 0) {
     return null
@@ -350,7 +363,8 @@ function buildFrameworkQuestionProfile(question: string, questionTokens: readonl
   const routeIntent = hasHttpVerb || hasRoutePath || includesAnyToken(questionTokens, ['route', 'routes', 'router', 'endpoint', 'endpoints'])
   const explicitExpress = includesAnyToken(questionTokens, ['express'])
   const explicitRedux = includesAnyToken(questionTokens, ['redux', 'toolkit'])
-  const explicitReactRouter = includesAnyToken(questionTokens, ['react', 'router', 'routing'])
+  const mentionsReact = includesAnyToken(questionTokens, ['react'])
+  const explicitReactRouter = includesAnyToken(questionTokens, ['router', 'routing'])
   const middlewareIntent = includesAnyToken(questionTokens, ['middleware', 'guard'])
   const handlerIntent = includesAnyToken(questionTokens, ['handler', 'handlers', 'controller', 'controllers'])
   const selectorIntent = includesAnyToken(questionTokens, ['selector', 'selectors'])
@@ -361,7 +375,7 @@ function buildFrameworkQuestionProfile(question: string, questionTokens: readonl
   const actionIntent = includesAnyToken(questionTokens, ['action', 'actions', 'submit', 'submits', 'dispatch'])
   const express = explicitExpress || hasHttpVerb || middlewareIntent || handlerIntent
   const redux = explicitRedux || selectorIntent || sliceIntent || storeIntent
-  const reactRouter = explicitReactRouter || renderIntent || loaderIntent || (actionIntent && (explicitReactRouter || routeIntent))
+  const reactRouter = routeIntent && !express && (explicitReactRouter || mentionsReact || renderIntent || loaderIntent || actionIntent)
 
   return {
     frameworkShaped: express || redux || reactRouter,
@@ -679,8 +693,7 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
 
   for (const node of inclusionOrder) {
     const snippet = readSnippet(node.sourceFile, node.lineNumber)
-    const nodeText = `${node.label} ${node.sourceFile}:${node.lineNumber} ${snippet ?? ''}`
-    const nodeTokens = estimateTokens(nodeText)
+    const nodeTokens = estimateRetrieveEntryTokens(node.label, node.sourceFile, node.lineNumber, snippet)
 
     if (tokenCount + nodeTokens > budget && matchedNodes.length > 0) {
       break
@@ -770,7 +783,7 @@ export function compactRetrieveResult(result: RetrieveResult): CompactRetrieveRe
 
   return {
     question: result.question,
-    token_count: result.token_count,
+    token_count: tokenCountForMatchedNodes(compactMatchedNodes),
     matched_nodes: compactMatchedNodes.map(({ community_label: _communityLabel, file_type: fileType, framework_boost: _frameworkBoost, ...node }) => ({
       ...node,
       ...(sharedFileType ? {} : { file_type: fileType }),

@@ -1230,6 +1230,55 @@ describe('retrieve', () => {
       )
     })
 
+    it('requires explicit route intent before boosting react router nodes', () => {
+      const graph = new KnowledgeGraph({ directed: true })
+      graph.addNode('settings_route', {
+        label: '/settings',
+        source_file: '/src/routes/settings.tsx',
+        line_number: 12,
+        node_kind: 'route',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_route',
+        community: 0,
+      })
+      graph.addNode('settings_component', {
+        label: 'SettingsComponent',
+        source_file: '/src/components/SettingsComponent.tsx',
+        line_number: 20,
+        node_kind: 'component',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_component',
+        community: 0,
+      })
+      graph.addEdge('settings_route', 'settings_component', {
+        relation: 'renders',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/settings.tsx',
+      })
+
+      const genericReactResult = retrieveContext(graph, {
+        question: 'how does the react settings component work',
+        budget: 5000,
+        fileType: 'code',
+      })
+      const routeQuestionResult = retrieveContext(graph, {
+        question: 'which react router path renders the settings component',
+        budget: 5000,
+        fileType: 'code',
+      })
+
+      expect(genericReactResult.matched_nodes[0]).toEqual(
+        expect.objectContaining({
+          label: 'SettingsComponent',
+          source_file: '/src/components/SettingsComponent.tsx',
+        }),
+      )
+      expect(genericReactResult.matched_nodes.find((node) => node.label === '/settings')?.framework_boost).toBe(0)
+      expect(routeQuestionResult.matched_nodes.find((node) => node.label === '/settings')?.framework_boost).toBeGreaterThan(0)
+    })
+
     it('keeps direct symbol matches above path-only matches after structural boosts', () => {
       const graph = new KnowledgeGraph()
       graph.addNode('direct_symbol', {
@@ -1731,6 +1780,123 @@ describe('retrieve', () => {
       expect(rawResult.matched_nodes.map((node) => node.label)).toEqual(expect.arrayContaining(['dashboardHelper']))
       expect(compactResult.matched_nodes).toHaveLength(5)
       expect(compactResult.matched_nodes.length).toBeLessThan(rawResult.matched_nodes.length)
+    })
+
+    it('recomputes compact token_count after truncating matched nodes', () => {
+      const graph = new KnowledgeGraph({ directed: true })
+      graph.addNode('dashboard_route', {
+        label: '/dashboard',
+        source_file: '/src/routes/dashboard.tsx',
+        line_number: 5,
+        node_kind: 'route',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_route',
+        community: 0,
+      })
+      graph.addNode('dashboard_layout', {
+        label: 'DashboardLayout',
+        source_file: '/src/routes/dashboard-layout.tsx',
+        line_number: 9,
+        node_kind: 'component',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_layout',
+        community: 0,
+      })
+      graph.addNode('dashboard_page', {
+        label: 'DashboardPage',
+        source_file: '/src/routes/dashboard-page.tsx',
+        line_number: 12,
+        node_kind: 'component',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_component',
+        community: 0,
+      })
+      graph.addNode('dashboard_loader', {
+        label: 'dashboardLoader',
+        source_file: '/src/routes/dashboard-loader.ts',
+        line_number: 18,
+        node_kind: 'function',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_loader',
+        community: 0,
+      })
+      graph.addNode('dashboard_action', {
+        label: 'dashboardAction',
+        source_file: '/src/routes/dashboard-action.ts',
+        line_number: 24,
+        node_kind: 'function',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_action',
+        community: 0,
+      })
+      graph.addNode('dashboard_router', {
+        label: 'dashboardRouter',
+        source_file: '/src/routes/router.tsx',
+        line_number: 30,
+        node_kind: 'router',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router',
+        community: 0,
+      })
+      graph.addNode('dashboard_helper', {
+        label: 'dashboardHelper',
+        source_file: '/src/routes/dashboard-helper.ts',
+        line_number: 36,
+        node_kind: 'function',
+        file_type: 'code',
+        community: 0,
+      })
+      graph.addEdge('dashboard_route', 'dashboard_layout', {
+        relation: 'renders',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/dashboard.tsx',
+      })
+      graph.addEdge('dashboard_route', 'dashboard_page', {
+        relation: 'renders',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/dashboard.tsx',
+      })
+      graph.addEdge('dashboard_route', 'dashboard_loader', {
+        relation: 'loads_route',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/dashboard.tsx',
+      })
+      graph.addEdge('dashboard_route', 'dashboard_action', {
+        relation: 'submits_route',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/dashboard.tsx',
+      })
+      graph.addEdge('dashboard_router', 'dashboard_route', {
+        relation: 'contains',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/router.tsx',
+      })
+      graph.addEdge('dashboard_helper', 'dashboard_loader', {
+        relation: 'calls',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/dashboard-helper.ts',
+      })
+
+      const rawResult = retrieveContext(graph, {
+        question: 'which react router route renders dashboard page',
+        budget: 5000,
+        fileType: 'code',
+      })
+      const compactResult = compactRetrieveResult(rawResult)
+      const compactTokenCount = compactResult.matched_nodes.reduce((total, node) => {
+        const nodeText = `${node.label} ${node.source_file}:${node.line_number} ${node.snippet ?? ''}`
+        return total + Math.max(1, Math.floor(nodeText.length / 3))
+      }, 0)
+
+      expect(compactResult.matched_nodes.length).toBeLessThan(rawResult.matched_nodes.length)
+      expect(compactResult.token_count).toBe(compactTokenCount)
+      expect(compactResult.token_count).toBeLessThan(rawResult.token_count)
     })
 
     it('assigns higher match_score to direct matches than neighbors', () => {
