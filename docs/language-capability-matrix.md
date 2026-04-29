@@ -1,6 +1,6 @@
 # Language and capability matrix
 
-This is the public support matrix for `graphify-ts` as of `v0.8.2`. It distinguishes between:
+This is the public support matrix for `graphify-ts` as of `v0.9.0`. It distinguishes between:
 
 - **Primary extractor path** - the implementation used when the runtime has everything it needs
 - **Fallback path** - what happens when a parser is unavailable at runtime
@@ -12,7 +12,7 @@ The registry lives in `src/infrastructure/capabilities.ts`. The extractor bindin
 
 | Coverage tier | Extensions | Primary path | Fallback / notes |
 |---|---|---|---|
-| TypeScript / JavaScript AST | `.ts` `.tsx` `.js` `.jsx` | TypeScript compiler API | Best code-structure coverage in the repo today |
+| TypeScript / JavaScript AST | `.ts` `.tsx` `.js` `.jsx` | TypeScript compiler API + framework-semantic pass | Best code-structure coverage in the repo today, including framework-aware semantics for Express, Redux Toolkit, and React Router |
 | Tree-sitter primary | `.py` `.rb` | Tree-sitter WASM parser | Falls back to language-specific legacy extractor if the parser is unavailable |
 | Tree-sitter primary | `.go` `.java` `.rs` | Tree-sitter WASM parser | Falls back to the generic structural extractor if the parser is unavailable |
 | Generic structural extractor | `.c` `.cc` `.cpp` `.cxx` `.h` `.hpp` `.kt` `.kts` `.cs` `.scala` `.php` `.swift` `.zig` | Generic extractor | Heuristic structure, import, inheritance, and call extraction |

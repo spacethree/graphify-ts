@@ -1,5 +1,9 @@
+import { join } from 'node:path'
+
 import { KnowledgeGraph } from '../../src/contracts/graph.js'
-import { analyzeImpact, callChains } from '../../src/runtime/impact.js'
+import { build } from '../../src/pipeline/build.js'
+import { extractJs } from '../../src/pipeline/extract.js'
+import { analyzeImpact, callChains, compactImpactResult } from '../../src/runtime/impact.js'
 
 function buildTestGraph(): KnowledgeGraph {
   const graph = new KnowledgeGraph({ directed: true })
@@ -16,6 +20,55 @@ function buildTestGraph(): KnowledgeGraph {
   graph.addEdge('auth', 'user', { relation: 'uses', confidence: 'EXTRACTED', source_file: '/src/auth.ts' })
   graph.addEdge('session', 'db', { relation: 'calls', confidence: 'EXTRACTED', source_file: '/src/session.ts' })
   graph.addEdge('auth', 'logger', { relation: 'calls', confidence: 'EXTRACTED', source_file: '/src/auth.ts' })
+
+  return graph
+}
+
+function buildExpressRouteGraph(): KnowledgeGraph {
+  const graph = new KnowledgeGraph({ directed: true })
+
+  graph.addNode('require_auth', {
+    label: 'requireAuth',
+    source_file: '/src/middleware/auth.ts',
+    node_kind: 'function',
+    file_type: 'code',
+    community: 0,
+  })
+  graph.addNode('show_user', {
+    label: 'showUser',
+    source_file: '/src/controllers/users.ts',
+    node_kind: 'function',
+    file_type: 'code',
+    community: 0,
+  })
+  graph.addNode('route_users_show', {
+    label: 'GET /users/:id',
+    source_file: '/src/routes/users.ts',
+    node_kind: 'route',
+    file_type: 'code',
+    community: 1,
+  })
+
+  graph.addEdge('require_auth', 'route_users_show', {
+    relation: 'middleware',
+    confidence: 'EXTRACTED',
+    source_file: '/src/routes/users.ts',
+  })
+  graph.addEdge('show_user', 'route_users_show', {
+    relation: 'handles_route',
+    confidence: 'EXTRACTED',
+    source_file: '/src/routes/users.ts',
+  })
+  graph.addEdge('route_users_show', 'require_auth', {
+    relation: 'depends_on',
+    confidence: 'EXTRACTED',
+    source_file: '/src/routes/users.ts',
+  })
+  graph.addEdge('route_users_show', 'show_user', {
+    relation: 'depends_on',
+    confidence: 'EXTRACTED',
+    source_file: '/src/routes/users.ts',
+  })
 
   return graph
 }
@@ -109,6 +162,469 @@ describe('impact', () => {
           path: ['SessionManager', 'authenticateUser', 'ApiHandler'],
         },
       ])
+    })
+
+    it('shows express routes as direct dependents of middleware and handlers', () => {
+      const graph = buildExpressRouteGraph()
+
+      const middlewareImpact = analyzeImpact(graph, {}, { label: 'requireAuth' })
+      const handlerImpact = analyzeImpact(graph, {}, { label: 'showUser' })
+
+      expect(middlewareImpact.direct_dependents).toEqual([
+        expect.objectContaining({
+          label: 'GET /users/:id',
+          relation: 'depends_on',
+        }),
+      ])
+      expect(handlerImpact.direct_dependents).toEqual([
+        expect.objectContaining({
+          label: 'GET /users/:id',
+          relation: 'depends_on',
+        }),
+      ])
+    })
+
+    it('shows mounted child routes as direct dependents of inherited mount middleware', () => {
+      const fixturesDir = join(process.cwd(), 'tests', 'fixtures')
+      const graph = build([
+        extractJs(join(fixturesDir, 'express-mounted-router-parent.ts')),
+        extractJs(join(fixturesDir, 'express-mounted-router-child.ts')),
+      ])
+
+      const result = analyzeImpact(graph, {}, { label: 'requireAuth' })
+
+      expect(result.direct_dependents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            label: 'USE /api',
+            relation: 'depends_on',
+          }),
+          expect.objectContaining({
+            label: 'GET /api/users/:id',
+            relation: 'depends_on',
+          }),
+        ]),
+      )
+    })
+
+    it('shows recursively mounted child routes as direct dependents of inherited mount middleware', () => {
+      const fixturesDir = join(process.cwd(), 'tests', 'fixtures')
+      const graph = build([
+        extractJs(join(fixturesDir, 'express-nested-router-parent.ts')),
+        extractJs(join(fixturesDir, 'express-nested-router-child.ts')),
+        extractJs(join(fixturesDir, 'express-nested-router-grandchild.ts')),
+      ])
+
+      const authImpact = analyzeImpact(graph, {}, { label: 'requireAuth' })
+      const auditImpact = analyzeImpact(graph, {}, { label: 'auditTrail' })
+
+      expect(authImpact.direct_dependents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            label: 'GET /api/v1/users/:id',
+          }),
+        ]),
+      )
+      expect(auditImpact.direct_dependents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            label: 'GET /api/v1/users/:id',
+          }),
+        ]),
+      )
+    })
+
+    it('shows patch and all express routes as direct dependents of middleware and handlers', () => {
+      const fixturesDir = join(process.cwd(), 'tests', 'fixtures')
+      const graph = build([extractJs(join(fixturesDir, 'express-patch-all.ts'))], { directed: true })
+
+      const middlewareImpact = analyzeImpact(graph, {}, { label: 'requireAuth' })
+      const patchHandlerImpact = analyzeImpact(graph, {}, { label: 'patchUser' })
+      const allHandlerImpact = analyzeImpact(graph, {}, { label: 'handleAudit' })
+
+      expect(middlewareImpact.direct_dependents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ label: 'PATCH /users/:id/profile', relation: 'depends_on' }),
+          expect.objectContaining({ label: 'ALL /users/:id/audit', relation: 'depends_on' }),
+        ]),
+      )
+      expect(patchHandlerImpact.direct_dependents).toEqual(
+        expect.arrayContaining([expect.objectContaining({ label: 'PATCH /users/:id/profile', relation: 'depends_on' })]),
+      )
+      expect(allHandlerImpact.direct_dependents).toEqual(
+        expect.arrayContaining([expect.objectContaining({ label: 'ALL /users/:id/audit', relation: 'depends_on' })]),
+      )
+    })
+
+    it('shows imported middleware routes as direct dependents across files', () => {
+      const fixturesDir = join(process.cwd(), 'tests', 'fixtures')
+      const graph = build(
+        [
+          extractJs(join(fixturesDir, 'express-imported-middleware.ts')),
+          extractJs(join(fixturesDir, 'express-imported-middleware-parent.ts')),
+        ],
+        { directed: true },
+      )
+
+      const result = analyzeImpact(graph, {}, { label: 'requireAuth' })
+
+      expect(result.direct_dependents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            label: 'USE /api',
+            relation: 'depends_on',
+          }),
+        ]),
+      )
+    })
+
+    it('shows mounted child routes as direct dependents of cross-file handlers', () => {
+      const fixturesDir = join(process.cwd(), 'tests', 'fixtures')
+      const graph = build(
+        [
+          extractJs(join(fixturesDir, 'express-mounted-router-parent.ts')),
+          extractJs(join(fixturesDir, 'express-mounted-router-child.ts')),
+        ],
+        { directed: true },
+      )
+
+      const result = analyzeImpact(graph, {}, { label: 'showUser' })
+
+      expect(result.direct_dependents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            label: 'GET /api/users/:id',
+            relation: 'depends_on',
+          }),
+        ]),
+      )
+    })
+
+    it('shows imported-owner express routes as direct dependents of cross-file handlers', () => {
+      const fixturesDir = join(process.cwd(), 'tests', 'fixtures')
+      const graph = build(
+        [
+          extractJs(join(fixturesDir, 'express-imported-owner-router-child.ts')),
+          extractJs(join(fixturesDir, 'express-imported-owner-router-parent.ts')),
+          extractJs(join(fixturesDir, 'express-imported-owner-app-child.ts')),
+          extractJs(join(fixturesDir, 'express-imported-owner-app-parent.ts')),
+        ],
+        { directed: true },
+      )
+
+      const routerResult = analyzeImpact(graph, {}, { label: 'showUser' })
+      const appResult = analyzeImpact(graph, {}, { label: 'createUser' })
+
+      expect(routerResult.direct_dependents).toEqual(
+        expect.arrayContaining([expect.objectContaining({ label: 'GET /users/:id', relation: 'depends_on' })]),
+      )
+      expect(appResult.direct_dependents).toEqual(
+        expect.arrayContaining([expect.objectContaining({ label: 'POST /users', relation: 'depends_on' })]),
+      )
+    })
+
+    it('shows module-object mounted child routes as direct dependents of inherited mount middleware', () => {
+      const fixturesDir = join(process.cwd(), 'tests', 'fixtures')
+      const namespaceGraph = build([
+        extractJs(join(fixturesDir, 'express-namespace-module-parent.ts')),
+        extractJs(join(fixturesDir, 'express-namespace-module-child.ts')),
+      ])
+      const commonjsGraph = build([
+        extractJs(join(fixturesDir, 'express-commonjs-module-parent.ts')),
+        extractJs(join(fixturesDir, 'express-commonjs-module-child.ts')),
+      ])
+
+      const namespaceResult = analyzeImpact(namespaceGraph, {}, { label: 'requireAuth' })
+      const commonjsResult = analyzeImpact(commonjsGraph, {}, { label: 'requireAuth' })
+
+      expect(namespaceResult.direct_dependents).toEqual(
+        expect.arrayContaining([expect.objectContaining({ label: 'GET /api/users/:id', relation: 'depends_on' })]),
+      )
+      expect(commonjsResult.direct_dependents).toEqual(
+        expect.arrayContaining([expect.objectContaining({ label: 'GET /api/users/:id', relation: 'depends_on' })]),
+      )
+    })
+
+    it('shows redux slice blast radius through selectors, components, and routes', () => {
+      const graph = new KnowledgeGraph({ directed: true })
+
+      graph.addNode('auth_slice', {
+        label: 'auth slice',
+        source_file: '/src/state/authSlice.ts',
+        node_kind: 'slice',
+        file_type: 'code',
+        framework: 'redux-toolkit',
+        framework_role: 'redux_slice',
+        community: 0,
+      })
+      graph.addNode('select_auth_status', {
+        label: 'selectAuthStatus',
+        source_file: '/src/state/authSlice.ts',
+        node_kind: 'function',
+        file_type: 'code',
+        framework: 'redux-toolkit',
+        framework_role: 'redux_selector',
+        community: 0,
+      })
+      graph.addNode('store', {
+        label: 'store',
+        source_file: '/src/state/store.ts',
+        node_kind: 'store',
+        file_type: 'code',
+        framework: 'redux-toolkit',
+        framework_role: 'redux_store',
+        community: 0,
+      })
+      graph.addNode('auth_status_badge', {
+        label: 'AuthStatusBadge',
+        source_file: '/src/components/AuthStatusBadge.tsx',
+        node_kind: 'component',
+        file_type: 'code',
+        community: 1,
+      })
+      graph.addNode('settings_route', {
+        label: '/settings',
+        source_file: '/src/routes/settings.tsx',
+        node_kind: 'route',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_route',
+        community: 1,
+      })
+
+      graph.addEdge('auth_slice', 'select_auth_status', {
+        relation: 'defines_selector',
+        confidence: 'EXTRACTED',
+        source_file: '/src/state/authSlice.ts',
+      })
+      graph.addEdge('auth_slice', 'store', {
+        relation: 'registered_in_store',
+        confidence: 'EXTRACTED',
+        source_file: '/src/state/store.ts',
+      })
+      graph.addEdge('auth_status_badge', 'select_auth_status', {
+        relation: 'uses',
+        confidence: 'EXTRACTED',
+        source_file: '/src/components/AuthStatusBadge.tsx',
+      })
+      graph.addEdge('settings_route', 'auth_status_badge', {
+        relation: 'renders',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/settings.tsx',
+      })
+
+      const result = analyzeImpact(graph, { 0: 'State', 1: 'UI' }, { label: 'auth slice', depth: 4 })
+
+      expect(result.direct_dependents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ label: 'selectAuthStatus' }),
+          expect.objectContaining({ label: 'store' }),
+        ]),
+      )
+      expect(result.transitive_dependents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ label: 'AuthStatusBadge' }),
+          expect.objectContaining({ label: '/settings' }),
+        ]),
+      )
+    })
+
+    it('prefers higher-level route summaries for service blast radius within a community', () => {
+      const graph = new KnowledgeGraph({ directed: true })
+
+      graph.addNode('user_service', {
+        label: 'userService',
+        source_file: '/src/services/userService.ts',
+        node_kind: 'function',
+        file_type: 'code',
+        community: 0,
+      })
+      graph.addNode('normalize_user_record', {
+        label: 'normalizeUserRecord',
+        source_file: '/src/controllers/users.ts',
+        node_kind: 'function',
+        file_type: 'code',
+        community: 1,
+      })
+      graph.addNode('show_user', {
+        label: 'showUser',
+        source_file: '/src/controllers/users.ts',
+        node_kind: 'function',
+        file_type: 'code',
+        framework: 'express',
+        framework_role: 'express_handler',
+        community: 1,
+      })
+      graph.addNode('route_users_show', {
+        label: 'GET /users/:id',
+        source_file: '/src/routes/users.ts',
+        node_kind: 'route',
+        file_type: 'code',
+        framework: 'express',
+        framework_role: 'express_route',
+        community: 1,
+      })
+
+      graph.addEdge('normalize_user_record', 'user_service', {
+        relation: 'calls',
+        confidence: 'EXTRACTED',
+        source_file: '/src/controllers/users.ts',
+      })
+      graph.addEdge('show_user', 'user_service', {
+        relation: 'calls',
+        confidence: 'EXTRACTED',
+        source_file: '/src/controllers/users.ts',
+      })
+      graph.addEdge('route_users_show', 'show_user', {
+        relation: 'depends_on',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/users.ts',
+      })
+
+      const result = analyzeImpact(graph, { 0: 'Data', 1: 'Delivery' }, { label: 'userService', depth: 4 })
+
+      expect(result.direct_dependents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ label: 'normalizeUserRecord' }),
+          expect.objectContaining({ label: 'showUser' }),
+        ]),
+      )
+      expect(result.top_paths_per_community).toEqual([
+        {
+          id: 1,
+          label: 'Delivery',
+          distance: 2,
+          path: ['userService', 'showUser', 'GET /users/:id'],
+        },
+      ])
+    })
+
+    it('prefers higher-level route summaries for loader blast radius within a community', () => {
+      const graph = new KnowledgeGraph({ directed: true })
+
+      graph.addNode('dashboard_loader_service', {
+        label: 'dashboardLoaderService',
+        source_file: '/src/services/dashboardLoaderService.ts',
+        node_kind: 'function',
+        file_type: 'code',
+        community: 0,
+      })
+      graph.addNode('coerce_dashboard_data', {
+        label: 'coerceDashboardData',
+        source_file: '/src/routes/dashboard.tsx',
+        node_kind: 'function',
+        file_type: 'code',
+        community: 1,
+      })
+      graph.addNode('dashboard_loader', {
+        label: 'dashboardLoader',
+        source_file: '/src/routes/dashboard.tsx',
+        node_kind: 'function',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_loader',
+        community: 1,
+      })
+      graph.addNode('dashboard_route', {
+        label: '/dashboard',
+        source_file: '/src/routes/dashboard.tsx',
+        node_kind: 'route',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_route',
+        community: 1,
+      })
+
+      graph.addEdge('coerce_dashboard_data', 'dashboard_loader_service', {
+        relation: 'calls',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/dashboard.tsx',
+      })
+      graph.addEdge('dashboard_loader', 'dashboard_loader_service', {
+        relation: 'calls',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/dashboard.tsx',
+      })
+      graph.addEdge('dashboard_route', 'dashboard_loader', {
+        relation: 'loads_route',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/dashboard.tsx',
+      })
+
+      const result = analyzeImpact(graph, { 0: 'Data', 1: 'Routes' }, { label: 'dashboardLoaderService', depth: 4 })
+
+      expect(result.direct_dependents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ label: 'coerceDashboardData' }),
+          expect.objectContaining({ label: 'dashboardLoader' }),
+        ]),
+      )
+      expect(result.top_paths_per_community).toEqual([
+        {
+          id: 1,
+          label: 'Routes',
+          distance: 2,
+          path: ['dashboardLoaderService', 'dashboardLoader', '/dashboard'],
+        },
+      ])
+    })
+
+    it('sorts framework-aware direct dependents ahead of generic functions', () => {
+      const graph = new KnowledgeGraph({ directed: true })
+
+      graph.addNode('dashboard_loader_service', {
+        label: 'dashboardLoaderService',
+        source_file: '/src/services/dashboardLoaderService.ts',
+        node_kind: 'function',
+        file_type: 'code',
+        community: 0,
+      })
+      graph.addNode('coerce_dashboard_data', {
+        label: 'coerceDashboardData',
+        source_file: '/src/routes/dashboard.tsx',
+        node_kind: 'function',
+        file_type: 'code',
+        community: 1,
+      })
+      graph.addNode('dashboard_loader', {
+        label: 'dashboardLoader',
+        source_file: '/src/routes/dashboard.tsx',
+        node_kind: 'function',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_loader',
+        community: 1,
+      })
+
+      graph.addEdge('coerce_dashboard_data', 'dashboard_loader_service', {
+        relation: 'calls',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/dashboard.tsx',
+      })
+      graph.addEdge('dashboard_loader', 'dashboard_loader_service', {
+        relation: 'calls',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/dashboard.tsx',
+      })
+
+      const result = analyzeImpact(graph, { 0: 'Data', 1: 'Routes' }, { label: 'dashboardLoaderService', depth: 2 })
+
+      expect(result.direct_dependents.map((node) => node.label)).toEqual(['dashboardLoader', 'coerceDashboardData'])
+    })
+
+    it('compacts repeated dependent metadata for default payloads', () => {
+      const graph = buildTestGraph()
+      const rawResult = analyzeImpact(graph, { 0: 'Auth', 1: 'Data', 2: 'API', 3: 'Observability' }, {
+        label: 'DatabaseConnection',
+        depth: 3,
+      })
+
+      const compactResult = compactImpactResult(rawResult)
+
+      expect(JSON.stringify(compactResult).length).toBeLessThan(JSON.stringify(rawResult).length)
+      expect(compactResult.shared_file_type).toBe('code')
+      expect(compactResult.direct_dependents[0]).not.toHaveProperty('file_type')
+      expect(compactResult.direct_dependents[0]).not.toHaveProperty('community_label')
     })
   })
 

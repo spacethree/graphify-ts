@@ -12,6 +12,7 @@ import { mergeExtractionFragments, resolveSourceNodeReferences } from './extract
 import { addPendingCall, addResolvedCalls, braceDelta, normalizeImportTarget, type PendingCall, type PendingCallInput } from './extract/call-resolution.js'
 import { resolveCrossFilePythonImports, resolveCrossFileRelativeJsImports, resolveJsxRendersProxies } from './extract/cross-file.js'
 import { dispatchSingleFileExtraction, type ExtractionFragment, type ExtractorHandlerMap } from './extract/dispatch.js'
+import { applyJsFrameworkAdapters } from './extract/frameworks/core.js'
 import { extractGenericCode, normalizeTypeName } from './extract/generic.js'
 import { _makeId, addEdge, addNode, addUniqueEdge, createEdge, createFileNode, createNode, indentationLevel, normalizeLabel, stripHashComment } from './extract/core.js'
 import { unparenthesizeExpression } from './extract/typescript-utils.js'
@@ -3484,7 +3485,7 @@ export function extractJs(filePath: string): ExtractionFragment {
   addResolvedCalls(edges, pendingCalls, nodes, filePath, methodIdsByClass)
 
   const validNodeIds = new Set(nodes.map((node) => node.id))
-  return {
+  const baseExtraction: ExtractionFragment = {
     nodes,
     edges: edges.filter(
       (edge) =>
@@ -3495,6 +3496,16 @@ export function extractJs(filePath: string): ExtractionFragment {
           (edge.relation === 'renders' && typeof edge.target === 'string' && edge.target.endsWith('__jsx_proxy'))),
     ),
   }
+
+  return applyJsFrameworkAdapters(baseExtraction, {
+    filePath,
+    sourceText,
+    sourceFile,
+    stem,
+    fileNodeId,
+    isJsxFile,
+    baseExtraction,
+  })
 }
 
 const SINGLE_FILE_EXTRACTOR_HANDLERS: ExtractorHandlerMap = {

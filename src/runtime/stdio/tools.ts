@@ -4,9 +4,9 @@ import type { CompareRefsInput } from '../../infrastructure/time-travel.js'
 import { buildCommunityLabels } from '../../pipeline/community-naming.js'
 import { communityDetailsAtZoom, communityDetailsMicro, type CommunityZoomLevel } from '../../pipeline/community-details.js'
 import { validateGraphPath } from '../../shared/security.js'
-import { analyzeImpact, callChains } from '../impact.js'
+import { analyzeImpact, callChains, compactImpactResult } from '../impact.js'
 import { analyzePrImpact } from '../pr-impact.js'
-import { retrieveContext } from '../retrieve.js'
+import { compactRetrieveResult, retrieveContext } from '../retrieve.js'
 import type { TimeTravelView } from '../time-travel.js'
 import {
   communitiesFromGraph,
@@ -149,6 +149,9 @@ export function handleToolCall(id: string | number | null, graphPath: string, pa
       if (!label) {
         return helpers.failure(id, helpers.jsonrpcInvalidParams, `impact requires a string label parameter <= ${helpers.maxStdioTextLength} characters`)
       }
+      if (Object.hasOwn(toolArguments, 'compact') && typeof toolArguments.compact !== 'boolean') {
+        return helpers.failure(id, helpers.jsonrpcInvalidParams, 'compact must be a boolean')
+      }
       const impactDepth = helpers.numberParamAlias(toolArguments, ['depth'], { min: 1, max: 5 })
       const rawEdgeTypes = toolArguments.edge_types
       const edgeTypes = Array.isArray(rawEdgeTypes) ? rawEdgeTypes.filter((t): t is string => typeof t === 'string') : undefined
@@ -158,7 +161,7 @@ export function handleToolCall(id: string | number | null, graphPath: string, pa
         ...(impactDepth !== null ? { depth: impactDepth } : {}),
         ...(edgeTypes && edgeTypes.length > 0 ? { edgeTypes } : {}),
       })
-      return helpers.ok(id, helpers.textToolResult(JSON.stringify(impactResult)))
+      return helpers.ok(id, helpers.textToolResult(JSON.stringify(toolArguments.compact === true ? compactImpactResult(impactResult) : impactResult)))
     }
     case 'call_chain': {
       const chainSource = helpers.stringParam(toolArguments, 'source')
@@ -188,6 +191,9 @@ export function handleToolCall(id: string | number | null, graphPath: string, pa
       if (!question) {
         return helpers.failure(id, helpers.jsonrpcInvalidParams, `retrieve requires a string question parameter <= ${helpers.maxStdioTextLength} characters`)
       }
+      if (Object.hasOwn(toolArguments, 'compact') && typeof toolArguments.compact !== 'boolean') {
+        return helpers.failure(id, helpers.jsonrpcInvalidParams, 'compact must be a boolean')
+      }
       const retrieveBudget = helpers.numberParamAlias(toolArguments, ['budget'], { min: 1, max: helpers.maxStdioTokenBudget })
       if (retrieveBudget === null) {
         return helpers.failure(id, helpers.jsonrpcInvalidParams, `retrieve requires a numeric budget parameter between 1 and ${helpers.maxStdioTokenBudget}`)
@@ -200,7 +206,7 @@ export function handleToolCall(id: string | number | null, graphPath: string, pa
         ...(retrieveCommunity !== null ? { community: retrieveCommunity } : {}),
         ...(retrieveFileType ? { fileType: retrieveFileType } : {}),
       })
-      return helpers.ok(id, helpers.textToolResult(JSON.stringify(result)))
+      return helpers.ok(id, helpers.textToolResult(JSON.stringify(toolArguments.compact === true ? compactRetrieveResult(result) : result)))
     }
     case 'time_travel_compare': {
       const fromRef = helpers.stringParamAlias(toolArguments, ['from_ref', 'fromRef'])

@@ -14,6 +14,7 @@ export interface ImpactNode {
   label: string
   source_file: string
   node_kind: string
+  framework_role: string | null
   file_type: string
   community: number | null
   community_label: string | null
@@ -31,6 +32,73 @@ export interface ImpactResult {
   affected_communities: Array<{ id: number; label: string; node_count: number }>
   top_paths_per_community: Array<{ id: number; label: string; distance: number; path: string[] }>
   total_affected: number
+}
+
+export interface CompactImpactNode extends Omit<ImpactNode, 'community_label' | 'file_type' | 'framework_role'> {
+  file_type?: string
+}
+
+export interface CompactImpactResult extends Omit<ImpactResult, 'direct_dependents' | 'transitive_dependents'> {
+  direct_dependents: CompactImpactNode[]
+  transitive_dependents: CompactImpactNode[]
+  shared_file_type?: string
+}
+
+interface TraversalCandidate {
+  neighborId: string
+  relation: string
+}
+
+interface CommunityPathSummary {
+  summary_rank: number
+  distance: number
+  path: string[]
+}
+
+function frameworkSummaryRank(node: Pick<ImpactNode, 'node_kind'> & { framework_role?: string | null }): number {
+  if (node.node_kind === 'route' || node.framework_role === 'express_route' || node.framework_role === 'react_router_route') {
+    return 4
+  }
+  if (node.node_kind === 'slice' || node.node_kind === 'store' || node.framework_role === 'redux_slice' || node.framework_role === 'redux_store') {
+    return 3
+  }
+  if (
+    node.framework_role === 'express_handler' ||
+    node.framework_role === 'express_middleware' ||
+    node.framework_role === 'redux_selector' ||
+    node.framework_role === 'redux_action' ||
+    node.framework_role === 'redux_thunk' ||
+    node.framework_role === 'react_router_loader' ||
+    node.framework_role === 'react_router_action' ||
+    node.framework_role === 'react_router_component'
+  ) {
+    return 2
+  }
+  return 0
+}
+
+function forwardImpactRelation(relation: string): boolean {
+  return relation === 'defines_action' || relation === 'defines_selector' || relation === 'registered_in_store'
+}
+
+function impactNeighbors(graph: KnowledgeGraph, nodeId: string, edgeTypes: string[] | undefined): TraversalCandidate[] {
+  const candidates = new Map<string, TraversalCandidate>()
+
+  for (const dependentId of graph.predecessors(nodeId)) {
+    const relation = edgeRelation(graph, dependentId, nodeId)
+    if (matchesEdgeType(relation, edgeTypes)) {
+      candidates.set(`pred:${dependentId}`, { neighborId: dependentId, relation })
+    }
+  }
+
+  for (const successorId of graph.successors(nodeId)) {
+    const relation = edgeRelation(graph, nodeId, successorId)
+    if (forwardImpactRelation(relation) && matchesEdgeType(relation, edgeTypes)) {
+      candidates.set(`succ:${successorId}`, { neighborId: successorId, relation })
+    }
+  }
+
+  return [...candidates.values()]
 }
 
 function findNodeByLabel(graph: KnowledgeGraph, label: string): string | null {
@@ -123,27 +191,22 @@ export function analyzeImpact(
       continue
     }
 
-    const dependents = graph.predecessors(current.nodeId)
-    for (const dependentId of dependents) {
-      if (visited.has(dependentId)) {
-        continue
-      }
-
-      const relation = edgeRelation(graph, dependentId, current.nodeId)
-      if (!matchesEdgeType(relation, options.edgeTypes)) {
+    for (const { neighborId, relation } of impactNeighbors(graph, current.nodeId, options.edgeTypes)) {
+      if (visited.has(neighborId)) {
         continue
       }
 
       const distance = current.distance + 1
-      const path = [...current.path, dependentId]
-      visited.set(dependentId, distance)
+      const path = [...current.path, neighborId]
+      visited.set(neighborId, distance)
 
-      const attributes = graph.nodeAttributes(dependentId)
+      const attributes = graph.nodeAttributes(neighborId)
       const community = parseCommunityId(attributes.community)
       const node: ImpactNode = {
-        label: String(attributes.label ?? dependentId),
+        label: String(attributes.label ?? neighborId),
         source_file: String(attributes.source_file ?? ''),
         node_kind: String(attributes.node_kind ?? ''),
+        framework_role: String(attributes.framework_role ?? '') || null,
         file_type: String(attributes.file_type ?? ''),
         community,
         community_label: community !== null ? (communityLabels[community] ?? null) : null,
@@ -157,8 +220,8 @@ export function analyzeImpact(
         transitiveDependents.push(node)
       }
 
-      discoveredDependents.push({ nodeId: dependentId, path, node })
-      queue.push({ nodeId: dependentId, distance, path })
+      discoveredDependents.push({ nodeId: neighborId, path, node })
+      queue.push({ nodeId: neighborId, distance, path })
     }
   }
 
@@ -172,7 +235,7 @@ export function analyzeImpact(
 
   // Affected communities (deduplicated with counts)
   const communityMap = new Map<number, number>()
-  const topPathsByCommunity = new Map<number, { distance: number; path: string[] }>()
+  const topPathsByCommunity = new Map<number, CommunityPathSummary>()
   for (const discovered of discoveredDependents) {
     const { node, path } = discovered
     if (node.community !== null) {
@@ -180,13 +243,19 @@ export function analyzeImpact(
 
       const labeledPath = path.map((nodeId) => String(graph.nodeAttributes(nodeId).label ?? nodeId))
       const existing = topPathsByCommunity.get(node.community)
+      const summaryRank = frameworkSummaryRank({
+        node_kind: node.node_kind,
+        framework_role: node.framework_role,
+      })
       const shouldReplace =
         !existing ||
-        node.distance < existing.distance ||
-        (node.distance === existing.distance && labeledPath.join('\u0000') < existing.path.join('\u0000'))
+        summaryRank > existing.summary_rank ||
+        (summaryRank === existing.summary_rank &&
+          (node.distance < existing.distance ||
+            (node.distance === existing.distance && labeledPath.join('\u0000') < existing.path.join('\u0000'))))
 
       if (shouldReplace) {
-        topPathsByCommunity.set(node.community, { distance: node.distance, path: labeledPath })
+        topPathsByCommunity.set(node.community, { summary_rank: summaryRank, distance: node.distance, path: labeledPath })
       }
     }
   }
@@ -212,12 +281,46 @@ export function analyzeImpact(
     target: String(targetAttributes.label ?? targetNodeId),
     target_file: String(targetAttributes.source_file ?? ''),
     depth: maxDepth,
-    direct_dependents: directDependents.sort((a, b) => a.label.localeCompare(b.label)),
-    transitive_dependents: transitiveDependents.sort((a, b) => a.distance - b.distance || a.label.localeCompare(b.label)),
+    direct_dependents: directDependents.sort(
+      (a, b) =>
+        frameworkSummaryRank(b) - frameworkSummaryRank(a) ||
+        a.label.localeCompare(b.label),
+    ),
+    transitive_dependents: transitiveDependents.sort(
+      (a, b) =>
+        frameworkSummaryRank(b) - frameworkSummaryRank(a) ||
+        a.distance - b.distance ||
+        a.label.localeCompare(b.label),
+    ),
     affected_files: [...fileSet].sort(),
     affected_communities: affectedCommunities,
     top_paths_per_community: topPathsPerCommunity,
     total_affected: directDependents.length + transitiveDependents.length,
+  }
+}
+
+export function compactImpactResult(result: ImpactResult): CompactImpactResult {
+  const dependents = [...result.direct_dependents, ...result.transitive_dependents]
+  const sharedFileType =
+    dependents.length > 0 && dependents.every((node) => node.file_type === dependents[0]?.file_type)
+      ? dependents[0]?.file_type
+      : undefined
+  const compactNode = ({ community_label: _communityLabel, file_type: fileType, framework_role: _frameworkRole, ...node }: ImpactNode): CompactImpactNode => ({
+    ...node,
+    ...(sharedFileType ? {} : { file_type: fileType }),
+  })
+
+  return {
+    target: result.target,
+    target_file: result.target_file,
+    depth: result.depth,
+    direct_dependents: result.direct_dependents.map(compactNode),
+    transitive_dependents: result.transitive_dependents.map(compactNode),
+    affected_files: result.affected_files,
+    affected_communities: result.affected_communities,
+    top_paths_per_community: result.top_paths_per_community,
+    total_affected: result.total_affected,
+    ...(sharedFileType ? { shared_file_type: sharedFileType } : {}),
   }
 }
 

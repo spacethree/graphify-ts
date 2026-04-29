@@ -4,6 +4,17 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-04-30
+
+### Added
+
+- **Framework-aware JS/TS extraction**: added deep semantic extraction for Express, Redux Toolkit, and React Router so the graph now emits higher-signal route, middleware, handler, slice, selector, store, loader, action, and route-component relationships
+
+### Improved
+
+- **Compact MCP retrieval and impact**: `retrieve` and `impact` now support an explicit `compact: true` mode for smaller framework-aware payloads while the default MCP response shape stays backward-compatible
+- **JS/TS support docs**: updated the README, capability matrix, and product-positioning docs to describe the new framework-aware extraction depth and compact MCP mode
+
 ## [0.8.9] - 2026-04-28
 
 ### Improved

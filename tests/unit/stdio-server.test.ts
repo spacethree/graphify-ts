@@ -548,6 +548,172 @@ describe('stdio runtime', () => {
     }
   })
 
+  it('keeps default retrieve and impact payloads backward-compatible and exposes compact mode explicitly', async () => {
+    const root = createGraphFixtureRoot()
+    try {
+      const graphPath = join(root, 'graph.json')
+      writeFileSync(
+        graphPath,
+        JSON.stringify({
+          community_labels: {
+            '0': 'Routes',
+            '1': 'State',
+          },
+          nodes: [
+            { id: 'dashboard_route', label: '/dashboard', source_file: '/src/routes/dashboard.tsx', line_number: 5, node_kind: 'route', file_type: 'code', framework: 'react-router', framework_role: 'react_router_route', community: 0 },
+            { id: 'dashboard_layout', label: 'DashboardLayout', source_file: '/src/routes/dashboard-layout.tsx', line_number: 9, node_kind: 'component', file_type: 'code', framework: 'react-router', framework_role: 'react_router_layout', community: 0 },
+            { id: 'dashboard_page_primary', label: 'DashboardPage', source_file: '/src/routes/dashboard-page.tsx', line_number: 12, node_kind: 'component', file_type: 'code', framework: 'react-router', framework_role: 'react_router_component', community: 0 },
+            { id: 'dashboard_loader', label: 'dashboardLoader', source_file: '/src/routes/dashboard-loader.ts', line_number: 18, node_kind: 'function', file_type: 'code', framework: 'react-router', framework_role: 'react_router_loader', community: 0 },
+            { id: 'dashboard_action', label: 'dashboardAction', source_file: '/src/routes/dashboard-action.ts', line_number: 24, node_kind: 'function', file_type: 'code', framework: 'react-router', framework_role: 'react_router_action', community: 0 },
+            { id: 'dashboard_router', label: 'dashboardRouter', source_file: '/src/routes/router.tsx', line_number: 30, node_kind: 'router', file_type: 'code', framework: 'react-router', framework_role: 'react_router', community: 0 },
+            { id: 'dashboard_page_secondary', label: 'DashboardPage', source_file: '/src/legacy/dashboard-page.ts', line_number: 36, node_kind: 'function', file_type: 'code', community: 0 },
+            { id: 'auth_slice', label: 'auth slice', source_file: '/src/state/authSlice.ts', line_number: 40, node_kind: 'slice', file_type: 'code', framework: 'redux-toolkit', framework_role: 'redux_slice', community: 1 },
+            { id: 'select_auth_status', label: 'selectAuthStatus', source_file: '/src/state/authSlice.ts', line_number: 48, node_kind: 'function', file_type: 'code', framework: 'redux-toolkit', framework_role: 'redux_selector', community: 1 },
+            { id: 'store', label: 'store', source_file: '/src/state/store.ts', line_number: 55, node_kind: 'store', file_type: 'code', framework: 'redux-toolkit', framework_role: 'redux_store', community: 1 },
+          ],
+          edges: [
+            { source: 'dashboard_route', target: 'dashboard_layout', relation: 'renders', confidence: 'EXTRACTED', source_file: '/src/routes/dashboard.tsx' },
+            { source: 'dashboard_route', target: 'dashboard_page_primary', relation: 'renders', confidence: 'EXTRACTED', source_file: '/src/routes/dashboard.tsx' },
+            { source: 'dashboard_route', target: 'dashboard_loader', relation: 'loads_route', confidence: 'EXTRACTED', source_file: '/src/routes/dashboard.tsx' },
+            { source: 'dashboard_route', target: 'dashboard_action', relation: 'submits_route', confidence: 'EXTRACTED', source_file: '/src/routes/dashboard.tsx' },
+            { source: 'dashboard_router', target: 'dashboard_route', relation: 'contains', confidence: 'EXTRACTED', source_file: '/src/routes/router.tsx' },
+            { source: 'dashboard_route', target: 'dashboard_page_secondary', relation: 'uses', confidence: 'EXTRACTED', source_file: '/src/routes/dashboard.tsx' },
+            { source: 'auth_slice', target: 'select_auth_status', relation: 'defines_selector', confidence: 'EXTRACTED', source_file: '/src/state/authSlice.ts' },
+            { source: 'auth_slice', target: 'store', relation: 'registered_in_store', confidence: 'EXTRACTED', source_file: '/src/state/store.ts' },
+            { source: 'dashboard_page_primary', target: 'select_auth_status', relation: 'uses', confidence: 'EXTRACTED', source_file: '/src/routes/dashboard-page.tsx' },
+            { source: 'dashboard_route', target: 'dashboard_page_primary', relation: 'depends_on', confidence: 'EXTRACTED', source_file: '/src/routes/dashboard.tsx' },
+          ],
+          hyperedges: [],
+        }),
+        'utf8',
+      )
+
+      const retrieveDefault = await Promise.resolve(handleStdioRequest(graphPath, {
+        id: 1,
+        method: 'tools/call',
+        params: {
+          name: 'retrieve',
+          arguments: {
+            question: 'which react router route renders dashboard page',
+            budget: 5000,
+            file_type: 'code',
+          },
+        },
+      }))
+      const retrieveCompact = await Promise.resolve(handleStdioRequest(graphPath, {
+        id: 2,
+        method: 'tools/call',
+        params: {
+          name: 'retrieve',
+          arguments: {
+            question: 'which react router route renders dashboard page',
+            budget: 5000,
+            file_type: 'code',
+            compact: true,
+          },
+        },
+      }))
+      const impactDefault = await Promise.resolve(handleStdioRequest(graphPath, {
+        id: 3,
+        method: 'tools/call',
+        params: {
+          name: 'impact',
+          arguments: {
+            label: 'auth slice',
+            depth: 4,
+          },
+        },
+      }))
+      const impactCompact = await Promise.resolve(handleStdioRequest(graphPath, {
+        id: 4,
+        method: 'tools/call',
+        params: {
+          name: 'impact',
+          arguments: {
+            label: 'auth slice',
+            depth: 4,
+            compact: true,
+          },
+        },
+      }))
+
+      const retrieveDefaultPayload = JSON.parse((retrieveDefault?.result as { content: Array<{ text: string }> }).content[0]!.text)
+      const retrieveCompactPayload = JSON.parse((retrieveCompact?.result as { content: Array<{ text: string }> }).content[0]!.text)
+      const impactDefaultPayload = JSON.parse((impactDefault?.result as { content: Array<{ text: string }> }).content[0]!.text)
+      const impactCompactPayload = JSON.parse((impactCompact?.result as { content: Array<{ text: string }> }).content[0]!.text)
+
+      expect(retrieveDefaultPayload.matched_nodes.length).toBeGreaterThan(retrieveCompactPayload.matched_nodes.length)
+      expect(retrieveDefaultPayload.matched_nodes.map((node: { label: string }) => node.label)).toEqual(
+        expect.arrayContaining(['dashboardRouter', 'DashboardPage']),
+      )
+      expect(retrieveDefaultPayload.shared_file_type).toBeUndefined()
+      expect(retrieveDefaultPayload.matched_nodes[0]).toEqual(
+        expect.objectContaining({
+          node_id: expect.any(String),
+          file_type: 'code',
+          community_label: expect.any(String),
+          framework_boost: expect.any(Number),
+        }),
+      )
+      expect(retrieveDefaultPayload.relationships.length).toBeGreaterThan(0)
+      expect(retrieveDefaultPayload.relationships[0]).toEqual(
+        expect.objectContaining({
+          from_id: expect.any(String),
+          from: expect.any(String),
+          to_id: expect.any(String),
+          to: expect.any(String),
+          relation: expect.any(String),
+        }),
+      )
+
+      expect(impactDefaultPayload.shared_file_type).toBeUndefined()
+      expect(impactDefaultPayload.direct_dependents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            label: 'selectAuthStatus',
+            file_type: 'code',
+            framework_role: 'redux_selector',
+            community_label: 'State',
+          }),
+          expect.objectContaining({
+            label: 'store',
+            file_type: 'code',
+            framework_role: 'redux_store',
+            community_label: 'State',
+          }),
+        ]),
+      )
+
+      expect(retrieveCompactPayload.matched_nodes).toHaveLength(5)
+      expect(retrieveCompactPayload.shared_file_type).toBe('code')
+      expect(retrieveCompactPayload.matched_nodes[0]).toEqual(
+        expect.objectContaining({
+          node_id: expect.any(String),
+        }),
+      )
+      expect(retrieveCompactPayload.matched_nodes[0]).not.toHaveProperty('file_type')
+      expect(retrieveCompactPayload.matched_nodes[0]).not.toHaveProperty('community_label')
+      expect(retrieveCompactPayload.matched_nodes[0]).not.toHaveProperty('framework_boost')
+
+      expect(impactCompactPayload.shared_file_type).toBe('code')
+      expect(impactCompactPayload.direct_dependents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            label: 'selectAuthStatus',
+          }),
+          expect.objectContaining({
+            label: 'store',
+          }),
+        ]),
+      )
+      expect(impactCompactPayload.direct_dependents[0]).not.toHaveProperty('file_type')
+      expect(impactCompactPayload.direct_dependents[0]).not.toHaveProperty('framework_role')
+      expect(impactCompactPayload.direct_dependents[0]).not.toHaveProperty('community_label')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('handles stdio requests for query and path-like methods', () => {
     const root = createGraphFixtureRoot()
     try {

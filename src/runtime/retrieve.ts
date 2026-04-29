@@ -30,10 +30,12 @@ export interface RetrieveOptions {
 }
 
 export interface RetrieveMatchedNode {
+  node_id?: string
   label: string
   source_file: string
   line_number: number
   node_kind: string
+  framework_boost?: number
   file_type: string
   snippet: string | null
   match_score: number
@@ -43,7 +45,9 @@ export interface RetrieveMatchedNode {
 }
 
 export interface RetrieveRelationship {
+  from_id?: string
   from: string
+  to_id?: string
   to: string
   relation: string
 }
@@ -64,6 +68,29 @@ export interface RetrieveResult {
     god_nodes: string[]
     bridge_nodes: string[]
   }
+}
+
+export interface CompactRetrieveMatchedNode extends Omit<RetrieveMatchedNode, 'community_label' | 'file_type' | 'framework_boost'> {
+  file_type?: string
+}
+
+export interface CompactRetrieveResult extends Omit<RetrieveResult, 'matched_nodes'> {
+  matched_nodes: CompactRetrieveMatchedNode[]
+  shared_file_type?: string
+}
+
+function matchedNodeId(node: Pick<RetrieveMatchedNode, 'node_id'>): string | null {
+  return typeof node.node_id === 'string' && node.node_id.length > 0 ? node.node_id : null
+}
+
+function stripRetrieveMatchedNodeIdentity<T extends RetrieveMatchedNode | CompactRetrieveMatchedNode>(node: T): Omit<T, 'node_id'> {
+  const { node_id: _nodeId, ...rest } = node
+  return rest
+}
+
+function stripRetrieveRelationshipIdentity<T extends RetrieveRelationship>(relationship: T): Omit<T, 'from_id' | 'to_id'> {
+  const { from_id: _fromId, to_id: _toId, ...rest } = relationship
+  return rest
 }
 
 export function tokenizeQuestion(question: string): string[] {
@@ -142,6 +169,19 @@ function estimateTokens(text: string): number {
   return Math.max(1, Math.floor(text.length / CHARS_PER_TOKEN))
 }
 
+function estimateRetrieveEntryTokens(label: string, sourceFile: string, lineNumber: number, snippet: string | null): number {
+  return estimateTokens(`${label} ${sourceFile}:${lineNumber} ${snippet ?? ''}`)
+}
+
+function tokenCountForMatchedNodes(
+  matchedNodes: readonly Pick<RetrieveMatchedNode, 'label' | 'source_file' | 'line_number' | 'snippet'>[],
+): number {
+  return matchedNodes.reduce(
+    (total, node) => total + estimateRetrieveEntryTokens(node.label, node.source_file, node.line_number, node.snippet),
+    0,
+  )
+}
+
 function readSnippet(sourceFile: string, lineNumber: number): string | null {
   if (!sourceFile || lineNumber <= 0) {
     return null
@@ -206,11 +246,28 @@ interface ScoredNode {
   nodeKind: string
   fileType: string
   community: number | null
+  frameworkBoost: number
   exactLabelMatch: boolean
   sourcePathMatch: boolean
   evidenceTier: 0 | 1 | 2
   score: number
   relevanceBand: 'direct' | 'related' | 'peripheral'
+}
+
+interface FrameworkQuestionProfile {
+  frameworkShaped: boolean
+  express: boolean
+  redux: boolean
+  reactRouter: boolean
+  routeIntent: boolean
+  middlewareIntent: boolean
+  handlerIntent: boolean
+  selectorIntent: boolean
+  sliceIntent: boolean
+  storeIntent: boolean
+  renderIntent: boolean
+  loaderIntent: boolean
+  actionIntent: boolean
 }
 
 function normalizeSeedText(value: string): string {
@@ -230,6 +287,7 @@ function evidenceTierForSeedScore(score: SeedScoreBreakdown): 0 | 1 | 2 {
 function compareScoredNodes(graph: KnowledgeGraph, left: ScoredNode, right: ScoredNode): number {
   return (
     right.evidenceTier - left.evidenceTier ||
+    right.frameworkBoost - left.frameworkBoost ||
     right.score - left.score ||
     graph.degree(right.id) - graph.degree(left.id)
   )
@@ -264,9 +322,17 @@ function relationWeight(relation: string): number {
     case 'calls':
     case 'imports_from':
     case 'defines':
+    case 'defines_action':
+    case 'defines_selector':
       return 1
     case 'contains':
+    case 'renders':
       return 1.2
+    case 'loads_route':
+    case 'submits_route':
+    case 'registered_in_store':
+    case 'updates_slice':
+      return 1
     case 'uses':
     case 'depends_on':
       return 0.7
@@ -288,7 +354,156 @@ function relationBetweenNodes(graph: KnowledgeGraph, source: string, target: str
 }
 
 function isPrimaryExpansionRelation(relation: string): boolean {
-  return relation === 'calls' || relation === 'imports_from' || relation === 'defines' || relation === 'contains'
+  return (
+    relation === 'calls' ||
+    relation === 'imports_from' ||
+    relation === 'defines' ||
+    relation === 'defines_action' ||
+    relation === 'defines_selector' ||
+    relation === 'contains' ||
+    relation === 'renders' ||
+    relation === 'loads_route' ||
+    relation === 'submits_route' ||
+    relation === 'registered_in_store' ||
+    relation === 'updates_slice'
+  )
+}
+
+function includesAnyToken(tokens: readonly string[], candidates: readonly string[]): boolean {
+  return candidates.some((candidate) => tokens.includes(candidate))
+}
+
+function containsUrlLikeRoutePath(question: string): boolean {
+  return (
+    /(^|[\s"'`([{])(\/(?:[A-Za-z0-9:_-]+(?:\/[A-Za-z0-9:_-]+)*)?\/?)(?=$|[\s"'`)\]}?!,:;])/.test(question) ||
+    /(^|[\s"'`([{])(\/(?:[A-Za-z0-9:_-]+(?:\/[A-Za-z0-9:_-]+)*)?\/?)\.(?=$|[\s"'`)\]}?!,:;])/.test(question)
+  )
+}
+
+function hasHttpVerbIntent(question: string, questionTokens: readonly string[], hasRoutePath: boolean, hasRouteKeyword: boolean): boolean {
+  const uppercaseQuestion = question.toUpperCase()
+  const hasUnambiguousHttpVerb = /\b(GET|POST|PUT|PATCH|DELETE|OPTIONS)\b/.test(uppercaseQuestion)
+  if (hasUnambiguousHttpVerb) {
+    return true
+  }
+
+  const hasHeadVerb = /\bHEAD\b/.test(uppercaseQuestion)
+  const hasUseVerb = /\bUSE\b/.test(uppercaseQuestion)
+  const hasAllVerb = /\bALL\b/.test(uppercaseQuestion)
+  if (!hasHeadVerb && !hasUseVerb && !hasAllVerb) {
+    return false
+  }
+
+  const hasHttpContext = includesAnyToken(questionTokens, ['express', 'http', 'https', 'method', 'methods', 'verb', 'verbs'])
+  if (hasRoutePath || hasRouteKeyword || hasHttpContext) {
+    return true
+  }
+
+  return hasHeadVerb && includesAnyToken(questionTokens, ['request', 'requests'])
+}
+
+function buildFrameworkQuestionProfile(question: string, questionTokens: readonly string[]): FrameworkQuestionProfile {
+  const hasRoutePath = containsUrlLikeRoutePath(question)
+  const hasRouteKeyword = includesAnyToken(questionTokens, ['route', 'routes', 'router', 'endpoint', 'endpoints'])
+  const hasHttpVerb = hasHttpVerbIntent(question, questionTokens, hasRoutePath, hasRouteKeyword)
+  const routeIntent = hasHttpVerb || hasRoutePath || hasRouteKeyword
+  const explicitExpress = includesAnyToken(questionTokens, ['express'])
+  const explicitRedux = includesAnyToken(questionTokens, ['redux', 'toolkit'])
+  const mentionsReact = includesAnyToken(questionTokens, ['react'])
+  const explicitReactRouter = /\breact(?:\s|-)?router\b/i.test(question)
+  const middlewareIntent = includesAnyToken(questionTokens, ['middleware', 'guard'])
+  const handlerIntent = includesAnyToken(questionTokens, ['handler', 'handlers', 'controller', 'controllers'])
+  const selectorIntent = includesAnyToken(questionTokens, ['selector', 'selectors'])
+  const sliceIntent = includesAnyToken(questionTokens, ['slice', 'slices', 'state'])
+  const storeIntent = includesAnyToken(questionTokens, ['store', 'stores', 'reducer', 'reducers'])
+  const renderIntent = includesAnyToken(questionTokens, ['render', 'renders', 'page', 'pages', 'component', 'components'])
+  const loaderIntent = includesAnyToken(questionTokens, ['loader', 'loaders', 'load'])
+  const actionIntent = includesAnyToken(questionTokens, ['action', 'actions', 'submit', 'submits', 'dispatch'])
+  const express = explicitExpress || hasHttpVerb || middlewareIntent || handlerIntent
+  const redux = explicitRedux || selectorIntent || sliceIntent || storeIntent
+  const reactRouter = routeIntent && !express && (explicitReactRouter || mentionsReact || renderIntent || loaderIntent || actionIntent)
+
+  return {
+    frameworkShaped: express || redux || reactRouter,
+    express,
+    redux,
+    reactRouter,
+    routeIntent,
+    middlewareIntent,
+    handlerIntent,
+    selectorIntent,
+    sliceIntent,
+    storeIntent,
+    renderIntent,
+    loaderIntent,
+    actionIntent,
+  }
+}
+
+function frameworkBoostForNode(
+  profile: FrameworkQuestionProfile,
+  nodeKind: string,
+  frameworkRole: string,
+): number {
+  if (!profile.frameworkShaped) {
+    return 0
+  }
+
+  let boost = 0
+
+  if (profile.express) {
+    if (frameworkRole === 'express_route') {
+      boost += profile.routeIntent ? 4 : 0
+    }
+    if (frameworkRole === 'express_middleware') {
+      boost += profile.middlewareIntent ? 2.5 : 1
+    }
+    if (frameworkRole === 'express_handler') {
+      boost += profile.handlerIntent ? 2.5 : 1.25
+    }
+    if (frameworkRole === 'express_router' || frameworkRole === 'express_app') {
+      boost += profile.routeIntent ? 1.5 : 0.5
+    }
+  }
+
+  if (profile.redux) {
+    if (nodeKind === 'slice' || frameworkRole === 'redux_slice') {
+      boost += profile.sliceIntent || profile.selectorIntent ? 3.5 : 2.5
+    }
+    if (frameworkRole === 'redux_selector') {
+      boost += profile.selectorIntent ? 3.5 : 2
+    }
+    if (nodeKind === 'store' || frameworkRole === 'redux_store') {
+      boost += profile.storeIntent || profile.sliceIntent ? 2.25 : 1.5
+    }
+    if (frameworkRole === 'redux_action' || frameworkRole === 'redux_thunk') {
+      boost += profile.actionIntent ? 2 : 0.75
+    }
+  }
+
+  if (profile.reactRouter) {
+    if (frameworkRole === 'react_router_route' || frameworkRole === 'react_router_layout') {
+      boost += profile.routeIntent || profile.renderIntent || profile.loaderIntent || profile.actionIntent ? 3.5 : 2
+    }
+    if (frameworkRole === 'react_router_component') {
+      boost += profile.renderIntent ? 2.5 : 1
+    }
+    if (frameworkRole === 'react_router_loader') {
+      boost += profile.loaderIntent ? 2.5 : 1
+    }
+    if (frameworkRole === 'react_router_action') {
+      boost += profile.actionIntent ? 2.5 : 1
+    }
+    if (frameworkRole === 'react_router') {
+      boost += profile.routeIntent ? 1.5 : 0.5
+    }
+  }
+
+  if (profile.frameworkShaped && boost === 0 && ['function', 'class', 'variable'].includes(nodeKind)) {
+    boost -= 0.5
+  }
+
+  return boost
 }
 export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions): RetrieveResult {
   const { question, budget } = options
@@ -307,6 +522,7 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
 
   // Pre-compute community labels so seed scoring can treat them as secondary evidence.
   const communities = communitiesFromGraph(graph)
+  const frameworkProfile = buildFrameworkQuestionProfile(question, questionTokens)
   const communityLabels: Record<number, string> = {
     ...buildCommunityLabels(graph, communities),
     ...storedCommunityLabelsFromGraph(graph),
@@ -328,6 +544,8 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
 
     const label = String(attributes.label ?? '')
     const sourceFile = String(attributes.source_file ?? '')
+    const nodeKind = String(attributes.node_kind ?? '')
+    const frameworkRole = String(attributes.framework_role ?? '')
     const score = scoreSeedCandidate(
       question,
       questionTokens,
@@ -343,15 +561,16 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
         label,
         sourceFile,
         lineNumber: typeof attributes.line_number === 'number' ? attributes.line_number : 0,
-        nodeKind: String(attributes.node_kind ?? ''),
+        nodeKind,
         fileType,
         community,
-        exactLabelMatch: score.labelExactScore > 0,
-        sourcePathMatch: score.sourcePathScore > 0,
-        evidenceTier: evidenceTierForSeedScore(score),
-        score: score.total,
-        relevanceBand: score.labelExactScore > 0 || score.labelTokenScore > 0 ? 'direct' : 'related',
-      })
+      frameworkBoost: frameworkBoostForNode(frameworkProfile, nodeKind, frameworkRole),
+      exactLabelMatch: score.labelExactScore > 0,
+      sourcePathMatch: score.sourcePathScore > 0,
+      evidenceTier: evidenceTierForSeedScore(score),
+      score: score.total + frameworkBoostForNode(frameworkProfile, nodeKind, frameworkRole),
+      relevanceBand: score.labelExactScore > 0 || score.labelTokenScore > 0 ? 'direct' : 'related',
+    })
     }
   }
 
@@ -463,6 +682,7 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
       nodeKind: String(attributes.node_kind ?? ''),
       fileType,
       community,
+      frameworkBoost: 0,
       exactLabelMatch: false,
       sourcePathMatch: false,
       evidenceTier: hopDistances.get(nodeId) === 1 ? (hopEvidenceTiers.get(nodeId) ?? 0) : 0,
@@ -491,25 +711,47 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
   const matchedNodes: RetrieveMatchedNode[] = []
   const includedIds = new Set<string>()
   let tokenCount = 0
-  const inclusionOrder = [
-    ...scored.filter((node) => (seedIds.has(node.id) || hopScores.has(node.id)) && node.relevanceBand !== 'peripheral'),
-    ...scored.filter((node) => (seedIds.has(node.id) || hopScores.has(node.id)) && node.relevanceBand === 'peripheral'),
-  ]
+  const primaryCandidates = scored.filter((node) => (seedIds.has(node.id) || hopScores.has(node.id)) && node.relevanceBand !== 'peripheral')
+  const peripheralCandidates = scored.filter((node) => (seedIds.has(node.id) || hopScores.has(node.id)) && node.relevanceBand === 'peripheral')
+  const prioritizedFrameworkCandidates = frameworkProfile.frameworkShaped
+    ? primaryCandidates.filter((node) => node.frameworkBoost > 0)
+    : []
+  const secondaryCandidates = frameworkProfile.frameworkShaped
+    ? primaryCandidates.filter((node) => node.frameworkBoost <= 0)
+    : primaryCandidates
+  const compactFrameworkLimit = frameworkProfile.frameworkShaped && prioritizedFrameworkCandidates.length > 0 ? 5 : Number.POSITIVE_INFINITY
+  const reservedSupportingSlots =
+    Number.isFinite(compactFrameworkLimit) && secondaryCandidates.length > 0
+      ? Math.min(2, secondaryCandidates.length, compactFrameworkLimit - 1)
+      : 0
+  const prioritizedFrameworkHeadCount = Number.isFinite(compactFrameworkLimit)
+    ? Math.max(1, compactFrameworkLimit - reservedSupportingSlots)
+    : prioritizedFrameworkCandidates.length
+  const inclusionOrder = frameworkProfile.frameworkShaped
+    ? [
+        ...prioritizedFrameworkCandidates.slice(0, prioritizedFrameworkHeadCount),
+        ...secondaryCandidates.slice(0, reservedSupportingSlots),
+        ...prioritizedFrameworkCandidates.slice(prioritizedFrameworkHeadCount),
+        ...secondaryCandidates.slice(reservedSupportingSlots),
+        ...peripheralCandidates,
+      ]
+    : [...secondaryCandidates, ...peripheralCandidates]
 
   for (const node of inclusionOrder) {
     const snippet = readSnippet(node.sourceFile, node.lineNumber)
-    const nodeText = `${node.label} ${node.sourceFile}:${node.lineNumber} ${snippet ?? ''}`
-    const nodeTokens = estimateTokens(nodeText)
+    const nodeTokens = estimateRetrieveEntryTokens(node.label, node.sourceFile, node.lineNumber, snippet)
 
     if (tokenCount + nodeTokens > budget && matchedNodes.length > 0) {
       break
     }
 
     matchedNodes.push({
+      node_id: node.id,
       label: node.label,
       source_file: node.sourceFile,
       line_number: node.lineNumber,
       node_kind: node.nodeKind,
+      framework_boost: node.frameworkBoost,
       file_type: node.fileType,
       snippet,
       match_score: node.score,
@@ -520,17 +762,20 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
 
     includedIds.add(node.id)
     tokenCount += nodeTokens
+
   }
 
   // Collect relationships between included nodes
   const relationships: RetrieveRelationship[] = []
   for (const [source, target, attributes] of graph.edgeEntries()) {
-    if (includedIds.has(source) && includedIds.has(target)) {
-      relationships.push({
-        from: String(graph.nodeAttributes(source).label ?? source),
-        to: String(graph.nodeAttributes(target).label ?? target),
-        relation: String(attributes.relation ?? 'related_to'),
-      })
+      if (includedIds.has(source) && includedIds.has(target)) {
+        relationships.push({
+          from_id: source,
+          from: String(graph.nodeAttributes(source).label ?? source),
+          to_id: target,
+          to: String(graph.nodeAttributes(target).label ?? target),
+          relation: String(attributes.relation ?? 'related_to'),
+        })
     }
   }
 
@@ -568,5 +813,81 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
       god_nodes: [...includedLabels].filter((label) => godNodeLabels.has(label)),
       bridge_nodes: [...includedLabels].filter((label) => bridgeNodeLabels.has(label)),
     },
+  }
+}
+
+export function compactRetrieveResult(result: RetrieveResult): CompactRetrieveResult {
+  const frameworkProfile = buildFrameworkQuestionProfile(result.question, tokenizeQuestion(result.question))
+  const compactFrameworkLimit =
+    frameworkProfile.frameworkShaped && result.matched_nodes.some((node) => (node.framework_boost ?? 0) > 0) ? 5 : Number.POSITIVE_INFINITY
+  const compactMatchedNodes = Number.isFinite(compactFrameworkLimit)
+    ? result.matched_nodes.slice(0, compactFrameworkLimit)
+    : result.matched_nodes
+  const includedNodeIds = new Set(compactMatchedNodes.map(matchedNodeId).filter((nodeId): nodeId is string => nodeId !== null))
+  const includedLabels = new Set(compactMatchedNodes.map((node) => node.label))
+  const includedCommunities = new Set(compactMatchedNodes.flatMap((node) => (node.community === null ? [] : [node.community])))
+  const sharedFileType =
+    compactMatchedNodes.length > 0 && compactMatchedNodes.every((node) => node.file_type === compactMatchedNodes[0]?.file_type)
+      ? compactMatchedNodes[0]?.file_type
+      : undefined
+
+  return {
+    question: result.question,
+    token_count: tokenCountForMatchedNodes(compactMatchedNodes),
+    matched_nodes: compactMatchedNodes.map(({ community_label: _communityLabel, file_type: fileType, framework_boost: _frameworkBoost, ...node }) => ({
+      ...node,
+      ...(sharedFileType ? {} : { file_type: fileType }),
+    })),
+    relationships: result.relationships.filter((edge) => {
+      if (includedNodeIds.size > 0 && edge.from_id && edge.to_id) {
+        return includedNodeIds.has(edge.from_id) && includedNodeIds.has(edge.to_id)
+      }
+      return includedLabels.has(edge.from) && includedLabels.has(edge.to)
+    }),
+    community_context: result.community_context.filter((community) => includedCommunities.has(community.id)),
+    graph_signals: {
+      god_nodes: result.graph_signals.god_nodes.filter((label) => includedLabels.has(label)),
+      bridge_nodes: result.graph_signals.bridge_nodes.filter((label) => includedLabels.has(label)),
+    },
+    ...(sharedFileType ? { shared_file_type: sharedFileType } : {}),
+  }
+}
+
+export function compactRetrieveResultForStdio(result: RetrieveResult): RetrieveResult {
+  const compactResult = compactRetrieveResult(result)
+  const originalNodesById = new Map(
+    result.matched_nodes
+      .map((node) => [matchedNodeId(node), node] as const)
+      .filter(([nodeId]) => nodeId !== null) as Array<[string, RetrieveMatchedNode]>,
+  )
+
+  const matchedNodes: RetrieveResult['matched_nodes'] = compactResult.matched_nodes.map((node) => {
+    const original = matchedNodeId(node) !== null ? originalNodesById.get(matchedNodeId(node)!) : undefined
+    if (original) {
+      return stripRetrieveMatchedNodeIdentity(original)
+    }
+
+    return {
+      label: node.label,
+      source_file: node.source_file,
+      line_number: node.line_number,
+      node_kind: node.node_kind,
+      framework_boost: 0,
+      file_type: node.file_type ?? compactResult.shared_file_type ?? '',
+      snippet: node.snippet,
+      match_score: node.match_score,
+      relevance_band: node.relevance_band,
+      community: node.community,
+      community_label: null,
+    }
+  })
+
+  return {
+    question: result.question,
+    token_count: compactResult.token_count,
+    matched_nodes: matchedNodes,
+    relationships: compactResult.relationships.map(stripRetrieveRelationshipIdentity),
+    community_context: compactResult.community_context,
+    graph_signals: compactResult.graph_signals,
   }
 }

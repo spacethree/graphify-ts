@@ -209,6 +209,6 @@ That progression keeps the proof honest:
 
 ## Capability Coverage Matters
 
-`graphify-ts` does not use one extractor for everything. Today the strongest code path is TypeScript/JavaScript via the TypeScript compiler API; Go, Java, Python, Ruby, and Rust use tree-sitter first with local fallback; several other languages use heuristic extractors; and images/audio/video are metadata only.
+`graphify-ts` does not use one extractor for everything. Today the strongest code path is TypeScript/JavaScript via the TypeScript compiler API plus a framework-semantic pass for Express, Redux Toolkit, and React Router; Go, Java, Python, Ruby, and Rust use tree-sitter first with local fallback; several other languages use heuristic extractors; and images/audio/video are metadata only.
 
 The exact matrix is published in [`docs/language-capability-matrix.md`](../docs/language-capability-matrix.md). That distinction is important when you are evaluating the tool for a polyglot codebase rather than a single TypeScript repo.

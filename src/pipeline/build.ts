@@ -26,6 +26,15 @@ export interface BuildGraphOptions {
   validateExtraction?: boolean
 }
 
+type BuildableExtraction = {
+  nodes: ExtractionData['nodes']
+  edges: ExtractionData['edges']
+  schema_version?: ExtractionData['schema_version']
+  hyperedges?: ExtractionData['hyperedges']
+  input_tokens?: number
+  output_tokens?: number
+}
+
 export function buildFromJson(extraction: unknown, options: BuildGraphOptions = {}): KnowledgeGraph {
   const graph = new KnowledgeGraph({ directed: options.directed === true })
   if (!isRecord(extraction)) {
@@ -86,7 +95,7 @@ export function buildFromJson(extraction: unknown, options: BuildGraphOptions = 
   return graph
 }
 
-export function build(extractions: ExtractionData[], options: BuildGraphOptions = {}): KnowledgeGraph {
+export function build(extractions: BuildableExtraction[], options: BuildGraphOptions = {}): KnowledgeGraph {
   const combined: CombinedExtraction = {
     schema_version: 1,
     nodes: [],
