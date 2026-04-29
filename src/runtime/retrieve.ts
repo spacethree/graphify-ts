@@ -381,7 +381,7 @@ function buildFrameworkQuestionProfile(question: string, questionTokens: readonl
   const explicitExpress = includesAnyToken(questionTokens, ['express'])
   const explicitRedux = includesAnyToken(questionTokens, ['redux', 'toolkit'])
   const mentionsReact = includesAnyToken(questionTokens, ['react'])
-  const explicitReactRouter = includesAnyToken(questionTokens, ['router', 'routing'])
+  const explicitReactRouter = /\breact(?:\s|-)?router\b/i.test(question)
   const middlewareIntent = includesAnyToken(questionTokens, ['middleware', 'guard'])
   const handlerIntent = includesAnyToken(questionTokens, ['handler', 'handlers', 'controller', 'controllers'])
   const selectorIntent = includesAnyToken(questionTokens, ['selector', 'selectors'])

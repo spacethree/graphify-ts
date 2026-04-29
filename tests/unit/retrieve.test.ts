@@ -1061,6 +1061,57 @@ describe('retrieve', () => {
       expect(result.matched_nodes.find((node) => node.label === '/settings/path')?.relevance_band).toBe('direct')
     })
 
+    it('does not treat a generic router question as react router intent', () => {
+      const graph = new KnowledgeGraph({ directed: true })
+      graph.addNode('settings_router', {
+        label: 'SettingsRouter',
+        source_file: '/src/server/settings-router.ts',
+        line_number: 5,
+        node_kind: 'class',
+        file_type: 'code',
+        community: 0,
+      })
+      graph.addNode('settings_route', {
+        label: '/settings',
+        source_file: '/src/routes/settings.tsx',
+        line_number: 12,
+        node_kind: 'route',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_route',
+        community: 1,
+      })
+      graph.addNode('settings_page', {
+        label: 'SettingsPage',
+        source_file: '/src/routes/settings-page.tsx',
+        line_number: 20,
+        node_kind: 'component',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_component',
+        community: 1,
+      })
+      graph.addEdge('settings_route', 'settings_page', {
+        relation: 'renders',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/settings.tsx',
+      })
+
+      const result = retrieveContext(graph, {
+        question: 'which router handles settings',
+        budget: 5000,
+        fileType: 'code',
+      })
+
+      expect(result.matched_nodes[0]).toEqual(
+        expect.objectContaining({
+          label: 'SettingsRouter',
+          source_file: '/src/server/settings-router.ts',
+        }),
+      )
+      expect(result.matched_nodes.find((node) => node.label === '/settings')?.framework_boost).toBe(0)
+    })
+
     it('answers route rendering questions with extracted react router route semantics', () => {
       const routerFilePath = join(process.cwd(), 'tests', 'fixtures', 'react-router-imported-router.tsx')
       const moduleFilePath = join(process.cwd(), 'tests', 'fixtures', 'react-router-imported-module.tsx')
@@ -1169,6 +1220,57 @@ describe('retrieve', () => {
         expect.arrayContaining(['router', 'SettingsPage()', 'settingsLoader()', 'settingsAction()']),
       )
       expect(semanticLowLevelMatches.length).toBeLessThan(baselineLowLevelMatches.length)
+    })
+
+    it('keeps react router boosts when react-specific route evidence is present', () => {
+      const graph = new KnowledgeGraph({ directed: true })
+      graph.addNode('settings_route', {
+        label: '/settings',
+        source_file: '/src/routes/settings.tsx',
+        line_number: 12,
+        node_kind: 'route',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_route',
+        community: 0,
+      })
+      graph.addNode('settings_page', {
+        label: 'SettingsPage',
+        source_file: '/src/routes/settings-page.tsx',
+        line_number: 20,
+        node_kind: 'component',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_component',
+        community: 0,
+      })
+      graph.addNode('settings_router_helper', {
+        label: 'settingsRouterHelper',
+        source_file: '/src/utils/settings-router-helper.ts',
+        line_number: 3,
+        node_kind: 'function',
+        file_type: 'code',
+        community: 1,
+      })
+      graph.addEdge('settings_route', 'settings_page', {
+        relation: 'renders',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/settings.tsx',
+      })
+
+      const result = retrieveContext(graph, {
+        question: 'which react router renders settings page',
+        budget: 5000,
+        fileType: 'code',
+      })
+
+      expect(result.matched_nodes[0]).toEqual(
+        expect.objectContaining({
+          label: '/settings',
+          node_kind: 'route',
+        }),
+      )
+      expect(result.matched_nodes.find((node) => node.label === '/settings')?.framework_boost).toBeGreaterThan(0)
     })
 
     it('keeps framework boosts for framework-shaped react router path questions', () => {
