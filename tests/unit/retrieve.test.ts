@@ -1061,6 +1061,57 @@ describe('retrieve', () => {
       expect(result.matched_nodes.find((node) => node.label === '/settings/path')?.relevance_band).toBe('direct')
     })
 
+    it('does not treat file path component questions as react router route intent', () => {
+      const graph = new KnowledgeGraph({ directed: true })
+      graph.addNode('login_component', {
+        label: 'Login',
+        source_file: '/src/auth/Login.tsx',
+        line_number: 18,
+        node_kind: 'component',
+        file_type: 'code',
+        community: 0,
+      })
+      graph.addNode('login_route', {
+        label: '/login',
+        source_file: '/src/routes/login.tsx',
+        line_number: 8,
+        node_kind: 'route',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_route',
+        community: 1,
+      })
+      graph.addNode('login_page', {
+        label: 'LoginPage',
+        source_file: '/src/routes/login-page.tsx',
+        line_number: 20,
+        node_kind: 'component',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_component',
+        community: 1,
+      })
+      graph.addEdge('login_route', 'login_page', {
+        relation: 'renders',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/login.tsx',
+      })
+
+      const result = retrieveContext(graph, {
+        question: 'how does src/auth/Login.tsx component work',
+        budget: 5000,
+        fileType: 'code',
+      })
+
+      expect(result.matched_nodes[0]).toEqual(
+        expect.objectContaining({
+          label: 'Login',
+          source_file: '/src/auth/Login.tsx',
+        }),
+      )
+      expect(result.matched_nodes.find((node) => node.label === '/login')?.framework_boost).toBe(0)
+    })
+
     it('does not treat a generic router question as react router intent', () => {
       const graph = new KnowledgeGraph({ directed: true })
       graph.addNode('settings_router', {
@@ -1330,6 +1381,106 @@ describe('retrieve', () => {
       expect(result.matched_nodes.findIndex((node) => node.label === '/settings/path')).toBeLessThan(
         result.matched_nodes.findIndex((node) => node.label === 'PathBuilder'),
       )
+    })
+
+    it('keeps framework boosts for real route path questions', () => {
+      const graph = new KnowledgeGraph({ directed: true })
+      graph.addNode('login_route', {
+        label: '/login',
+        source_file: '/src/routes/login.tsx',
+        line_number: 8,
+        node_kind: 'route',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_route',
+        community: 0,
+      })
+      graph.addNode('login_page', {
+        label: 'LoginPage',
+        source_file: '/src/routes/login-page.tsx',
+        line_number: 20,
+        node_kind: 'component',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_component',
+        community: 0,
+      })
+      graph.addNode('login_guide', {
+        label: 'LoginGuide',
+        source_file: '/docs/login.md',
+        line_number: 3,
+        node_kind: 'section',
+        file_type: 'document',
+        community: 0,
+      })
+      graph.addEdge('login_route', 'login_page', {
+        relation: 'renders',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/login.tsx',
+      })
+
+      const result = retrieveContext(graph, {
+        question: 'which react router route renders /login',
+        budget: 5000,
+        fileType: 'code',
+      })
+
+      expect(result.matched_nodes[0]).toEqual(
+        expect.objectContaining({
+          label: '/login',
+          node_kind: 'route',
+          relevance_band: 'direct',
+        }),
+      )
+      expect(result.relationships).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ from: '/login', to: 'LoginPage', relation: 'renders' }),
+        ]),
+      )
+      expect(result.matched_nodes.find((node) => node.label === '/login')?.framework_boost).toBeGreaterThan(0)
+    })
+
+    it('keeps framework boosts for real route path questions with trailing punctuation', () => {
+      const graph = new KnowledgeGraph({ directed: true })
+      graph.addNode('login_route', {
+        label: '/login',
+        source_file: '/src/routes/login.tsx',
+        line_number: 8,
+        node_kind: 'route',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_route',
+        community: 0,
+      })
+      graph.addNode('login_page', {
+        label: 'LoginPage',
+        source_file: '/src/routes/login-page.tsx',
+        line_number: 20,
+        node_kind: 'component',
+        file_type: 'code',
+        framework: 'react-router',
+        framework_role: 'react_router_component',
+        community: 0,
+      })
+      graph.addEdge('login_route', 'login_page', {
+        relation: 'renders',
+        confidence: 'EXTRACTED',
+        source_file: '/src/routes/login.tsx',
+      })
+
+      const result = retrieveContext(graph, {
+        question: 'what react page renders /login.',
+        budget: 5000,
+        fileType: 'code',
+      })
+
+      expect(result.matched_nodes[0]).toEqual(
+        expect.objectContaining({
+          label: '/login',
+          node_kind: 'route',
+        }),
+      )
+      expect(result.matched_nodes.find((node) => node.label === '/login')?.framework_boost).toBeGreaterThan(0)
     })
 
     it('requires explicit route intent before boosting react router nodes', () => {

@@ -373,10 +373,17 @@ function includesAnyToken(tokens: readonly string[], candidates: readonly string
   return candidates.some((candidate) => tokens.includes(candidate))
 }
 
+function containsUrlLikeRoutePath(question: string): boolean {
+  return (
+    /(^|[\s"'`([{])(\/(?:[A-Za-z0-9:_-]+(?:\/[A-Za-z0-9:_-]+)*)?\/?)(?=$|[\s"'`)\]}?!,:;])/.test(question) ||
+    /(^|[\s"'`([{])(\/(?:[A-Za-z0-9:_-]+(?:\/[A-Za-z0-9:_-]+)*)?\/?)\.(?=$|[\s"'`)\]}?!,:;])/.test(question)
+  )
+}
+
 function buildFrameworkQuestionProfile(question: string, questionTokens: readonly string[]): FrameworkQuestionProfile {
   const uppercaseQuestion = question.toUpperCase()
   const hasHttpVerb = /\b(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD|USE|ALL)\b/.test(uppercaseQuestion)
-  const hasRoutePath = /\/[A-Za-z0-9:_-]*/.test(question)
+  const hasRoutePath = containsUrlLikeRoutePath(question)
   const routeIntent = hasHttpVerb || hasRoutePath || includesAnyToken(questionTokens, ['route', 'routes', 'router', 'endpoint', 'endpoints'])
   const explicitExpress = includesAnyToken(questionTokens, ['express'])
   const explicitRedux = includesAnyToken(questionTokens, ['redux', 'toolkit'])
