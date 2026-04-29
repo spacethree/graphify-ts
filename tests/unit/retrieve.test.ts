@@ -611,6 +611,7 @@ describe('retrieve', () => {
 
     it('answers route rendering questions with extracted react router route semantics', () => {
       const routerFilePath = join(process.cwd(), 'tests', 'fixtures', 'react-router-imported-router.tsx')
+      const moduleFilePath = join(process.cwd(), 'tests', 'fixtures', 'react-router-imported-module.tsx')
       const semanticExtraction = extractJs(routerFilePath)
       const semanticNodeIds = new Set(
         semanticExtraction.nodes.filter((node) => node.label !== 'react-router-imported-router.tsx').map((node) => node.id),
@@ -627,52 +628,52 @@ describe('retrieve', () => {
       )
 
       const baselineGraph = new KnowledgeGraph({ directed: true })
-      baselineGraph.addNode('router_config', {
-        label: 'routerConfig',
-        source_file: '/src/router.tsx',
+      baselineGraph.addNode('router_variable', {
+        label: 'router',
+        source_file: routerFilePath,
         line_number: 1,
         node_kind: 'variable',
         file_type: 'code',
         community: 1,
       })
       baselineGraph.addNode('settings_page_component', {
-        label: 'SettingsPage',
-        source_file: '/src/pages/SettingsPage.tsx',
+        label: 'SettingsPage()',
+        source_file: moduleFilePath,
         line_number: 2,
         node_kind: 'function',
         file_type: 'code',
         community: 1,
       })
       baselineGraph.addNode('settings_loader_baseline', {
-        label: 'settingsLoader',
-        source_file: '/src/pages/SettingsPage.tsx',
+        label: 'settingsLoader()',
+        source_file: moduleFilePath,
         line_number: 12,
         node_kind: 'function',
         file_type: 'code',
         community: 1,
       })
-      baselineGraph.addNode('route_path_literal', {
-        label: 'settingsPath',
-        source_file: '/src/router.tsx',
-        line_number: 9,
-        node_kind: 'variable',
+      baselineGraph.addNode('settings_action_baseline', {
+        label: 'settingsAction()',
+        source_file: moduleFilePath,
+        line_number: 16,
+        node_kind: 'function',
         file_type: 'code',
         community: 1,
       })
-      baselineGraph.addEdge('router_config', 'settings_page_component', {
+      baselineGraph.addEdge('router_variable', 'settings_page_component', {
         relation: 'uses',
         confidence: 'EXTRACTED',
-        source_file: '/src/router.tsx',
+        source_file: routerFilePath,
       })
-      baselineGraph.addEdge('router_config', 'settings_loader_baseline', {
+      baselineGraph.addEdge('router_variable', 'settings_loader_baseline', {
         relation: 'uses',
         confidence: 'EXTRACTED',
-        source_file: '/src/router.tsx',
+        source_file: routerFilePath,
       })
-      baselineGraph.addEdge('router_config', 'route_path_literal', {
-        relation: 'defines',
+      baselineGraph.addEdge('router_variable', 'settings_action_baseline', {
+        relation: 'uses',
         confidence: 'EXTRACTED',
-        source_file: '/src/router.tsx',
+        source_file: routerFilePath,
       })
 
       const semanticResult = retrieveContext(semanticGraph, {
@@ -685,6 +686,10 @@ describe('retrieve', () => {
         budget: 5000,
         fileType: 'code',
       })
+      const semanticLowLevelMatches = semanticResult.matched_nodes.filter(
+        (node) => node.node_kind !== 'route' && node.node_kind !== 'router',
+      )
+      const baselineLowLevelMatches = baselineResult.matched_nodes
 
       expect(semanticResult.matched_nodes).toEqual(
         expect.arrayContaining([
@@ -698,7 +703,7 @@ describe('retrieve', () => {
       expect(baselineResult.matched_nodes).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            label: 'routerConfig',
+            label: 'router',
           }),
         ]),
       )
@@ -707,6 +712,11 @@ describe('retrieve', () => {
           expect.objectContaining({ from: '/settings', to: 'SettingsPage()', relation: 'renders' }),
         ]),
       )
+      expect(semanticLowLevelMatches).toHaveLength(3)
+      expect(baselineLowLevelMatches.map((node) => node.label)).toEqual(
+        expect.arrayContaining(['router', 'SettingsPage()', 'settingsLoader()', 'settingsAction()']),
+      )
+      expect(semanticLowLevelMatches.length).toBeLessThan(baselineLowLevelMatches.length)
     })
 
     it('keeps direct symbol matches above path-only matches after structural boosts', () => {
