@@ -16,6 +16,7 @@
 
 - **Generate local graph artifacts** for a repository or mixed project folder
 - **Give AI agents structured codebase context** via MCP tools (`retrieve`, `impact`, `call_chain`, `pr_impact`)
+- **Understand mainstream JS/TS app structure** with framework-aware extraction for Express, Redux Toolkit, and React Router
 - **Explore the graph** through interactive HTML, reports, and CLI commands
 - **Analyze blast radius** before making changes — know what breaks across modules and repos
 - **Federate multiple repos** into a single queryable super-graph
@@ -39,6 +40,17 @@ graphify-ts claude install    # or cursor, copilot, gemini
 ```
 
 Need the exact support matrix? See [docs/language-capability-matrix.md](docs/language-capability-matrix.md). Need the reproducible proof ladder? See [docs/proof-workflows.md](docs/proof-workflows.md) and [examples/why-graphify.md](examples/why-graphify.md).
+
+## Framework-aware JS/TS support today
+
+For TypeScript and JavaScript repositories, `graphify-ts` now adds a framework-semantic pass on top of the base AST extraction:
+
+- **Express**: apps, routers, mounted routers, route nodes, middleware ownership, and handler relationships
+- **Redux Toolkit**: slices, actions, selectors, thunks, and store registration
+- **React Router**: object routes, JSX routes, loaders, actions, nested routes, and route/component binding
+- **Compact MCP mode**: `retrieve` and `impact` accept `compact: true` for smaller framework-aware payloads while the default MCP response shape stays backward-compatible
+
+That means agents can answer questions like “which middleware protects this route?”, “which slice owns auth state?”, or “which route loads this page?” with higher-signal nodes instead of only low-level helpers.
 
 What you get in `graphify-out/`:
 
@@ -135,8 +147,8 @@ When an agent connects via `graphify-ts serve --stdio`, it gets these tools:
 
 | Tool | What it does |
 |------|-------------|
-| `retrieve` | One-call context retrieval — question + token budget → matched nodes with code snippets, relationships, community context, and relevance bands |
-| `impact` | Blast radius analysis — "if I change X, what could break?" with directed dependents, affected communities, and path evidence |
+| `retrieve` | One-call context retrieval — question + token budget → matched nodes with code snippets, relationships, community context, and relevance bands; supports `compact: true` for smaller MCP payloads |
+| `impact` | Blast radius analysis — "if I change X, what could break?" with directed dependents, affected communities, and path evidence; supports `compact: true` for smaller MCP payloads |
 | `call_chain` | Execution path tracing — all paths from A to B filtered by edge type |
 | `pr_impact` | PR risk analysis — git diff → affected nodes → aggregate blast radius |
 | `community_details` | Hierarchical community data at micro/mid/macro zoom levels |
@@ -225,7 +237,7 @@ The public support matrix is in [docs/language-capability-matrix.md](docs/langua
 
 | Area | Current implementation |
 |---|---|
-| TypeScript / JavaScript | TypeScript compiler API |
+| TypeScript / JavaScript | TypeScript compiler API plus framework-aware semantics for Express, Redux Toolkit, and React Router |
 | Python / Ruby / Go / Java / Rust | Tree-sitter WASM primary path with local fallback |
 | C-family / Kotlin / C# / Scala / PHP / Swift / Zig | Generic structural extractor |
 | Lua / Elixir / Julia / PowerShell / Objective-C / TOC | Lightweight language-specific scanners |
