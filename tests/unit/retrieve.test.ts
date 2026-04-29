@@ -373,6 +373,29 @@ describe('retrieve', () => {
       )
     })
 
+    it('ranks recursively mounted express route nodes by their propagated prefixes', () => {
+      const fixturesDir = join(process.cwd(), 'tests', 'fixtures')
+      const graph = build([
+        extractJs(join(fixturesDir, 'express-nested-router-parent.ts')),
+        extractJs(join(fixturesDir, 'express-nested-router-child.ts')),
+        extractJs(join(fixturesDir, 'express-nested-router-grandchild.ts')),
+      ])
+
+      const result = retrieveContext(graph, {
+        question: 'where is GET /api/v1/users/:id defined',
+        budget: 5000,
+        fileType: 'code',
+      })
+
+      expect(result.matched_nodes[0]).toEqual(
+        expect.objectContaining({
+          label: 'GET /api/v1/users/:id',
+          node_kind: 'route',
+          relevance_band: 'direct',
+        }),
+      )
+    })
+
     it('keeps direct symbol matches above path-only matches after structural boosts', () => {
       const graph = new KnowledgeGraph()
       graph.addNode('direct_symbol', {

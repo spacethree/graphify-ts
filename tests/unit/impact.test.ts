@@ -206,6 +206,33 @@ describe('impact', () => {
         ]),
       )
     })
+
+    it('shows recursively mounted child routes as direct dependents of inherited mount middleware', () => {
+      const fixturesDir = join(process.cwd(), 'tests', 'fixtures')
+      const graph = build([
+        extractJs(join(fixturesDir, 'express-nested-router-parent.ts')),
+        extractJs(join(fixturesDir, 'express-nested-router-child.ts')),
+        extractJs(join(fixturesDir, 'express-nested-router-grandchild.ts')),
+      ])
+
+      const authImpact = analyzeImpact(graph, {}, { label: 'requireAuth' })
+      const auditImpact = analyzeImpact(graph, {}, { label: 'auditTrail' })
+
+      expect(authImpact.direct_dependents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            label: 'GET /api/v1/users/:id',
+          }),
+        ]),
+      )
+      expect(auditImpact.direct_dependents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            label: 'GET /api/v1/users/:id',
+          }),
+        ]),
+      )
+    })
   })
 
   describe('callChains', () => {

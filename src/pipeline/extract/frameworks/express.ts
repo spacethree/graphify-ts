@@ -34,6 +34,7 @@ interface ImportedBindingTarget {
 interface RouteAttachment {
   relation: 'middleware' | 'handles_route'
   targetId: string
+  ownedByRoute?: boolean
 }
 
 interface RouteRecord {
@@ -247,6 +248,105 @@ function joinRoutePaths(prefix: string, path: string): string {
   return normalizedRoutePath(`${prefix}/${path}`)
 }
 
+function routeRecordKey(record: RouteRecord): string {
+  return [record.ownerId, record.method, record.path, String(record.line), record.sourceFile].join('|')
+}
+
+function dedupeRouteRecords(records: readonly RouteRecord[]): RouteRecord[] {
+  const seen = new Set<string>()
+  const deduped: RouteRecord[] = []
+
+  for (const record of records) {
+    const key = routeRecordKey(record)
+    if (seen.has(key)) {
+      continue
+    }
+    seen.add(key)
+    deduped.push(record)
+  }
+
+  return deduped
+}
+
+function ownedRouteCacheKey(ownerId: string, seenTargets: ReadonlySet<string>): string {
+  return `${ownerId}|${[...seenTargets].sort().join(',')}`
+}
+
+function createMountedRouteRecord(mountRecord: MountRecord, descendantRoute: RouteRecord): RouteRecord {
+  return {
+    ownerId: mountRecord.owner.id,
+    ownerName: `${mountRecord.owner.name}->${descendantRoute.ownerName}`,
+    method: descendantRoute.method,
+    path: joinRoutePaths(mountRecord.prefix, descendantRoute.path),
+    line: descendantRoute.line,
+    sourceFile: descendantRoute.sourceFile,
+    attachments: [...mountRecord.inheritedMiddleware, ...descendantRoute.attachments],
+  }
+}
+
+function createRouteRecordResolver(
+  filePath: string,
+  routeRecords: readonly RouteRecord[],
+  mountRecords: readonly MountRecord[],
+  resolveExternalRoutes: (routerTarget: MountRecord['routerTarget']) => readonly RouteRecord[],
+): (routerTarget: MountRecord['routerTarget']) => RouteRecord[] {
+  const directRouteRecordsByOwner = new Map<string, RouteRecord[]>()
+  const mountRecordsByOwner = new Map<string, MountRecord[]>()
+  const ownedRouteCache = new Map<string, RouteRecord[]>()
+
+  for (const routeRecord of routeRecords) {
+    const records = directRouteRecordsByOwner.get(routeRecord.ownerId)
+    if (records) {
+      records.push(routeRecord)
+    } else {
+      directRouteRecordsByOwner.set(routeRecord.ownerId, [routeRecord])
+    }
+  }
+
+  for (const mountRecord of mountRecords) {
+    const records = mountRecordsByOwner.get(mountRecord.owner.id)
+    if (records) {
+      records.push(mountRecord)
+    } else {
+      mountRecordsByOwner.set(mountRecord.owner.id, [mountRecord])
+    }
+  }
+
+  const collectOwnedRoutes = (ownerId: string, seenTargets: Set<string>): RouteRecord[] => {
+    const cacheKey = ownedRouteCacheKey(ownerId, seenTargets)
+    const cached = ownedRouteCache.get(cacheKey)
+    if (cached) {
+      return cached
+    }
+
+    const ownedRoutes = [...(directRouteRecordsByOwner.get(ownerId) ?? [])]
+    for (const mountRecord of mountRecordsByOwner.get(ownerId) ?? []) {
+      const targetKey = `${mountRecord.routerTarget.sourceFile}:${mountRecord.routerTarget.id}`
+      if (seenTargets.has(targetKey)) {
+        continue
+      }
+
+      const descendantRoutes =
+        mountRecord.routerTarget.sourceFile === filePath
+          ? collectOwnedRoutes(mountRecord.routerTarget.id, new Set([...seenTargets, targetKey]))
+          : resolveExternalRoutes(mountRecord.routerTarget)
+
+      for (const descendantRoute of descendantRoutes) {
+        ownedRoutes.push(createMountedRouteRecord(mountRecord, descendantRoute))
+      }
+    }
+
+    const dedupedRoutes = dedupeRouteRecords(ownedRoutes)
+    ownedRouteCache.set(cacheKey, dedupedRoutes)
+    return dedupedRoutes
+  }
+
+  return (routerTarget) =>
+    routerTarget.sourceFile === filePath
+      ? collectOwnedRoutes(routerTarget.id, new Set([`${routerTarget.sourceFile}:${routerTarget.id}`]))
+      : [...resolveExternalRoutes(routerTarget)]
+}
+
 function resolveLocalRouteAttachment(
   expression: ts.Expression,
   routeLabel: string,
@@ -273,6 +373,7 @@ function resolveLocalRouteAttachment(
     return {
       relation,
       targetId: _makeId(filePath, relation, routeLabel, String(lineOf(candidate, sourceFile)), functionName),
+      ownedByRoute: relation === 'handles_route',
     }
   }
 
@@ -289,9 +390,11 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
   const sourceFile = ts.createSourceFile(filePath, sourceText, ts.ScriptTarget.Latest, true, scriptKindForPath(filePath))
   const expressFactoryAliases = new Set<string>()
   const expressRouterAliases = new Set<string>()
+  const importedBindingsByLocalName = new Map<string, ImportedBindingTarget>()
   const expressEntities = new Map<string, ExpressEntity>()
   const functionInfoByName = new Map<string, FunctionInfo>()
   const routeRecords: RouteRecord[] = []
+  const mountRecords: MountRecord[] = []
   const exportedBindings = new Map<string, ImportedBindingTarget>()
 
   const registerExpressEntity = (name: string, kind: ExpressEntity['kind']): void => {
@@ -325,6 +428,25 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
             }
           }
         }
+      } else {
+        const resolvedImportPath = resolveImportPath(filePath, moduleSpecifier)
+        const importedModule = resolvedImportPath ? analyzeExpressModule(resolvedImportPath) : null
+        if (resolvedImportPath && importedModule && importClause?.name) {
+          const importedTarget = importedModule.exportedBindings.get('default')
+          if (importedTarget) {
+            importedBindingsByLocalName.set(importClause.name.text, importedTarget)
+          }
+        }
+        const bindings = importClause?.namedBindings
+        if (resolvedImportPath && importedModule && bindings && ts.isNamedImports(bindings)) {
+          for (const element of bindings.elements) {
+            const importedName = element.propertyName && ts.isIdentifier(element.propertyName) ? element.propertyName.text : element.name.text
+            const importedTarget = importedModule.exportedBindings.get(importedName)
+            if (importedTarget) {
+              importedBindingsByLocalName.set(element.name.text, importedTarget)
+            }
+          }
+        }
       }
     }
 
@@ -340,6 +462,15 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
       const requiredModule = node.initializer.arguments[0]!.text
       if (requiredModule === 'express') {
         expressFactoryAliases.add(node.name.text)
+      } else {
+        const resolvedImportPath = resolveImportPath(filePath, requiredModule)
+        const importedModule = resolvedImportPath ? analyzeExpressModule(resolvedImportPath) : null
+        if (resolvedImportPath && importedModule) {
+          const importedTarget = importedModule.exportedBindings.get('default')
+          if (importedTarget) {
+            importedBindingsByLocalName.set(node.name.text, importedTarget)
+          }
+        }
       }
     }
 
@@ -361,6 +492,24 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
               : element.name.getText(sourceFile)
           if (importedName === 'Router' && ts.isIdentifier(element.name)) {
             expressRouterAliases.add(element.name.text)
+          }
+        }
+      } else {
+        const resolvedImportPath = resolveImportPath(filePath, requiredModule)
+        const importedModule = resolvedImportPath ? analyzeExpressModule(resolvedImportPath) : null
+        if (resolvedImportPath && importedModule) {
+          for (const element of node.name.elements) {
+            if (!ts.isIdentifier(element.name)) {
+              continue
+            }
+            const importedName =
+              !element.propertyName || ts.isIdentifier(element.propertyName)
+                ? (element.propertyName?.text ?? element.name.text)
+                : element.propertyName.getText(sourceFile)
+            const importedTarget = importedModule.exportedBindings.get(importedName)
+            if (importedTarget) {
+              importedBindingsByLocalName.set(element.name.text, importedTarget)
+            }
           }
         }
       }
@@ -458,6 +607,27 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
 
         if (parsedRoute.method === 'use') {
           for (const argument of flattenedArgs) {
+            const routerName = ts.isIdentifier(argument) ? argument.text : null
+            const localRouter = routerName ? expressEntities.get(routerName) : null
+            const importedRouter = routerName ? importedBindingsByLocalName.get(routerName) ?? null : null
+            const routerTarget =
+              localRouter && (localRouter.kind === 'router' || localRouter.kind === 'app')
+                ? { id: localRouter.id, sourceFile: filePath }
+                : importedRouter && (importedRouter.kind === 'router' || importedRouter.kind === 'app')
+                  ? { id: importedRouter.id, sourceFile: importedRouter.sourceFile }
+                  : null
+
+            if (routerTarget) {
+              mountRecords.push({
+                owner: parsedRoute.owner,
+                prefix: parsedRoute.path,
+                line: lineOf(node, sourceFile),
+                inheritedMiddleware: [...attachments],
+                routerTarget,
+              })
+              continue
+            }
+
             const attachment = resolveLocalRouteAttachment(
               argument,
               routeLabel,
@@ -579,7 +749,15 @@ function analyzeExpressModule(filePath: string): ExpressModuleAnalysis {
   collectRoutes(sourceFile)
   collectExports(sourceFile)
 
-  const analysis = { sourceText, exportedBindings, routeRecords }
+  const resolveRouteRecords = createRouteRecordResolver(filePath, routeRecords, mountRecords, (routerTarget) =>
+    analyzeExpressModule(routerTarget.sourceFile).routeRecords.filter((record) => record.ownerId === routerTarget.id),
+  )
+  const expandedRouteRecords = dedupeRouteRecords([
+    ...routeRecords,
+    ...mountRecords.flatMap((mountRecord) => resolveRouteRecords(mountRecord.routerTarget).map((record) => createMountedRouteRecord(mountRecord, record))),
+  ])
+
+  const analysis = { sourceText, exportedBindings, routeRecords: expandedRouteRecords }
   expressModuleAnalysisCache.set(filePath, analysis)
   return analysis
 }
@@ -595,7 +773,7 @@ function resolveTargetNodeId(
   importedBindingsByLocalName: ReadonlyMap<string, ImportedBindingTarget>,
   nodes: ReturnType<NonNullable<ExtractionFragment['nodes']>['slice']>,
   seenNodeIds: Set<string>,
-): string | null {
+): RouteAttachment | null {
   const candidate = resolveWrappedTargetExpression(expression)
   if (!candidate) {
     return null
@@ -619,12 +797,12 @@ function resolveTargetNodeId(
           },
         )
       }
-      return nodeId
+      return { relation, targetId: nodeId }
     }
 
     const importedBinding = ts.isIdentifier(candidate) ? importedBindingsByLocalName.get(label) ?? null : null
     if (importedBinding?.kind === 'function') {
-      return importedBinding.id
+      return { relation, targetId: importedBinding.id }
     }
   }
 
@@ -641,10 +819,25 @@ function resolveTargetNodeId(
         framework_role: frameworkRoleForCallable(relation, candidate.parameters.length),
       },
     )
-    return id
+    return { relation, targetId: id, ownedByRoute: relation === 'handles_route' }
   }
 
   return null
+}
+
+function addRouteAttachmentEdges(
+  edges: ReturnType<NonNullable<ExtractionFragment['edges']>['slice']>,
+  seenEdges: Set<string>,
+  sourceFile: string,
+  line: number,
+  routeId: string,
+  attachment: RouteAttachment,
+): void {
+  addUniqueEdge(edges, seenEdges, createEdge(attachment.targetId, routeId, attachment.relation, sourceFile, line))
+  addUniqueEdge(edges, seenEdges, createEdge(routeId, attachment.targetId, 'depends_on', sourceFile, line))
+  if (attachment.ownedByRoute) {
+    addUniqueEdge(edges, seenEdges, createEdge(routeId, attachment.targetId, 'contains', sourceFile, line))
+  }
 }
 
 function parseRouteCall(
@@ -983,7 +1176,7 @@ export const expressAdapter: JsFrameworkAdapter = {
                 continue
               }
 
-              const middlewareTargetId = resolveTargetNodeId(
+              const middlewareAttachment = resolveTargetNodeId(
                 argument,
                 routeLabel,
                 'middleware',
@@ -995,19 +1188,17 @@ export const expressAdapter: JsFrameworkAdapter = {
                 nodes,
                 seenNodeIds,
               )
-              if (middlewareTargetId) {
-                addUniqueEdge(edges, seenEdges, createEdge(middlewareTargetId, routeId, 'middleware', context.filePath, routeLine))
-                addUniqueEdge(edges, seenEdges, createEdge(routeId, middlewareTargetId, 'depends_on', context.filePath, routeLine))
-                const attachment = { relation: 'middleware' as const, targetId: middlewareTargetId }
-                inheritedMiddleware.push(attachment)
-                routeRecord.attachments.push(attachment)
+              if (middlewareAttachment) {
+                addRouteAttachmentEdges(edges, seenEdges, context.filePath, routeLine, routeId, middlewareAttachment)
+                inheritedMiddleware.push(middlewareAttachment)
+                routeRecord.attachments.push(middlewareAttachment)
               }
             }
           } else if (HTTP_ROUTE_METHODS.has(parsedRoute.method) && flattenedArgs.length > 0) {
             for (let index = 0; index < flattenedArgs.length; index += 1) {
               const argument = flattenedArgs[index]!
               const relation = index === flattenedArgs.length - 1 ? 'handles_route' : 'middleware'
-              const targetId = resolveTargetNodeId(
+              const attachment = resolveTargetNodeId(
                 argument,
                 routeLabel,
                 relation,
@@ -1019,10 +1210,9 @@ export const expressAdapter: JsFrameworkAdapter = {
                 nodes,
                 seenNodeIds,
               )
-              if (targetId) {
-                addUniqueEdge(edges, seenEdges, createEdge(targetId, routeId, relation, context.filePath, routeLine))
-                addUniqueEdge(edges, seenEdges, createEdge(routeId, targetId, 'depends_on', context.filePath, routeLine))
-                routeRecord.attachments.push({ relation, targetId })
+              if (attachment) {
+                addRouteAttachmentEdges(edges, seenEdges, context.filePath, routeLine, routeId, attachment)
+                routeRecord.attachments.push(attachment)
               }
             }
           }
@@ -1036,43 +1226,41 @@ export const expressAdapter: JsFrameworkAdapter = {
 
     visitRoutes(context.sourceFile)
 
+    const resolveRouteRecords = createRouteRecordResolver(context.filePath, routeRecords, mountRecords, (routerTarget) =>
+      analyzeExpressModule(routerTarget.sourceFile).routeRecords.filter((record) => record.ownerId === routerTarget.id),
+    )
+
     for (const mountRecord of mountRecords) {
-      const descendantRoutes =
-        mountRecord.routerTarget.sourceFile === context.filePath
-          ? routeRecords.filter((record) => record.ownerId === mountRecord.routerTarget.id)
-          : analyzeExpressModule(mountRecord.routerTarget.sourceFile).routeRecords.filter(
-              (record) => record.ownerId === mountRecord.routerTarget.id,
-            )
+      const descendantRoutes = resolveRouteRecords(mountRecord.routerTarget)
 
       for (const descendantRoute of descendantRoutes) {
-        const mountedPath = joinRoutePaths(mountRecord.prefix, descendantRoute.path)
-        const mountedLabel = `${descendantRoute.method} ${mountedPath}`
+        const mountedRouteRecord = createMountedRouteRecord(mountRecord, descendantRoute)
+        const mountedLabel = `${mountedRouteRecord.method} ${mountedRouteRecord.path}`
         const mountedRouteId = routeNodeId(
           context.filePath,
-          `${mountRecord.owner.name}->${descendantRoute.ownerName}`,
-          descendantRoute.method,
-          mountedPath,
-          descendantRoute.line,
+          mountedRouteRecord.ownerName,
+          mountedRouteRecord.method,
+          mountedRouteRecord.path,
+          mountedRouteRecord.line,
         )
 
         addNode(
           nodes,
           seenNodeIds,
           {
-            ...createNode(mountedRouteId, mountedLabel, descendantRoute.sourceFile, descendantRoute.line),
+            ...createNode(mountedRouteId, mountedLabel, mountedRouteRecord.sourceFile, mountedRouteRecord.line),
             node_kind: 'route',
             framework: 'express',
             framework_role: 'express_route',
-            http_method: descendantRoute.method,
-            route_path: mountedPath,
+            http_method: mountedRouteRecord.method,
+            route_path: mountedRouteRecord.path,
           },
         )
         addUniqueEdge(edges, seenEdges, createEdge(context.fileNodeId, mountedRouteId, 'declares', context.filePath, mountRecord.line))
         addUniqueEdge(edges, seenEdges, createEdge(mountRecord.owner.id, mountedRouteId, 'registers_route', context.filePath, mountRecord.line))
 
-        for (const attachment of [...mountRecord.inheritedMiddleware, ...descendantRoute.attachments]) {
-          addUniqueEdge(edges, seenEdges, createEdge(attachment.targetId, mountedRouteId, attachment.relation, context.filePath, mountRecord.line))
-          addUniqueEdge(edges, seenEdges, createEdge(mountedRouteId, attachment.targetId, 'depends_on', context.filePath, mountRecord.line))
+        for (const attachment of mountedRouteRecord.attachments) {
+          addRouteAttachmentEdges(edges, seenEdges, context.filePath, mountRecord.line, mountedRouteId, attachment)
         }
       }
     }

@@ -421,6 +421,7 @@ describe('js framework extraction contract', () => {
         expect.objectContaining({ label: 'router', node_kind: 'router', framework_role: 'express_router' }),
         expect.objectContaining({ label: 'requireAuth', node_kind: 'function', framework_role: 'express_middleware' }),
         expect.objectContaining({ label: 'createUser', node_kind: 'function', framework_role: 'express_handler' }),
+        expect.objectContaining({ label: 'inline handles_route GET /health', node_kind: 'function', framework_role: 'express_handler' }),
         expect.objectContaining({ label: 'onUserError', node_kind: 'function', framework_role: 'express_error_middleware' }),
         expect.objectContaining({ label: 'USE /api', node_kind: 'route', http_method: 'USE', route_path: '/api' }),
         expect.objectContaining({ label: 'GET /health', node_kind: 'route', http_method: 'GET', route_path: '/health' }),
@@ -439,6 +440,7 @@ describe('js framework extraction contract', () => {
     const routerNodeId = nodeIdForLabel(result, 'router')
     const useApiRouteId = nodeIdForLabel(result, 'USE /api')
     const getHealthRouteId = nodeIdForLabel(result, 'GET /health')
+    const getHealthInlineHandlerId = nodeIdForLabel(result, 'inline handles_route GET /health')
     const postUsersRouteId = nodeIdForLabel(result, 'POST /users')
     const putProfileRouteId = nodeIdForLabel(result, 'PUT /users/:id/profile')
     const deleteProfileRouteId = nodeIdForLabel(result, 'DELETE /users/:id/profile')
@@ -453,6 +455,8 @@ describe('js framework extraction contract', () => {
         expect.objectContaining({ source: appNodeId, target: routerNodeId, relation: 'mounts_router' }),
         expect.objectContaining({ source: nodeIdForLabel(result, 'requireAuth'), target: useApiRouteId, relation: 'middleware' }),
         expect.objectContaining({ source: nodeIdForLabel(result, 'auditTrail'), target: useApiRouteId, relation: 'middleware' }),
+        expect.objectContaining({ source: getHealthInlineHandlerId, target: getHealthRouteId, relation: 'handles_route' }),
+        expect.objectContaining({ source: getHealthRouteId, target: getHealthInlineHandlerId, relation: 'contains' }),
         expect.objectContaining({ source: nodeIdForLabel(result, 'requireAuth'), target: postUsersRouteId, relation: 'middleware' }),
         expect.objectContaining({ source: nodeIdForLabel(result, 'createUser'), target: postUsersRouteId, relation: 'handles_route' }),
         expect.objectContaining({ source: nodeIdForLabel(result, 'requireAuth'), target: putProfileRouteId, relation: 'middleware' }),
@@ -628,5 +632,60 @@ describe('js framework extraction contract', () => {
     )
     expect(graph.edgeAttributes(middlewareId, mountedRouteId)).toEqual(expect.objectContaining({ relation: 'middleware' }))
     expect(graph.edgeAttributes(handlerId, mountedRouteId)).toEqual(expect.objectContaining({ relation: 'handles_route' }))
+  })
+
+  it('recursively propagates nested mounted router prefixes and inherited middleware', () => {
+    const parentFilePath = join(FIXTURES_DIR, 'express-nested-router-parent.ts')
+    const childFilePath = join(FIXTURES_DIR, 'express-nested-router-child.ts')
+    const grandchildFilePath = join(FIXTURES_DIR, 'express-nested-router-grandchild.ts')
+
+    const graph = build([extractJs(parentFilePath), extractJs(childFilePath), extractJs(grandchildFilePath)], { directed: true })
+
+    const mountedRouteId = graphNodeIdForLabel(graph, 'GET /api/v1/users/:id')
+    const authMiddlewareId = graphNodeIdForLabel(graph, 'requireAuth()')
+    const auditMiddlewareId = graphNodeIdForLabel(graph, 'auditTrail()')
+    const handlerId = graphNodeIdForLabel(graph, 'showUser()')
+
+    expect(graph.nodeAttributes(mountedRouteId)).toEqual(
+      expect.objectContaining({
+        label: 'GET /api/v1/users/:id',
+        node_kind: 'route',
+        route_path: '/api/v1/users/:id',
+      }),
+    )
+    expect(graph.edgeAttributes(authMiddlewareId, mountedRouteId)).toEqual(expect.objectContaining({ relation: 'middleware' }))
+    expect(graph.edgeAttributes(auditMiddlewareId, mountedRouteId)).toEqual(expect.objectContaining({ relation: 'middleware' }))
+    expect(graph.edgeAttributes(handlerId, mountedRouteId)).toEqual(expect.objectContaining({ relation: 'handles_route' }))
+  })
+
+  it('does not let recursive mount cycle detection poison sibling mounted router expansions', () => {
+    const filePath = join(FIXTURES_DIR, 'virtual-express-cycle.ts')
+    const sourceText = [
+      "import express from 'express'",
+      '',
+      'function showUser() {}',
+      '',
+      'const app = express()',
+      'const routerA = express.Router()',
+      'const routerB = express.Router()',
+      '',
+      "routerA.use('/sub', routerB)",
+      "routerB.use('/loop', routerA)",
+      "routerB.get('/leaf', showUser)",
+      '',
+      "app.use('/a', routerA)",
+      "app.use('/b', routerB)",
+    ].join('\n')
+    const baseExtraction = createBaseExtraction(filePath, 'virtual-express-cycle', ['showUser'])
+
+    const result = applyJsFrameworkAdapters(baseExtraction, createFrameworkContext(filePath, sourceText, baseExtraction))
+    const graph = build([result], { directed: true })
+
+    expect(graph.nodeAttributes(graphNodeIdForLabel(graph, 'GET /a/sub/leaf'))).toEqual(
+      expect.objectContaining({ route_path: '/a/sub/leaf' }),
+    )
+    expect(graph.nodeAttributes(graphNodeIdForLabel(graph, 'GET /b/leaf'))).toEqual(
+      expect.objectContaining({ route_path: '/b/leaf' }),
+    )
   })
 })
