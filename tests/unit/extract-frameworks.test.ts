@@ -3,7 +3,7 @@ import { join } from 'node:path'
 
 import * as ts from 'typescript'
 
-import { buildFromJson } from '../../src/pipeline/build.js'
+import { build, buildFromJson } from '../../src/pipeline/build.js'
 import { _makeId, createEdge, createNode } from '../../src/pipeline/extract/core.js'
 import { applyJsFrameworkAdapters } from '../../src/pipeline/extract/frameworks/core.js'
 import type { ExtractionFragment } from '../../src/pipeline/extract/dispatch.js'
@@ -202,6 +202,104 @@ describe('js framework extraction contract', () => {
     expect(graph.edgeAttributes(fileNodeId, componentNodeId)).toEqual(
       expect.objectContaining({
         relation: 'declares',
+      }),
+    )
+  })
+
+  it('keeps the baseline edge when adapter edges reuse the same pair in reverse direction', () => {
+    const filePath = join(FIXTURES_DIR, 'router.tsx')
+    const sourceText = ['export function App() {', '  return null', '}'].join('\n')
+    const fileNodeId = _makeId('app')
+    const componentNodeId = _makeId('app', 'component')
+    const baseExtraction: ExtractionFragment = {
+      nodes: [createNode(fileNodeId, 'app.tsx', filePath, 1), createNode(componentNodeId, 'App', filePath, 1)],
+      edges: [createEdge(fileNodeId, componentNodeId, 'declares', filePath, 1)],
+    }
+
+    const adapter: JsFrameworkAdapter = {
+      id: 'test:framework-reverse-edge-collision',
+      matches() {
+        return true
+      },
+      extract() {
+        return {
+          nodes: [],
+          edges: [createEdge(componentNodeId, fileNodeId, 'framework_references_component', filePath, 2)],
+        }
+      },
+    }
+
+    const result = applyJsFrameworkAdapters(baseExtraction, createFrameworkContext(filePath, sourceText, baseExtraction), [adapter])
+    const graph = buildFromJson({
+      nodes: result.nodes,
+      edges: result.edges,
+    })
+
+    expect(
+      result.edges.filter(
+        (edge) =>
+          new Set([edge.source, edge.target]).size === 2 &&
+          [edge.source, edge.target].includes(fileNodeId) &&
+          [edge.source, edge.target].includes(componentNodeId),
+      ),
+    ).toEqual([expect.objectContaining({ source: fileNodeId, target: componentNodeId, relation: 'declares' })])
+    expect(graph.edgeAttributes(fileNodeId, componentNodeId)).toEqual(
+      expect.objectContaining({
+        relation: 'declares',
+      }),
+    )
+  })
+
+  it('preserves framework-scoped cross-file edges until the combined graph contains their targets', () => {
+    const filePath = join(FIXTURES_DIR, 'app.tsx')
+    const sourceText = ['export function App() {', '  return null', '}'].join('\n')
+    const fileNodeId = _makeId('app')
+    const routeNodeId = _makeId('routes', 'app-route')
+    const baseExtraction: ExtractionFragment = {
+      nodes: [createNode(fileNodeId, 'app.tsx', filePath, 1)],
+      edges: [],
+    }
+
+    const adapter: JsFrameworkAdapter = {
+      id: 'test:framework-cross-file-edge',
+      matches() {
+        return true
+      },
+      extract() {
+        return {
+          nodes: [],
+          edges: [createEdge(fileNodeId, routeNodeId, 'framework_registers_route', filePath, 2)],
+        }
+      },
+    }
+
+    const result = applyJsFrameworkAdapters(baseExtraction, createFrameworkContext(filePath, sourceText, baseExtraction), [adapter])
+
+    expect(result.edges).toEqual([
+      expect.objectContaining({
+        source: fileNodeId,
+        target: routeNodeId,
+        relation: 'framework_registers_route',
+      }),
+    ])
+
+    const graph = build([
+      {
+        schema_version: 1,
+        nodes: result.nodes,
+        edges: result.edges,
+      },
+      {
+        schema_version: 1,
+        nodes: [createNode(routeNodeId, 'AppRoute', join(FIXTURES_DIR, 'routes.ts'), 1)],
+        edges: [],
+      },
+    ])
+
+    expect(graph.hasNode(routeNodeId)).toBe(true)
+    expect(graph.edgeAttributes(fileNodeId, routeNodeId)).toEqual(
+      expect.objectContaining({
+        relation: 'framework_registers_route',
       }),
     )
   })

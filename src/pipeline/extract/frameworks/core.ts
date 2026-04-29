@@ -34,7 +34,11 @@ function edgeDedupeKey(edge: ExtractionEdge): string {
 }
 
 function edgePairKey(edge: Pick<ExtractionEdge, 'source' | 'target'>): string {
-  return `${edge.source}|${edge.target}`
+  return [edge.source, edge.target].sort().join('|')
+}
+
+function isFrameworkScopedEdge(edge: Pick<ExtractionEdge, 'relation'>): boolean {
+  return edge.relation.startsWith('framework_')
 }
 
 function dedupeEdges(edges: readonly ExtractionEdge[]): ExtractionEdge[] {
@@ -90,6 +94,7 @@ function filterJsExtractionEdges(nodes: readonly ExtractionNode[], edges: readon
     (edge) =>
       validNodeIds.has(edge.source) &&
       (validNodeIds.has(edge.target) ||
+        isFrameworkScopedEdge(edge) ||
         EXTERNAL_TARGET_RELATIONS.has(edge.relation) ||
         (edge.relation === 'renders' && typeof edge.target === 'string' && edge.target.endsWith('__jsx_proxy'))),
   )
