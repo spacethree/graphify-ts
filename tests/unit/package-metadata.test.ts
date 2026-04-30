@@ -4,8 +4,10 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 interface PackageManifest {
+  dependencies?: Record<string, string>
   devDependencies?: Record<string, string>
   license?: string
+  overrides?: Record<string, string>
 }
 
 function loadPackageManifest(): PackageManifest {
@@ -34,6 +36,32 @@ function loadLanguageCapabilityMatrix(): string {
 
 function normalizeVersionRange(range: string | undefined): string {
   return (range ?? '').replace(/^[\^~]/, '')
+}
+
+function parseVersion(version: string | undefined): [number, number, number] {
+  const [major = '0', minor = '0', patch = '0'] = normalizeVersionRange(version).split('.')
+  return [
+    Number.parseInt(major, 10) || 0,
+    Number.parseInt(minor, 10) || 0,
+    Number.parseInt(patch, 10) || 0,
+  ]
+}
+
+function isAtLeastVersion(actual: string | undefined, minimum: readonly [number, number, number]): boolean {
+  const [currentMajor, currentMinor, currentPatch] = parseVersion(actual)
+  const [minimumMajor, minimumMinor, minimumPatch] = minimum
+
+  if (currentMajor !== minimumMajor) {
+    return currentMajor > minimumMajor
+  }
+  if (currentMinor !== minimumMinor) {
+    return currentMinor > minimumMinor
+  }
+  if (currentPatch !== minimumPatch) {
+    return currentPatch > minimumPatch
+  }
+
+  return true
 }
 
 describe('package metadata', () => {
@@ -84,5 +112,15 @@ describe('package metadata', () => {
     expect(matrix).toContain('Next.js')
     expect(matrix).toContain('`framework_role`')
     expect(matrix).toContain('compact MCP payloads by default')
+  })
+
+  it('pins non-vulnerable dependency floors for the CI security audit', () => {
+    const manifest = loadPackageManifest()
+    const devDependencies = manifest.devDependencies ?? {}
+    const dependencies = manifest.dependencies ?? {}
+
+    expect(isAtLeastVersion(devDependencies.vite, [6, 4, 2])).toBe(true)
+    expect(dependencies['@xenova/transformers']).toBeUndefined()
+    expect(typeof dependencies['@huggingface/transformers']).toBe('string')
   })
 })

@@ -21,6 +21,7 @@ All notable changes to the TypeScript package will be documented in this file.
 ### Fixed
 
 - **Vitest toolchain compatibility**: pinned `vite` to the compatible 6.x line so the test/runtime toolchain avoids the Vite 8 / rolldown native-binding failure on the current Node environment
+- **Semantic dependency security**: replaced the deprecated `@xenova/transformers` package with the maintained `@huggingface/transformers` successor so the local semantic retrieval path no longer ships the vulnerable `protobufjs` dependency chain by default
 
 ## [0.9.2] - 2026-04-30
 

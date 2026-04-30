@@ -105,7 +105,7 @@ async function loadPipeline(task: string, model: string): Promise<TransformerPip
 
   const pending = (async () => {
     try {
-      const { pipeline } = await import('@xenova/transformers')
+      const { pipeline } = await import('@huggingface/transformers')
       return await pipeline(task as Parameters<typeof pipeline>[0], model) as TransformerPipeline
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
