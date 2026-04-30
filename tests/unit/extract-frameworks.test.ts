@@ -2800,6 +2800,95 @@ describe('js framework extraction contract', () => {
     }
   })
 
+  it('links next app route-handler nodes to their exported HTTP method implementations', () => {
+    const routeFilePath = join(FIXTURES_DIR, 'next-app', 'app', 'api', 'teams', '[team]', 'route.ts')
+    const routeResult = extractJs(routeFilePath)
+    const getRouteNodeId = nodeIdForLabel(routeResult, 'GET /api/teams/[team]')
+    const postRouteNodeId = nodeIdForLabel(routeResult, 'POST /api/teams/[team]')
+    const getImplementationNodeId = nodeIdForLabel(routeResult, 'GET()')
+    const postImplementationNodeId = nodeIdForLabel(routeResult, 'POST()')
+
+    expect(routeResult.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: getRouteNodeId, target: getImplementationNodeId, relation: 'depends_on' }),
+        expect.objectContaining({ source: postRouteNodeId, target: postImplementationNodeId, relation: 'depends_on' }),
+      ]),
+    )
+  })
+
+  it('links next named middleware exports to the middleware semantic node', () => {
+    const scratchDir = join(TEST_ARTIFACTS_DIR, 'next-named-middleware-export')
+    try {
+      writeScratchFiles(scratchDir, {
+        'middleware.ts': [
+          'export function middleware() {',
+          '  return null',
+          '}',
+          '',
+          'export const config = {',
+          "  matcher: ['/dashboard/:team'],",
+          '}',
+        ].join('\n'),
+        'app/page.tsx': 'export default function Page() { return null }',
+      })
+
+      const middlewareFilePath = join(scratchDir, 'middleware.ts')
+      const middlewareResult = extractJs(middlewareFilePath)
+      const middlewareSemanticNodeId = nodeIdForLabel(middlewareResult, 'middleware')
+      const middlewareImplementationNodeId = nodeIdForLabel(middlewareResult, 'middleware()')
+
+      expect(middlewareResult.edges).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ source: middlewareSemanticNodeId, target: middlewareImplementationNodeId, relation: 'depends_on' }),
+        ]),
+      )
+    } finally {
+      rmSync(scratchDir, { recursive: true, force: true })
+    }
+  })
+
+  it('only annotates exported Next boundary callables', () => {
+    const scratchDir = join(TEST_ARTIFACTS_DIR, 'next-exported-boundary-callables')
+    try {
+      writeScratchFiles(scratchDir, {
+        'app/actions.ts': [
+          "'use server'",
+          '',
+          'function localHelper() {',
+          '  return 1',
+          '}',
+          '',
+          'const localAction = async () => 2',
+          '',
+          'export async function saveSettings() {',
+          '  return 3',
+          '}',
+          '',
+          'export const publish = async () => 4',
+          '',
+          'export const config = {',
+          "  runtime: 'nodejs',",
+          '}',
+        ].join('\n'),
+      })
+
+      const actionsFilePath = join(scratchDir, 'app', 'actions.ts')
+      const actionsResult = extractJs(actionsFilePath)
+
+      expect(actionsResult.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ label: 'saveSettings()', framework_role: 'next_server_action', runtime_boundary: 'server' }),
+          expect.objectContaining({ label: 'publish()', framework_role: 'next_server_action', runtime_boundary: 'server' }),
+        ]),
+      )
+      expect(actionsResult.nodes.find((node) => node.label === 'localHelper()' && node.framework_role === 'next_server_action')).toBeUndefined()
+      expect(actionsResult.nodes.find((node) => node.label === 'localAction()' && node.framework_role === 'next_server_action')).toBeUndefined()
+      expect(actionsResult.nodes.find((node) => node.label === 'config' && node.framework_role === 'next_server_action')).toBeUndefined()
+    } finally {
+      rmSync(scratchDir, { recursive: true, force: true })
+    }
+  })
+
   it('keeps imported nest providers distinct when same-named classes come from same-stem files', () => {
     const scratchDir = join(TEST_ARTIFACTS_DIR, 'nest-same-stem-provider-collision')
     try {

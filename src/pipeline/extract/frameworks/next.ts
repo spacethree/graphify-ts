@@ -768,6 +768,27 @@ function defaultExportName(sourceFile: ts.SourceFile): string | null {
   return null
 }
 
+function namedExportName(sourceFile: ts.SourceFile, exportName: string): string | null {
+  for (const statement of sourceFile.statements) {
+    if (ts.isFunctionDeclaration(statement) && statement.name?.text === exportName && hasExportModifier(statement)) {
+      return exportName
+    }
+    if (ts.isClassDeclaration(statement) && statement.name?.text === exportName && hasExportModifier(statement)) {
+      return exportName
+    }
+    if (!ts.isVariableStatement(statement) || !hasExportModifier(statement)) {
+      continue
+    }
+    for (const declaration of statement.declarationList.declarations) {
+      if (ts.isIdentifier(declaration.name) && declaration.name.text === exportName) {
+        return exportName
+      }
+    }
+  }
+
+  return null
+}
+
 function maybeLinkSemanticOwnerToDefaultExport(
   context: JsFrameworkContext,
   nodes: ExtractionNode[],
@@ -859,7 +880,7 @@ function annotateBoundaryExports(
 ): void {
   const fileBoundary = sourceFileBoundary(sourceFile)
   for (const statement of sourceFile.statements) {
-    if (ts.isFunctionDeclaration(statement) && statement.name) {
+    if (ts.isFunctionDeclaration(statement) && statement.name && hasExportModifier(statement)) {
       const boundary = functionBoundary(statement) ?? fileBoundary
       const role = roleForBoundary(boundary)
       if (role) {
@@ -868,7 +889,7 @@ function annotateBoundaryExports(
       continue
     }
 
-    if (ts.isClassDeclaration(statement) && statement.name) {
+    if (ts.isClassDeclaration(statement) && statement.name && hasExportModifier(statement)) {
       const role = roleForBoundary(fileBoundary)
       if (role) {
         addAugmentedBaseNode(context, nodes, seenIds, statement.name.text, 'class', role, fileBoundary)
@@ -876,17 +897,21 @@ function annotateBoundaryExports(
       continue
     }
 
-    if (ts.isVariableStatement(statement)) {
+    if (ts.isVariableStatement(statement) && hasExportModifier(statement)) {
       for (const declaration of statement.declarationList.declarations) {
         if (!ts.isIdentifier(declaration.name) || !declaration.initializer) {
           continue
         }
         const initializer = unparenthesizeExpression(declaration.initializer)
         const functionLike = ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer) ? initializer : null
+        const classLike = ts.isClassExpression(initializer)
+        if (!functionLike && !classLike) {
+          continue
+        }
         const boundary = functionLike ? functionBoundary(functionLike) ?? fileBoundary : fileBoundary
         const role = roleForBoundary(boundary)
         if (role) {
-          addAugmentedBaseNode(context, nodes, seenIds, declaration.name.text, ts.isClassExpression(initializer) ? 'class' : 'function', role, boundary)
+          addAugmentedBaseNode(context, nodes, seenIds, declaration.name.text, classLike ? 'class' : 'function', role, boundary)
         }
       }
     }
@@ -925,6 +950,11 @@ function handleAppFile(
         runtimeBoundary: 'server',
       }
       const routeNodeId = addSemanticNode(nodes, seenIds, routeSpec)
+      const baseNode = findBaseNode(context, statement.name.text)
+      if (baseNode) {
+        upsertFrameworkNode(nodes, seenIds, { ...baseNode, id: baseNode.id })
+        addUniqueEdge(edges, seenEdges, createEdge(routeNodeId, baseNode.id, 'depends_on', context.filePath, routeSpec.line))
+      }
       if (middlewareNode && middlewareAppliesToRoute(middlewareFile!, appInfo.routePath)) {
         linkRouteDependency(nodes, edges, seenIds, seenEdges, routeNodeId, middlewareNode, 'middleware', context.filePath)
       }
@@ -1074,7 +1104,7 @@ function handleMiddlewareFile(
     return
   }
   const semanticNodeId = addSemanticNode(nodes, seenIds, middlewareSpec(projectDirs.rootDir, context.filePath))
-  const exportName = defaultExportName(context.sourceFile)
+  const exportName = namedExportName(context.sourceFile, 'middleware') ?? defaultExportName(context.sourceFile)
   if (!exportName) {
     return
   }
