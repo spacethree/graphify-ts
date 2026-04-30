@@ -1,4 +1,5 @@
 import { KnowledgeGraph } from '../contracts/graph.js'
+import { relativizeSourceFile } from '../shared/source-path.js'
 import { communitiesFromGraph } from './serve.js'
 
 const MAX_IMPACT_DEPTH = 5
@@ -13,7 +14,7 @@ export interface ImpactOptions {
 export interface ImpactNode {
   label: string
   source_file: string
-  node_kind: string
+  node_kind?: string
   framework_role: string | null
   file_type: string
   community: number | null
@@ -55,7 +56,7 @@ interface CommunityPathSummary {
   path: string[]
 }
 
-function frameworkSummaryRank(node: Pick<ImpactNode, 'node_kind'> & { framework_role?: string | null }): number {
+function frameworkSummaryRank(node: { node_kind?: string; framework_role?: string | null }): number {
   if (
     node.node_kind === 'route' ||
     node.framework_role === 'express_route' ||
@@ -189,6 +190,7 @@ export function analyzeImpact(
 ): ImpactResult {
   const maxDepth = Math.min(options.depth ?? 3, MAX_IMPACT_DEPTH)
   const targetNodeId = findNodeByLabel(graph, options.label)
+  const rootPath = typeof graph.graph.root_path === 'string' ? graph.graph.root_path : undefined
 
   if (!targetNodeId) {
     return {
@@ -233,16 +235,17 @@ export function analyzeImpact(
 
       const attributes = graph.nodeAttributes(neighborId)
       const community = parseCommunityId(attributes.community)
+      const nodeKind = String(attributes.node_kind ?? '')
       const node: ImpactNode = {
         label: String(attributes.label ?? neighborId),
-        source_file: String(attributes.source_file ?? ''),
-        node_kind: String(attributes.node_kind ?? ''),
+        source_file: relativizeSourceFile(String(attributes.source_file ?? ''), rootPath),
         framework_role: String(attributes.framework_role ?? '') || null,
         file_type: String(attributes.file_type ?? ''),
         community,
         community_label: community !== null ? (communityLabels[community] ?? null) : null,
         distance,
         relation,
+        ...(nodeKind.trim().length > 0 ? { node_kind: nodeKind } : {}),
       }
 
       if (distance === 1) {
@@ -274,10 +277,7 @@ export function analyzeImpact(
 
       const labeledPath = path.map((nodeId) => String(graph.nodeAttributes(nodeId).label ?? nodeId))
       const existing = topPathsByCommunity.get(node.community)
-      const summaryRank = frameworkSummaryRank({
-        node_kind: node.node_kind,
-        framework_role: node.framework_role,
-      })
+      const summaryRank = frameworkSummaryRank(node)
       const shouldReplace =
         !existing ||
         summaryRank > existing.summary_rank ||
@@ -310,7 +310,7 @@ export function analyzeImpact(
 
   return {
     target: String(targetAttributes.label ?? targetNodeId),
-    target_file: String(targetAttributes.source_file ?? ''),
+    target_file: relativizeSourceFile(String(targetAttributes.source_file ?? ''), rootPath),
     depth: maxDepth,
     direct_dependents: directDependents.sort(
       (a, b) =>

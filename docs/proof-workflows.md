@@ -21,7 +21,7 @@ node dist/src/cli/bin.js eval examples/demo-repo/graphify-out/graph.json --quest
 Expected signals on the checked-in demo:
 
 - `benchmark`: `Question coverage: 5/5 matched`, `Expected evidence: 17/17 labels found`, about `1.7x` fewer tokens per query
-- `eval`: `Recall: 100.0%`, `MRR: 1.000`, about `2.7x` fewer tokens at query time
+- `eval`: `Recall: 100.0%`, `MRR: 1.000`, `Snippet coverage: 100.0%`, about `2.7x` fewer tokens at query time
 
 This is still the most reproducible question-set proof path because the corpus, labels, and expected signals are checked in here. It now runs through your configured terminal runner, so use `--yes` for CI/non-interactive runs and expect model-token usage unless your runner is purely local.
 

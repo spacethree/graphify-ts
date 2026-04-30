@@ -173,7 +173,8 @@ export const MCP_TOOLS: McpToolDefinition[] = [
           items: { type: 'string' },
           description: 'Optional: limit to specific edge types (e.g. ["calls", "imports_from"])',
         },
-        compact: { type: 'boolean', description: 'Optional: return the compact impact payload instead of the default backward-compatible response.' },
+        verbose: { type: 'boolean', description: 'Optional: return the legacy verbose impact payload instead of the default compact response.' },
+        compact: { type: 'boolean', description: 'Deprecated alias: use verbose=false or omit both flags for the default compact response.' },
       },
     },
   },
@@ -220,7 +221,72 @@ export const MCP_TOOLS: McpToolDefinition[] = [
         budget: { type: 'number', description: 'Maximum tokens to return in the context bundle' },
         community: { type: 'number', description: 'Optional: limit retrieval to one community id' },
         file_type: { type: 'string', description: 'Optional: limit retrieval to one file type (e.g. code, document)' },
-        compact: { type: 'boolean', description: 'Optional: return the compact retrieve payload instead of the default backward-compatible response.' },
+        verbose: { type: 'boolean', description: 'Optional: return the legacy verbose retrieve payload instead of the default compact response.' },
+        compact: { type: 'boolean', description: 'Deprecated alias: use verbose=false or omit both flags for the default compact response.' },
+      },
+    },
+  },
+  {
+    name: 'relevant_files',
+    description:
+      'Return the most relevant files for a feature or change question, ranked with short explanations of why each file matters.',
+    inputSchema: {
+      type: 'object',
+      required: ['question'],
+      properties: {
+        question: { type: 'string', description: 'Natural language feature or change question' },
+        budget: { type: 'number', description: 'Optional: retrieval budget used to gather evidence (default 4000)' },
+        limit: { type: 'number', description: 'Optional: maximum number of files to return (default 8)' },
+        community: { type: 'number', description: 'Optional: limit file ranking to one community id' },
+        file_type: { type: 'string', description: 'Optional: limit ranking to one file type (e.g. code, document)' },
+      },
+    },
+  },
+  {
+    name: 'feature_map',
+    description:
+      'Return a high-level feature map for a change question: primary communities, likely entry points, and starter files.',
+    inputSchema: {
+      type: 'object',
+      required: ['question'],
+      properties: {
+        question: { type: 'string', description: 'Natural language feature or change question' },
+        budget: { type: 'number', description: 'Optional: retrieval budget used to gather evidence (default 4000)' },
+        limit: { type: 'number', description: 'Optional: maximum number of communities, entry points, and files to return (default 5)' },
+        community: { type: 'number', description: 'Optional: limit the feature map to one community id' },
+        file_type: { type: 'string', description: 'Optional: limit the feature map to one file type (e.g. code, document)' },
+      },
+    },
+  },
+  {
+    name: 'risk_map',
+    description:
+      'Return a pre-change risk briefing for a feature question: likely blast radius, structural hotspots, and starter files.',
+    inputSchema: {
+      type: 'object',
+      required: ['question'],
+      properties: {
+        question: { type: 'string', description: 'Natural language feature or change question' },
+        budget: { type: 'number', description: 'Optional: retrieval budget used to gather evidence (default 4000)' },
+        limit: { type: 'number', description: 'Optional: maximum number of risks and hotspots to return (default 5)' },
+        community: { type: 'number', description: 'Optional: limit the risk map to one community id' },
+        file_type: { type: 'string', description: 'Optional: limit the risk map to one file type (e.g. code, document)' },
+      },
+    },
+  },
+  {
+    name: 'implementation_checklist',
+    description:
+      'Return an ordered implementation checklist for a feature question: edit steps first, then validation checkpoints for entry points and shared risks.',
+    inputSchema: {
+      type: 'object',
+      required: ['question'],
+      properties: {
+        question: { type: 'string', description: 'Natural language feature or change question' },
+        budget: { type: 'number', description: 'Optional: retrieval budget used to gather evidence (default 4000)' },
+        limit: { type: 'number', description: 'Optional: maximum number of edit steps and validations to return (default 5)' },
+        community: { type: 'number', description: 'Optional: limit the checklist to one community id' },
+        file_type: { type: 'string', description: 'Optional: limit the checklist to one file type (e.g. code, document)' },
       },
     },
   },

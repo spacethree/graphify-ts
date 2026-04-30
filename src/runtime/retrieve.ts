@@ -4,6 +4,7 @@ import { KnowledgeGraph } from '../contracts/graph.js'
 import { godNodes, workspaceBridges } from '../pipeline/analyze.js'
 import { type Communities } from '../pipeline/cluster.js'
 import { buildCommunityLabels } from '../pipeline/community-naming.js'
+import { relativizeSourceFile } from '../shared/source-path.js'
 import { communitiesFromGraph } from './serve.js'
 
 const SNIPPET_HALF_WINDOW = 7
@@ -34,7 +35,7 @@ export interface RetrieveMatchedNode {
   label: string
   source_file: string
   line_number: number
-  node_kind: string
+  node_kind?: string
   framework?: string | undefined
   framework_role?: string | undefined
   framework_boost?: number
@@ -615,6 +616,7 @@ function frameworkBoostForNode(
 export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions): RetrieveResult {
   const { question, budget } = options
   const questionTokens = tokenizeQuestion(question)
+  const rootPath = typeof graph.graph.root_path === 'string' ? graph.graph.root_path : undefined
 
   if (questionTokens.length === 0) {
     return {
@@ -851,18 +853,18 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
 
   for (const node of inclusionOrder) {
     const snippet = readSnippet(node.sourceFile, node.lineNumber)
-    const nodeTokens = estimateRetrieveEntryTokens(node.label, node.sourceFile, node.lineNumber, snippet)
+    const serializedSourceFile = relativizeSourceFile(node.sourceFile, rootPath)
+    const nodeTokens = estimateRetrieveEntryTokens(node.label, serializedSourceFile, node.lineNumber, snippet)
 
     if (tokenCount + nodeTokens > budget && matchedNodes.length > 0) {
       break
     }
 
-    matchedNodes.push({
+    const matchedNode: RetrieveMatchedNode = {
       node_id: node.id,
       label: node.label,
-      source_file: node.sourceFile,
+      source_file: serializedSourceFile,
       line_number: node.lineNumber,
-      node_kind: node.nodeKind,
       framework: node.framework,
       framework_role: node.frameworkRole,
       framework_boost: node.frameworkBoost,
@@ -872,7 +874,10 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
       relevance_band: node.relevanceBand,
       community: node.community,
       community_label: node.community !== null ? (communityLabels[node.community] ?? null) : null,
-    })
+      ...(node.nodeKind.trim().length > 0 ? { node_kind: node.nodeKind } : {}),
+    }
+
+    matchedNodes.push(matchedNode)
 
     includedIds.add(node.id)
     tokenCount += nodeTokens
@@ -948,8 +953,9 @@ export function compactRetrieveResult(result: RetrieveResult): CompactRetrieveRe
   return {
     question: result.question,
     token_count: tokenCountForMatchedNodes(compactMatchedNodes),
-    matched_nodes: compactMatchedNodes.map(({ community_label: _communityLabel, file_type: fileType, framework_boost: _frameworkBoost, ...node }) => ({
+    matched_nodes: compactMatchedNodes.map(({ community_label: _communityLabel, file_type: fileType, framework_boost: _frameworkBoost, node_kind: nodeKind, ...node }) => ({
       ...node,
+      ...(typeof nodeKind === 'string' && nodeKind.trim().length > 0 ? { node_kind: nodeKind } : {}),
       ...(sharedFileType ? {} : { file_type: fileType }),
     })),
     relationships: result.relationships.filter((edge) => {
@@ -975,7 +981,7 @@ export function compactRetrieveResultForStdio(result: RetrieveResult): RetrieveR
       .filter(([nodeId]) => nodeId !== null) as Array<[string, RetrieveMatchedNode]>,
   )
 
-  const matchedNodes: RetrieveResult['matched_nodes'] = compactResult.matched_nodes.map((node) => {
+  const matchedNodes: RetrieveResult['matched_nodes'] = compactResult.matched_nodes.map((node): RetrieveMatchedNode => {
     const original = matchedNodeId(node) !== null ? originalNodesById.get(matchedNodeId(node)!) : undefined
     if (original) {
       return stripRetrieveMatchedNodeIdentity(original)
@@ -985,7 +991,6 @@ export function compactRetrieveResultForStdio(result: RetrieveResult): RetrieveR
       label: node.label,
       source_file: node.source_file,
       line_number: node.line_number,
-      node_kind: node.node_kind,
       framework_boost: 0,
       file_type: node.file_type ?? compactResult.shared_file_type ?? '',
       snippet: node.snippet,
@@ -993,6 +998,7 @@ export function compactRetrieveResultForStdio(result: RetrieveResult): RetrieveR
       relevance_band: node.relevance_band,
       community: node.community,
       community_label: null,
+      ...(node.node_kind ? { node_kind: node.node_kind } : {}),
     }
   })
 

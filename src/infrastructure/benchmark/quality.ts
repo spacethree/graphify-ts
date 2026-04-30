@@ -35,6 +35,7 @@ export interface QualityResult {
   precision: number
   recall: number
   reciprocal_rank: number
+  snippet_coverage: number
   tokens_used: number
   total_tokens: number | null
   prompt_tokens_estimated: number | null
@@ -51,6 +52,7 @@ export interface QualityReport {
   avg_precision: number
   avg_recall: number
   mrr: number
+  avg_snippet_coverage: number
   questions_with_hits: number
   total_questions: number
   avg_tokens_used: number
@@ -185,6 +187,10 @@ function buildQualityResult(gold: GoldQuestion, result: RetrieveResult, metadata
 
   const precision = returnedLabels.length > 0 ? matchedLabels.length / returnedLabels.length : 0
   const recall = expectedLabels.length > 0 ? matchedLabels.length / expectedLabels.length : 0
+  const snippetCoverage =
+    result.matched_nodes.length > 0
+      ? result.matched_nodes.filter((node) => typeof node.snippet === 'string' && node.snippet.trim().length > 0).length / result.matched_nodes.length
+      : 0
 
   return {
     question: gold.question,
@@ -195,6 +201,7 @@ function buildQualityResult(gold: GoldQuestion, result: RetrieveResult, metadata
     precision,
     recall,
     reciprocal_rank: reciprocalRank,
+    snippet_coverage: snippetCoverage,
     tokens_used: metadata.tokens_used,
     total_tokens: metadata.total_tokens,
     prompt_tokens_estimated: metadata.prompt_tokens_estimated,
@@ -268,6 +275,7 @@ function buildQualityReport(
     avg_precision: results.length > 0 ? results.reduce((sum, r) => sum + r.precision, 0) / results.length : 0,
     avg_recall: results.length > 0 ? results.reduce((sum, r) => sum + r.recall, 0) / results.length : 0,
     mrr: results.length > 0 ? results.reduce((sum, r) => sum + r.reciprocal_rank, 0) / results.length : 0,
+    avg_snippet_coverage: results.length > 0 ? results.reduce((sum, r) => sum + r.snippet_coverage, 0) / results.length : 0,
     questions_with_hits: withHits.length,
     total_questions: results.length,
     avg_tokens_used: avgTokens,
@@ -323,6 +331,7 @@ export function formatQualityReport(report: QualityReport): string {
     ...(report.skipped_questions > 0 ? [`  Skipped:      ${report.skipped_questions} unlabeled question(s) missing expected_labels`] : []),
     `  Recall:       ${(report.avg_recall * 100).toFixed(1)}%`,
     `  MRR:          ${report.mrr.toFixed(3)}`,
+    `  Snippet coverage: ${(report.avg_snippet_coverage * 100).toFixed(1)}%`,
   ]
 
   if (report.avg_tokens_used > 0) {

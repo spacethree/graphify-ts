@@ -91,6 +91,9 @@ export function buildFromJson(extraction: unknown, options: BuildGraphOptions = 
   }
   graph.graph.schema_version = normalized.schema_version
   graph.graph.directed = graph.isDirected()
+  if (typeof extraction.root_path === 'string' && extraction.root_path.trim().length > 0) {
+    graph.graph.root_path = extraction.root_path
+  }
 
   return graph
 }

@@ -4,9 +4,13 @@ import type { CompareRefsInput } from '../../infrastructure/time-travel.js'
 import { buildCommunityLabels } from '../../pipeline/community-naming.js'
 import { communityDetailsAtZoom, communityDetailsMicro, type CommunityZoomLevel } from '../../pipeline/community-details.js'
 import { validateGraphPath } from '../../shared/security.js'
+import { featureMap } from '../feature-map.js'
+import { implementationChecklist } from '../implementation-checklist.js'
 import { analyzeImpact, callChains, compactImpactResult } from '../impact.js'
 import { analyzePrImpact } from '../pr-impact.js'
+import { relevantFiles } from '../relevant-files.js'
 import { compactRetrieveResult, retrieveContext } from '../retrieve.js'
+import { riskMap } from '../risk-map.js'
 import type { TimeTravelView } from '../time-travel.js'
 import {
   communitiesFromGraph,
@@ -152,6 +156,9 @@ export function handleToolCall(id: string | number | null, graphPath: string, pa
       if (Object.hasOwn(toolArguments, 'compact') && typeof toolArguments.compact !== 'boolean') {
         return helpers.failure(id, helpers.jsonrpcInvalidParams, 'compact must be a boolean')
       }
+      if (Object.hasOwn(toolArguments, 'verbose') && typeof toolArguments.verbose !== 'boolean') {
+        return helpers.failure(id, helpers.jsonrpcInvalidParams, 'verbose must be a boolean')
+      }
       const impactDepth = helpers.numberParamAlias(toolArguments, ['depth'], { min: 1, max: 5 })
       const rawEdgeTypes = toolArguments.edge_types
       const edgeTypes = Array.isArray(rawEdgeTypes) ? rawEdgeTypes.filter((t): t is string => typeof t === 'string') : undefined
@@ -161,7 +168,8 @@ export function handleToolCall(id: string | number | null, graphPath: string, pa
         ...(impactDepth !== null ? { depth: impactDepth } : {}),
         ...(edgeTypes && edgeTypes.length > 0 ? { edgeTypes } : {}),
       })
-      return helpers.ok(id, helpers.textToolResult(JSON.stringify(toolArguments.compact === true ? compactImpactResult(impactResult) : impactResult)))
+      const useVerboseImpact = toolArguments.verbose === true || toolArguments.compact === false
+      return helpers.ok(id, helpers.textToolResult(JSON.stringify(useVerboseImpact ? impactResult : compactImpactResult(impactResult))))
     }
     case 'call_chain': {
       const chainSource = helpers.stringParam(toolArguments, 'source')
@@ -194,6 +202,9 @@ export function handleToolCall(id: string | number | null, graphPath: string, pa
       if (Object.hasOwn(toolArguments, 'compact') && typeof toolArguments.compact !== 'boolean') {
         return helpers.failure(id, helpers.jsonrpcInvalidParams, 'compact must be a boolean')
       }
+      if (Object.hasOwn(toolArguments, 'verbose') && typeof toolArguments.verbose !== 'boolean') {
+        return helpers.failure(id, helpers.jsonrpcInvalidParams, 'verbose must be a boolean')
+      }
       const retrieveBudget = helpers.numberParamAlias(toolArguments, ['budget'], { min: 1, max: helpers.maxStdioTokenBudget })
       if (retrieveBudget === null) {
         return helpers.failure(id, helpers.jsonrpcInvalidParams, `retrieve requires a numeric budget parameter between 1 and ${helpers.maxStdioTokenBudget}`)
@@ -206,7 +217,116 @@ export function handleToolCall(id: string | number | null, graphPath: string, pa
         ...(retrieveCommunity !== null ? { community: retrieveCommunity } : {}),
         ...(retrieveFileType ? { fileType: retrieveFileType } : {}),
       })
-      return helpers.ok(id, helpers.textToolResult(JSON.stringify(toolArguments.compact === true ? compactRetrieveResult(result) : result)))
+      const useVerboseRetrieve = toolArguments.verbose === true || toolArguments.compact === false
+      return helpers.ok(id, helpers.textToolResult(JSON.stringify(useVerboseRetrieve ? result : compactRetrieveResult(result))))
+    }
+    case 'relevant_files': {
+      const question = helpers.stringParam(toolArguments, 'question')
+      if (!question) {
+        return helpers.failure(id, helpers.jsonrpcInvalidParams, `relevant_files requires a string question parameter <= ${helpers.maxStdioTextLength} characters`)
+      }
+
+      const relevantBudget = helpers.numberParamAlias(toolArguments, ['budget'], { min: 1, max: helpers.maxStdioTokenBudget })
+      if (Object.hasOwn(toolArguments, 'budget') && relevantBudget === null) {
+        return helpers.failure(id, helpers.jsonrpcInvalidParams, `budget must be a number between 1 and ${helpers.maxStdioTokenBudget}`)
+      }
+
+      const relevantLimit = helpers.numberParamAlias(toolArguments, ['limit'], { min: 1, max: 50 })
+      if (Object.hasOwn(toolArguments, 'limit') && relevantLimit === null) {
+        return helpers.failure(id, helpers.jsonrpcInvalidParams, 'limit must be a number between 1 and 50')
+      }
+
+      const relevantCommunity = helpers.numberParamAlias(toolArguments, ['community', 'community_id', 'communityId'], { min: 0 })
+      const relevantFileType = helpers.stringParamAlias(toolArguments, ['file_type', 'fileType'])
+      const result = relevantFiles(graph, {
+        question,
+        budget: relevantBudget ?? 4000,
+        ...(relevantLimit !== null ? { limit: relevantLimit } : {}),
+        ...(relevantCommunity !== null ? { community: relevantCommunity } : {}),
+        ...(relevantFileType ? { fileType: relevantFileType } : {}),
+      })
+      return helpers.ok(id, helpers.textToolResult(JSON.stringify(result)))
+    }
+    case 'feature_map': {
+      const question = helpers.stringParam(toolArguments, 'question')
+      if (!question) {
+        return helpers.failure(id, helpers.jsonrpcInvalidParams, `feature_map requires a string question parameter <= ${helpers.maxStdioTextLength} characters`)
+      }
+
+      const featureBudget = helpers.numberParamAlias(toolArguments, ['budget'], { min: 1, max: helpers.maxStdioTokenBudget })
+      if (Object.hasOwn(toolArguments, 'budget') && featureBudget === null) {
+        return helpers.failure(id, helpers.jsonrpcInvalidParams, `budget must be a number between 1 and ${helpers.maxStdioTokenBudget}`)
+      }
+
+      const featureLimit = helpers.numberParamAlias(toolArguments, ['limit'], { min: 1, max: 50 })
+      if (Object.hasOwn(toolArguments, 'limit') && featureLimit === null) {
+        return helpers.failure(id, helpers.jsonrpcInvalidParams, 'limit must be a number between 1 and 50')
+      }
+
+      const featureCommunity = helpers.numberParamAlias(toolArguments, ['community', 'community_id', 'communityId'], { min: 0 })
+      const featureFileType = helpers.stringParamAlias(toolArguments, ['file_type', 'fileType'])
+      const result = featureMap(graph, {
+        question,
+        budget: featureBudget ?? 4000,
+        ...(featureLimit !== null ? { limit: featureLimit } : {}),
+        ...(featureCommunity !== null ? { community: featureCommunity } : {}),
+        ...(featureFileType ? { fileType: featureFileType } : {}),
+      })
+      return helpers.ok(id, helpers.textToolResult(JSON.stringify(result)))
+    }
+    case 'risk_map': {
+      const question = helpers.stringParam(toolArguments, 'question')
+      if (!question) {
+        return helpers.failure(id, helpers.jsonrpcInvalidParams, `risk_map requires a string question parameter <= ${helpers.maxStdioTextLength} characters`)
+      }
+
+      const riskBudget = helpers.numberParamAlias(toolArguments, ['budget'], { min: 1, max: helpers.maxStdioTokenBudget })
+      if (Object.hasOwn(toolArguments, 'budget') && riskBudget === null) {
+        return helpers.failure(id, helpers.jsonrpcInvalidParams, `budget must be a number between 1 and ${helpers.maxStdioTokenBudget}`)
+      }
+
+      const riskLimit = helpers.numberParamAlias(toolArguments, ['limit'], { min: 1, max: 50 })
+      if (Object.hasOwn(toolArguments, 'limit') && riskLimit === null) {
+        return helpers.failure(id, helpers.jsonrpcInvalidParams, 'limit must be a number between 1 and 50')
+      }
+
+      const riskCommunity = helpers.numberParamAlias(toolArguments, ['community', 'community_id', 'communityId'], { min: 0 })
+      const riskFileType = helpers.stringParamAlias(toolArguments, ['file_type', 'fileType'])
+      const result = riskMap(graph, {
+        question,
+        budget: riskBudget ?? 4000,
+        ...(riskLimit !== null ? { limit: riskLimit } : {}),
+        ...(riskCommunity !== null ? { community: riskCommunity } : {}),
+        ...(riskFileType ? { fileType: riskFileType } : {}),
+      })
+      return helpers.ok(id, helpers.textToolResult(JSON.stringify(result)))
+    }
+    case 'implementation_checklist': {
+      const question = helpers.stringParam(toolArguments, 'question')
+      if (!question) {
+        return helpers.failure(id, helpers.jsonrpcInvalidParams, `implementation_checklist requires a string question parameter <= ${helpers.maxStdioTextLength} characters`)
+      }
+
+      const checklistBudget = helpers.numberParamAlias(toolArguments, ['budget'], { min: 1, max: helpers.maxStdioTokenBudget })
+      if (Object.hasOwn(toolArguments, 'budget') && checklistBudget === null) {
+        return helpers.failure(id, helpers.jsonrpcInvalidParams, `budget must be a number between 1 and ${helpers.maxStdioTokenBudget}`)
+      }
+
+      const checklistLimit = helpers.numberParamAlias(toolArguments, ['limit'], { min: 1, max: 50 })
+      if (Object.hasOwn(toolArguments, 'limit') && checklistLimit === null) {
+        return helpers.failure(id, helpers.jsonrpcInvalidParams, 'limit must be a number between 1 and 50')
+      }
+
+      const checklistCommunity = helpers.numberParamAlias(toolArguments, ['community', 'community_id', 'communityId'], { min: 0 })
+      const checklistFileType = helpers.stringParamAlias(toolArguments, ['file_type', 'fileType'])
+      const result = implementationChecklist(graph, {
+        question,
+        budget: checklistBudget ?? 4000,
+        ...(checklistLimit !== null ? { limit: checklistLimit } : {}),
+        ...(checklistCommunity !== null ? { community: checklistCommunity } : {}),
+        ...(checklistFileType ? { fileType: checklistFileType } : {}),
+      })
+      return helpers.ok(id, helpers.textToolResult(JSON.stringify(result)))
     }
     case 'time_travel_compare': {
       const fromRef = helpers.stringParamAlias(toolArguments, ['from_ref', 'fromRef'])

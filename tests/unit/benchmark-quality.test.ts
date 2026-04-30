@@ -223,6 +223,20 @@ describe('retrieval quality benchmark', () => {
     expect(output).toContain('MRR:')
   })
 
+  it('reports snippet coverage separately from label recall so null-snippet regressions stay visible', () => {
+    const graph = buildTestGraph()
+    const questions: GoldQuestion[] = [{ question: 'auth module', expected_labels: ['authmodule'] }]
+
+    const report = evaluateRetrievalQuality(graph, questions, 3000)
+    const output = formatQualityReport(report)
+
+    expect(report.questions[0]?.recall).toBe(1)
+    expect(report.questions[0]?.snippet_coverage).toBe(0)
+    expect(report.avg_snippet_coverage).toBe(0)
+    expect(output).toContain('Snippet coverage:')
+    expect(output).toContain('0.0%')
+  })
+
   it('keeps framework-aware retrieval accurate and compact across the five supported JS/TS frameworks', () => {
     const graph = buildFrameworkSupportGraph()
     const questions: GoldQuestion[] = [
