@@ -1,3 +1,5 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { KnowledgeGraph } from '../../src/contracts/graph.js'
@@ -1208,7 +1210,7 @@ describe('retrieve', () => {
         expect.arrayContaining(['authSlice', 'authReducer', 'selectAuthStatus']),
       )
       expect(semanticLowLevelMatches.length).toBeLessThan(baselineLowLevelMatches.length)
-      expect(semanticResult.token_count).toBeLessThan(baselineResult.token_count)
+      expect(compactRetrieveResult(semanticResult).token_count).toBeLessThan(compactRetrieveResult(baselineResult).token_count)
     })
 
     it('prefers redux slice and selector summaries over utility helpers for redux-shaped questions', () => {
@@ -2665,6 +2667,38 @@ describe('retrieve', () => {
       // Files don't exist on disk in test, so all snippets should be null
       for (const node of result.matched_nodes) {
         expect(node.snippet).toBeNull()
+      }
+    })
+
+    it('derives line_number and snippet from source_location when line_number is absent', () => {
+      const tempDir = mkdtempSync(join(tmpdir(), 'graphify-retrieve-'))
+      try {
+        const filePath = join(tempDir, 'auth.ts')
+        writeFileSync(
+          filePath,
+          [
+            'const session = 1',
+            'export function AuthService() {',
+            '  return session',
+            '}',
+          ].join('\n'),
+          'utf8',
+        )
+
+        const graph = new KnowledgeGraph()
+        graph.addNode('auth_service', {
+          label: 'AuthService',
+          file_type: 'code',
+          source_file: filePath,
+          source_location: 'L2',
+        })
+
+        const result = retrieveContext(graph, { question: 'auth', budget: 3000 })
+
+        expect(result.matched_nodes[0]?.line_number).toBe(2)
+        expect(result.matched_nodes[0]?.snippet).toContain('export function AuthService() {')
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true })
       }
     })
 
