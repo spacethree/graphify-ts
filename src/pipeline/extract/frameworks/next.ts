@@ -421,9 +421,9 @@ function preferredNextDir(rootDir: string, name: 'app' | 'pages'): string | unde
 function findNextProjectDirs(filePath: string): NextProjectDirs | null {
   const resolvedFilePath = resolve(filePath)
   const parts = resolvedFilePath.split(sep)
-  const appIndex = parts.lastIndexOf('app')
-  const pagesIndex = parts.lastIndexOf('pages')
-  const relevantIndex = Math.max(appIndex, pagesIndex)
+  const appIndex = parts.indexOf('app')
+  const pagesIndex = parts.indexOf('pages')
+  const relevantIndex = [appIndex, pagesIndex].filter((index) => index >= 0).sort((left, right) => left - right)[0] ?? -1
   if (relevantIndex > 0) {
     const rootDir = parts.slice(0, relevantIndex).join(sep) || sep
     return {
@@ -1021,17 +1021,25 @@ function handlePagesFile(
     return
   }
 
-  const routeLabel = pagesInfo.kind === 'page' ? routePath : semanticSpec.label
-  const routeRole = 'next_route_handler'
+  if (pagesInfo.kind === 'api') {
+    const routeNodeId = addSemanticNode(nodes, seenIds, semanticSpec)
+    maybeLinkSemanticOwnerToDefaultExport(context, nodes, edges, seenIds, seenEdges, routeNodeId, context.sourceFile)
+
+    const middlewareFile = findMiddlewareFile(pagesInfo.rootDir)
+    if (middlewareFile && middlewareAppliesToRoute(middlewareFile, routePath)) {
+      linkRouteDependency(nodes, edges, seenIds, seenEdges, routeNodeId, middlewareSpec(pagesInfo.rootDir, middlewareFile), 'middleware', context.filePath)
+    }
+    return
+  }
+
   const routeSpec: NextSemanticSpec = {
-    id: pagesInfo.kind === 'page' ? nextRouteNodeId(pagesInfo.rootDir, routePath) : nextSemanticNodeId(pagesInfo.rootDir, 'pages-api', routePath),
-    label: routeLabel,
+    id: nextRouteNodeId(pagesInfo.rootDir, routePath),
+    label: routePath,
     sourceFile: context.filePath,
     line: 1,
     nodeKind: 'route',
-    frameworkRole: pagesInfo.kind === 'page' ? 'next_route' : routeRole,
+    frameworkRole: 'next_route',
     routePath,
-    ...(pagesInfo.kind === 'api' ? { runtimeBoundary: 'server' as const } : {}),
   }
   const routeNodeId = addSemanticNode(nodes, seenIds, routeSpec)
   const ownerNodeId = addSemanticNode(nodes, seenIds, semanticSpec)

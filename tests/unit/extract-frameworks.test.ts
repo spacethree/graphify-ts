@@ -2755,6 +2755,16 @@ describe('js framework extraction contract', () => {
     expect(graph.edgeAttributes(pagesRouteNodeId, pagesAppNodeId)).toEqual(expect.objectContaining({ relation: 'depends_on' }))
   })
 
+  it('does not duplicate pages-router API route handlers', () => {
+    const pagesApiFilePath = join(FIXTURES_DIR, 'next-pages', 'pages', 'api', 'auth', '[...nextauth].ts')
+    const pagesApiResult = extractJs(pagesApiFilePath)
+    const apiNodes = pagesApiResult.nodes.filter(
+      (node) => node.label === 'API /api/auth/[...nextauth]' && node.framework_role === 'next_route_handler',
+    )
+
+    expect(apiNodes).toHaveLength(1)
+  })
+
   it('matches next middleware parameters in the middle of a route pattern', () => {
     const scratchDir = join(TEST_ARTIFACTS_DIR, 'next-middleware-parameter-middle')
     try {
@@ -2831,6 +2841,112 @@ describe('js framework extraction contract', () => {
       expect(
         [...graph.nodeEntries()].filter(([, attributes]) => attributes.label === 'AuthService' && attributes.framework_role === 'nest_provider'),
       ).toHaveLength(2)
+    } finally {
+      rmSync(scratchDir, { recursive: true, force: true })
+    }
+  })
+
+  it('propagates controller-level nest pipes to each extracted route', () => {
+    const scratchDir = join(TEST_ARTIFACTS_DIR, 'nest-controller-level-pipes')
+    try {
+      writeScratchFiles(scratchDir, {
+        'auth.controller.ts': [
+          "import { Controller, Get, Injectable, Post, UsePipes } from '@nestjs/common'",
+          '',
+          '@Injectable()',
+          'export class TrimBodyPipe {}',
+          '',
+          "@Controller('auth')",
+          '@UsePipes(TrimBodyPipe)',
+          'export class AuthController {',
+          "  @Get('profile')",
+          '  getProfile() {',
+          '    return true',
+          '  }',
+          '',
+          "  @Post('login')",
+          '  login() {',
+          '    return true',
+          '  }',
+          '}',
+        ].join('\n'),
+      })
+
+      const controllerResult = extractJs(join(scratchDir, 'auth.controller.ts'))
+      const profileRouteNodeId = nodeIdForLabel(controllerResult, 'GET /auth/profile')
+      const loginRouteNodeId = nodeIdForLabel(controllerResult, 'POST /auth/login')
+      const pipeNodeId = nodeIdForLabel(controllerResult, 'TrimBodyPipe')
+
+      expect(controllerResult.edges).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ source: profileRouteNodeId, target: pipeNodeId, relation: 'uses_pipe' }),
+          expect.objectContaining({ source: loginRouteNodeId, target: pipeNodeId, relation: 'uses_pipe' }),
+        ]),
+      )
+    } finally {
+      rmSync(scratchDir, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps imported nest providers distinct from same-stem local base classes in the current file', () => {
+    const scratchDir = join(TEST_ARTIFACTS_DIR, 'nest-base-extraction-provider-collision')
+    try {
+      writeScratchFiles(scratchDir, {
+        'shared/auth.service.ts': [
+          "import { Injectable } from '@nestjs/common'",
+          '',
+          '@Injectable()',
+          'export class AuthService {}',
+        ].join('\n'),
+        'feature/auth.service.ts': [
+          "import { Module } from '@nestjs/common'",
+          "import { AuthService as SharedAuthService } from '../shared/auth.service'",
+          '',
+          'class AuthService {}',
+          '',
+          '@Module({',
+          '  providers: [SharedAuthService],',
+          '})',
+          'export class FeatureModule {}',
+        ].join('\n'),
+      })
+
+      const featureResult = extractJs(join(scratchDir, 'feature', 'auth.service.ts'))
+      const authServiceNodes = featureResult.nodes.filter((node) => node.label === 'AuthService')
+      const providerNodes = authServiceNodes.filter((node) => node.framework_role === 'nest_provider')
+
+      expect(authServiceNodes).toHaveLength(2)
+      expect(providerNodes).toHaveLength(1)
+      expect(providerNodes[0]).toEqual(
+        expect.objectContaining({
+          source_file: join(scratchDir, 'shared', 'auth.service.ts'),
+          framework_role: 'nest_provider',
+        }),
+      )
+    } finally {
+      rmSync(scratchDir, { recursive: true, force: true })
+    }
+  })
+
+  it('uses the outermost next app directory when nested route segments are literally named app', () => {
+    const scratchDir = join(TEST_ARTIFACTS_DIR, 'next-outermost-app-root')
+    try {
+      writeScratchFiles(scratchDir, {
+        'app/app/page.tsx': [
+          'export default function NestedAppPage() {',
+          '  return null',
+          '}',
+        ].join('\n'),
+      })
+
+      const pageResult = extractJs(join(scratchDir, 'app', 'app', 'page.tsx'))
+
+      expect(pageResult.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ label: '/app', framework_role: 'next_route', route_path: '/app' }),
+          expect.objectContaining({ label: 'page /app', framework_role: 'next_page', route_path: '/app' }),
+        ]),
+      )
     } finally {
       rmSync(scratchDir, { recursive: true, force: true })
     }

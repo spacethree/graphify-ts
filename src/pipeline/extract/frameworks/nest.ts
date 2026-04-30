@@ -275,8 +275,9 @@ function addNestNode(
 ): string {
   const baseNode = reference.sourceFile === context.filePath ? findBaseNode(context, reference.label) : null
   let id = baseNode?.id ?? reference.id
+  const baseCollision = context.baseExtraction.nodes?.find((node) => node.id === id && node.source_file !== reference.sourceFile) ?? null
   const collidingNode = nodes.find((node) => node.id === id)
-  if (collidingNode && collidingNode.source_file !== reference.sourceFile) {
+  if (baseCollision || (collidingNode && collidingNode.source_file !== reference.sourceFile)) {
     id = _makeId(resolve(reference.sourceFile), reference.label)
   }
   const nextNode: ExtractionNode = {
@@ -531,6 +532,7 @@ export const nestAdapter: JsFrameworkAdapter = {
       const controllerPrefix = stringLiteralValue(controllerDecorator.args[0]) ?? ''
       const classGuardRefs = collectUseTargets(classDecorators, bindings.useGuards, localBindings, importedBindings)
       const classInterceptorRefs = collectUseTargets(classDecorators, bindings.useInterceptors, localBindings, importedBindings)
+      const classPipeRefs = collectUseTargets(classDecorators, bindings.usePipes, localBindings, importedBindings)
 
       for (const member of statement.members) {
         if (!ts.isConstructorDeclaration(member)) {
@@ -575,7 +577,7 @@ export const nestAdapter: JsFrameworkAdapter = {
 
         const guardRefs = [...classGuardRefs, ...collectUseTargets(getDecorators(member), bindings.useGuards, localBindings, importedBindings)]
         const interceptorRefs = [...classInterceptorRefs, ...collectUseTargets(getDecorators(member), bindings.useInterceptors, localBindings, importedBindings)]
-        const pipeRefs = collectUseTargets(getDecorators(member), bindings.usePipes, localBindings, importedBindings)
+        const pipeRefs = [...classPipeRefs, ...collectUseTargets(getDecorators(member), bindings.usePipes, localBindings, importedBindings)]
 
         for (const reference of guardRefs) {
           const targetId = addNestNode(context, nodes, seenIds, { ...reference, frameworkRole: 'nest_guard' }, 'nest_guard')
