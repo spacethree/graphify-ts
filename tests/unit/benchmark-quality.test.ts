@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { existsSync } from 'node:fs'
@@ -235,6 +235,50 @@ describe('retrieval quality benchmark', () => {
     expect(report.avg_snippet_coverage).toBe(0)
     expect(output).toContain('Snippet coverage:')
     expect(output).toContain('0.0%')
+  })
+
+  it('reports grounded match rate and query buckets alongside label metrics', () => {
+    const tempDir = join(process.cwd(), 'graphify-out', 'benchmark-quality-grounding-fixture')
+    mkdirSync(tempDir, { recursive: true })
+    const routeFile = join(tempDir, 'auth-route.ts')
+    writeFileSync(routeFile, ['export function AuthRoute() {', '  return true', '}'].join('\n'), 'utf8')
+
+    try {
+      const graph = new KnowledgeGraph()
+      graph.addNode('auth_route', {
+        label: 'AuthRoute',
+        file_type: 'code',
+        source_file: routeFile,
+        source_location: 'L1',
+      })
+      graph.addNode('auth_slice', {
+        label: 'AuthSlice',
+        file_type: 'code',
+        source_file: join(tempDir, 'missing-slice.ts'),
+        source_location: 'L1',
+      })
+
+      const report = evaluateRetrievalQuality(
+        graph,
+        [
+          { question: 'which route handles auth', expected_labels: ['AuthRoute'] },
+          { question: 'which slice owns auth state', expected_labels: ['AuthSlice'] },
+        ],
+        3000,
+      )
+      const output = formatQualityReport(report)
+
+      expect(report.questions[0]?.grounded_match_rate).toBe(1)
+      expect(report.questions[1]?.grounded_match_rate).toBe(0)
+      expect(report.avg_grounded_match_rate).toBe(0.5)
+      expect(report.bucket_summaries.map((summary) => summary.bucket)).toEqual(['routing', 'state'])
+      expect(output).toContain('Grounded match rate:')
+      expect(output).toContain('Query buckets:')
+      expect(output).toContain('routing')
+      expect(output).toContain('state')
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true })
+    }
   })
 
   it('keeps framework-aware retrieval accurate and compact across the five supported JS/TS frameworks', () => {

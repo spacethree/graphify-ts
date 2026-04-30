@@ -1405,6 +1405,40 @@ describe('extract', () => {
     expect(calls.has('.post()->.get()')).toBe(true)
   })
 
+  it('stores AST-bounded snippets for extracted typescript symbols', () => {
+    const root = createTempRoot()
+    try {
+      const filePath = join(root, 'auth.ts')
+      writeFileSync(
+        filePath,
+        [
+          'class AuthService {',
+          '  login() {',
+          '    return true',
+          '  }',
+          '}',
+          '',
+          'function logout() {',
+          '  return false',
+          '}',
+        ].join('\n'),
+        'utf8',
+      )
+
+      const result = extractJs(filePath)
+      const authService = result.nodes.find((node) => node.label === 'AuthService')
+      const logout = result.nodes.find((node) => node.label === 'logout()')
+
+      expect(authService?.source_location).toBe('L1-L5')
+      expect(authService?.snippet).toContain('class AuthService {')
+      expect(authService?.snippet).toContain('login() {')
+      expect(logout?.source_location).toBe('L7-L9')
+      expect(logout?.snippet).toContain('function logout() {')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('extracts nested js/ts closures with local ownership and dynamic imports', () => {
     const root = createTempRoot()
     try {

@@ -1,21 +1,32 @@
+import * as nodeFs from 'node:fs'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { KnowledgeGraph } from '../../src/contracts/graph.js'
+import * as analyze from '../../src/pipeline/analyze.js'
 import { build } from '../../src/pipeline/build.js'
 import { extractJs } from '../../src/pipeline/extract.js'
 import { inspectReduxModuleExports } from '../../src/pipeline/extract/frameworks/redux.js'
 import {
   compactRetrieveResult,
+  reciprocalRankFuse,
   retrieveContext,
   scoreNode,
   tokenWeightsForQuestion,
   tokenizeLabel,
   tokenizeQuestion,
 } from '../../src/runtime/retrieve.js'
+import { estimateQueryTokens } from '../../src/runtime/serve.js'
+import { afterEach, vi } from 'vitest'
 
 describe('retrieve', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.resetModules()
+    vi.doUnmock('node:fs')
+  })
+
   describe('tokenizeQuestion', () => {
     it('splits words and removes stop words', () => {
       const tokens = tokenizeQuestion('how does auth middleware work?')
@@ -73,6 +84,19 @@ describe('retrieve', () => {
     it('scores multiple matches', () => {
       const score = scoreNode(['auth', 'user'], ['authenticate', 'user'])
       expect(score).toBe(2)
+    })
+  })
+
+  describe('reciprocalRankFuse', () => {
+    it('prefers candidates that appear across multiple evidence rankings', () => {
+      const fused = reciprocalRankFuse([
+        ['focused', 'label_only'],
+        ['path_only', 'focused'],
+        ['focused', 'community_only'],
+      ])
+
+      expect((fused.get('focused') ?? 0)).toBeGreaterThan(fused.get('label_only') ?? 0)
+      expect((fused.get('focused') ?? 0)).toBeGreaterThan(fused.get('path_only') ?? 0)
     })
   })
 
@@ -395,6 +419,30 @@ describe('retrieve', () => {
       expect(result.matched_nodes.length).toBeGreaterThan(0)
       const labels = result.matched_nodes.map((n) => n.label)
       expect(labels).toContain('authenticateUser')
+    })
+
+    it('prefers focused label matches over noisy long labels for narrow symbol queries', () => {
+      const graph = new KnowledgeGraph()
+      graph.addNode('noisy_auth', {
+        label: 'AuthServiceControllerSessionLogger',
+        source_file: '/src/noisy-auth.ts',
+        line_number: 1,
+        node_kind: 'function',
+        file_type: 'code',
+        community: 0,
+      })
+      graph.addNode('focused_auth', {
+        label: 'AuthService',
+        source_file: '/src/auth.ts',
+        line_number: 1,
+        node_kind: 'function',
+        file_type: 'code',
+        community: 0,
+      })
+
+      const result = retrieveContext(graph, { question: 'auth service class', budget: 3000 })
+
+      expect(result.matched_nodes[0]?.label).toBe('AuthService')
     })
 
     it('ranks express route nodes first for route-shaped questions', () => {
@@ -2225,9 +2273,26 @@ describe('retrieve', () => {
     it('returns token_count reflecting actual usage', () => {
       const graph = buildTestGraph()
       const result = retrieveContext(graph, { question: 'auth', budget: 5000 })
+      const exactTokenCount = result.matched_nodes.reduce((total, node) => {
+        const nodeText = `${node.label} ${node.source_file}:${node.line_number} ${node.snippet ?? ''}`
+        return total + estimateQueryTokens(nodeText)
+      }, 0)
 
       expect(result.token_count).toBeGreaterThan(0)
       expect(result.token_count).toBeLessThanOrEqual(5000)
+      expect(result.token_count).toBe(exactTokenCount)
+    })
+
+    it('reuses cached graph signals for repeated retrieve calls on the same graph', () => {
+      const graph = buildTestGraph()
+      const godNodesSpy = vi.spyOn(analyze, 'godNodes')
+      const workspaceBridgesSpy = vi.spyOn(analyze, 'workspaceBridges')
+
+      retrieveContext(graph, { question: 'auth', budget: 5000 })
+      retrieveContext(graph, { question: 'session', budget: 5000 })
+
+      expect(godNodesSpy).toHaveBeenCalledTimes(1)
+      expect(workspaceBridgesSpy).toHaveBeenCalledTimes(1)
     })
 
     it('compacts repeated node metadata for default payloads', () => {
@@ -2466,7 +2531,7 @@ describe('retrieve', () => {
       const compactResult = compactRetrieveResult(rawResult)
       const compactTokenCount = compactResult.matched_nodes.reduce((total, node) => {
         const nodeText = `${node.label} ${node.source_file}:${node.line_number} ${node.snippet ?? ''}`
-        return total + Math.max(1, Math.floor(nodeText.length / 3))
+        return total + estimateQueryTokens(nodeText)
       }, 0)
 
       expect(compactResult.matched_nodes.length).toBeLessThan(rawResult.matched_nodes.length)
@@ -2668,6 +2733,114 @@ describe('retrieve', () => {
       for (const node of result.matched_nodes) {
         expect(node.snippet).toBeNull()
       }
+    })
+
+    it('prefers stored snippets over file-window fallback', () => {
+      const graph = new KnowledgeGraph()
+      graph.addNode('logout', {
+        label: 'logout()',
+        file_type: 'code',
+        source_file: '/missing/auth.ts',
+        source_location: 'L7-L9',
+        snippet: ['function logout() {', '  return false', '}'].join('\n'),
+      })
+
+      const result = retrieveContext(graph, { question: 'logout', budget: 3000 })
+
+      expect(result.matched_nodes[0]?.line_number).toBe(7)
+      expect(result.matched_nodes[0]?.snippet).toBe(['function logout() {', '  return false', '}'].join('\n'))
+    })
+
+    it('reuses file contents when multiple matched nodes come from the same source file', async () => {
+      const tempDir = mkdtempSync(join(tmpdir(), 'graphify-retrieve-cache-'))
+      try {
+        const filePath = join(tempDir, 'auth.ts')
+        writeFileSync(
+          filePath,
+          [
+            'export function AuthService() {',
+            '  return true',
+            '}',
+            '',
+            'export function AuthController() {',
+            '  return AuthService()',
+            '}',
+          ].join('\n'),
+          'utf8',
+        )
+
+        const graph = new KnowledgeGraph()
+        graph.addNode('auth_service', {
+          label: 'AuthService',
+          file_type: 'code',
+          source_file: filePath,
+          source_location: 'L1',
+        })
+        graph.addNode('auth_controller', {
+          label: 'AuthController',
+          file_type: 'code',
+          source_file: filePath,
+          source_location: 'L5',
+        })
+
+        const readFileSync = vi.fn((path: nodeFs.PathOrFileDescriptor, encoding?: BufferEncoding | null) =>
+          nodeFs.readFileSync(path, encoding),
+        )
+        vi.doMock('node:fs', async () => {
+          const actual = await vi.importActual<typeof import('node:fs')>('node:fs')
+          return {
+            ...actual,
+            readFileSync,
+          }
+        })
+        const { retrieveContext: retrieveContextWithMock } = await import('../../src/runtime/retrieve.js')
+        const result = retrieveContextWithMock(graph, { question: 'auth', budget: 3000 })
+
+        expect(result.matched_nodes).toHaveLength(2)
+        expect(result.matched_nodes.every((node) => node.snippet !== null)).toBe(true)
+        expect(readFileSync.mock.calls.filter(([path]) => path === filePath)).toHaveLength(1)
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true })
+      }
+    })
+
+    it('collects default-path relationships without scanning every graph edge', () => {
+      const graph = buildTestGraph()
+      const edgeEntriesSpy = vi.spyOn(graph, 'edgeEntries')
+
+      const result = retrieveContext(graph, { question: 'auth', budget: 5000, fileType: 'code' })
+
+      expect(edgeEntriesSpy).not.toHaveBeenCalled()
+      expect(result.relationships).toEqual([
+        {
+          from_id: 'auth_user',
+          from: 'authenticateUser',
+          to_id: 'session_mgr',
+          to: 'SessionManager',
+          relation: 'calls',
+        },
+        {
+          from_id: 'auth_user',
+          from: 'authenticateUser',
+          to_id: 'user_model',
+          to: 'UserModel',
+          relation: 'uses',
+        },
+        {
+          from_id: 'auth_user',
+          from: 'authenticateUser',
+          to_id: 'logger',
+          to: 'Logger',
+          relation: 'calls',
+        },
+        {
+          from_id: 'session_mgr',
+          from: 'SessionManager',
+          to_id: 'db_conn',
+          to: 'DatabaseConnection',
+          relation: 'depends_on',
+        },
+      ])
     })
 
     it('derives line_number and snippet from source_location when line_number is absent', () => {
