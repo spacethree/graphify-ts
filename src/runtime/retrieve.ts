@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs'
+import { basename } from 'node:path'
 
 import { KnowledgeGraph } from '../contracts/graph.js'
 import { godNodes, workspaceBridges } from '../pipeline/analyze.js'
@@ -404,6 +405,7 @@ function scoredNodeFromGraphEntry(
     framework: typeof attributes.framework === 'string' ? attributes.framework : undefined,
     frameworkRole: frameworkRole || undefined,
     fileType: String(attributes.file_type ?? '').trim().toLowerCase(),
+    fileNodeLike: isFileNodeLike(String(attributes.label ?? ''), String(attributes.source_file ?? '')),
     community: parseCommunityId(attributes.community),
     frameworkBoost: frameworkBoostForNode(frameworkProfile, nodeKind, frameworkRole),
     exactLabelMatch: false,
@@ -458,6 +460,7 @@ interface SeedCandidate {
   framework?: string | undefined
   frameworkRole?: string | undefined
   fileType: string
+  fileNodeLike: boolean
   community: number | null
   frameworkBoost: number
   seedScore: SeedScoreBreakdown
@@ -478,6 +481,7 @@ interface ScoredNode {
   framework?: string | undefined
   frameworkRole?: string | undefined
   fileType: string
+  fileNodeLike: boolean
   community: number | null
   frameworkBoost: number
   exactLabelMatch: boolean
@@ -538,6 +542,22 @@ function normalizeSeedText(value: string): string {
   return tokenizeLabel(value).join('')
 }
 
+function isFileNodeLike(label: string, sourceFile: string): boolean {
+  if (!label || !sourceFile) {
+    return false
+  }
+
+  return label.trim().toLowerCase() === basename(sourceFile).trim().toLowerCase()
+}
+
+function questionLooksFileOriented(question: string, questionTokens: readonly string[]): boolean {
+  if (/\.[a-z0-9]{1,6}\b/i.test(question)) {
+    return true
+  }
+
+  return includesAnyToken(questionTokens, ['file', 'files', 'filepath', 'path', 'paths', 'directory', 'directories', 'folder', 'folders'])
+}
+
 function evidenceTierForSeedScore(score: SeedScoreBreakdown): 0 | 1 | 2 {
   if (score.labelExactScore > 0 || score.labelTokenScore > 0) {
     return 2
@@ -553,6 +573,7 @@ function compareScoredNodes(graph: KnowledgeGraph, left: ScoredNode, right: Scor
     right.evidenceTier - left.evidenceTier ||
     right.frameworkBoost - left.frameworkBoost ||
     right.score - left.score ||
+    Number(left.fileNodeLike) - Number(right.fileNodeLike) ||
     graph.degree(right.id) - graph.degree(left.id)
   )
 }
@@ -583,11 +604,15 @@ function scoreSeedCandidate(
   communityLabel: string | null,
   tokenWeights: ReadonlyMap<string, number>,
   averageLabelLength: number,
+  options: { fileNodeLike: boolean; fileOrientedQuestion: boolean },
 ): SeedScoreBreakdown {
   const labelExactScore = normalizeSeedText(question) !== '' && normalizeSeedText(question) === normalizeSeedText(label) ? 2 : 0
-  const labelTokenScore = scoreNode(questionTokens, tokenizeLabel(label), tokenWeights, averageLabelLength)
-  const sourcePathScore = scoreNode(questionTokens, tokenizeLabel(sourceFile), tokenWeights) * 0.25
-  const communityScore = communityLabel
+  const fileNodePenaltyApplies = options.fileNodeLike && !options.fileOrientedQuestion && labelExactScore === 0
+  const labelTokenScore = fileNodePenaltyApplies ? 0 : scoreNode(questionTokens, tokenizeLabel(label), tokenWeights, averageLabelLength)
+  const sourcePathScore = fileNodePenaltyApplies ? 0 : scoreNode(questionTokens, tokenizeLabel(sourceFile), tokenWeights) * 0.25
+  const communityScore = fileNodePenaltyApplies
+    ? 0
+    : communityLabel
     ? Math.min(scoreNode(questionTokens, tokenizeLabel(communityLabel)) * 0.1, 0.2)
     : 0
 
@@ -926,6 +951,7 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
   // Pre-compute community labels so seed scoring can treat them as secondary evidence.
   const communities = communitiesFromGraph(graph)
   const frameworkProfile = buildFrameworkQuestionProfile(question, questionTokens)
+  const fileOrientedQuestion = questionLooksFileOriented(question, questionTokens)
   const activeFrameworks = activeFrameworksForProfile(frameworkProfile)
   const communityLabels: Record<number, string> = {
     ...buildCommunityLabels(graph, communities),
@@ -950,17 +976,19 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
     const label = String(attributes.label ?? '')
     const sourceFile = String(attributes.source_file ?? '')
     const nodeKind = String(attributes.node_kind ?? '')
+    const fileNodeLike = isFileNodeLike(label, sourceFile)
     const framework = typeof attributes.framework === 'string' ? attributes.framework : undefined
     const frameworkRole = String(attributes.framework_role ?? '')
     const score = scoreSeedCandidate(
       question,
       questionTokens,
       label,
-        sourceFile,
-        community !== null ? (communityLabels[community] ?? null) : null,
-        tokenWeights,
-        averageLabelLength,
-      )
+      sourceFile,
+      community !== null ? (communityLabels[community] ?? null) : null,
+      tokenWeights,
+      averageLabelLength,
+      { fileNodeLike, fileOrientedQuestion },
+    )
 
     if (score.total > 0) {
       const resolvedLine = resolvedLineNumber(attributes)
@@ -975,6 +1003,7 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
         framework,
         frameworkRole: frameworkRole || undefined,
         fileType,
+        fileNodeLike,
         community,
         frameworkBoost: frameworkBoostForNode(frameworkProfile, nodeKind, frameworkRole),
         seedScore: score,
@@ -1005,6 +1034,7 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
     framework: candidate.framework,
     frameworkRole: candidate.frameworkRole,
     fileType: candidate.fileType,
+    fileNodeLike: candidate.fileNodeLike,
     community: candidate.community,
     frameworkBoost: candidate.frameworkBoost,
     exactLabelMatch: candidate.exactLabelMatch,
@@ -1126,6 +1156,7 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
       framework: typeof attributes.framework === 'string' ? attributes.framework : undefined,
       frameworkRole: typeof attributes.framework_role === 'string' ? attributes.framework_role : undefined,
       fileType,
+      fileNodeLike: isFileNodeLike(String(attributes.label ?? ''), String(attributes.source_file ?? '')),
       community,
       frameworkBoost: 0,
       exactLabelMatch: false,

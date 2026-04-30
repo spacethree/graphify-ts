@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { existsSync } from 'node:fs'
@@ -459,6 +459,9 @@ describe('retrieval quality benchmark', () => {
 
   const graphPath = 'graphify-out/graph.json'
   const hasGraph = existsSync(graphPath)
+  const demoGraphPath = join(process.cwd(), 'examples', 'demo-repo', 'graphify-out', 'graph.json')
+  const demoQuestionsPath = join(process.cwd(), 'examples', 'demo-repo', 'benchmark-questions.json')
+  const hasDemoGraph = existsSync(demoGraphPath) && existsSync(demoQuestionsPath)
 
   it.skipIf(!hasGraph)('every built-in gold label resolves in the repo graph', () => {
     const graph = loadGraph(graphPath)
@@ -471,5 +474,20 @@ describe('retrieval quality benchmark', () => {
         expect(allNormalized.has(norm), `Gold label "${expected}" (normalized: "${norm}") not found in graph for question: "${gold.question}"`).toBe(true)
       }
     }
+  })
+
+  it.skipIf(!hasDemoGraph)('keeps demo benchmark MRR above the CI regression floor', () => {
+    const graph = loadGraph(demoGraphPath)
+    const questions = JSON.parse(readFileSync(demoQuestionsPath, 'utf8')) as GoldQuestion[]
+    const report = evaluateRetrievalQuality(
+      graph,
+      questions,
+      3000,
+      { graphPath: realpathSync(demoGraphPath) },
+    )
+
+    expect(report.avg_recall).toBe(1)
+    expect(report.avg_snippet_coverage).toBe(1)
+    expect(report.mrr).toBeGreaterThanOrEqual(0.95)
   })
 })
