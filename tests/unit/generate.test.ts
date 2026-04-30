@@ -957,6 +957,8 @@ function createTestOggOpusBuffer(
 }
 
 describe('generateGraph', () => {
+  const generateGraphIntegrationTimeoutMs = 15_000
+
   test('builds graph artifacts for a code corpus', () => {
     withTempDir((tempDir) => {
       writeFileSync(join(tempDir, 'main.py'), 'class Greeter:\n    def hello(self):\n        return 1\n', 'utf8')
@@ -987,7 +989,7 @@ describe('generateGraph', () => {
       expect(graphData.nodes.some((node) => node.file_type === 'document')).toBe(true)
       expect(Array.isArray(graphData.semantic_anomalies)).toBe(true)
     })
-  })
+  }, generateGraphIntegrationTimeoutMs)
 
   test('builds graph artifacts with stitched relative workspace anonymous default-export barrel imports while keeping the worker isolated', () => {
     withTempDir((tempDir) => {

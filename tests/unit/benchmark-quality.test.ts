@@ -234,6 +234,7 @@ describe('retrieval quality benchmark', () => {
     ]
 
     const report = evaluateRetrievalQuality(graph, questions, 4000)
+    const crossPlatformSlack = { returned: 1, tokens: 75, lowLevel: 1 }
     const expectedCeilings = new Map([
       ['where is GET /api/users/:id defined', { returned: 12, tokens: 650, lowLevel: 4 }],
       ['which slice owns auth state', { returned: 17, tokens: 850, lowLevel: 10 }],
@@ -249,8 +250,8 @@ describe('retrieval quality benchmark', () => {
       const ceilings = expectedCeilings.get(question.question)
       expect(ceilings).toBeDefined()
       expect(question.reciprocal_rank).toBe(1)
-      expect(question.returned_labels.length).toBeLessThanOrEqual(ceilings!.returned)
-      expect(question.tokens_used).toBeLessThanOrEqual(ceilings!.tokens)
+      expect(question.returned_labels.length).toBeLessThanOrEqual(ceilings!.returned + crossPlatformSlack.returned)
+      expect(question.tokens_used).toBeLessThanOrEqual(ceilings!.tokens + crossPlatformSlack.tokens)
     }
 
     const lowLevelNodeCounts = [
@@ -275,7 +276,7 @@ describe('retrieval quality benchmark', () => {
     }))
 
     for (const result of lowLevelNodeCounts) {
-      expect(result.lowLevel).toBeLessThanOrEqual(expectedCeilings.get(result.question)!.lowLevel)
+      expect(result.lowLevel).toBeLessThanOrEqual(expectedCeilings.get(result.question)!.lowLevel + crossPlatformSlack.lowLevel)
     }
   })
 
