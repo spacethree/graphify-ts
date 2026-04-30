@@ -2889,6 +2889,62 @@ describe('js framework extraction contract', () => {
     }
   })
 
+  it('does not assign next server-action roles to imported plain helper functions', () => {
+    const scratchDir = join(TEST_ARTIFACTS_DIR, 'next-imported-plain-helper')
+    try {
+      writeScratchFiles(scratchDir, {
+        'app/page.tsx': [
+          "import { formatTeamName } from '../helpers'",
+          '',
+          'export default function Page() {',
+          '  return <div>{formatTeamName(\'team\')}</div>',
+          '}',
+        ].join('\n'),
+        'helpers.ts': [
+          'export function formatTeamName(value: string) {',
+          '  return value.toUpperCase()',
+          '}',
+        ].join('\n'),
+      })
+
+      const pageFilePath = join(scratchDir, 'app', 'page.tsx')
+      const pageResult = extractJs(pageFilePath)
+      const helperNode = pageResult.nodes.find((node) => node.label === 'formatTeamName()')
+
+      expect(helperNode).toBeDefined()
+      expect(helperNode?.framework_role).toBeUndefined()
+    } finally {
+      rmSync(scratchDir, { recursive: true, force: true })
+    }
+  })
+
+  it('does not synthesize callable imported bindings for non-callable Next exports', () => {
+    const scratchDir = join(TEST_ARTIFACTS_DIR, 'next-imported-non-callable-export')
+    try {
+      writeScratchFiles(scratchDir, {
+        'app/page.tsx': [
+          "import { config } from '../helpers'",
+          '',
+          'export default function Page() {',
+          '  return <div>{config.mode}</div>',
+          '}',
+        ].join('\n'),
+        'helpers.ts': [
+          'export const config = {',
+          "  mode: 'team',",
+          '}',
+        ].join('\n'),
+      })
+
+      const pageFilePath = join(scratchDir, 'app', 'page.tsx')
+      const pageResult = extractJs(pageFilePath)
+
+      expect(pageResult.nodes.find((node) => node.label === 'config()')).toBeUndefined()
+    } finally {
+      rmSync(scratchDir, { recursive: true, force: true })
+    }
+  })
+
   it('keeps imported nest providers distinct when same-named classes come from same-stem files', () => {
     const scratchDir = join(TEST_ARTIFACTS_DIR, 'nest-same-stem-provider-collision')
     try {

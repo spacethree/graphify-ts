@@ -64,7 +64,7 @@ interface NextSemanticSpec {
   sourceFile: string
   line: number
   nodeKind: NonNullable<ExtractionNode['node_kind']>
-  frameworkRole: string
+  frameworkRole?: string | undefined
   routePath?: string | undefined
   runtimeBoundary?: RuntimeBoundary | undefined
   parallelSlot?: string | undefined
@@ -119,7 +119,9 @@ function createFrameworkNode(spec: NextSemanticSpec): ExtractionNode {
     id: spec.id,
     node_kind: spec.nodeKind,
     framework: 'nextjs',
-    framework_role: spec.frameworkRole,
+  }
+  if (spec.frameworkRole) {
+    node.framework_role = spec.frameworkRole
   }
   if (spec.routePath) {
     node.route_path = spec.routePath
@@ -320,7 +322,11 @@ function analyzeNextModule(filePath: string, cache: Map<string, NextModuleAnalys
         }
         const initializer = unparenthesizeExpression(declaration.initializer)
         const functionLike = ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer) ? initializer : null
-        const nodeKind: NonNullable<ExtractionNode['node_kind']> = ts.isClassExpression(initializer) ? 'class' : 'function'
+        const classLike = ts.isClassExpression(initializer)
+        if (!functionLike && !classLike) {
+          continue
+        }
+        const nodeKind: NonNullable<ExtractionNode['node_kind']> = classLike ? 'class' : 'function'
         const boundary = functionLike ? functionBoundary(functionLike) ?? fileBoundary : fileBoundary
         const reference = exportReferenceForDeclaration(
           resolvedFilePath,
@@ -1015,7 +1021,7 @@ function handleAppFile(
       sourceFile: binding.sourceFile,
       line: binding.line,
       nodeKind: binding.nodeKind,
-      frameworkRole: binding.frameworkRole ?? 'next_server_action',
+      ...(binding.frameworkRole ? { frameworkRole: binding.frameworkRole } : {}),
       ...(binding.runtimeBoundary ? { runtimeBoundary: binding.runtimeBoundary } : {}),
     })
     upsertFrameworkNode(nodes, seenIds, bindingNode)
