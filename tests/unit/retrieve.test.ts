@@ -1,3 +1,5 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { KnowledgeGraph } from '../../src/contracts/graph.js'
@@ -1180,7 +1182,7 @@ describe('retrieve', () => {
         fileType: 'code',
       })
 
-      const isLowLevelMatch = (label: string, nodeKind: string): boolean =>
+      const isLowLevelMatch = (label: string, nodeKind?: string): boolean =>
         nodeKind !== 'slice' &&
         nodeKind !== 'store' &&
         tokenizeLabel(label).some((token) => ['auth', 'state', 'slice'].some((queryToken) => token.startsWith(queryToken) || queryToken.startsWith(token)))
@@ -1208,7 +1210,7 @@ describe('retrieve', () => {
         expect.arrayContaining(['authSlice', 'authReducer', 'selectAuthStatus']),
       )
       expect(semanticLowLevelMatches.length).toBeLessThan(baselineLowLevelMatches.length)
-      expect(semanticResult.token_count).toBeLessThan(baselineResult.token_count)
+      expect(compactRetrieveResult(semanticResult).token_count).toBeLessThan(compactRetrieveResult(baselineResult).token_count)
     })
 
     it('prefers redux slice and selector summaries over utility helpers for redux-shaped questions', () => {
@@ -2599,6 +2601,33 @@ describe('retrieve', () => {
       ])
     })
 
+    it('omits empty node_kind during compact retrieve serialization', () => {
+      const compactResult = compactRetrieveResult({
+        question: 'where is auth defined',
+        token_count: 10,
+        matched_nodes: [
+          {
+            node_id: 'auth_service',
+            label: 'AuthService',
+            source_file: 'src/auth.ts',
+            line_number: 1,
+            node_kind: '',
+            file_type: 'code',
+            snippet: null,
+            match_score: 3,
+            relevance_band: 'direct',
+            community: 0,
+            community_label: 'Auth',
+          },
+        ],
+        relationships: [],
+        community_context: [{ id: 0, label: 'Auth', node_count: 1 }],
+        graph_signals: { god_nodes: [], bridge_nodes: [] },
+      })
+
+      expect(compactResult.matched_nodes[0]).not.toHaveProperty('node_kind')
+    })
+
     it('assigns higher match_score to direct matches than neighbors', () => {
       const graph = buildTestGraph()
       const result = retrieveContext(graph, { question: 'auth', budget: 5000 })
@@ -2622,6 +2651,15 @@ describe('retrieve', () => {
       expect(result.matched_nodes[0]!.match_score).toBeGreaterThan(0)
     })
 
+    it('omits empty node_kind from retrieve payload nodes', () => {
+      const graph = new KnowledgeGraph()
+      graph.addNode('auth_service', { label: 'AuthService', file_type: 'code', source_file: 'src/auth.ts', source_location: 'L1' })
+
+      const result = retrieveContext(graph, { question: 'auth', budget: 3000 })
+
+      expect(result.matched_nodes[0]).not.toHaveProperty('node_kind')
+    })
+
     it('returns snippet as null when source file does not exist', () => {
       const graph = buildTestGraph()
       const result = retrieveContext(graph, { question: 'auth', budget: 5000 })
@@ -2630,6 +2668,69 @@ describe('retrieve', () => {
       for (const node of result.matched_nodes) {
         expect(node.snippet).toBeNull()
       }
+    })
+
+    it('derives line_number and snippet from source_location when line_number is absent', () => {
+      const tempDir = mkdtempSync(join(tmpdir(), 'graphify-retrieve-'))
+      try {
+        const filePath = join(tempDir, 'auth.ts')
+        writeFileSync(
+          filePath,
+          [
+            'const session = 1',
+            'export function AuthService() {',
+            '  return session',
+            '}',
+          ].join('\n'),
+          'utf8',
+        )
+
+        const graph = new KnowledgeGraph()
+        graph.addNode('auth_service', {
+          label: 'AuthService',
+          file_type: 'code',
+          source_file: filePath,
+          source_location: 'L2',
+        })
+
+        const result = retrieveContext(graph, { question: 'auth', budget: 3000 })
+
+        expect(result.matched_nodes[0]?.line_number).toBe(2)
+        expect(result.matched_nodes[0]?.snippet).toContain('export function AuthService() {')
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true })
+      }
+    })
+
+    it('relativizes in-root source files while preserving outside-root matches', () => {
+      const graph = new KnowledgeGraph({ directed: true })
+      graph.graph.root_path = '/workspace/app'
+      graph.addNode('auth_service', {
+        label: 'AuthService',
+        source_file: '/workspace/app/src/auth/service.ts',
+        line_number: 12,
+        node_kind: 'function',
+        file_type: 'code',
+        community: 0,
+      })
+      graph.addNode('shared_auth', {
+        label: 'SharedAuthPolicy',
+        source_file: '/opt/shared/auth/policy.ts',
+        line_number: 4,
+        node_kind: 'function',
+        file_type: 'code',
+        community: 1,
+      })
+      graph.addEdge('auth_service', 'shared_auth', {
+        relation: 'calls',
+        confidence: 'EXTRACTED',
+        source_file: '/workspace/app/src/auth/service.ts',
+      })
+
+      const result = retrieveContext(graph, { question: 'auth', budget: 5000, fileType: 'code' })
+
+      expect(result.matched_nodes.find((node) => node.label === 'AuthService')?.source_file).toBe('src/auth/service.ts')
+      expect(result.matched_nodes.find((node) => node.label === 'SharedAuthPolicy')?.source_file).toBe('/opt/shared/auth/policy.ts')
     })
 
     it('preserves question in result', () => {

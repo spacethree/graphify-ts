@@ -4753,6 +4753,19 @@ describe('generateGraph', () => {
     })
   })
 
+  test('writes root_path into graph.json', () => {
+    withTempDir((tempDir) => {
+      writeFileSync(join(tempDir, 'main.py'), 'def hello():\n    return 1\n', 'utf8')
+
+      const result = generateGraph(tempDir, { noHtml: true })
+      const graphData = JSON.parse(readFileSync(result.graphPath, 'utf8')) as {
+        root_path?: string
+      }
+
+      expect(graphData.root_path).toBe(tempDir)
+    })
+  })
+
   test('resolves renders proxy edges to real component nodes across files', () => {
     withTempDir((tempDir) => {
       mkdirSync(join(tempDir, 'src'), { recursive: true })

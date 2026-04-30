@@ -1,23 +1,10 @@
 import type { ExtractionData, ExtractionNode } from '../../contracts/types.js'
+import { lineNumberFromSourceLocation } from '../../shared/source-location.js'
 import { addUniqueEdge, createEdge, normalizeLabel } from './core.js'
 import type { ExtractionFragment } from './dispatch.js'
 
 export interface ResolveSourceNodeReferencesOptions {
   contextNodes?: readonly ExtractionNode[]
-}
-
-function lineNumberFromSourceLocation(location: unknown): number {
-  if (typeof location !== 'string') {
-    return 1
-  }
-
-  const match = location.match(/^L(\d+)$/)
-  if (!match?.[1]) {
-    return 1
-  }
-
-  const line = Number.parseInt(match[1], 10)
-  return Number.isFinite(line) && line > 0 ? line : 1
 }
 
 function addNodeReferenceKey(index: Map<string, string[]>, key: string, nodeId: string): void {

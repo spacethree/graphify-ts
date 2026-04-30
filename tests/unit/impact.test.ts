@@ -100,6 +100,41 @@ describe('impact', () => {
       expect(result.affected_files).toContain('/src/session.ts')
     })
 
+    it('relativizes in-root impact paths while preserving outside-root files', () => {
+      const graph = new KnowledgeGraph({ directed: true })
+      graph.graph.root_path = '/workspace/app'
+      graph.addNode('db', {
+        label: 'DatabaseConnection',
+        source_file: '/workspace/app/src/db.ts',
+        node_kind: 'class',
+        file_type: 'code',
+        community: 0,
+      })
+      graph.addNode('service', {
+        label: 'AuthService',
+        source_file: '/workspace/app/src/auth/service.ts',
+        node_kind: 'function',
+        file_type: 'code',
+        community: 0,
+      })
+      graph.addNode('vendor', {
+        label: 'SharedAuditLogger',
+        source_file: '/opt/shared/audit/logger.ts',
+        node_kind: 'function',
+        file_type: 'code',
+        community: 1,
+      })
+      graph.addEdge('service', 'db', { relation: 'calls', confidence: 'EXTRACTED', source_file: '/workspace/app/src/auth/service.ts' })
+      graph.addEdge('vendor', 'service', { relation: 'calls', confidence: 'EXTRACTED', source_file: '/opt/shared/audit/logger.ts' })
+
+      const result = analyzeImpact(graph, {}, { label: 'DatabaseConnection', depth: 3 })
+
+      expect(result.target_file).toBe('src/db.ts')
+      expect(result.direct_dependents.find((node) => node.label === 'AuthService')?.source_file).toBe('src/auth/service.ts')
+      expect(result.transitive_dependents.find((node) => node.label === 'SharedAuditLogger')?.source_file).toBe('/opt/shared/audit/logger.ts')
+      expect(result.affected_files).toEqual(['/opt/shared/audit/logger.ts', 'src/auth/service.ts'])
+    })
+
     it('reports affected communities', () => {
       const graph = buildTestGraph()
       const result = analyzeImpact(graph, { 0: 'Auth Module', 1: 'Database', 2: 'API Layer' }, { label: 'DatabaseConnection', depth: 3 })
@@ -625,6 +660,30 @@ describe('impact', () => {
       expect(compactResult.shared_file_type).toBe('code')
       expect(compactResult.direct_dependents[0]).not.toHaveProperty('file_type')
       expect(compactResult.direct_dependents[0]).not.toHaveProperty('community_label')
+    })
+
+    it('omits empty node_kind from raw and compact impact payloads', () => {
+      const graph = new KnowledgeGraph({ directed: true })
+      graph.addNode('db', {
+        label: 'DatabaseConnection',
+        source_file: '/src/db.ts',
+        node_kind: 'class',
+        file_type: 'code',
+        community: 0,
+      })
+      graph.addNode('auth', {
+        label: 'AuthService',
+        source_file: '/src/auth.ts',
+        file_type: 'code',
+        community: 0,
+      })
+      graph.addEdge('auth', 'db', { relation: 'calls', confidence: 'EXTRACTED', source_file: '/src/auth.ts' })
+
+      const rawResult = analyzeImpact(graph, {}, { label: 'DatabaseConnection', depth: 2 })
+      const compactResult = compactImpactResult(rawResult)
+
+      expect(rawResult.direct_dependents[0]).not.toHaveProperty('node_kind')
+      expect(compactResult.direct_dependents[0]).not.toHaveProperty('node_kind')
     })
 
     it('shows nest controllers, modules, and routes as dependents of injected services', () => {

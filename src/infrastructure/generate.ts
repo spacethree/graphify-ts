@@ -360,6 +360,8 @@ export function generateGraph(rootPath = '.', options: GenerateGraphOptions = {}
     suggestedQuestions,
   )
 
+  graph.graph.root_path = resolvedRootPath
+
   progress?.({ step: 'export', message: 'Writing outputs...' })
   writeFileSync(reportPath, `${report}\n`, 'utf8')
   toJson(graph, communities, graphPath, communityLabels, semanticAnomalyList, EXTRACTOR_CACHE_VERSION)

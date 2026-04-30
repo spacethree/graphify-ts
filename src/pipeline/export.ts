@@ -336,6 +336,7 @@ export function toJson(
   const data = {
     schema_version: graph.graph.schema_version === 2 ? 2 : 1,
     directed: graph.isDirected(),
+    ...(typeof graph.graph.root_path === 'string' && graph.graph.root_path.length > 0 ? { root_path: graph.graph.root_path } : {}),
     ...(typeof extractorVersion === 'number' ? { extractor_version: extractorVersion } : {}),
     nodes: graph.nodeEntries().map(([id, attributes]) => ({
       id,

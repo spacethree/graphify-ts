@@ -15,7 +15,7 @@
 ## What this package is best at today
 
 - **Generate local graph artifacts** for a repository or mixed project folder
-- **Give AI agents structured codebase context** via MCP tools (`retrieve`, `impact`, `call_chain`, `pr_impact`)
+- **Give AI agents structured codebase context** via MCP tools (`retrieve`, `relevant_files`, `feature_map`, `risk_map`, `implementation_checklist`, `impact`, `call_chain`, `pr_impact`)
 - **Understand mainstream JS/TS app structure** with framework-aware extraction for Express, Redux Toolkit, React Router, NestJS, and Next.js
 - **Explore the graph** through interactive HTML, reports, and CLI commands
 - **Analyze blast radius** before making changes — know what breaks across modules and repos
@@ -50,7 +50,7 @@ For TypeScript and JavaScript repositories, `graphify-ts` now adds a framework-s
 - **React Router**: object routes, JSX routes, loaders, actions, nested routes, and route/component binding
 - **NestJS**: modules, controllers, route decorators, providers, constructor injection, guards, pipes, and interceptors
 - **Next.js**: App Router and Pages Router ownership, layouts/templates/loading/error states, route handlers, middleware reachability, client/server boundaries, and server actions
-- **Compact MCP mode**: `retrieve` and `impact` accept `compact: true` for smaller framework-aware payloads while the default MCP response shape stays backward-compatible
+- **Compact MCP mode by default**: `retrieve` and `impact` now return compact framework-aware MCP payloads by default; use `verbose: true` when you explicitly need the legacy fuller shape
 
 That means agents can answer questions like “which middleware protects this route?”, “which slice owns auth state?”, “which Nest controller calls this service?”, or “which Next route/layout owns this page?” with higher-signal nodes instead of only low-level helpers.
 
@@ -85,7 +85,7 @@ node dist/src/cli/bin.js eval examples/demo-repo/graphify-out/graph.json --quest
 Outputs land in `examples/demo-repo/graphify-out/`, which is ignored so you can rerun the demo without polluting git status.
 
 - `benchmark` proves the graph is cheaper to query than reading the corpus naively, while still covering the labeled demo questions and their expected evidence. On the checked-in demo repo you should see `Question coverage: 5/5 matched`, `Expected evidence: 17/17 labels found`, and about `1.7x` fewer tokens per query.
-- `eval` proves retrieval quality on the same labeled questions: recall plus ranking quality (MRR). On the checked-in demo repo you should see `Recall: 100.0%`, `MRR: 1.000`, and about `2.7x` fewer tokens at query time.
+- `eval` proves retrieval quality on the same labeled questions: recall, ranking quality (MRR), and snippet coverage. On the checked-in demo repo you should see `Recall: 100.0%`, `MRR: 1.000`, `Snippet coverage: 100.0%`, and about `2.7x` fewer tokens at query time.
 - `benchmark` and `eval` now execute those prompts through your terminal runner, just like `compare`. When the runner returns structured Gemini/Claude usage, the reports include provider-reported tokens; otherwise they label the local `cl100k_base` fallback estimate explicitly.
 - The demo repo is intentionally tiny, so these ratios are lower than the production benchmark below. The point is that the proof is fully reproducible from this repo.
 
@@ -151,8 +151,12 @@ When an agent connects via `graphify-ts serve --stdio`, it gets these tools:
 
 | Tool | What it does |
 |------|-------------|
-| `retrieve` | One-call context retrieval — question + token budget → matched nodes with code snippets, relationships, community context, and relevance bands; supports `compact: true` for smaller MCP payloads |
-| `impact` | Blast radius analysis — "if I change X, what could break?" with directed dependents, affected communities, and path evidence; supports `compact: true` for smaller MCP payloads |
+| `retrieve` | One-call context retrieval — question + token budget → compact matched nodes with code snippets, relationships, community context, and relevance bands by default; supports `verbose: true` for the legacy fuller payload |
+| `relevant_files` | Feature-starting file triage — question → ranked files with matched symbols and a short explanation of why each file matters |
+| `feature_map` | Feature-level orientation — question → primary communities, likely entry points, and starter files to open first |
+| `risk_map` | Pre-change risk briefing — question → likely blast radius, structural hotspots, and starter files before you edit |
+| `implementation_checklist` | Change-planning checklist — question → ordered edit steps plus validation checkpoints for entry points and shared risks |
+| `impact` | Blast radius analysis — "if I change X, what could break?" with compact directed dependents, affected communities, and path evidence by default; supports `verbose: true` for the legacy fuller payload |
 | `call_chain` | Execution path tracing — all paths from A to B filtered by edge type |
 | `pr_impact` | PR risk analysis — git diff → affected nodes → aggregate blast radius |
 | `community_details` | Hierarchical community data at micro/mid/macro zoom levels |
@@ -169,6 +173,10 @@ When an agent connects via `graphify-ts serve --stdio`, it gets these tools:
 
 The agent uses these tools to answer questions like:
 - "How does authentication work?" → `retrieve` returns relevant nodes with code snippets
+- "Where should I start editing the user profile route?" → `relevant_files` ranks the first files to open and explains why
+- "What parts of the codebase are involved in the user profile route?" → `feature_map` summarizes the primary communities, entry points, and starter files
+- "What looks risky before I edit the user profile route?" → `risk_map` highlights likely blast-radius chokepoints and structural hotspots
+- "What order should I edit this feature, and what should I validate after?" → `implementation_checklist` returns an edit sequence plus validation checkpoints
 - "What breaks if I refactor SessionManager?" → `impact` shows directed dependents, affected communities, and the highest-signal propagation paths
 - "How does a request flow from the API to the database?" → `call_chain` traces the execution path
 - "Is this PR safe to merge?" → `pr_impact` computes blast radius of all changes
@@ -204,7 +212,7 @@ This merges graphs and infers cross-repo connections from shared types and funct
 | `explain <label>` | Explain one node and its neighborhood |
 | `add <url> [path]` | Ingest a URL and rebuild |
 | `benchmark [graph.json]` | Measure token reduction and structure signals |
-| `eval [graph.json]` | Measure retrieval quality: recall and MRR |
+| `eval [graph.json]` | Measure retrieval quality: recall, MRR, and snippet coverage |
 | `compare [question]` | Run a real baseline-vs-graphify prompt comparison through your own terminal LLM command |
 | `time-travel <from> <to>` | Compare two refs via on-demand local graph snapshots (`summary` default; `risk`, `drift`, `timeline` optional) |
 | `install --platform claude` | Install home-level Claude skill |

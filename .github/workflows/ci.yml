@@ -76,8 +76,9 @@ jobs:
 
           recall="$(printf '%s\n' "$output" | awk '/Recall:/ { gsub("%", "", $2); print $2 }')"
           mrr="$(printf '%s\n' "$output" | awk '/MRR:/ { print $2 }')"
+          snippet_coverage="$(printf '%s\n' "$output" | awk '/Snippet coverage:/ { gsub("%", "", $3); print $3 }')"
 
-          node -e "const recall = Number(process.argv[1]); const mrr = Number(process.argv[2]); if (!Number.isFinite(recall) || recall < 95 || !Number.isFinite(mrr) || mrr < 0.95) { console.error('eval thresholds failed: recall=' + recall + ', mrr=' + mrr); process.exit(1) }" "$recall" "$mrr"
+          node -e "const recall = Number(process.argv[1]); const mrr = Number(process.argv[2]); const snippetCoverage = Number(process.argv[3]); if (!Number.isFinite(recall) || recall < 95 || !Number.isFinite(mrr) || mrr < 0.95 || !Number.isFinite(snippetCoverage) || snippetCoverage < 95) { console.error('eval thresholds failed: recall=' + recall + ', mrr=' + mrr + ', snippet_coverage=' + snippetCoverage); process.exit(1) }" "$recall" "$mrr" "$snippet_coverage"
 
       - name: Validate npm package contents
         if: matrix.os == 'ubuntu-latest' && matrix.node-version == '20'

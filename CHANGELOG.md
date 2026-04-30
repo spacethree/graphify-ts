@@ -4,6 +4,19 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-04-30
+
+### Added
+
+- **Developer workflow MCP tools**: added `relevant_files`, `feature_map`, `risk_map`, and `implementation_checklist` so agents can move from file triage to edit planning without leaving the graph surface
+
+### Improved
+
+- **Eval hardening**: `eval` now reports snippet coverage alongside recall and MRR, and CI enforces the stronger regression gate on the demo graph path
+- **Compact MCP defaults**: `retrieve` and `impact` now default to compact payloads, with `verbose: true` preserving the legacy fuller response shape during the transition
+- **Payload hygiene**: retrieval and impact responses now emit project-root-relative paths when possible and omit empty `node_kind` noise from raw and compact payloads
+- **Framework support clarity**: updated README, proof docs, and the language capability matrix to document the framework-aware JS/TS surface and `framework_role` behavior explicitly
+
 ## [0.9.1] - 2026-04-30
 
 ### Added

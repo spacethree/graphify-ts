@@ -12,7 +12,7 @@ The registry lives in `src/infrastructure/capabilities.ts`. The extractor bindin
 
 | Coverage tier | Extensions | Primary path | Fallback / notes |
 |---|---|---|---|
-| TypeScript / JavaScript AST | `.ts` `.tsx` `.js` `.jsx` | TypeScript compiler API + framework-semantic pass | Best code-structure coverage in the repo today, including deep framework-aware semantics for mainstream Express, Redux Toolkit, React Router, NestJS, and Next.js patterns; `retrieve`/`impact` also support explicit `compact: true` responses for smaller framework-heavy payloads |
+| TypeScript / JavaScript AST | `.ts` `.tsx` `.js` `.jsx` | TypeScript compiler API + framework-semantic pass | Best code-structure coverage in the repo today, including deep framework-aware semantics for mainstream Express, Redux Toolkit, React Router, NestJS, and Next.js patterns; MCP `retrieve`/`impact` now return compact payloads by default, with `verbose: true` as the legacy escape hatch |
 | Tree-sitter primary | `.py` `.rb` | Tree-sitter WASM parser | Falls back to language-specific legacy extractor if the parser is unavailable |
 | Tree-sitter primary | `.go` `.java` `.rs` | Tree-sitter WASM parser | Falls back to the generic structural extractor if the parser is unavailable |
 | Generic structural extractor | `.c` `.cc` `.cpp` `.cxx` `.h` `.hpp` `.kt` `.kts` `.cs` `.scala` `.php` `.swift` `.zig` | Generic extractor | Heuristic structure, import, inheritance, and call extraction |
@@ -46,6 +46,20 @@ The registry lives in `src/infrastructure/capabilities.ts`. The extractor bindin
 - generic webpages
 
 These ingestors fetch structured content into the local project so the normal graph build can include it. They are separate from local file extractors.
+
+## Framework awareness
+
+For `.ts`, `.tsx`, `.js`, and `.jsx`, the JS/TS extractor can emit framework-semantic nodes directly instead of only low-level functions and imports. Those framework-shaped nodes carry `framework_role` on the graph node when graphify-ts can identify a mainstream convention reliably, and the default MCP surface now uses compact MCP payloads by default.
+
+| Framework | What graphify-ts extracts today | Example `framework_role` values |
+|---|---|---|
+| Express | apps, routers, mounted routers, route nodes, middleware ownership, handler relationships, and route params | `express_app`, `express_router`, `express_route`, `express_middleware`, `express_handler`, `express_error_handler` |
+| Redux Toolkit | slices, actions, selectors, thunks, and store registration across common cross-file patterns | `redux_slice`, `redux_action`, `redux_selector`, `redux_thunk`, `redux_store` |
+| React Router | object routes, JSX routes, loaders, actions, nested layouts, route components, and imported router bindings | `react_router`, `react_router_route`, `react_router_layout`, `react_router_loader`, `react_router_action`, `react_router_component` |
+| NestJS | modules, controllers, route decorators, providers, constructor injection, guards, pipes, and interceptors | `nest_module`, `nest_controller`, `nest_route`, `nest_provider`, `nest_guard`, `nest_pipe`, `nest_interceptor` |
+| Next.js | App Router and Pages Router ownership, layouts/templates/loading/error states, route handlers, middleware, client/server boundaries, and server actions | `next_route`, `next_page`, `next_layout`, `next_template`, `next_loading`, `next_error`, `next_not_found`, `next_route_handler`, `next_middleware`, `next_server_action`, `next_client_component`, `next_pages_app` |
+
+These roles are meant to be consumed as structural hints by retrieval and workflow tools. They are not guaranteed for heavily dynamic wrapper abstractions, runtime-generated routes, or custom meta-programming layers that fall back to the base AST graph.
 
 ## How to read this matrix
 

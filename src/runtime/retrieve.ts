@@ -4,9 +4,12 @@ import { KnowledgeGraph } from '../contracts/graph.js'
 import { godNodes, workspaceBridges } from '../pipeline/analyze.js'
 import { type Communities } from '../pipeline/cluster.js'
 import { buildCommunityLabels } from '../pipeline/community-naming.js'
+import { lineNumberFromSourceLocation } from '../shared/source-location.js'
+import { relativizeSourceFile } from '../shared/source-path.js'
 import { communitiesFromGraph } from './serve.js'
 
 const SNIPPET_HALF_WINDOW = 7
+const DERIVED_SNIPPET_HALF_WINDOW = 1
 const MAX_SNIPPET_LINE_LENGTH = 200
 
 const STOP_WORDS = new Set([
@@ -34,7 +37,7 @@ export interface RetrieveMatchedNode {
   label: string
   source_file: string
   line_number: number
-  node_kind: string
+  node_kind?: string
   framework?: string | undefined
   framework_role?: string | undefined
   framework_boost?: number
@@ -184,7 +187,7 @@ function tokenCountForMatchedNodes(
   )
 }
 
-function readSnippet(sourceFile: string, lineNumber: number): string | null {
+function readSnippet(sourceFile: string, lineNumber: number, options: { derived?: boolean } = {}): string | null {
   if (!sourceFile || lineNumber <= 0) {
     return null
   }
@@ -197,8 +200,9 @@ function readSnippet(sourceFile: string, lineNumber: number): string | null {
     const content = readFileSync(sourceFile, 'utf8')
     const lines = content.split(/\r?\n/)
     const zeroIndex = lineNumber - 1
-    const start = Math.max(0, zeroIndex - SNIPPET_HALF_WINDOW)
-    const end = Math.min(lines.length, zeroIndex + SNIPPET_HALF_WINDOW + 1)
+    const halfWindow = options.derived ? DERIVED_SNIPPET_HALF_WINDOW : SNIPPET_HALF_WINDOW
+    const start = Math.max(0, zeroIndex - halfWindow)
+    const end = Math.min(lines.length, zeroIndex + halfWindow + 1)
 
     return lines
       .slice(start, end)
@@ -206,6 +210,20 @@ function readSnippet(sourceFile: string, lineNumber: number): string | null {
       .join('\n')
   } catch {
     return null
+  }
+}
+
+function resolvedLineNumber(attributes: Record<string, unknown>): { lineNumber: number; derived: boolean } {
+  if (typeof attributes.line_number === 'number' && attributes.line_number > 0) {
+    return {
+      lineNumber: attributes.line_number,
+      derived: false,
+    }
+  }
+
+  return {
+    lineNumber: lineNumberFromSourceLocation(attributes.source_location),
+    derived: true,
   }
 }
 
@@ -245,6 +263,7 @@ interface ScoredNode {
   label: string
   sourceFile: string
   lineNumber: number
+  lineNumberDerived: boolean
   nodeKind: string
   framework?: string | undefined
   frameworkRole?: string | undefined
@@ -285,6 +304,24 @@ interface FrameworkQuestionProfile {
   guardIntent: boolean
   interceptorIntent: boolean
   pipeIntent: boolean
+}
+
+function activeFrameworksForProfile(profile: FrameworkQuestionProfile): ReadonlySet<string> {
+  const frameworks = new Set<string>()
+  if (profile.express) frameworks.add('express')
+  if (profile.redux) frameworks.add('redux-toolkit')
+  if (profile.reactRouter) frameworks.add('react-router')
+  if (profile.nest) frameworks.add('nestjs')
+  if (profile.next) frameworks.add('nextjs')
+  return frameworks
+}
+
+function isFrameworkCompatible(activeFrameworks: ReadonlySet<string>, framework: string | undefined): boolean {
+  if (activeFrameworks.size === 0 || !framework) {
+    return true
+  }
+
+  return activeFrameworks.has(framework)
 }
 
 function normalizeSeedText(value: string): string {
@@ -428,6 +465,8 @@ function buildFrameworkQuestionProfile(question: string, questionTokens: readonl
   const explicitRedux = includesAnyToken(questionTokens, ['redux', 'toolkit'])
   const explicitNest = includesAnyToken(questionTokens, ['nest', 'nestjs'])
   const explicitNext = includesAnyToken(questionTokens, ['next', 'nextjs'])
+  const explicitNextText = /\bnext(?:\.js)?\b/i.test(question)
+  const explicitNextPagesArtifact = /\b(_app|_document|not-found)\b/i.test(question)
   const mentionsReact = includesAnyToken(questionTokens, ['react'])
   const explicitReactRouter = /\breact(?:\s|-)?router\b/i.test(question)
   const middlewareIntent = includesAnyToken(questionTokens, ['middleware', 'guard'])
@@ -449,15 +488,27 @@ function buildFrameworkQuestionProfile(question: string, questionTokens: readonl
   const guardIntent = includesAnyToken(questionTokens, ['guard', 'guards'])
   const interceptorIntent = includesAnyToken(questionTokens, ['interceptor', 'interceptors'])
   const pipeIntent = includesAnyToken(questionTokens, ['pipe', 'pipes'])
+  const nextSpecificIntent =
+    explicitNext ||
+    explicitNextText ||
+    explicitNextPagesArtifact ||
+    layoutIntent ||
+    clientIntent ||
+    serverIntent ||
+    apiIntent
   const express = explicitExpress || hasHttpVerb || middlewareIntent || handlerIntent
   const redux = explicitRedux || selectorIntent || sliceIntent || storeIntent
-  const reactRouter = routeIntent && !express && (explicitReactRouter || mentionsReact || renderIntent || loaderIntent || actionIntent)
+  const reactRouter =
+    routeIntent &&
+    !express &&
+    (explicitReactRouter || mentionsReact || loaderIntent || actionIntent || (renderIntent && !nextSpecificIntent))
   const nest = explicitNest || controllerIntent || moduleIntent || guardIntent || interceptorIntent || pipeIntent
   const next =
-    explicitNext ||
-    /\bnext(?:\.js)?\b/i.test(question) ||
-    /\b(_app|_document|not-found)\b/i.test(question) ||
-    ((pageIntent || layoutIntent || clientIntent || serverIntent || apiIntent) && includesAnyToken(questionTokens, ['route', 'routes', 'middleware', 'action', 'actions']))
+    nextSpecificIntent &&
+    (explicitNext ||
+      explicitNextText ||
+      explicitNextPagesArtifact ||
+      includesAnyToken(questionTokens, ['route', 'routes', 'middleware', 'action', 'actions', 'page', 'pages']))
 
   return {
     frameworkShaped: express || redux || reactRouter || nest || next,
@@ -520,13 +571,13 @@ function frameworkBoostForNode(
       boost += profile.sliceIntent || profile.selectorIntent ? 3.5 : 2.5
     }
     if (frameworkRole === 'redux_selector') {
-      boost += profile.selectorIntent ? 3.5 : 2
+      boost += profile.selectorIntent ? 3.5 : profile.sliceIntent || profile.storeIntent ? 0.75 : 0
     }
     if (nodeKind === 'store' || frameworkRole === 'redux_store') {
       boost += profile.storeIntent || profile.sliceIntent ? 2.25 : 1.5
     }
     if (frameworkRole === 'redux_action' || frameworkRole === 'redux_thunk') {
-      boost += profile.actionIntent ? 2 : 0.75
+      boost += profile.actionIntent ? 2 : 0
     }
   }
 
@@ -615,6 +666,7 @@ function frameworkBoostForNode(
 export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions): RetrieveResult {
   const { question, budget } = options
   const questionTokens = tokenizeQuestion(question)
+  const rootPath = typeof graph.graph.root_path === 'string' ? graph.graph.root_path : undefined
 
   if (questionTokens.length === 0) {
     return {
@@ -630,6 +682,7 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
   // Pre-compute community labels so seed scoring can treat them as secondary evidence.
   const communities = communitiesFromGraph(graph)
   const frameworkProfile = buildFrameworkQuestionProfile(question, questionTokens)
+  const activeFrameworks = activeFrameworksForProfile(frameworkProfile)
   const communityLabels: Record<number, string> = {
     ...buildCommunityLabels(graph, communities),
     ...storedCommunityLabelsFromGraph(graph),
@@ -664,11 +717,13 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
     )
 
     if (score.total > 0) {
+      const resolvedLine = resolvedLineNumber(attributes)
       scored.push({
         id,
         label,
         sourceFile,
-        lineNumber: typeof attributes.line_number === 'number' ? attributes.line_number : 0,
+        lineNumber: resolvedLine.lineNumber,
+        lineNumberDerived: resolvedLine.derived,
         nodeKind,
         framework,
         frameworkRole: frameworkRole || undefined,
@@ -784,11 +839,13 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
       continue
     }
 
+    const resolvedLine = resolvedLineNumber(attributes)
     scored.push({
       id: nodeId,
       label: String(attributes.label ?? ''),
       sourceFile: String(attributes.source_file ?? ''),
-      lineNumber: typeof attributes.line_number === 'number' ? attributes.line_number : 0,
+      lineNumber: resolvedLine.lineNumber,
+      lineNumberDerived: resolvedLine.derived,
       nodeKind: String(attributes.node_kind ?? ''),
       framework: typeof attributes.framework === 'string' ? attributes.framework : undefined,
       frameworkRole: typeof attributes.framework_role === 'string' ? attributes.framework_role : undefined,
@@ -823,8 +880,16 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
   const matchedNodes: RetrieveMatchedNode[] = []
   const includedIds = new Set<string>()
   let tokenCount = 0
-  const primaryCandidates = scored.filter((node) => (seedIds.has(node.id) || hopScores.has(node.id)) && node.relevanceBand !== 'peripheral')
-  const peripheralCandidates = scored.filter((node) => (seedIds.has(node.id) || hopScores.has(node.id)) && node.relevanceBand === 'peripheral')
+  const frameworkCompatibleCandidates = frameworkProfile.frameworkShaped
+    ? scored.filter((node) => isFrameworkCompatible(activeFrameworks, node.framework))
+    : scored
+  const frameworkIncompatibleCandidates = frameworkProfile.frameworkShaped
+    ? scored.filter((node) => !isFrameworkCompatible(activeFrameworks, node.framework))
+    : []
+  const primaryCandidates = frameworkCompatibleCandidates.filter((node) => (seedIds.has(node.id) || hopScores.has(node.id)) && node.relevanceBand !== 'peripheral')
+  const peripheralCandidates = frameworkCompatibleCandidates.filter((node) => (seedIds.has(node.id) || hopScores.has(node.id)) && node.relevanceBand === 'peripheral')
+  const fallbackPrimaryCandidates = frameworkIncompatibleCandidates.filter((node) => (seedIds.has(node.id) || hopScores.has(node.id)) && node.relevanceBand !== 'peripheral')
+  const fallbackPeripheralCandidates = frameworkIncompatibleCandidates.filter((node) => (seedIds.has(node.id) || hopScores.has(node.id)) && node.relevanceBand === 'peripheral')
   const prioritizedFrameworkCandidates = frameworkProfile.frameworkShaped
     ? primaryCandidates.filter((node) => node.frameworkBoost > 0)
     : []
@@ -839,6 +904,10 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
   const prioritizedFrameworkHeadCount = Number.isFinite(compactFrameworkLimit)
     ? Math.max(1, compactFrameworkLimit - reservedSupportingSlots)
     : prioritizedFrameworkCandidates.length
+  const compatibleCandidateCount = primaryCandidates.length + peripheralCandidates.length
+  const fallbackInclusionOrder = compatibleCandidateCount < 4
+    ? [...fallbackPrimaryCandidates, ...fallbackPeripheralCandidates]
+    : []
   const inclusionOrder = frameworkProfile.frameworkShaped
     ? [
         ...prioritizedFrameworkCandidates.slice(0, prioritizedFrameworkHeadCount),
@@ -846,23 +915,24 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
         ...prioritizedFrameworkCandidates.slice(prioritizedFrameworkHeadCount),
         ...secondaryCandidates.slice(reservedSupportingSlots),
         ...peripheralCandidates,
+        ...fallbackInclusionOrder,
       ]
     : [...secondaryCandidates, ...peripheralCandidates]
 
   for (const node of inclusionOrder) {
-    const snippet = readSnippet(node.sourceFile, node.lineNumber)
-    const nodeTokens = estimateRetrieveEntryTokens(node.label, node.sourceFile, node.lineNumber, snippet)
+    const snippet = readSnippet(node.sourceFile, node.lineNumber, { derived: node.lineNumberDerived })
+    const serializedSourceFile = relativizeSourceFile(node.sourceFile, rootPath)
+    const nodeTokens = estimateRetrieveEntryTokens(node.label, serializedSourceFile, node.lineNumber, snippet)
 
     if (tokenCount + nodeTokens > budget && matchedNodes.length > 0) {
       break
     }
 
-    matchedNodes.push({
+    const matchedNode: RetrieveMatchedNode = {
       node_id: node.id,
       label: node.label,
-      source_file: node.sourceFile,
+      source_file: serializedSourceFile,
       line_number: node.lineNumber,
-      node_kind: node.nodeKind,
       framework: node.framework,
       framework_role: node.frameworkRole,
       framework_boost: node.frameworkBoost,
@@ -872,7 +942,10 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
       relevance_band: node.relevanceBand,
       community: node.community,
       community_label: node.community !== null ? (communityLabels[node.community] ?? null) : null,
-    })
+      ...(node.nodeKind.trim().length > 0 ? { node_kind: node.nodeKind } : {}),
+    }
+
+    matchedNodes.push(matchedNode)
 
     includedIds.add(node.id)
     tokenCount += nodeTokens
@@ -948,8 +1021,9 @@ export function compactRetrieveResult(result: RetrieveResult): CompactRetrieveRe
   return {
     question: result.question,
     token_count: tokenCountForMatchedNodes(compactMatchedNodes),
-    matched_nodes: compactMatchedNodes.map(({ community_label: _communityLabel, file_type: fileType, framework_boost: _frameworkBoost, ...node }) => ({
+    matched_nodes: compactMatchedNodes.map(({ community_label: _communityLabel, file_type: fileType, framework_boost: _frameworkBoost, node_kind: nodeKind, ...node }) => ({
       ...node,
+      ...(typeof nodeKind === 'string' && nodeKind.trim().length > 0 ? { node_kind: nodeKind } : {}),
       ...(sharedFileType ? {} : { file_type: fileType }),
     })),
     relationships: result.relationships.filter((edge) => {
@@ -975,7 +1049,7 @@ export function compactRetrieveResultForStdio(result: RetrieveResult): RetrieveR
       .filter(([nodeId]) => nodeId !== null) as Array<[string, RetrieveMatchedNode]>,
   )
 
-  const matchedNodes: RetrieveResult['matched_nodes'] = compactResult.matched_nodes.map((node) => {
+  const matchedNodes: RetrieveResult['matched_nodes'] = compactResult.matched_nodes.map((node): RetrieveMatchedNode => {
     const original = matchedNodeId(node) !== null ? originalNodesById.get(matchedNodeId(node)!) : undefined
     if (original) {
       return stripRetrieveMatchedNodeIdentity(original)
@@ -985,7 +1059,6 @@ export function compactRetrieveResultForStdio(result: RetrieveResult): RetrieveR
       label: node.label,
       source_file: node.source_file,
       line_number: node.line_number,
-      node_kind: node.node_kind,
       framework_boost: 0,
       file_type: node.file_type ?? compactResult.shared_file_type ?? '',
       snippet: node.snippet,
@@ -993,6 +1066,7 @@ export function compactRetrieveResultForStdio(result: RetrieveResult): RetrieveR
       relevance_band: node.relevance_band,
       community: node.community,
       community_label: null,
+      ...(node.node_kind ? { node_kind: node.node_kind } : {}),
     }
   })
 

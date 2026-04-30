@@ -128,7 +128,7 @@ node dist/src/cli/bin.js eval examples/demo-repo/graphify-out/graph.json --quest
 What each command proves:
 
 - `benchmark` proves token reduction, question coverage, expected-evidence coverage, and structure-signal reporting on a known question set. On the checked-in demo repo it should report `Question coverage: 5/5 matched`, `Expected evidence: 17/17 labels found`, and roughly `1.7x` fewer tokens per query.
-- `eval` proves retrieval quality on that same labeled question set: recall plus ranking quality (MRR). On the checked-in demo repo it should report `Recall: 100.0%`, `MRR: 1.000`, and roughly `2.7x` fewer tokens at query time.
+- `eval` proves retrieval quality on that same labeled question set: recall, ranking quality (MRR), and snippet coverage. On the checked-in demo repo it should report `Recall: 100.0%`, `MRR: 1.000`, `Snippet coverage: 100.0%`, and roughly `2.7x` fewer tokens at query time.
 
 The demo repo is intentionally tiny, so its token-reduction numbers are modest. It exists to make the flow reproducible, not to maximize the headline ratio. Demo outputs land in `examples/demo-repo/graphify-out/`, which is ignored so you can rerun the flow locally without polluting git status.
 

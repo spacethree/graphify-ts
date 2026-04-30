@@ -224,6 +224,7 @@ export function loadGraph(graphPath: string): KnowledgeGraph {
   const extraction = {
     schema_version: parsed.schema_version,
     directed: parsed.directed === true,
+    root_path: parsed.root_path,
     nodes: Array.isArray(parsed.nodes) ? parsed.nodes : [],
     edges: Array.isArray(parsed.links) ? parsed.links : Array.isArray(parsed.edges) ? parsed.edges : [],
     hyperedges: Array.isArray(parsed.hyperedges) ? parsed.hyperedges : [],

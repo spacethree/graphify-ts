@@ -548,7 +548,7 @@ describe('stdio runtime', () => {
     }
   })
 
-  it('keeps default retrieve and impact payloads backward-compatible and exposes compact mode explicitly', async () => {
+  it('returns compact retrieve and impact payloads by default and keeps verbose mode as an escape hatch', async () => {
     const root = createGraphFixtureRoot()
     try {
       const graphPath = join(root, 'graph.json')
@@ -600,7 +600,7 @@ describe('stdio runtime', () => {
           },
         },
       }))
-      const retrieveCompact = await Promise.resolve(handleStdioRequest(graphPath, {
+      const retrieveVerbose = await Promise.resolve(handleStdioRequest(graphPath, {
         id: 2,
         method: 'tools/call',
         params: {
@@ -609,7 +609,7 @@ describe('stdio runtime', () => {
             question: 'which react router route renders dashboard page',
             budget: 5000,
             file_type: 'code',
-            compact: true,
+            verbose: true,
           },
         },
       }))
@@ -624,7 +624,7 @@ describe('stdio runtime', () => {
           },
         },
       }))
-      const impactCompact = await Promise.resolve(handleStdioRequest(graphPath, {
+      const impactVerbose = await Promise.resolve(handleStdioRequest(graphPath, {
         id: 4,
         method: 'tools/call',
         params: {
@@ -632,22 +632,22 @@ describe('stdio runtime', () => {
           arguments: {
             label: 'auth slice',
             depth: 4,
-            compact: true,
+            verbose: true,
           },
         },
       }))
 
       const retrieveDefaultPayload = JSON.parse((retrieveDefault?.result as { content: Array<{ text: string }> }).content[0]!.text)
-      const retrieveCompactPayload = JSON.parse((retrieveCompact?.result as { content: Array<{ text: string }> }).content[0]!.text)
+      const retrieveVerbosePayload = JSON.parse((retrieveVerbose?.result as { content: Array<{ text: string }> }).content[0]!.text)
       const impactDefaultPayload = JSON.parse((impactDefault?.result as { content: Array<{ text: string }> }).content[0]!.text)
-      const impactCompactPayload = JSON.parse((impactCompact?.result as { content: Array<{ text: string }> }).content[0]!.text)
+      const impactVerbosePayload = JSON.parse((impactVerbose?.result as { content: Array<{ text: string }> }).content[0]!.text)
 
-      expect(retrieveDefaultPayload.matched_nodes.length).toBeGreaterThan(retrieveCompactPayload.matched_nodes.length)
-      expect(retrieveDefaultPayload.matched_nodes.map((node: { label: string }) => node.label)).toEqual(
+      expect(retrieveVerbosePayload.matched_nodes.length).toBeGreaterThan(retrieveDefaultPayload.matched_nodes.length)
+      expect(retrieveVerbosePayload.matched_nodes.map((node: { label: string }) => node.label)).toEqual(
         expect.arrayContaining(['dashboardRouter', 'DashboardPage']),
       )
-      expect(retrieveDefaultPayload.shared_file_type).toBeUndefined()
-      expect(retrieveDefaultPayload.matched_nodes[0]).toEqual(
+      expect(retrieveVerbosePayload.shared_file_type).toBeUndefined()
+      expect(retrieveVerbosePayload.matched_nodes[0]).toEqual(
         expect.objectContaining({
           node_id: expect.any(String),
           file_type: 'code',
@@ -655,8 +655,8 @@ describe('stdio runtime', () => {
           framework_boost: expect.any(Number),
         }),
       )
-      expect(retrieveDefaultPayload.relationships.length).toBeGreaterThan(0)
-      expect(retrieveDefaultPayload.relationships[0]).toEqual(
+      expect(retrieveVerbosePayload.relationships.length).toBeGreaterThan(0)
+      expect(retrieveVerbosePayload.relationships[0]).toEqual(
         expect.objectContaining({
           from_id: expect.any(String),
           from: expect.any(String),
@@ -666,8 +666,8 @@ describe('stdio runtime', () => {
         }),
       )
 
-      expect(impactDefaultPayload.shared_file_type).toBeUndefined()
-      expect(impactDefaultPayload.direct_dependents).toEqual(
+      expect(impactVerbosePayload.shared_file_type).toBeUndefined()
+      expect(impactVerbosePayload.direct_dependents).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             label: 'selectAuthStatus',
@@ -684,19 +684,19 @@ describe('stdio runtime', () => {
         ]),
       )
 
-      expect(retrieveCompactPayload.matched_nodes).toHaveLength(5)
-      expect(retrieveCompactPayload.shared_file_type).toBe('code')
-      expect(retrieveCompactPayload.matched_nodes[0]).toEqual(
+      expect(retrieveDefaultPayload.matched_nodes).toHaveLength(5)
+      expect(retrieveDefaultPayload.shared_file_type).toBe('code')
+      expect(retrieveDefaultPayload.matched_nodes[0]).toEqual(
         expect.objectContaining({
           node_id: expect.any(String),
         }),
       )
-      expect(retrieveCompactPayload.matched_nodes[0]).not.toHaveProperty('file_type')
-      expect(retrieveCompactPayload.matched_nodes[0]).not.toHaveProperty('community_label')
-      expect(retrieveCompactPayload.matched_nodes[0]).not.toHaveProperty('framework_boost')
+      expect(retrieveDefaultPayload.matched_nodes[0]).not.toHaveProperty('file_type')
+      expect(retrieveDefaultPayload.matched_nodes[0]).not.toHaveProperty('community_label')
+      expect(retrieveDefaultPayload.matched_nodes[0]).not.toHaveProperty('framework_boost')
 
-      expect(impactCompactPayload.shared_file_type).toBe('code')
-      expect(impactCompactPayload.direct_dependents).toEqual(
+      expect(impactDefaultPayload.shared_file_type).toBe('code')
+      expect(impactDefaultPayload.direct_dependents).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             label: 'selectAuthStatus',
@@ -706,9 +706,282 @@ describe('stdio runtime', () => {
           }),
         ]),
       )
-      expect(impactCompactPayload.direct_dependents[0]).not.toHaveProperty('file_type')
-      expect(impactCompactPayload.direct_dependents[0]).not.toHaveProperty('framework_role')
-      expect(impactCompactPayload.direct_dependents[0]).not.toHaveProperty('community_label')
+      expect(impactDefaultPayload.direct_dependents[0]).not.toHaveProperty('file_type')
+      expect(impactDefaultPayload.direct_dependents[0]).not.toHaveProperty('framework_role')
+      expect(impactDefaultPayload.direct_dependents[0]).not.toHaveProperty('community_label')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('exposes a relevant_files tool that returns ranked files with reasons', async () => {
+    const root = createGraphFixtureRoot()
+    try {
+      const graphPath = join(root, 'graph.json')
+      writeFileSync(
+        graphPath,
+        JSON.stringify({
+          root_path: '/workspace',
+          nodes: [
+            { id: 'route_users_show', label: 'GET /users/:id', source_file: '/workspace/src/routes/users.ts', line_number: 12, node_kind: 'route', file_type: 'code', framework: 'express', framework_role: 'express_route', community: 0 },
+            { id: 'show_user_profile', label: 'showUserProfile', source_file: '/workspace/src/routes/users.ts', line_number: 24, node_kind: 'function', file_type: 'code', community: 0 },
+            { id: 'get_user_profile', label: 'getUserProfile', source_file: '/workspace/src/services/users.ts', line_number: 8, node_kind: 'function', file_type: 'code', community: 1, contextual_prefix: 'Loads user profile data for the users route handler.' },
+            { id: 'logger', label: 'Logger', source_file: '/workspace/src/utils/logger.ts', line_number: 3, node_kind: 'class', file_type: 'code', community: 2 },
+          ],
+          edges: [
+            { source: 'route_users_show', target: 'show_user_profile', relation: 'handles_route', confidence: 'EXTRACTED', source_file: '/workspace/src/routes/users.ts' },
+            { source: 'show_user_profile', target: 'get_user_profile', relation: 'calls', confidence: 'EXTRACTED', source_file: '/workspace/src/routes/users.ts' },
+            { source: 'show_user_profile', target: 'logger', relation: 'calls', confidence: 'EXTRACTED', source_file: '/workspace/src/routes/users.ts' },
+          ],
+          hyperedges: [],
+        }),
+        'utf8',
+      )
+
+      const tools = await Promise.resolve(handleStdioRequest(graphPath, { id: 1, method: 'tools/list' }))
+      const relevantFilesCall = await Promise.resolve(handleStdioRequest(graphPath, {
+        id: 2,
+        method: 'tools/call',
+        params: {
+          name: 'relevant_files',
+          arguments: {
+            question: 'where should I edit the user profile route',
+            limit: 2,
+            file_type: 'code',
+          },
+        },
+      }))
+
+      const toolList = (tools?.result as { tools: Array<{ name: string; description?: string; inputSchema: { properties: Record<string, unknown> } }> }).tools
+      const relevantFilesTool = toolList.find((tool) => tool.name === 'relevant_files')
+      const relevantFilesPayload = JSON.parse((relevantFilesCall?.result as { content: Array<{ text: string }> }).content[0]!.text)
+
+      expect(relevantFilesTool?.inputSchema.properties).toHaveProperty('question')
+      expect(relevantFilesTool?.inputSchema.properties).toHaveProperty('limit')
+      expect(relevantFilesTool?.inputSchema.properties).toHaveProperty('file_type')
+      expect(relevantFilesPayload.relevant_files.map((entry: { path: string }) => entry.path)).toEqual([
+        'src/routes/users.ts',
+        'src/services/users.ts',
+      ])
+      expect(relevantFilesPayload.relevant_files[0]).toEqual(
+        expect.objectContaining({
+          path: 'src/routes/users.ts',
+          matched_symbols: expect.arrayContaining(['GET /users/:id', 'showUserProfile']),
+        }),
+      )
+      expect(relevantFilesPayload.relevant_files[0].why).toContain('GET /users/:id')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('exposes a feature_map tool that returns communities, entry points, and starter files', async () => {
+    const root = createGraphFixtureRoot()
+    try {
+      const graphPath = join(root, 'graph.json')
+      writeFileSync(
+        graphPath,
+        JSON.stringify({
+          root_path: '/workspace',
+          community_labels: {
+            '0': 'Routes',
+            '1': 'Services',
+            '2': 'Utilities',
+          },
+          nodes: [
+            { id: 'route_users_show', label: 'GET /users/:id', source_file: '/workspace/src/routes/users.ts', line_number: 12, node_kind: 'route', file_type: 'code', framework: 'express', framework_role: 'express_route', community: 0 },
+            { id: 'show_user_profile', label: 'showUserProfile', source_file: '/workspace/src/routes/users.ts', line_number: 24, node_kind: 'function', file_type: 'code', community: 0 },
+            { id: 'get_user_profile', label: 'getUserProfile', source_file: '/workspace/src/services/users.ts', line_number: 8, node_kind: 'function', file_type: 'code', community: 1, contextual_prefix: 'Loads user profile data for the users route handler.' },
+            { id: 'logger', label: 'Logger', source_file: '/workspace/src/utils/logger.ts', line_number: 3, node_kind: 'class', file_type: 'code', community: 2 },
+          ],
+          edges: [
+            { source: 'route_users_show', target: 'show_user_profile', relation: 'handles_route', confidence: 'EXTRACTED', source_file: '/workspace/src/routes/users.ts' },
+            { source: 'show_user_profile', target: 'get_user_profile', relation: 'calls', confidence: 'EXTRACTED', source_file: '/workspace/src/routes/users.ts' },
+            { source: 'show_user_profile', target: 'logger', relation: 'calls', confidence: 'EXTRACTED', source_file: '/workspace/src/routes/users.ts' },
+          ],
+          hyperedges: [],
+        }),
+        'utf8',
+      )
+
+      const tools = await Promise.resolve(handleStdioRequest(graphPath, { id: 1, method: 'tools/list' }))
+      const featureMapCall = await Promise.resolve(handleStdioRequest(graphPath, {
+        id: 2,
+        method: 'tools/call',
+        params: {
+          name: 'feature_map',
+          arguments: {
+            question: 'where should I edit the user profile route',
+            limit: 2,
+            file_type: 'code',
+          },
+        },
+      }))
+
+      const toolList = (tools?.result as { tools: Array<{ name: string; description?: string; inputSchema: { properties: Record<string, unknown> } }> }).tools
+      const featureMapTool = toolList.find((tool) => tool.name === 'feature_map')
+      const featureMapPayload = JSON.parse((featureMapCall?.result as { content: Array<{ text: string }> }).content[0]!.text)
+
+      expect(featureMapTool?.inputSchema.properties).toHaveProperty('question')
+      expect(featureMapTool?.inputSchema.properties).toHaveProperty('limit')
+      expect(featureMapTool?.inputSchema.properties).toHaveProperty('file_type')
+      expect(featureMapPayload.summary).toContain('Routes')
+      expect(featureMapPayload.communities.map((community: { label: string }) => community.label)).toEqual(['Routes', 'Services'])
+      expect(featureMapPayload.entry_points[0]).toEqual(
+        expect.objectContaining({
+          label: 'GET /users/:id',
+          source_file: 'src/routes/users.ts',
+        }),
+      )
+      expect(featureMapPayload.relevant_files[0].path).toBe('src/routes/users.ts')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('exposes a risk_map tool that returns top risks and structural hotspots', async () => {
+    const root = createGraphFixtureRoot()
+    try {
+      const graphPath = join(root, 'graph.json')
+      writeFileSync(
+        graphPath,
+        JSON.stringify({
+          root_path: '/workspace',
+          community_labels: {
+            '0': 'Routes',
+            '1': 'Services',
+            '2': 'Persistence',
+            '3': 'Account UI',
+          },
+          nodes: [
+            { id: 'route_users_show', label: 'GET /users/:id', source_file: '/workspace/src/routes/users.ts', line_number: 12, node_kind: 'route', file_type: 'code', framework: 'express', framework_role: 'express_route', community: 0 },
+            { id: 'show_user_profile', label: 'showUserProfile', source_file: '/workspace/src/routes/users.ts', line_number: 24, node_kind: 'function', file_type: 'code', community: 0 },
+            { id: 'get_user_profile', label: 'getUserProfile', source_file: '/workspace/src/services/users.ts', line_number: 8, node_kind: 'function', file_type: 'code', community: 1, contextual_prefix: 'Loads user profile data for the users route handler.' },
+            { id: 'database', label: 'DatabaseConnection', source_file: '/workspace/src/persistence/database.ts', line_number: 4, node_kind: 'class', file_type: 'code', community: 2 },
+            { id: 'hydrate_account', label: 'hydrateAccountScreen', source_file: '/workspace/src/account/screen.ts', line_number: 14, node_kind: 'function', file_type: 'code', community: 3 },
+          ],
+          edges: [
+            { source: 'route_users_show', target: 'show_user_profile', relation: 'handles_route', confidence: 'EXTRACTED', source_file: '/workspace/src/routes/users.ts' },
+            { source: 'show_user_profile', target: 'get_user_profile', relation: 'calls', confidence: 'EXTRACTED', source_file: '/workspace/src/routes/users.ts' },
+            { source: 'hydrate_account', target: 'get_user_profile', relation: 'calls', confidence: 'EXTRACTED', source_file: '/workspace/src/account/screen.ts' },
+            { source: 'get_user_profile', target: 'database', relation: 'calls', confidence: 'EXTRACTED', source_file: '/workspace/src/services/users.ts' },
+          ],
+          hyperedges: [],
+        }),
+        'utf8',
+      )
+
+      const tools = await Promise.resolve(handleStdioRequest(graphPath, { id: 1, method: 'tools/list' }))
+      const riskMapCall = await Promise.resolve(handleStdioRequest(graphPath, {
+        id: 2,
+        method: 'tools/call',
+        params: {
+          name: 'risk_map',
+          arguments: {
+            question: 'where should I edit the user profile route',
+            limit: 3,
+            file_type: 'code',
+          },
+        },
+      }))
+
+      const toolList = (tools?.result as { tools: Array<{ name: string; description?: string; inputSchema: { properties: Record<string, unknown> } }> }).tools
+      const riskMapTool = toolList.find((tool) => tool.name === 'risk_map')
+      const riskMapPayload = JSON.parse((riskMapCall?.result as { content: Array<{ text: string }> }).content[0]!.text)
+
+      expect(riskMapTool?.inputSchema.properties).toHaveProperty('question')
+      expect(riskMapTool?.inputSchema.properties).toHaveProperty('limit')
+      expect(riskMapTool?.inputSchema.properties).toHaveProperty('file_type')
+      expect(riskMapPayload.summary).toContain('getUserProfile')
+      expect(riskMapPayload.top_risks[0]).toEqual(
+        expect.objectContaining({
+          label: 'getUserProfile',
+          severity: 'high',
+        }),
+      )
+      expect(riskMapPayload.structural_hotspots).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            label: 'getUserProfile',
+            type: 'bridge',
+          }),
+        ]),
+      )
+      expect(riskMapPayload.starter_files[0].path).toBe('src/routes/users.ts')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('exposes an implementation_checklist tool that returns edit steps and validation checkpoints', async () => {
+    const root = createGraphFixtureRoot()
+    try {
+      const graphPath = join(root, 'graph.json')
+      writeFileSync(
+        graphPath,
+        JSON.stringify({
+          root_path: '/workspace',
+          community_labels: {
+            '0': 'Routes',
+            '1': 'Services',
+            '2': 'Persistence',
+            '3': 'Account UI',
+          },
+          nodes: [
+            { id: 'route_users_show', label: 'GET /users/:id', source_file: '/workspace/src/routes/users.ts', line_number: 12, node_kind: 'route', file_type: 'code', framework: 'express', framework_role: 'express_route', community: 0 },
+            { id: 'show_user_profile', label: 'showUserProfile', source_file: '/workspace/src/routes/users.ts', line_number: 24, node_kind: 'function', file_type: 'code', community: 0 },
+            { id: 'get_user_profile', label: 'getUserProfile', source_file: '/workspace/src/services/users.ts', line_number: 8, node_kind: 'function', file_type: 'code', community: 1, contextual_prefix: 'Loads user profile data for the users route handler.' },
+            { id: 'database', label: 'DatabaseConnection', source_file: '/workspace/src/persistence/database.ts', line_number: 4, node_kind: 'class', file_type: 'code', community: 2 },
+            { id: 'hydrate_account', label: 'hydrateAccountScreen', source_file: '/workspace/src/account/screen.ts', line_number: 14, node_kind: 'function', file_type: 'code', community: 3 },
+          ],
+          edges: [
+            { source: 'route_users_show', target: 'show_user_profile', relation: 'handles_route', confidence: 'EXTRACTED', source_file: '/workspace/src/routes/users.ts' },
+            { source: 'show_user_profile', target: 'get_user_profile', relation: 'calls', confidence: 'EXTRACTED', source_file: '/workspace/src/routes/users.ts' },
+            { source: 'hydrate_account', target: 'get_user_profile', relation: 'calls', confidence: 'EXTRACTED', source_file: '/workspace/src/account/screen.ts' },
+            { source: 'get_user_profile', target: 'database', relation: 'calls', confidence: 'EXTRACTED', source_file: '/workspace/src/services/users.ts' },
+          ],
+          hyperedges: [],
+        }),
+        'utf8',
+      )
+
+      const tools = await Promise.resolve(handleStdioRequest(graphPath, { id: 1, method: 'tools/list' }))
+      const checklistCall = await Promise.resolve(handleStdioRequest(graphPath, {
+        id: 2,
+        method: 'tools/call',
+        params: {
+          name: 'implementation_checklist',
+          arguments: {
+            question: 'where should I edit the user profile route',
+            limit: 3,
+            file_type: 'code',
+          },
+        },
+      }))
+
+      const toolList = (tools?.result as { tools: Array<{ name: string; description?: string; inputSchema: { properties: Record<string, unknown> } }> }).tools
+      const checklistTool = toolList.find((tool) => tool.name === 'implementation_checklist')
+      const checklistPayload = JSON.parse((checklistCall?.result as { content: Array<{ text: string }> }).content[0]!.text)
+
+      expect(checklistTool?.inputSchema.properties).toHaveProperty('question')
+      expect(checklistTool?.inputSchema.properties).toHaveProperty('limit')
+      expect(checklistTool?.inputSchema.properties).toHaveProperty('file_type')
+      expect(checklistPayload.summary).toContain('src/routes/users.ts')
+      expect(checklistPayload.edit_steps[0]).toEqual(
+        expect.objectContaining({
+          path: 'src/routes/users.ts',
+        }),
+      )
+      expect(checklistPayload.validation_steps).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            title: expect.stringContaining('GET /users/:id'),
+          }),
+          expect.objectContaining({
+            title: expect.stringContaining('getUserProfile'),
+          }),
+        ]),
+      )
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

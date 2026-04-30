@@ -290,7 +290,7 @@ export function formatHelp(binaryName = 'graphify-ts'): string {
     '    --exec TEMPLATE       required command template; supports {prompt_file}, {question}, {mode}, and {output_file}',
     '    --questions PATH      load benchmark/eval questions from a JSON file',
     '    --yes                 skip confirmation before running the paid benchmark/eval prompts',
-    '  eval [graph.json]      measure retrieval quality: recall and MRR through the benchmark/eval runner. This may consume paid model tokens.',
+    '  eval [graph.json]      measure retrieval quality: recall, MRR, and snippet coverage through the benchmark/eval runner. This may consume paid model tokens.',
     '    --exec TEMPLATE       required command template; supports {prompt_file}, {question}, {mode}, and {output_file}',
     '    --questions PATH      load benchmark/eval questions from a JSON file',
     '    --yes                 skip confirmation before running the paid benchmark/eval prompts',

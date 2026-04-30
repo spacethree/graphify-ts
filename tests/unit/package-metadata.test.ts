@@ -28,6 +28,10 @@ function loadContributingGuide(): string {
   return readFileSync(join(process.cwd(), 'CONTRIBUTING.md'), 'utf8')
 }
 
+function loadLanguageCapabilityMatrix(): string {
+  return readFileSync(join(process.cwd(), 'docs', 'language-capability-matrix.md'), 'utf8')
+}
+
 function normalizeVersionRange(range: string | undefined): string {
   return (range ?? '').replace(/^[\^~]/, '')
 }
@@ -65,5 +69,20 @@ describe('package metadata', () => {
     expect(ciWorkflow).toContain('ci-prompt-runner.mjs')
     expect(ciWorkflow).toContain('--exec')
     expect(ciWorkflow).toContain('--yes')
+    expect(ciWorkflow).toContain('Snippet coverage:')
+    expect(ciWorkflow).toContain('snippet_coverage')
+  })
+
+  it('documents framework-aware JS/TS support explicitly in the language capability matrix', () => {
+    const matrix = loadLanguageCapabilityMatrix()
+
+    expect(matrix).toContain('## Framework awareness')
+    expect(matrix).toContain('Express')
+    expect(matrix).toContain('Redux Toolkit')
+    expect(matrix).toContain('React Router')
+    expect(matrix).toContain('NestJS')
+    expect(matrix).toContain('Next.js')
+    expect(matrix).toContain('`framework_role`')
+    expect(matrix).toContain('compact MCP payloads by default')
   })
 })
