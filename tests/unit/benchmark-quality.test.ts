@@ -6,6 +6,9 @@ import { existsSync } from 'node:fs'
 import { KnowledgeGraph } from '../../src/contracts/graph.js'
 import { evaluateRetrievalQuality, formatQualityReport, GOLD_QUESTIONS, type GoldQuestion } from '../../src/infrastructure/benchmark/quality.js'
 import { type BenchmarkQuestionSpec } from '../../src/infrastructure/benchmark/questions.js'
+import { build } from '../../src/pipeline/build.js'
+import { extractJs } from '../../src/pipeline/extract.js'
+import { retrieveContext } from '../../src/runtime/retrieve.js'
 import { loadGraph } from '../../src/runtime/serve.js'
 
 function buildTestGraph(): KnowledgeGraph {
@@ -18,6 +21,48 @@ function buildTestGraph(): KnowledgeGraph {
   graph.addEdge('login_handler', 'database', { relation: 'calls', confidence: 'EXTRACTED', source_file: 'src/auth.ts' })
   graph.addEdge('database', 'user_model', { relation: 'references', confidence: 'EXTRACTED', source_file: 'src/db.ts' })
   return graph
+}
+
+function stripFileNodes(extraction: ReturnType<typeof extractJs>): ReturnType<typeof extractJs> {
+  const semanticNodeIds = new Set(extraction.nodes.filter((node) => String(node.node_kind ?? '') !== '').map((node) => node.id))
+  return {
+    ...extraction,
+    nodes: extraction.nodes.filter((node) => semanticNodeIds.has(node.id)),
+    edges: extraction.edges.filter((edge) => semanticNodeIds.has(edge.source) && semanticNodeIds.has(edge.target)),
+  }
+}
+
+function buildFrameworkSupportGraph(): KnowledgeGraph {
+  const fixturesDir = join(process.cwd(), 'tests', 'fixtures')
+  return build(
+    [
+      stripFileNodes(extractJs(join(fixturesDir, 'express-namespace-module-parent.ts'))),
+      stripFileNodes(extractJs(join(fixturesDir, 'express-namespace-module-child.ts'))),
+      stripFileNodes(extractJs(join(fixturesDir, 'redux-retrieve-auth-slice.ts'))),
+      stripFileNodes(extractJs(join(fixturesDir, 'redux-retrieve-auth-store.ts'))),
+      stripFileNodes(extractJs(join(fixturesDir, 'react-router-imported-router.tsx'))),
+      stripFileNodes(extractJs(join(fixturesDir, 'nest-auth.module.ts'))),
+      stripFileNodes(extractJs(join(fixturesDir, 'nest-auth.controller.ts'))),
+      stripFileNodes(extractJs(join(fixturesDir, 'nest-auth.service.ts'))),
+      stripFileNodes(extractJs(join(fixturesDir, 'next-app', 'middleware.ts'))),
+      stripFileNodes(extractJs(join(fixturesDir, 'next-app', 'app', '(marketing)', 'dashboard', '[team]', 'layout.tsx'))),
+      stripFileNodes(extractJs(join(fixturesDir, 'next-app', 'app', '(marketing)', 'dashboard', '[team]', 'page.tsx'))),
+      stripFileNodes(extractJs(join(fixturesDir, 'next-app', 'app', '(marketing)', 'dashboard', '[team]', 'template.tsx'))),
+      stripFileNodes(extractJs(join(fixturesDir, 'next-app', 'app', '(marketing)', 'dashboard', '[team]', 'loading.tsx'))),
+      stripFileNodes(extractJs(join(fixturesDir, 'next-app', 'app', '(marketing)', 'dashboard', '[team]', 'error.tsx'))),
+      stripFileNodes(extractJs(join(fixturesDir, 'next-app', 'app', '(marketing)', 'dashboard', '[team]', 'not-found.tsx'))),
+      stripFileNodes(extractJs(join(fixturesDir, 'next-app', 'app', '(marketing)', 'dashboard', '[team]', '@modal', 'default.tsx'))),
+      stripFileNodes(extractJs(join(fixturesDir, 'next-app', 'app', '(marketing)', 'dashboard', '[team]', 'actions.ts'))),
+      stripFileNodes(extractJs(join(fixturesDir, 'next-app', 'app', '(marketing)', 'dashboard', '[team]', 'ClientTeamPanel.tsx'))),
+      stripFileNodes(extractJs(join(fixturesDir, 'next-app', 'app', 'api', 'teams', '[team]', 'route.ts'))),
+      stripFileNodes(extractJs(join(fixturesDir, 'next-pages', 'pages', 'account.tsx'))),
+      stripFileNodes(extractJs(join(fixturesDir, 'next-pages', 'pages', '_app.tsx'))),
+      stripFileNodes(extractJs(join(fixturesDir, 'next-pages', 'pages', '_document.tsx'))),
+      stripFileNodes(extractJs(join(fixturesDir, 'next-pages', 'pages', '_error.tsx'))),
+      stripFileNodes(extractJs(join(fixturesDir, 'next-pages', 'pages', 'api', 'auth', '[...nextauth].ts'))),
+    ],
+    { directed: true },
+  )
 }
 
 const RUNNER_GRAPH_PATH = join(process.cwd(), 'graphify-out', 'graph.json')
@@ -176,6 +221,63 @@ describe('retrieval quality benchmark', () => {
     expect(output).toContain('retrieval quality benchmark')
     expect(output).toContain('Recall:')
     expect(output).toContain('MRR:')
+  })
+
+  it('keeps framework-aware retrieval accurate and compact across the five supported JS/TS frameworks', () => {
+    const graph = buildFrameworkSupportGraph()
+    const questions: GoldQuestion[] = [
+      { question: 'where is GET /api/users/:id defined', expected_labels: ['GET /api/users/:id'] },
+      { question: 'which slice owns auth state', expected_labels: ['auth slice'] },
+      { question: 'which route renders settings page', expected_labels: ['/settings'] },
+      { question: 'which nest controller calls AuthService', expected_labels: ['AuthController'] },
+      { question: 'which next route owns the team settings page', expected_labels: ['/dashboard/[team]'] },
+    ]
+
+    const report = evaluateRetrievalQuality(graph, questions, 4000)
+    const crossPlatformSlack = { returned: 1, tokens: 75, lowLevel: 1 }
+    const expectedCeilings = new Map([
+      ['where is GET /api/users/:id defined', { returned: 12, tokens: 650, lowLevel: 4 }],
+      ['which slice owns auth state', { returned: 17, tokens: 850, lowLevel: 10 }],
+      ['which route renders settings page', { returned: 17, tokens: 900, lowLevel: 12 }],
+      ['which nest controller calls AuthService', { returned: 12, tokens: 650, lowLevel: 6 }],
+      ['which next route owns the team settings page', { returned: 25, tokens: 1400, lowLevel: 20 }],
+    ])
+
+    expect(report.total_questions).toBe(5)
+    expect(report.avg_recall).toBe(1)
+    expect(report.mrr).toBe(1)
+    for (const question of report.questions) {
+      const ceilings = expectedCeilings.get(question.question)
+      expect(ceilings).toBeDefined()
+      expect(question.reciprocal_rank).toBe(1)
+      expect(question.returned_labels.length).toBeLessThanOrEqual(ceilings!.returned + crossPlatformSlack.returned)
+      expect(question.tokens_used).toBeLessThanOrEqual(ceilings!.tokens + crossPlatformSlack.tokens)
+    }
+
+    const lowLevelNodeCounts = [
+      retrieveContext(graph, { question: 'where is GET /api/users/:id defined', budget: 4000, fileType: 'code' }),
+      retrieveContext(graph, { question: 'which slice owns auth state', budget: 4000, fileType: 'code' }),
+      retrieveContext(graph, { question: 'which route renders settings page', budget: 4000, fileType: 'code' }),
+      retrieveContext(graph, { question: 'which nest controller calls AuthService', budget: 4000, fileType: 'code' }),
+      retrieveContext(graph, { question: 'which next route owns the team settings page', budget: 4000, fileType: 'code' }),
+    ].map((result) => ({
+      question: result.question,
+      lowLevel: result.matched_nodes.filter(
+        (node) =>
+          node.node_kind !== 'route' &&
+          node.node_kind !== 'slice' &&
+          node.node_kind !== 'store' &&
+          node.framework_role !== 'express_route' &&
+          node.framework_role !== 'react_router_route' &&
+          node.framework_role !== 'nest_controller' &&
+          node.framework_role !== 'next_route' &&
+          node.framework_role !== 'next_page',
+      ).length,
+    }))
+
+    for (const result of lowLevelNodeCounts) {
+      expect(result.lowLevel).toBeLessThanOrEqual(expectedCeilings.get(result.question)!.lowLevel + crossPlatformSlack.lowLevel)
+    }
   })
 
   it('executes each labeled eval question through the runner and reports provider usage averages', async () => {

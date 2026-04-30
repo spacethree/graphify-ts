@@ -626,6 +626,68 @@ describe('impact', () => {
       expect(compactResult.direct_dependents[0]).not.toHaveProperty('file_type')
       expect(compactResult.direct_dependents[0]).not.toHaveProperty('community_label')
     })
+
+    it('shows nest controllers, modules, and routes as dependents of injected services', () => {
+      const fixturesDir = join(process.cwd(), 'tests', 'fixtures')
+      const graph = build([
+        extractJs(join(fixturesDir, 'nest-auth.module.ts')),
+        extractJs(join(fixturesDir, 'nest-auth.controller.ts')),
+        extractJs(join(fixturesDir, 'nest-auth.service.ts')),
+      ], { directed: true })
+
+      const result = analyzeImpact(graph, {}, { label: 'AuthService', depth: 2 })
+
+      expect(result.direct_dependents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ label: 'AuthController', relation: 'injects' }),
+          expect.objectContaining({ label: 'AuthModule', relation: 'provides' }),
+        ]),
+      )
+      expect(result.transitive_dependents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ label: 'GET /auth/profile', relation: 'depends_on' }),
+          expect.objectContaining({ label: 'POST /auth/login', relation: 'depends_on' }),
+        ]),
+      )
+    })
+
+    it('shows next routes as dependents of middleware and shared pages wrappers', () => {
+      const fixturesDir = join(process.cwd(), 'tests', 'fixtures')
+      const graph = build([
+        extractJs(join(fixturesDir, 'next-app', 'middleware.ts')),
+        extractJs(join(fixturesDir, 'next-app', 'app', '(marketing)', 'dashboard', '[team]', 'layout.tsx')),
+        extractJs(join(fixturesDir, 'next-app', 'app', '(marketing)', 'dashboard', '[team]', 'page.tsx')),
+        extractJs(join(fixturesDir, 'next-app', 'app', '(marketing)', 'dashboard', '[team]', 'template.tsx')),
+        extractJs(join(fixturesDir, 'next-app', 'app', '(marketing)', 'dashboard', '[team]', 'loading.tsx')),
+        extractJs(join(fixturesDir, 'next-app', 'app', '(marketing)', 'dashboard', '[team]', 'error.tsx')),
+        extractJs(join(fixturesDir, 'next-app', 'app', '(marketing)', 'dashboard', '[team]', 'not-found.tsx')),
+        extractJs(join(fixturesDir, 'next-app', 'app', '(marketing)', 'dashboard', '[team]', '@modal', 'default.tsx')),
+        extractJs(join(fixturesDir, 'next-app', 'app', '(marketing)', 'dashboard', '[team]', 'actions.ts')),
+        extractJs(join(fixturesDir, 'next-app', 'app', '(marketing)', 'dashboard', '[team]', 'ClientTeamPanel.tsx')),
+        extractJs(join(fixturesDir, 'next-app', 'app', 'api', 'teams', '[team]', 'route.ts')),
+        extractJs(join(fixturesDir, 'next-pages', 'pages', 'account.tsx')),
+        extractJs(join(fixturesDir, 'next-pages', 'pages', '_app.tsx')),
+        extractJs(join(fixturesDir, 'next-pages', 'pages', '_document.tsx')),
+        extractJs(join(fixturesDir, 'next-pages', 'pages', '_error.tsx')),
+        extractJs(join(fixturesDir, 'next-pages', 'pages', 'api', 'auth', '[...nextauth].ts')),
+      ], { directed: true })
+
+      const middlewareResult = analyzeImpact(graph, {}, { label: 'middleware', depth: 2 })
+      expect(middlewareResult.direct_dependents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ label: '/dashboard/[team]', relation: 'middleware' }),
+          expect.objectContaining({ label: 'GET /api/teams/[team]', relation: 'middleware' }),
+          expect.objectContaining({ label: 'POST /api/teams/[team]', relation: 'middleware' }),
+        ]),
+      )
+
+      const appResult = analyzeImpact(graph, {}, { label: '_app', depth: 2 })
+      expect(appResult.direct_dependents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ label: '/account', relation: 'depends_on' }),
+        ]),
+      )
+    })
   })
 
   describe('callChains', () => {

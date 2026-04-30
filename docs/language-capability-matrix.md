@@ -1,6 +1,6 @@
 # Language and capability matrix
 
-This is the public support matrix for `graphify-ts` as of `v0.9.0`. It distinguishes between:
+This is the public support matrix for `graphify-ts` on the current mainline. It distinguishes between:
 
 - **Primary extractor path** - the implementation used when the runtime has everything it needs
 - **Fallback path** - what happens when a parser is unavailable at runtime
@@ -12,7 +12,7 @@ The registry lives in `src/infrastructure/capabilities.ts`. The extractor bindin
 
 | Coverage tier | Extensions | Primary path | Fallback / notes |
 |---|---|---|---|
-| TypeScript / JavaScript AST | `.ts` `.tsx` `.js` `.jsx` | TypeScript compiler API + framework-semantic pass | Best code-structure coverage in the repo today, including framework-aware semantics for Express, Redux Toolkit, and React Router |
+| TypeScript / JavaScript AST | `.ts` `.tsx` `.js` `.jsx` | TypeScript compiler API + framework-semantic pass | Best code-structure coverage in the repo today, including deep framework-aware semantics for mainstream Express, Redux Toolkit, React Router, NestJS, and Next.js patterns; `retrieve`/`impact` also support explicit `compact: true` responses for smaller framework-heavy payloads |
 | Tree-sitter primary | `.py` `.rb` | Tree-sitter WASM parser | Falls back to language-specific legacy extractor if the parser is unavailable |
 | Tree-sitter primary | `.go` `.java` `.rs` | Tree-sitter WASM parser | Falls back to the generic structural extractor if the parser is unavailable |
 | Generic structural extractor | `.c` `.cc` `.cpp` `.cxx` `.h` `.hpp` `.kt` `.kts` `.cs` `.scala` `.php` `.swift` `.zig` | Generic extractor | Heuristic structure, import, inheritance, and call extraction |
@@ -53,5 +53,6 @@ These ingestors fetch structured content into the local project so the normal gr
 - **Tree-sitter primary** means the runtime prefers a WASM grammar, then logs a one-time warning and falls back locally if that grammar is unavailable.
 - **Generic** means the extractor is intentionally heuristic. It is useful for structure discovery, but it is not the same depth as the TypeScript AST path.
 - **Metadata-only** means the graph will know the asset exists and keep file metadata, but it will not derive OCR, captions, or transcripts.
+- **Framework-aware JS/TS** means mainstream framework conventions are modeled directly; heavily dynamic wrappers, runtime-generated routes, and custom decorator meta-programming still fall back to the base AST graph.
 
 If you need exact command-level proof for the benchmark, eval, compare, and federation surfaces, see [proof-workflows.md](./proof-workflows.md).

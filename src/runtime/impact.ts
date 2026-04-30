@@ -56,10 +56,29 @@ interface CommunityPathSummary {
 }
 
 function frameworkSummaryRank(node: Pick<ImpactNode, 'node_kind'> & { framework_role?: string | null }): number {
-  if (node.node_kind === 'route' || node.framework_role === 'express_route' || node.framework_role === 'react_router_route') {
+  if (
+    node.node_kind === 'route' ||
+    node.framework_role === 'express_route' ||
+    node.framework_role === 'react_router_route' ||
+    node.framework_role === 'nest_route' ||
+    node.framework_role === 'next_route' ||
+    node.framework_role === 'next_route_handler'
+  ) {
     return 4
   }
-  if (node.node_kind === 'slice' || node.node_kind === 'store' || node.framework_role === 'redux_slice' || node.framework_role === 'redux_store') {
+  if (
+    node.node_kind === 'slice' ||
+    node.node_kind === 'store' ||
+    node.framework_role === 'redux_slice' ||
+    node.framework_role === 'redux_store' ||
+    node.framework_role === 'nest_module' ||
+    node.framework_role === 'nest_controller' ||
+    node.framework_role === 'next_page' ||
+    node.framework_role === 'next_layout' ||
+    node.framework_role === 'next_pages_app' ||
+    node.framework_role === 'next_pages_document' ||
+    node.framework_role === 'next_pages_error'
+  ) {
     return 3
   }
   if (
@@ -70,7 +89,19 @@ function frameworkSummaryRank(node: Pick<ImpactNode, 'node_kind'> & { framework_
     node.framework_role === 'redux_thunk' ||
     node.framework_role === 'react_router_loader' ||
     node.framework_role === 'react_router_action' ||
-    node.framework_role === 'react_router_component'
+    node.framework_role === 'react_router_component' ||
+    node.framework_role === 'nest_provider' ||
+    node.framework_role === 'nest_guard' ||
+    node.framework_role === 'nest_pipe' ||
+    node.framework_role === 'nest_interceptor' ||
+    node.framework_role === 'next_template' ||
+    node.framework_role === 'next_loading' ||
+    node.framework_role === 'next_error' ||
+    node.framework_role === 'next_not_found' ||
+    node.framework_role === 'next_default' ||
+    node.framework_role === 'next_middleware' ||
+    node.framework_role === 'next_server_action' ||
+    node.framework_role === 'next_client_component'
   ) {
     return 2
   }

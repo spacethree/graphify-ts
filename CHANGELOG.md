@@ -4,6 +4,17 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-04-30
+
+### Added
+
+- **Framework-aware JS/TS expansion**: added deep semantic extraction and retrieval/impact ranking support for NestJS and Next.js, extending the existing Express, Redux Toolkit, and React Router coverage to all five planned mainstream JS/TS frameworks
+
+### Improved
+
+- **Framework benchmark guardrails**: benchmark-quality tests now lock representative Express, Redux Toolkit, React Router, NestJS, and Next.js questions to top-hit accuracy plus measured returned-label and token ceilings on a mixed framework graph
+- **Framework support docs**: updated the README, capability matrix, and product-positioning example to describe the five-framework coverage honestly, including the boundary between mainstream conventions and dynamic fallback behavior
+
 ## [0.9.0] - 2026-04-30
 
 ### Added

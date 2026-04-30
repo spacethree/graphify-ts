@@ -16,7 +16,7 @@
 
 - **Generate local graph artifacts** for a repository or mixed project folder
 - **Give AI agents structured codebase context** via MCP tools (`retrieve`, `impact`, `call_chain`, `pr_impact`)
-- **Understand mainstream JS/TS app structure** with framework-aware extraction for Express, Redux Toolkit, and React Router
+- **Understand mainstream JS/TS app structure** with framework-aware extraction for Express, Redux Toolkit, React Router, NestJS, and Next.js
 - **Explore the graph** through interactive HTML, reports, and CLI commands
 - **Analyze blast radius** before making changes — know what breaks across modules and repos
 - **Federate multiple repos** into a single queryable super-graph
@@ -48,9 +48,13 @@ For TypeScript and JavaScript repositories, `graphify-ts` now adds a framework-s
 - **Express**: apps, routers, mounted routers, route nodes, middleware ownership, and handler relationships
 - **Redux Toolkit**: slices, actions, selectors, thunks, and store registration
 - **React Router**: object routes, JSX routes, loaders, actions, nested routes, and route/component binding
+- **NestJS**: modules, controllers, route decorators, providers, constructor injection, guards, pipes, and interceptors
+- **Next.js**: App Router and Pages Router ownership, layouts/templates/loading/error states, route handlers, middleware reachability, client/server boundaries, and server actions
 - **Compact MCP mode**: `retrieve` and `impact` accept `compact: true` for smaller framework-aware payloads while the default MCP response shape stays backward-compatible
 
-That means agents can answer questions like “which middleware protects this route?”, “which slice owns auth state?”, or “which route loads this page?” with higher-signal nodes instead of only low-level helpers.
+That means agents can answer questions like “which middleware protects this route?”, “which slice owns auth state?”, “which Nest controller calls this service?”, or “which Next route/layout owns this page?” with higher-signal nodes instead of only low-level helpers.
+
+The deep coverage target is **mainstream framework conventions**, not every possible abstraction layer. Runtime-generated routes, heavily meta-programmed decorators, and custom wrapper stacks still fall back to the base AST graph rather than pretending to be first-class framework semantics.
 
 What you get in `graphify-out/`:
 
@@ -237,7 +241,7 @@ The public support matrix is in [docs/language-capability-matrix.md](docs/langua
 
 | Area | Current implementation |
 |---|---|
-| TypeScript / JavaScript | TypeScript compiler API plus framework-aware semantics for Express, Redux Toolkit, and React Router |
+| TypeScript / JavaScript | TypeScript compiler API plus framework-aware semantics for Express, Redux Toolkit, React Router, NestJS, and Next.js mainstream conventions |
 | Python / Ruby / Go / Java / Rust | Tree-sitter WASM primary path with local fallback |
 | C-family / Kotlin / C# / Scala / PHP / Swift / Zig | Generic structural extractor |
 | Lua / Elixir / Julia / PowerShell / Objective-C / TOC | Lightweight language-specific scanners |
