@@ -2655,6 +2655,92 @@ describe('retrieve', () => {
       expect(result.matched_nodes.find((node) => node.label === 'SessionManager')?.relevance_band).toBe('related')
       expect(result.matched_nodes.find((node) => node.label === 'BillingStore')?.relevance_band).toBe('peripheral')
     })
+
+    it('answers nest controller and service questions with extracted nest semantics', () => {
+      const fixturesDir = join(process.cwd(), 'tests', 'fixtures')
+      const graph = build([
+        extractJs(join(fixturesDir, 'nest-auth.module.ts')),
+        extractJs(join(fixturesDir, 'nest-auth.controller.ts')),
+        extractJs(join(fixturesDir, 'nest-auth.service.ts')),
+      ])
+
+      const result = retrieveContext(graph, {
+        question: 'which nest controller calls AuthService',
+        budget: 5000,
+        fileType: 'code',
+      })
+
+      expect(result.matched_nodes[0]).toEqual(
+        expect.objectContaining({
+          label: 'AuthController',
+          framework_role: 'nest_controller',
+          framework: 'nestjs',
+        }),
+      )
+      expect(result.matched_nodes[0]?.framework_boost).toBeGreaterThan(0)
+    })
+
+    it('answers next route, client, and server-action questions with extracted next semantics', () => {
+      const fixturesDir = join(process.cwd(), 'tests', 'fixtures')
+      const graph = build([
+        extractJs(join(fixturesDir, 'next-app', 'middleware.ts')),
+        extractJs(join(fixturesDir, 'next-app', 'app', '(marketing)', 'dashboard', '[team]', 'layout.tsx')),
+        extractJs(join(fixturesDir, 'next-app', 'app', '(marketing)', 'dashboard', '[team]', 'page.tsx')),
+        extractJs(join(fixturesDir, 'next-app', 'app', '(marketing)', 'dashboard', '[team]', 'template.tsx')),
+        extractJs(join(fixturesDir, 'next-app', 'app', '(marketing)', 'dashboard', '[team]', 'loading.tsx')),
+        extractJs(join(fixturesDir, 'next-app', 'app', '(marketing)', 'dashboard', '[team]', 'error.tsx')),
+        extractJs(join(fixturesDir, 'next-app', 'app', '(marketing)', 'dashboard', '[team]', 'not-found.tsx')),
+        extractJs(join(fixturesDir, 'next-app', 'app', '(marketing)', 'dashboard', '[team]', '@modal', 'default.tsx')),
+        extractJs(join(fixturesDir, 'next-app', 'app', '(marketing)', 'dashboard', '[team]', 'actions.ts')),
+        extractJs(join(fixturesDir, 'next-app', 'app', '(marketing)', 'dashboard', '[team]', 'ClientTeamPanel.tsx')),
+        extractJs(join(fixturesDir, 'next-app', 'app', 'api', 'teams', '[team]', 'route.ts')),
+        extractJs(join(fixturesDir, 'next-pages', 'pages', 'account.tsx')),
+        extractJs(join(fixturesDir, 'next-pages', 'pages', '_app.tsx')),
+        extractJs(join(fixturesDir, 'next-pages', 'pages', '_document.tsx')),
+        extractJs(join(fixturesDir, 'next-pages', 'pages', '_error.tsx')),
+        extractJs(join(fixturesDir, 'next-pages', 'pages', 'api', 'auth', '[...nextauth].ts')),
+      ])
+
+      const routeResult = retrieveContext(graph, {
+        question: 'which next route owns the team settings page',
+        budget: 5000,
+        fileType: 'code',
+      })
+      expect(routeResult.matched_nodes[0]).toEqual(
+        expect.objectContaining({
+          label: '/dashboard/[team]',
+          framework: 'nextjs',
+          framework_role: 'next_route',
+        }),
+      )
+
+      const clientResult = retrieveContext(graph, {
+        question: 'which next component is client only',
+        budget: 5000,
+        fileType: 'code',
+      })
+      expect(clientResult.matched_nodes[0]).toEqual(
+        expect.objectContaining({
+          label: 'ClientTeamPanel()',
+          framework: 'nextjs',
+          framework_role: 'next_client_component',
+        }),
+      )
+
+      const actionResult = retrieveContext(graph, {
+        question: 'which next server action updates team settings',
+        budget: 5000,
+        fileType: 'code',
+      })
+      expect(actionResult.matched_nodes[0]).toEqual(
+        expect.objectContaining({
+          label: 'saveTeamSettings()',
+          framework: 'nextjs',
+          framework_role: 'next_server_action',
+        }),
+      )
+      expect(actionResult.matched_nodes[0]?.framework_boost).toBeGreaterThan(0)
+    })
   })
 
   describe('tokenWeightsForQuestion', () => {

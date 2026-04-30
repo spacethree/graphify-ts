@@ -35,6 +35,8 @@ export interface RetrieveMatchedNode {
   source_file: string
   line_number: number
   node_kind: string
+  framework?: string | undefined
+  framework_role?: string | undefined
   framework_boost?: number
   file_type: string
   snippet: string | null
@@ -244,6 +246,8 @@ interface ScoredNode {
   sourceFile: string
   lineNumber: number
   nodeKind: string
+  framework?: string | undefined
+  frameworkRole?: string | undefined
   fileType: string
   community: number | null
   frameworkBoost: number
@@ -259,15 +263,28 @@ interface FrameworkQuestionProfile {
   express: boolean
   redux: boolean
   reactRouter: boolean
+  nest: boolean
+  next: boolean
   routeIntent: boolean
   middlewareIntent: boolean
   handlerIntent: boolean
+  controllerIntent: boolean
+  pageIntent: boolean
+  layoutIntent: boolean
+  clientIntent: boolean
+  serverIntent: boolean
+  apiIntent: boolean
   selectorIntent: boolean
   sliceIntent: boolean
   storeIntent: boolean
   renderIntent: boolean
   loaderIntent: boolean
   actionIntent: boolean
+  moduleIntent: boolean
+  providerIntent: boolean
+  guardIntent: boolean
+  interceptorIntent: boolean
+  pipeIntent: boolean
 }
 
 function normalizeSeedText(value: string): string {
@@ -409,34 +426,66 @@ function buildFrameworkQuestionProfile(question: string, questionTokens: readonl
   const routeIntent = hasHttpVerb || hasRoutePath || hasRouteKeyword
   const explicitExpress = includesAnyToken(questionTokens, ['express'])
   const explicitRedux = includesAnyToken(questionTokens, ['redux', 'toolkit'])
+  const explicitNest = includesAnyToken(questionTokens, ['nest', 'nestjs'])
+  const explicitNext = includesAnyToken(questionTokens, ['next', 'nextjs'])
   const mentionsReact = includesAnyToken(questionTokens, ['react'])
   const explicitReactRouter = /\breact(?:\s|-)?router\b/i.test(question)
   const middlewareIntent = includesAnyToken(questionTokens, ['middleware', 'guard'])
-  const handlerIntent = includesAnyToken(questionTokens, ['handler', 'handlers', 'controller', 'controllers'])
+  const handlerIntent = includesAnyToken(questionTokens, ['handler', 'handlers'])
+  const controllerIntent = includesAnyToken(questionTokens, ['controller', 'controllers'])
+  const pageIntent = includesAnyToken(questionTokens, ['page', 'pages'])
+  const layoutIntent = includesAnyToken(questionTokens, ['layout', 'layouts', 'template', 'templates', 'loading', 'error', 'document', 'default'])
+  const clientIntent = includesAnyToken(questionTokens, ['client', 'browser'])
+  const serverIntent = includesAnyToken(questionTokens, ['server', 'servers'])
+  const apiIntent = includesAnyToken(questionTokens, ['api'])
   const selectorIntent = includesAnyToken(questionTokens, ['selector', 'selectors'])
   const sliceIntent = includesAnyToken(questionTokens, ['slice', 'slices', 'state'])
   const storeIntent = includesAnyToken(questionTokens, ['store', 'stores', 'reducer', 'reducers'])
   const renderIntent = includesAnyToken(questionTokens, ['render', 'renders', 'page', 'pages', 'component', 'components'])
   const loaderIntent = includesAnyToken(questionTokens, ['loader', 'loaders', 'load'])
   const actionIntent = includesAnyToken(questionTokens, ['action', 'actions', 'submit', 'submits', 'dispatch'])
+  const moduleIntent = includesAnyToken(questionTokens, ['module', 'modules'])
+  const providerIntent = includesAnyToken(questionTokens, ['provider', 'providers', 'service', 'services', 'injectable', 'injectables'])
+  const guardIntent = includesAnyToken(questionTokens, ['guard', 'guards'])
+  const interceptorIntent = includesAnyToken(questionTokens, ['interceptor', 'interceptors'])
+  const pipeIntent = includesAnyToken(questionTokens, ['pipe', 'pipes'])
   const express = explicitExpress || hasHttpVerb || middlewareIntent || handlerIntent
   const redux = explicitRedux || selectorIntent || sliceIntent || storeIntent
   const reactRouter = routeIntent && !express && (explicitReactRouter || mentionsReact || renderIntent || loaderIntent || actionIntent)
+  const nest = explicitNest || controllerIntent || moduleIntent || guardIntent || interceptorIntent || pipeIntent
+  const next =
+    explicitNext ||
+    /\bnext(?:\.js)?\b/i.test(question) ||
+    /\b(_app|_document|not-found)\b/i.test(question) ||
+    ((pageIntent || layoutIntent || clientIntent || serverIntent || apiIntent) && includesAnyToken(questionTokens, ['route', 'routes', 'middleware', 'action', 'actions']))
 
   return {
-    frameworkShaped: express || redux || reactRouter,
+    frameworkShaped: express || redux || reactRouter || nest || next,
     express,
     redux,
     reactRouter,
+    nest,
+    next,
     routeIntent,
     middlewareIntent,
     handlerIntent,
+    controllerIntent,
+    pageIntent,
+    layoutIntent,
+    clientIntent,
+    serverIntent,
+    apiIntent,
     selectorIntent,
     sliceIntent,
     storeIntent,
     renderIntent,
     loaderIntent,
     actionIntent,
+    moduleIntent,
+    providerIntent,
+    guardIntent,
+    interceptorIntent,
+    pipeIntent,
   }
 }
 
@@ -499,6 +548,64 @@ function frameworkBoostForNode(
     }
   }
 
+  if (profile.nest) {
+    if (frameworkRole === 'nest_route') {
+      boost += profile.routeIntent ? 3.5 : 1.25
+    }
+    if (frameworkRole === 'nest_controller') {
+      boost += profile.controllerIntent || profile.routeIntent ? 3.5 : 1.75
+    }
+    if (frameworkRole === 'nest_module') {
+      boost += profile.moduleIntent ? 2.5 : 1
+    }
+    if (frameworkRole === 'nest_provider') {
+      boost += profile.providerIntent || profile.controllerIntent ? 2.25 : 1
+    }
+    if (frameworkRole === 'nest_guard') {
+      boost += profile.guardIntent || profile.middlewareIntent ? 2.5 : 0.75
+    }
+    if (frameworkRole === 'nest_interceptor') {
+      boost += profile.interceptorIntent ? 2.5 : 0.75
+    }
+    if (frameworkRole === 'nest_pipe') {
+      boost += profile.pipeIntent ? 2.5 : 0.75
+    }
+  }
+
+  if (profile.next) {
+    if (frameworkRole === 'next_route') {
+      boost += profile.routeIntent || profile.pageIntent ? 3.75 : 1.5
+    }
+    if (frameworkRole === 'next_route_handler') {
+      boost += profile.apiIntent ? 3.75 : profile.routeIntent ? 1.25 : 0.5
+    }
+    if (frameworkRole === 'next_page') {
+      boost += profile.pageIntent || profile.routeIntent ? 3.25 : 1.5
+    }
+    if (
+      frameworkRole === 'next_layout' ||
+      frameworkRole === 'next_template' ||
+      frameworkRole === 'next_loading' ||
+      frameworkRole === 'next_error' ||
+      frameworkRole === 'next_not_found' ||
+      frameworkRole === 'next_default' ||
+      frameworkRole === 'next_pages_app' ||
+      frameworkRole === 'next_pages_document' ||
+      frameworkRole === 'next_pages_error'
+    ) {
+      boost += profile.layoutIntent || profile.pageIntent || profile.routeIntent ? 2.5 : 1
+    }
+    if (frameworkRole === 'next_middleware') {
+      boost += profile.middlewareIntent ? 3 : 1.25
+    }
+    if (frameworkRole === 'next_server_action') {
+      boost += profile.actionIntent || profile.serverIntent ? 3.25 : 1.25
+    }
+    if (frameworkRole === 'next_client_component') {
+      boost += profile.clientIntent || profile.renderIntent ? 3.25 : 1.25
+    }
+  }
+
   if (profile.frameworkShaped && boost === 0 && ['function', 'class', 'variable'].includes(nodeKind)) {
     boost -= 0.5
   }
@@ -545,6 +652,7 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
     const label = String(attributes.label ?? '')
     const sourceFile = String(attributes.source_file ?? '')
     const nodeKind = String(attributes.node_kind ?? '')
+    const framework = typeof attributes.framework === 'string' ? attributes.framework : undefined
     const frameworkRole = String(attributes.framework_role ?? '')
     const score = scoreSeedCandidate(
       question,
@@ -562,15 +670,17 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
         sourceFile,
         lineNumber: typeof attributes.line_number === 'number' ? attributes.line_number : 0,
         nodeKind,
+        framework,
+        frameworkRole: frameworkRole || undefined,
         fileType,
         community,
-      frameworkBoost: frameworkBoostForNode(frameworkProfile, nodeKind, frameworkRole),
-      exactLabelMatch: score.labelExactScore > 0,
-      sourcePathMatch: score.sourcePathScore > 0,
-      evidenceTier: evidenceTierForSeedScore(score),
-      score: score.total + frameworkBoostForNode(frameworkProfile, nodeKind, frameworkRole),
-      relevanceBand: score.labelExactScore > 0 || score.labelTokenScore > 0 ? 'direct' : 'related',
-    })
+        frameworkBoost: frameworkBoostForNode(frameworkProfile, nodeKind, frameworkRole),
+        exactLabelMatch: score.labelExactScore > 0,
+        sourcePathMatch: score.sourcePathScore > 0,
+        evidenceTier: evidenceTierForSeedScore(score),
+        score: score.total + frameworkBoostForNode(frameworkProfile, nodeKind, frameworkRole),
+        relevanceBand: score.labelExactScore > 0 || score.labelTokenScore > 0 ? 'direct' : 'related',
+      })
     }
   }
 
@@ -680,6 +790,8 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
       sourceFile: String(attributes.source_file ?? ''),
       lineNumber: typeof attributes.line_number === 'number' ? attributes.line_number : 0,
       nodeKind: String(attributes.node_kind ?? ''),
+      framework: typeof attributes.framework === 'string' ? attributes.framework : undefined,
+      frameworkRole: typeof attributes.framework_role === 'string' ? attributes.framework_role : undefined,
       fileType,
       community,
       frameworkBoost: 0,
@@ -751,6 +863,8 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
       source_file: node.sourceFile,
       line_number: node.lineNumber,
       node_kind: node.nodeKind,
+      framework: node.framework,
+      framework_role: node.frameworkRole,
       framework_boost: node.frameworkBoost,
       file_type: node.fileType,
       snippet,

@@ -209,6 +209,8 @@ That progression keeps the proof honest:
 
 ## Capability Coverage Matters
 
-`graphify-ts` does not use one extractor for everything. Today the strongest code path is TypeScript/JavaScript via the TypeScript compiler API plus a framework-semantic pass for Express, Redux Toolkit, and React Router; Go, Java, Python, Ruby, and Rust use tree-sitter first with local fallback; several other languages use heuristic extractors; and images/audio/video are metadata only.
+`graphify-ts` does not use one extractor for everything. Today the strongest code path is TypeScript/JavaScript via the TypeScript compiler API plus a framework-semantic pass for Express, Redux Toolkit, React Router, NestJS, and Next.js; Go, Java, Python, Ruby, and Rust use tree-sitter first with local fallback; several other languages use heuristic extractors; and images/audio/video are metadata only.
+
+For JS/TS specifically, the promise is deep support for **mainstream framework conventions**: Express routing/middleware, Redux Toolkit slices/selectors/store wiring, React Router routes/loaders/actions, NestJS modules/controllers/providers, and Next.js App Router + Pages Router ownership. If a codebase relies on highly dynamic wrappers, runtime-generated routes, or custom decorator meta-programming, graphify-ts still extracts the underlying AST structure but does not overclaim first-class framework semantics for those cases.
 
 The exact matrix is published in [`docs/language-capability-matrix.md`](../docs/language-capability-matrix.md). That distinction is important when you are evaluating the tool for a polyglot codebase rather than a single TypeScript repo.

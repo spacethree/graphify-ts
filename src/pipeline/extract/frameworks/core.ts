@@ -1,12 +1,28 @@
 import type { ExtractionEdge, ExtractionNode } from '../../../contracts/types.js'
 import type { ExtractionFragment } from '../dispatch.js'
 import { expressAdapter } from './express.js'
+import { nestAdapter } from './nest.js'
+import { nextAdapter } from './next.js'
 import { reactRouterAdapter } from './react-router.js'
 import { reduxAdapter } from './redux.js'
 import type { JsFrameworkAdapter, JsFrameworkContext } from './types.js'
 
-const JS_FRAMEWORK_ADAPTERS: readonly JsFrameworkAdapter[] = [expressAdapter, reduxAdapter, reactRouterAdapter]
-const EXTERNAL_TARGET_RELATIONS = new Set(['depends_on', 'imports', 'imports_from', 'handles_route', 'middleware', 'mounts_router'])
+const JS_FRAMEWORK_ADAPTERS: readonly JsFrameworkAdapter[] = [expressAdapter, reduxAdapter, reactRouterAdapter, nestAdapter, nextAdapter]
+const EXTERNAL_TARGET_RELATIONS = new Set([
+  'depends_on',
+  'imports',
+  'imports_from',
+  'handles_route',
+  'middleware',
+  'mounts_router',
+  'declares_controller',
+  'provides',
+  'injects',
+  'uses_guard',
+  'uses_pipe',
+  'uses_interceptor',
+  'defines_action',
+])
 const EXTERNAL_SOURCE_RELATIONS = new Set(['handles_route', 'middleware', 'mounts_router', 'registers_route'])
 
 function mergeNodeAttributes(existing: ExtractionNode, incoming: ExtractionNode): ExtractionNode {

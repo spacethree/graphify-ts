@@ -2534,4 +2534,305 @@ describe('js framework extraction contract', () => {
       ]),
     )
   })
+
+  it('extracts nest modules, controllers, providers, routes, and controller attachments across files', () => {
+    const moduleFilePath = join(FIXTURES_DIR, 'nest-auth.module.ts')
+    const controllerFilePath = join(FIXTURES_DIR, 'nest-auth.controller.ts')
+    const serviceFilePath = join(FIXTURES_DIR, 'nest-auth.service.ts')
+
+    const moduleResult = extractJs(moduleFilePath)
+    const controllerResult = extractJs(controllerFilePath)
+    const serviceResult = extractJs(serviceFilePath)
+    const graph = build([moduleResult, controllerResult, serviceResult], { directed: true })
+
+    const moduleNodeId = nodeIdForLabel(moduleResult, 'AuthModule')
+    const controllerNodeId = nodeIdForLabel(controllerResult, 'AuthController')
+    const serviceNodeId = nodeIdForLabel(serviceResult, 'AuthService')
+    const guardNodeId = nodeIdForLabel(controllerResult, 'AuthGuard')
+    const pipeNodeId = nodeIdForLabel(controllerResult, 'TrimBodyPipe')
+    const interceptorNodeId = nodeIdForLabel(controllerResult, 'AuditInterceptor')
+    const profileRouteNodeId = nodeIdForLabel(controllerResult, 'GET /auth/profile')
+    const loginRouteNodeId = nodeIdForLabel(controllerResult, 'POST /auth/login')
+
+    expect([...moduleResult.nodes, ...controllerResult.nodes, ...serviceResult.nodes]).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: 'AuthModule', node_kind: 'class', framework: 'nestjs', framework_role: 'nest_module' }),
+        expect.objectContaining({ label: 'AuthController', node_kind: 'class', framework: 'nestjs', framework_role: 'nest_controller' }),
+        expect.objectContaining({ label: 'AuthService', node_kind: 'class', framework: 'nestjs', framework_role: 'nest_provider' }),
+        expect.objectContaining({ label: 'AuthGuard', node_kind: 'class', framework: 'nestjs', framework_role: 'nest_guard' }),
+        expect.objectContaining({ label: 'TrimBodyPipe', node_kind: 'class', framework: 'nestjs', framework_role: 'nest_pipe' }),
+        expect.objectContaining({ label: 'AuditInterceptor', node_kind: 'class', framework: 'nestjs', framework_role: 'nest_interceptor' }),
+        expect.objectContaining({
+          label: 'GET /auth/profile',
+          node_kind: 'route',
+          framework: 'nestjs',
+          framework_role: 'nest_route',
+          route_path: '/auth/profile',
+        }),
+        expect.objectContaining({
+          label: 'POST /auth/login',
+          node_kind: 'route',
+          framework: 'nestjs',
+          framework_role: 'nest_route',
+          route_path: '/auth/login',
+        }),
+      ]),
+    )
+
+    expect(moduleResult.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: moduleNodeId, target: controllerNodeId, relation: 'declares_controller' }),
+        expect.objectContaining({ source: moduleNodeId, target: serviceNodeId, relation: 'provides' }),
+      ]),
+    )
+    expect(controllerResult.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: controllerNodeId, target: serviceNodeId, relation: 'injects' }),
+        expect.objectContaining({ source: controllerNodeId, target: profileRouteNodeId, relation: 'handles_route' }),
+        expect.objectContaining({ source: controllerNodeId, target: loginRouteNodeId, relation: 'handles_route' }),
+        expect.objectContaining({ source: profileRouteNodeId, target: controllerNodeId, relation: 'depends_on' }),
+        expect.objectContaining({ source: profileRouteNodeId, target: guardNodeId, relation: 'uses_guard' }),
+        expect.objectContaining({ source: profileRouteNodeId, target: pipeNodeId, relation: 'uses_pipe' }),
+        expect.objectContaining({ source: profileRouteNodeId, target: interceptorNodeId, relation: 'uses_interceptor' }),
+      ]),
+    )
+
+    expect(graph.edgeAttributes(moduleNodeId, controllerNodeId)).toEqual(expect.objectContaining({ relation: 'declares_controller' }))
+    expect(graph.edgeAttributes(moduleNodeId, serviceNodeId)).toEqual(expect.objectContaining({ relation: 'provides' }))
+    expect(graph.edgeAttributes(controllerNodeId, serviceNodeId)).toEqual(expect.objectContaining({ relation: 'injects' }))
+    expect(graph.edgeAttributes(controllerNodeId, profileRouteNodeId)).toEqual(expect.objectContaining({ relation: 'handles_route' }))
+    expect(graph.edgeAttributes(profileRouteNodeId, controllerNodeId)).toEqual(expect.objectContaining({ relation: 'depends_on' }))
+    expect(graph.edgeAttributes(profileRouteNodeId, guardNodeId)).toEqual(expect.objectContaining({ relation: 'uses_guard' }))
+    expect(graph.edgeAttributes(profileRouteNodeId, pipeNodeId)).toEqual(expect.objectContaining({ relation: 'uses_pipe' }))
+    expect(graph.edgeAttributes(profileRouteNodeId, interceptorNodeId)).toEqual(expect.objectContaining({ relation: 'uses_interceptor' }))
+  })
+
+  it('extracts next app-router, pages-router, middleware, and boundary semantics across files', () => {
+    const nextAppDir = join(FIXTURES_DIR, 'next-app')
+    const nextPagesDir = join(FIXTURES_DIR, 'next-pages', 'pages')
+    const middlewareFilePath = join(nextAppDir, 'middleware.ts')
+    const layoutFilePath = join(nextAppDir, 'app', '(marketing)', 'dashboard', '[team]', 'layout.tsx')
+    const pageFilePath = join(nextAppDir, 'app', '(marketing)', 'dashboard', '[team]', 'page.tsx')
+    const templateFilePath = join(nextAppDir, 'app', '(marketing)', 'dashboard', '[team]', 'template.tsx')
+    const loadingFilePath = join(nextAppDir, 'app', '(marketing)', 'dashboard', '[team]', 'loading.tsx')
+    const errorFilePath = join(nextAppDir, 'app', '(marketing)', 'dashboard', '[team]', 'error.tsx')
+    const notFoundFilePath = join(nextAppDir, 'app', '(marketing)', 'dashboard', '[team]', 'not-found.tsx')
+    const defaultFilePath = join(nextAppDir, 'app', '(marketing)', 'dashboard', '[team]', '@modal', 'default.tsx')
+    const actionFilePath = join(nextAppDir, 'app', '(marketing)', 'dashboard', '[team]', 'actions.ts')
+    const clientFilePath = join(nextAppDir, 'app', '(marketing)', 'dashboard', '[team]', 'ClientTeamPanel.tsx')
+    const routeHandlerFilePath = join(nextAppDir, 'app', 'api', 'teams', '[team]', 'route.ts')
+    const accountFilePath = join(nextPagesDir, 'account.tsx')
+    const pagesAppFilePath = join(nextPagesDir, '_app.tsx')
+    const pagesDocumentFilePath = join(nextPagesDir, '_document.tsx')
+    const pagesErrorFilePath = join(nextPagesDir, '_error.tsx')
+    const pagesApiFilePath = join(nextPagesDir, 'api', 'auth', '[...nextauth].ts')
+
+    const middlewareResult = extractJs(middlewareFilePath)
+    const layoutResult = extractJs(layoutFilePath)
+    const pageResult = extractJs(pageFilePath)
+    const templateResult = extractJs(templateFilePath)
+    const loadingResult = extractJs(loadingFilePath)
+    const errorResult = extractJs(errorFilePath)
+    const notFoundResult = extractJs(notFoundFilePath)
+    const defaultResult = extractJs(defaultFilePath)
+    const actionResult = extractJs(actionFilePath)
+    const clientResult = extractJs(clientFilePath)
+    const routeHandlerResult = extractJs(routeHandlerFilePath)
+    const accountResult = extractJs(accountFilePath)
+    const pagesAppResult = extractJs(pagesAppFilePath)
+    const pagesDocumentResult = extractJs(pagesDocumentFilePath)
+    const pagesErrorResult = extractJs(pagesErrorFilePath)
+    const pagesApiResult = extractJs(pagesApiFilePath)
+    const graph = build([
+      middlewareResult,
+      layoutResult,
+      pageResult,
+      templateResult,
+      loadingResult,
+      errorResult,
+      notFoundResult,
+      defaultResult,
+      actionResult,
+      clientResult,
+      routeHandlerResult,
+      accountResult,
+      pagesAppResult,
+      pagesDocumentResult,
+      pagesErrorResult,
+      pagesApiResult,
+    ], { directed: true })
+
+    const appRouteNodeId = nodeIdForLabel(pageResult, '/dashboard/[team]')
+    const appPageNodeId = nodeIdForLabel(pageResult, 'page /dashboard/[team]')
+    const layoutNodeId = nodeIdForLabel(pageResult, 'layout /dashboard/[team]')
+    const templateNodeId = nodeIdForLabel(pageResult, 'template /dashboard/[team]')
+    const loadingNodeId = nodeIdForLabel(pageResult, 'loading /dashboard/[team]')
+    const errorNodeId = nodeIdForLabel(pageResult, 'error /dashboard/[team]')
+    const notFoundNodeId = nodeIdForLabel(pageResult, 'not-found /dashboard/[team]')
+    const defaultNodeId = nodeIdForLabel(pageResult, 'default /dashboard/[team] @modal')
+    const middlewareNodeId = nodeIdForLabel(pageResult, 'middleware')
+    const actionNodeId = nodeIdForLabel(pageResult, 'saveTeamSettings()')
+    const apiGetNodeId = nodeIdForLabel(routeHandlerResult, 'GET /api/teams/[team]')
+    const apiPostNodeId = nodeIdForLabel(routeHandlerResult, 'POST /api/teams/[team]')
+    const pagesRouteNodeId = nodeIdForLabel(accountResult, '/account')
+    const pagesPageNodeId = nodeIdForLabel(accountResult, 'page /account')
+    const pagesAppNodeId = nodeIdForLabel(accountResult, '_app')
+    const pagesDocumentNodeId = nodeIdForLabel(accountResult, '_document')
+    const pagesErrorNodeId = nodeIdForLabel(accountResult, '_error')
+
+    expect([
+      ...middlewareResult.nodes,
+      ...layoutResult.nodes,
+      ...pageResult.nodes,
+      ...templateResult.nodes,
+      ...loadingResult.nodes,
+      ...errorResult.nodes,
+      ...notFoundResult.nodes,
+      ...defaultResult.nodes,
+      ...actionResult.nodes,
+      ...clientResult.nodes,
+      ...routeHandlerResult.nodes,
+      ...accountResult.nodes,
+      ...pagesAppResult.nodes,
+      ...pagesDocumentResult.nodes,
+      ...pagesErrorResult.nodes,
+      ...pagesApiResult.nodes,
+    ]).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: '/dashboard/[team]', node_kind: 'route', framework: 'nextjs', framework_role: 'next_route', route_path: '/dashboard/[team]' }),
+        expect.objectContaining({ label: 'page /dashboard/[team]', node_kind: 'component', framework: 'nextjs', framework_role: 'next_page', route_path: '/dashboard/[team]', runtime_boundary: 'server' }),
+        expect.objectContaining({ label: 'layout /dashboard/[team]', node_kind: 'component', framework: 'nextjs', framework_role: 'next_layout', route_path: '/dashboard/[team]' }),
+        expect.objectContaining({ label: 'template /dashboard/[team]', node_kind: 'component', framework: 'nextjs', framework_role: 'next_template', route_path: '/dashboard/[team]' }),
+        expect.objectContaining({ label: 'loading /dashboard/[team]', node_kind: 'component', framework: 'nextjs', framework_role: 'next_loading', route_path: '/dashboard/[team]' }),
+        expect.objectContaining({ label: 'error /dashboard/[team]', node_kind: 'component', framework: 'nextjs', framework_role: 'next_error', route_path: '/dashboard/[team]', runtime_boundary: 'client' }),
+        expect.objectContaining({ label: 'not-found /dashboard/[team]', node_kind: 'component', framework: 'nextjs', framework_role: 'next_not_found', route_path: '/dashboard/[team]' }),
+        expect.objectContaining({ label: 'default /dashboard/[team] @modal', node_kind: 'component', framework: 'nextjs', framework_role: 'next_default', route_path: '/dashboard/[team]', parallel_slot: 'modal' }),
+        expect.objectContaining({ label: 'middleware', node_kind: 'function', framework: 'nextjs', framework_role: 'next_middleware' }),
+        expect.objectContaining({ label: 'GET /api/teams/[team]', node_kind: 'route', framework: 'nextjs', framework_role: 'next_route_handler', route_path: '/api/teams/[team]' }),
+        expect.objectContaining({ label: 'POST /api/teams/[team]', node_kind: 'route', framework: 'nextjs', framework_role: 'next_route_handler', route_path: '/api/teams/[team]' }),
+        expect.objectContaining({ label: '/account', node_kind: 'route', framework: 'nextjs', framework_role: 'next_route', route_path: '/account' }),
+        expect.objectContaining({ label: 'page /account', node_kind: 'component', framework: 'nextjs', framework_role: 'next_page', route_path: '/account', runtime_boundary: 'server' }),
+        expect.objectContaining({ label: 'API /api/auth/[...nextauth]', node_kind: 'route', framework: 'nextjs', framework_role: 'next_route_handler', route_path: '/api/auth/[...nextauth]' }),
+        expect.objectContaining({ label: '_app', node_kind: 'component', framework: 'nextjs', framework_role: 'next_pages_app' }),
+        expect.objectContaining({ label: '_document', node_kind: 'component', framework: 'nextjs', framework_role: 'next_pages_document' }),
+        expect.objectContaining({ label: '_error', node_kind: 'component', framework: 'nextjs', framework_role: 'next_pages_error' }),
+        expect.objectContaining({ label: 'saveTeamSettings()', node_kind: 'function', framework: 'nextjs', framework_role: 'next_server_action', runtime_boundary: 'server' }),
+        expect.objectContaining({ label: 'ClientTeamPanel()', framework: 'nextjs', framework_role: 'next_client_component', runtime_boundary: 'client' }),
+      ]),
+    )
+
+    expect(pageResult.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: appRouteNodeId, target: appPageNodeId, relation: 'depends_on' }),
+        expect.objectContaining({ source: appRouteNodeId, target: layoutNodeId, relation: 'depends_on' }),
+        expect.objectContaining({ source: appRouteNodeId, target: templateNodeId, relation: 'depends_on' }),
+        expect.objectContaining({ source: appRouteNodeId, target: loadingNodeId, relation: 'depends_on' }),
+        expect.objectContaining({ source: appRouteNodeId, target: errorNodeId, relation: 'depends_on' }),
+        expect.objectContaining({ source: appRouteNodeId, target: notFoundNodeId, relation: 'depends_on' }),
+        expect.objectContaining({ source: appRouteNodeId, target: defaultNodeId, relation: 'depends_on' }),
+        expect.objectContaining({ source: appRouteNodeId, target: middlewareNodeId, relation: 'middleware' }),
+        expect.objectContaining({ source: appPageNodeId, target: actionNodeId, relation: 'defines_action' }),
+      ]),
+    )
+    expect(routeHandlerResult.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: apiGetNodeId, target: middlewareNodeId, relation: 'middleware' }),
+        expect.objectContaining({ source: apiPostNodeId, target: middlewareNodeId, relation: 'middleware' }),
+      ]),
+    )
+    expect(accountResult.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: pagesRouteNodeId, target: pagesPageNodeId, relation: 'depends_on' }),
+        expect.objectContaining({ source: pagesRouteNodeId, target: pagesAppNodeId, relation: 'depends_on' }),
+        expect.objectContaining({ source: pagesRouteNodeId, target: pagesDocumentNodeId, relation: 'depends_on' }),
+        expect.objectContaining({ source: pagesRouteNodeId, target: pagesErrorNodeId, relation: 'depends_on' }),
+      ]),
+    )
+
+    expect(graph.edgeAttributes(appRouteNodeId, appPageNodeId)).toEqual(expect.objectContaining({ relation: 'depends_on' }))
+    expect(graph.edgeAttributes(appRouteNodeId, middlewareNodeId)).toEqual(expect.objectContaining({ relation: 'middleware' }))
+    expect(graph.edgeAttributes(apiGetNodeId, middlewareNodeId)).toEqual(expect.objectContaining({ relation: 'middleware' }))
+    expect(graph.edgeAttributes(pagesRouteNodeId, pagesAppNodeId)).toEqual(expect.objectContaining({ relation: 'depends_on' }))
+  })
+
+  it('matches next middleware parameters in the middle of a route pattern', () => {
+    const scratchDir = join(TEST_ARTIFACTS_DIR, 'next-middleware-parameter-middle')
+    try {
+      writeScratchFiles(scratchDir, {
+        'middleware.ts': [
+          'export default function middleware() {',
+          '  return null',
+          '}',
+          '',
+          'export const config = {',
+          "  matcher: ['/api/:userId/posts'],",
+          '}',
+        ].join('\n'),
+        'app/api/[userId]/posts/route.ts': [
+          'export async function GET() {',
+          '  return { ok: true }',
+          '}',
+        ].join('\n'),
+      })
+
+      const routeFilePath = join(scratchDir, 'app', 'api', '[userId]', 'posts', 'route.ts')
+      const routeResult = extractJs(routeFilePath)
+      const routeNodeId = nodeIdForLabel(routeResult, 'GET /api/[userId]/posts')
+      const middlewareNodeId = nodeIdForLabel(routeResult, 'middleware')
+
+      expect(routeResult.edges).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ source: routeNodeId, target: middlewareNodeId, relation: 'middleware' }),
+        ]),
+      )
+    } finally {
+      rmSync(scratchDir, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps imported nest providers distinct when same-named classes come from same-stem files', () => {
+    const scratchDir = join(TEST_ARTIFACTS_DIR, 'nest-same-stem-provider-collision')
+    try {
+      writeScratchFiles(scratchDir, {
+        'feature/auth.service.ts': [
+          "import { Injectable } from '@nestjs/common'",
+          '',
+          '@Injectable()',
+          'export class AuthService {}',
+        ].join('\n'),
+        'users/auth.service.ts': [
+          "import { Injectable } from '@nestjs/common'",
+          '',
+          '@Injectable()',
+          'export class AuthService {}',
+        ].join('\n'),
+        'app.module.ts': [
+          "import { Module } from '@nestjs/common'",
+          "import { AuthService as FeatureAuthService } from './feature/auth.service'",
+          "import { AuthService as UserAuthService } from './users/auth.service'",
+          '',
+          '@Module({',
+          '  providers: [FeatureAuthService, UserAuthService],',
+          '})',
+          'export class AppModule {}',
+        ].join('\n'),
+      })
+
+      const moduleResult = extractJs(join(scratchDir, 'app.module.ts'))
+      const featureResult = extractJs(join(scratchDir, 'feature', 'auth.service.ts'))
+      const userResult = extractJs(join(scratchDir, 'users', 'auth.service.ts'))
+      const graph = build([moduleResult, featureResult, userResult], { directed: true })
+      const providerNodes = moduleResult.nodes.filter((node) => node.label === 'AuthService' && node.framework_role === 'nest_provider')
+
+      expect(providerNodes).toHaveLength(2)
+      expect(new Set(providerNodes.map((node) => node.id)).size).toBe(2)
+      expect(new Set(providerNodes.map((node) => node.source_file)).size).toBe(2)
+      expect(moduleResult.edges.filter((edge) => edge.relation === 'provides')).toHaveLength(2)
+      expect(
+        [...graph.nodeEntries()].filter(([, attributes]) => attributes.label === 'AuthService' && attributes.framework_role === 'nest_provider'),
+      ).toHaveLength(2)
+    } finally {
+      rmSync(scratchDir, { recursive: true, force: true })
+    }
+  })
 })
