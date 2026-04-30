@@ -9,7 +9,7 @@ import { implementationChecklist } from '../implementation-checklist.js'
 import { analyzeImpact, callChains, compactImpactResult } from '../impact.js'
 import { analyzePrImpact } from '../pr-impact.js'
 import { relevantFiles } from '../relevant-files.js'
-import { compactRetrieveResult, retrieveContext } from '../retrieve.js'
+import { compactRetrieveResult, retrieveContext, retrieveContextAsync } from '../retrieve.js'
 import { riskMap } from '../risk-map.js'
 import type { TimeTravelView } from '../time-travel.js'
 import {
@@ -205,20 +205,39 @@ export function handleToolCall(id: string | number | null, graphPath: string, pa
       if (Object.hasOwn(toolArguments, 'verbose') && typeof toolArguments.verbose !== 'boolean') {
         return helpers.failure(id, helpers.jsonrpcInvalidParams, 'verbose must be a boolean')
       }
+      if (Object.hasOwn(toolArguments, 'semantic') && typeof toolArguments.semantic !== 'boolean') {
+        return helpers.failure(id, helpers.jsonrpcInvalidParams, 'semantic must be a boolean')
+      }
+      if (Object.hasOwn(toolArguments, 'rerank') && typeof toolArguments.rerank !== 'boolean') {
+        return helpers.failure(id, helpers.jsonrpcInvalidParams, 'rerank must be a boolean')
+      }
       const retrieveBudget = helpers.numberParamAlias(toolArguments, ['budget'], { min: 1, max: helpers.maxStdioTokenBudget })
       if (retrieveBudget === null) {
         return helpers.failure(id, helpers.jsonrpcInvalidParams, `retrieve requires a numeric budget parameter between 1 and ${helpers.maxStdioTokenBudget}`)
       }
       const retrieveCommunity = helpers.numberParamAlias(toolArguments, ['community', 'community_id', 'communityId'], { min: 0 })
       const retrieveFileType = helpers.stringParamAlias(toolArguments, ['file_type', 'fileType'])
-      const result = retrieveContext(graph, {
+      const retrieveSemantic = toolArguments.semantic === true
+      const retrieveRerank = toolArguments.rerank === true
+      const retrieveSemanticModel = helpers.stringParamAlias(toolArguments, ['semantic_model', 'semanticModel'])
+      const retrieveRerankModel = helpers.stringParamAlias(toolArguments, ['rerank_model', 'rerankModel'])
+      const retrieval = retrieveSemantic || retrieveRerank ? retrieveContextAsync(graph, {
         question,
         budget: retrieveBudget,
         ...(retrieveCommunity !== null ? { community: retrieveCommunity } : {}),
         ...(retrieveFileType ? { fileType: retrieveFileType } : {}),
-      })
+        ...(retrieveSemantic ? { semantic: true } : {}),
+        ...(retrieveSemanticModel ? { semanticModel: retrieveSemanticModel } : {}),
+        ...(retrieveRerank ? { rerank: true } : {}),
+        ...(retrieveRerankModel ? { rerankerModel: retrieveRerankModel } : {}),
+      }) : Promise.resolve(retrieveContext(graph, {
+        question,
+        budget: retrieveBudget,
+        ...(retrieveCommunity !== null ? { community: retrieveCommunity } : {}),
+        ...(retrieveFileType ? { fileType: retrieveFileType } : {}),
+      }))
       const useVerboseRetrieve = toolArguments.verbose === true || toolArguments.compact === false
-      return helpers.ok(id, helpers.textToolResult(JSON.stringify(useVerboseRetrieve ? result : compactRetrieveResult(result))))
+      return retrieval.then((result) => helpers.ok(id, helpers.textToolResult(JSON.stringify(useVerboseRetrieve ? result : compactRetrieveResult(result)))))
     }
     case 'relevant_files': {
       const question = helpers.stringParam(toolArguments, 'question')

@@ -968,6 +968,7 @@ describe('generateGraph', () => {
       const result = generateGraph(tempDir)
       const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
         nodes: Array<Record<string, unknown>>
+        links: Array<Record<string, unknown>>
         semantic_anomalies?: unknown
       }
       const manifestData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'manifest.json'), 'utf8')) as {
@@ -987,7 +988,35 @@ describe('generateGraph', () => {
       expect(readFileSync(join(tempDir, 'graphify-out', 'GRAPH_REPORT.md'), 'utf8')).toContain('## Semantic Anomalies')
       expect(result.notes.join('\n')).not.toContain('semantic extraction')
       expect(graphData.nodes.some((node) => node.file_type === 'document')).toBe(true)
+      for (const edge of graphData.links) {
+        expect(edge).not.toHaveProperty('_src')
+        expect(edge).not.toHaveProperty('_tgt')
+        expect(edge).not.toHaveProperty('confidence_score')
+      }
       expect(Array.isArray(graphData.semantic_anomalies)).toBe(true)
+    })
+  }, generateGraphIntegrationTimeoutMs)
+
+  test('persists stored snippets for AST-backed TypeScript nodes in graph artifacts', () => {
+    withTempDir((tempDir) => {
+      writeFileSync(
+        join(tempDir, 'auth.ts'),
+        ['class AuthService {', '  login() {', '    return true', '  }', '}', '', 'export function logout() {', '  return false', '}'].join('\n'),
+        'utf8',
+      )
+
+      generateGraph(tempDir, { noHtml: true })
+
+      const graphData = JSON.parse(readFileSync(join(tempDir, 'graphify-out', 'graph.json'), 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+      }
+      const authService = graphData.nodes.find((node) => node.label === 'AuthService')
+      const logout = graphData.nodes.find((node) => node.label === 'logout()')
+
+      expect(authService?.source_location).toBe('L1-L5')
+      expect(authService?.snippet).toContain('class AuthService {')
+      expect(logout?.source_location).toBe('L7-L9')
+      expect(logout?.snippet).toContain('export function logout() {')
     })
   }, generateGraphIntegrationTimeoutMs)
 

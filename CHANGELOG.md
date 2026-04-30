@@ -4,6 +4,24 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-04-30
+
+### Added
+
+- **Local semantic retrieval**: added opt-in embedding-backed retrieval with `semantic` / `semantic_model` support on the MCP `retrieve` tool and runtime, keeping the default path unchanged while enabling local conceptual matching for harder queries
+- **Local cross-encoder reranking**: added opt-in reranking with `rerank` / `rerank_model` support so semantic candidate pools can be rescored locally before prompt assembly
+
+### Improved
+
+- **AST-bounded snippet quality**: TypeScript extraction now persists bounded symbol snippets and line ranges into graph artifacts, and `retrieve` prefers stored snippets before falling back to file-window reads
+- **Retrieval ranking and payload efficiency**: completed the remaining roadmap work for shared token accounting, graph-signal caching, snippet file caching, default-path relationship collection, BM25-style lexical scoring, reciprocal-rank fusion, and pruned graph artifact edge payloads
+- **Eval visibility**: benchmark quality reports now include grounded match rate and query-bucket summaries so retrieval improvements are tracked beyond label-only recall and MRR
+- **Compare low-budget prompt assembly**: compare retrieval now trims prompt context after retrieval with compare-specific ranking so low-budget prompts keep the highest-signal explainer nodes instead of leaf-only snippets
+
+### Fixed
+
+- **Vitest toolchain compatibility**: pinned `vite` to the compatible 6.x line so the test/runtime toolchain avoids the Vite 8 / rolldown native-binding failure on the current Node environment
+
 ## [0.9.2] - 2026-04-30
 
 ### Added

@@ -28,6 +28,7 @@ export type QualityQuestionInput = GoldQuestion | BenchmarkQuestionSpec
 
 export interface QualityResult {
   question: string
+  bucket: string
   expected_labels: string[]
   returned_labels: string[]
   matched_labels: string[]
@@ -36,6 +37,7 @@ export interface QualityResult {
   recall: number
   reciprocal_rank: number
   snippet_coverage: number
+  grounded_match_rate: number
   tokens_used: number
   total_tokens: number | null
   prompt_tokens_estimated: number | null
@@ -46,6 +48,15 @@ export interface QualityResult {
   artifacts: BenchmarkPromptArtifacts | null
 }
 
+export interface QualityBucketSummary {
+  bucket: string
+  questions: number
+  avg_recall: number
+  mrr: number
+  avg_snippet_coverage: number
+  avg_grounded_match_rate: number
+}
+
 export interface QualityReport {
   questions: QualityResult[]
   skipped_questions: number
@@ -53,6 +64,7 @@ export interface QualityReport {
   avg_recall: number
   mrr: number
   avg_snippet_coverage: number
+  avg_grounded_match_rate: number
   questions_with_hits: number
   total_questions: number
   avg_tokens_used: number
@@ -60,6 +72,7 @@ export interface QualityReport {
   corpus_tokens: number
   corpus_source: CorpusBaselineSource
   compression_ratio: number
+  bucket_summaries: QualityBucketSummary[]
 }
 
 export interface QualityOptions {
@@ -163,8 +176,26 @@ function qualityRetrieveContext(graph: KnowledgeGraph, question: string, budget:
   return graphPath ? retrieveBenchmarkContext(graph, graphPath, question, budget) : retrieveContext(graph, { question, budget })
 }
 
+function questionBucket(question: string): string {
+  const normalized = question.toLowerCase()
+  if (/\b(route|routes|router|endpoint|endpoints|middleware|path)\b/.test(normalized) || /\/[a-z0-9[_\]:/-]+/i.test(question)) {
+    return 'routing'
+  }
+  if (/\b(slice|slices|selector|selectors|store|stores|state|reducer|reducers)\b/.test(normalized)) {
+    return 'state'
+  }
+  if (/\b(controller|controllers|service|services|module|modules|provider|providers|guard|guards|interceptor|interceptors|pipe|pipes)\b/.test(normalized)) {
+    return 'backend'
+  }
+  if (/\b(page|pages|layout|layouts|component|components|client|server|template|templates|loading|error|screen|screens)\b/.test(normalized)) {
+    return 'ui'
+  }
+  return 'general'
+}
+
 function buildQualityResult(gold: GoldQuestion, result: RetrieveResult, metadata: QualityQuestionRunMetadata): QualityResult {
   const expectedLabels = gold.expected_labels
+  const normalizedExpectedLabels = expectedLabels.map((label) => normalizeExpectedLabel(label))
   const returnedLabels = result.matched_nodes.map((node) => normalizeExpectedLabel(node.label))
 
   const matchedLabels = expectedLabels.filter((expected) =>
@@ -191,9 +222,16 @@ function buildQualityResult(gold: GoldQuestion, result: RetrieveResult, metadata
     result.matched_nodes.length > 0
       ? result.matched_nodes.filter((node) => typeof node.snippet === 'string' && node.snippet.trim().length > 0).length / result.matched_nodes.length
       : 0
+  const groundedMatches = result.matched_nodes.filter((node) => (
+    normalizedExpectedLabels.includes(normalizeExpectedLabel(node.label)) &&
+    typeof node.snippet === 'string' &&
+    node.snippet.trim().length > 0
+  )).length
+  const groundedMatchRate = expectedLabels.length > 0 ? groundedMatches / expectedLabels.length : 0
 
   return {
     question: gold.question,
+    bucket: questionBucket(gold.question),
     expected_labels: expectedLabels,
     returned_labels: result.matched_nodes.map((node) => node.label),
     matched_labels: matchedLabels,
@@ -202,6 +240,7 @@ function buildQualityResult(gold: GoldQuestion, result: RetrieveResult, metadata
     recall,
     reciprocal_rank: reciprocalRank,
     snippet_coverage: snippetCoverage,
+    grounded_match_rate: groundedMatchRate,
     tokens_used: metadata.tokens_used,
     total_tokens: metadata.total_tokens,
     prompt_tokens_estimated: metadata.prompt_tokens_estimated,
@@ -268,6 +307,19 @@ function buildQualityReport(
   const withHits = results.filter((r) => r.matched_labels.length > 0)
   const avgTokens = results.length > 0 ? Math.floor(results.reduce((sum, r) => sum + r.tokens_used, 0) / results.length) : 0
   const baseline = resolveCorpusBaseline(graph.numberOfNodes(), options)
+  const bucketSummaries = [...new Set(results.map((result) => result.bucket))]
+    .map((bucket) => {
+      const bucketResults = results.filter((result) => result.bucket === bucket)
+      return {
+        bucket,
+        questions: bucketResults.length,
+        avg_recall: bucketResults.reduce((sum, result) => sum + result.recall, 0) / bucketResults.length,
+        mrr: bucketResults.reduce((sum, result) => sum + result.reciprocal_rank, 0) / bucketResults.length,
+        avg_snippet_coverage: bucketResults.reduce((sum, result) => sum + result.snippet_coverage, 0) / bucketResults.length,
+        avg_grounded_match_rate: bucketResults.reduce((sum, result) => sum + result.grounded_match_rate, 0) / bucketResults.length,
+      } satisfies QualityBucketSummary
+    })
+    .sort((left, right) => left.bucket.localeCompare(right.bucket))
 
   return {
     questions: results,
@@ -276,6 +328,7 @@ function buildQualityReport(
     avg_recall: results.length > 0 ? results.reduce((sum, r) => sum + r.recall, 0) / results.length : 0,
     mrr: results.length > 0 ? results.reduce((sum, r) => sum + r.reciprocal_rank, 0) / results.length : 0,
     avg_snippet_coverage: results.length > 0 ? results.reduce((sum, r) => sum + r.snippet_coverage, 0) / results.length : 0,
+    avg_grounded_match_rate: results.length > 0 ? results.reduce((sum, r) => sum + r.grounded_match_rate, 0) / results.length : 0,
     questions_with_hits: withHits.length,
     total_questions: results.length,
     avg_tokens_used: avgTokens,
@@ -283,6 +336,7 @@ function buildQualityReport(
     corpus_tokens: baseline.tokens,
     corpus_source: baseline.source,
     compression_ratio: avgTokens > 0 ? Number((baseline.tokens / avgTokens).toFixed(1)) : 0,
+    bucket_summaries: bucketSummaries,
   }
 }
 
@@ -332,6 +386,7 @@ export function formatQualityReport(report: QualityReport): string {
     `  Recall:       ${(report.avg_recall * 100).toFixed(1)}%`,
     `  MRR:          ${report.mrr.toFixed(3)}`,
     `  Snippet coverage: ${(report.avg_snippet_coverage * 100).toFixed(1)}%`,
+    `  Grounded match rate: ${(report.avg_grounded_match_rate * 100).toFixed(1)}%`,
   ]
 
   if (report.avg_tokens_used > 0) {
@@ -348,6 +403,15 @@ export function formatQualityReport(report: QualityReport): string {
       lines.push(`  Usage capture: ${usageSummary}`)
     }
     lines.push(`  Compression:  ${compressionSummary}`)
+  }
+
+  if (report.bucket_summaries.length > 0) {
+    lines.push('  Query buckets:')
+    for (const bucket of report.bucket_summaries) {
+      lines.push(
+        `    - ${bucket.bucket}: recall ${(bucket.avg_recall * 100).toFixed(0)}%, MRR ${bucket.mrr.toFixed(3)}, snippets ${(bucket.avg_snippet_coverage * 100).toFixed(0)}%, grounded ${(bucket.avg_grounded_match_rate * 100).toFixed(0)}%`,
+      )
+    }
   }
 
   lines.push('')
