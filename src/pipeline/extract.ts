@@ -3147,6 +3147,17 @@ export function extractJs(filePath: string): ExtractionFragment {
 
   const defaultExportId = _makeId(stem, 'default')
 
+  const nodeOptionsForTsNode = (node: ts.Node): Parameters<typeof createNode>[5] => {
+    const start = node.getStart(sourceFile)
+    const end = node.getEnd()
+    const endPosition = Math.max(start, end - 1)
+
+    return {
+      endLine: sourceFile.getLineAndCharacterOfPosition(endPosition).line + 1,
+      snippet: sourceText.slice(start, end),
+    }
+  }
+
   const maybeMarkComponent = (functionId: string, functionName: string, body: ts.ConciseBody | undefined, line: number): void => {
     if (!isJsxFile || !body || !/^[A-Z]/.test(functionName)) return
     if (!bodyContainsJsx(body)) return
@@ -3157,8 +3168,9 @@ export function extractJs(filePath: string): ExtractionFragment {
     }
   }
 
-  const addTsFunctionNode = (functionId: string, label: string, line: number, body?: ts.ConciseBody): void => {
-    addNode(nodes, seenIds, createNode(functionId, label, filePath, line))
+  const addTsFunctionNode = (functionId: string, label: string, declarationNode: ts.Node, body?: ts.ConciseBody): void => {
+    const line = sourceFile.getLineAndCharacterOfPosition(declarationNode.getStart(sourceFile)).line + 1
+    addNode(nodes, seenIds, createNode(functionId, label, filePath, line, 'code', nodeOptionsForTsNode(declarationNode)))
     addEdge(edges, createEdge(fileNodeId, functionId, 'contains', filePath, line))
     if (body) {
       addTsCalls(body, functionId)
@@ -3167,7 +3179,7 @@ export function extractJs(filePath: string): ExtractionFragment {
   }
 
   const addTsClassNode = (classId: string, label: string, line: number, node: ts.ClassDeclaration | ts.ClassExpression): void => {
-    addNode(nodes, seenIds, createNode(classId, label, filePath, line))
+    addNode(nodes, seenIds, createNode(classId, label, filePath, line, 'code', nodeOptionsForTsNode(node)))
     addEdge(edges, createEdge(fileNodeId, classId, 'contains', filePath, line))
 
     for (const heritageClause of node.heritageClauses ?? []) {
@@ -3204,7 +3216,7 @@ export function extractJs(filePath: string): ExtractionFragment {
 
         const methodLine = sourceFile.getLineAndCharacterOfPosition(member.name.getStart(sourceFile)).line + 1
         const methodId = _makeId(classId, methodName)
-        addNode(nodes, seenIds, createNode(methodId, `.${methodName}()`, filePath, methodLine))
+        addNode(nodes, seenIds, createNode(methodId, `.${methodName}()`, filePath, methodLine, 'code', nodeOptionsForTsNode(member)))
         addEdge(edges, createEdge(classId, methodId, 'method', filePath, methodLine))
         methodIdsByClass.set(`${classId}:${methodName.toLowerCase()}`, methodId)
         addTsCalls(member.initializer.body, methodId, classId)
@@ -3225,7 +3237,7 @@ export function extractJs(filePath: string): ExtractionFragment {
 
       const methodLine = sourceFile.getLineAndCharacterOfPosition(member.getStart(sourceFile)).line + 1
       const methodId = _makeId(classId, methodName)
-      addNode(nodes, seenIds, createNode(methodId, `.${methodName}()`, filePath, methodLine))
+      addNode(nodes, seenIds, createNode(methodId, `.${methodName}()`, filePath, methodLine, 'code', nodeOptionsForTsNode(member)))
       addEdge(edges, createEdge(classId, methodId, 'method', filePath, methodLine))
       methodIdsByClass.set(`${classId}:${methodName.toLowerCase()}`, methodId)
       if (member.body) {
@@ -3281,7 +3293,7 @@ export function extractJs(filePath: string): ExtractionFragment {
         const functionName = candidate.name.text
         const functionLine = sourceFile.getLineAndCharacterOfPosition(candidate.name.getStart(sourceFile)).line + 1
         const functionId = _makeId(ownerId, functionName)
-        addNode(nodes, seenIds, createNode(functionId, `${functionName}()`, filePath, functionLine))
+        addNode(nodes, seenIds, createNode(functionId, `${functionName}()`, filePath, functionLine, 'code', nodeOptionsForTsNode(candidate)))
         addEdge(edges, createEdge(ownerId, functionId, 'contains', filePath, functionLine))
         if (candidate.body) {
           addTsCalls(candidate.body, functionId, currentClassId)
@@ -3303,7 +3315,7 @@ export function extractJs(filePath: string): ExtractionFragment {
           const functionName = declaration.name.text
           const functionLine = sourceFile.getLineAndCharacterOfPosition(declaration.name.getStart(sourceFile)).line + 1
           const functionId = _makeId(ownerId, functionName)
-          addNode(nodes, seenIds, createNode(functionId, `${functionName}()`, filePath, functionLine))
+          addNode(nodes, seenIds, createNode(functionId, `${functionName}()`, filePath, functionLine, 'code', nodeOptionsForTsNode(declaration)))
           addEdge(edges, createEdge(ownerId, functionId, 'contains', filePath, functionLine))
           addTsCalls(declaration.initializer.body, functionId, currentClassId)
           addNestedTsFunctions(declaration.initializer.body, functionId, currentClassId, depth + 1)
@@ -3371,7 +3383,7 @@ export function extractJs(filePath: string): ExtractionFragment {
       const interfaceName = node.name.text
       const interfaceId = _makeId(stem, interfaceName)
       const interfaceLine = sourceFile.getLineAndCharacterOfPosition(node.name.getStart(sourceFile)).line + 1
-      addNode(nodes, seenIds, createNode(interfaceId, interfaceName, filePath, interfaceLine))
+      addNode(nodes, seenIds, createNode(interfaceId, interfaceName, filePath, interfaceLine, 'code', nodeOptionsForTsNode(node)))
       addEdge(edges, createEdge(fileNodeId, interfaceId, 'contains', filePath, interfaceLine))
 
       for (const heritageClause of node.heritageClauses ?? []) {
@@ -3411,9 +3423,9 @@ export function extractJs(filePath: string): ExtractionFragment {
 
     if (ts.isFunctionDeclaration(node) && node.name) {
       const functionName = node.name.text
-      const functionLine = sourceFile.getLineAndCharacterOfPosition(node.name.getStart(sourceFile)).line + 1
       const functionId = _makeId(stem, functionName)
-      addTsFunctionNode(functionId, `${functionName}()`, functionLine, node.body)
+      const functionLine = sourceFile.getLineAndCharacterOfPosition(node.name.getStart(sourceFile)).line + 1
+      addTsFunctionNode(functionId, `${functionName}()`, node, node.body)
       maybeMarkComponent(functionId, functionName, node.body, functionLine)
       return
     }
@@ -3424,8 +3436,7 @@ export function extractJs(filePath: string): ExtractionFragment {
         (modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) ?? false) &&
         (modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword) ?? false)
       if (isDefaultExport) {
-        const functionLine = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1
-        addTsFunctionNode(defaultExportId, 'default()', functionLine, node.body)
+        addTsFunctionNode(defaultExportId, 'default()', node, node.body)
         return
       }
     }
@@ -3434,7 +3445,7 @@ export function extractJs(filePath: string): ExtractionFragment {
       const exportLine = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1
       const exportExpression = unparenthesizeExpression(node.expression)
       if (ts.isArrowFunction(exportExpression) || ts.isFunctionExpression(exportExpression)) {
-        addTsFunctionNode(defaultExportId, 'default()', exportLine, exportExpression.body)
+        addTsFunctionNode(defaultExportId, 'default()', node, exportExpression.body)
         return
       }
 
@@ -3465,7 +3476,7 @@ export function extractJs(filePath: string): ExtractionFragment {
         const functionName = declaration.name.text
         const functionLine = sourceFile.getLineAndCharacterOfPosition(declaration.name.getStart(sourceFile)).line + 1
         const functionId = _makeId(stem, functionName)
-        addNode(nodes, seenIds, createNode(functionId, `${functionName}()`, filePath, functionLine))
+        addNode(nodes, seenIds, createNode(functionId, `${functionName}()`, filePath, functionLine, 'code', nodeOptionsForTsNode(declaration)))
         addEdge(edges, createEdge(fileNodeId, functionId, 'contains', filePath, functionLine))
 
         const body = declaration.initializer.body

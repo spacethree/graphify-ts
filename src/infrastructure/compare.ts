@@ -552,6 +552,75 @@ function resolveCompareSnippetPath(sourceFile: string, projectRoot: string): str
   return null
 }
 
+function compareMatchedNodeId(node: Pick<RetrieveResult['matched_nodes'][number], 'node_id'>): string | null {
+  return typeof node.node_id === 'string' && node.node_id.length > 0 ? node.node_id : null
+}
+
+function compareEntryTokens(node: Pick<RetrieveResult['matched_nodes'][number], 'label' | 'source_file' | 'line_number' | 'snippet'>): number {
+  return estimateQueryTokens(`${node.label} ${node.source_file}:${node.line_number} ${node.snippet ?? ''}`)
+}
+
+function relevanceBandPriority(band: RetrieveResult['matched_nodes'][number]['relevance_band']): number {
+  switch (band) {
+    case 'direct':
+      return 2
+    case 'related':
+      return 1
+    default:
+      return 0
+  }
+}
+
+function trimCompareRetrieval(graph: KnowledgeGraph, retrieval: RetrieveResult, budget: number): RetrieveResult {
+  const orderedNodes = [...retrieval.matched_nodes].sort((left, right) => {
+    const leftId = compareMatchedNodeId(left)
+    const rightId = compareMatchedNodeId(right)
+    return (
+      relevanceBandPriority(right.relevance_band) - relevanceBandPriority(left.relevance_band) ||
+      (rightId ? graph.degree(rightId) : 0) - (leftId ? graph.degree(leftId) : 0) ||
+      right.match_score - left.match_score
+    )
+  })
+
+  const matchedNodes: RetrieveResult['matched_nodes'] = []
+  const includedIds = new Set<string>()
+  let tokenCount = 0
+
+  for (const node of orderedNodes) {
+    const nodeTokens = compareEntryTokens(node)
+    if (tokenCount + nodeTokens > budget && matchedNodes.length > 0) {
+      continue
+    }
+
+    matchedNodes.push(node)
+    const nodeId = compareMatchedNodeId(node)
+    if (nodeId) {
+      includedIds.add(nodeId)
+    }
+    tokenCount += nodeTokens
+  }
+
+  const includedLabels = new Set(matchedNodes.map((node) => node.label))
+  const includedCommunities = new Set(matchedNodes.flatMap((node) => (node.community === null ? [] : [node.community])))
+
+  return {
+    ...retrieval,
+    token_count: tokenCount,
+    matched_nodes: matchedNodes,
+    relationships: retrieval.relationships.filter((relationship) => {
+      if (includedIds.size > 0 && relationship.from_id && relationship.to_id) {
+        return includedIds.has(relationship.from_id) && includedIds.has(relationship.to_id)
+      }
+      return includedLabels.has(relationship.from) && includedLabels.has(relationship.to)
+    }),
+    community_context: retrieval.community_context.filter((community) => includedCommunities.has(community.id)),
+    graph_signals: {
+      god_nodes: retrieval.graph_signals.god_nodes.filter((label) => includedLabels.has(label)),
+      bridge_nodes: retrieval.graph_signals.bridge_nodes.filter((label) => includedLabels.has(label)),
+    },
+  }
+}
+
 function createCompareRetrievalGraph(
   graph: KnowledgeGraph,
   projectRoot: string,
@@ -564,6 +633,7 @@ function createCompareRetrievalGraph(
   for (const [id, attributes] of graph.nodeEntries()) {
     const sourceFile = String(attributes.source_file ?? '')
     const safeSourceFileTokens = tokenizeLabel(sourceFile)
+    const { snippet: _snippet, ...nodeAttributes } = attributes
     const retrievalSourceFile =
       sourceFile.length > 0 && resolveCompareSnippetPath(sourceFile, projectRoot) === null
         ? `__compare_outside__/${
@@ -575,7 +645,7 @@ function createCompareRetrievalGraph(
     }
 
     retrievalGraph.addNode(id, {
-      ...attributes,
+      ...nodeAttributes,
       ...(retrievalSourceFile !== sourceFile ? { source_file: retrievalSourceFile } : {}),
     })
     if (retrievalSourceFile !== sourceFile) {
@@ -595,11 +665,11 @@ function retrieveCompareContext(graph: KnowledgeGraph, question: string, budget:
   const originalCwd = process.cwd()
   try {
     process.chdir(projectRoot)
-    const retrieval = retrieveContext(retrievalGraph, { question, budget })
+    const retrieval = retrieveContext(retrievalGraph, { question, budget: Math.max(budget, 200) })
     for (const matchedNode of retrieval.matched_nodes) {
       matchedNode.source_file = originalSourceFiles.get(matchedNode.source_file) ?? matchedNode.source_file
     }
-    return retrieval
+    return trimCompareRetrieval(retrievalGraph, retrieval, budget)
   } finally {
     process.chdir(originalCwd)
   }

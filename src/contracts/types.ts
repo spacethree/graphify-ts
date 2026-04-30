@@ -21,6 +21,7 @@ export interface ExtractionNode {
   file_type: FileType
   source_file: string
   source_location?: string
+  snippet?: string
   layer?: ExtractionLayer
   provenance?: ExtractionProvenance[]
   semantic_kind?: 'citation' | 'reference'

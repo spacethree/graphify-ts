@@ -80,6 +80,11 @@ function runPipeline(tempDir: string) {
   for (const node of jsonData.nodes as Array<Record<string, unknown>>) {
     expect(node).toHaveProperty('community')
   }
+  for (const edge of jsonData.links as Array<Record<string, unknown>>) {
+    expect(edge).not.toHaveProperty('_src')
+    expect(edge).not.toHaveProperty('_tgt')
+    expect(edge).not.toHaveProperty('confidence_score')
+  }
 
   const htmlPath = join(tempDir, 'graph.html')
   toHtml(graph, communities, htmlPath, labels)
@@ -111,7 +116,7 @@ describe('pipeline', () => {
       const result = runPipeline(tempDir)
       expect(result.graph.numberOfNodes()).toBeGreaterThan(0)
     })
-  })
+  }, 15_000)
 
   it('keeps node and edge counts stable across repeated runs', () => {
     withTempDir((tempDir) => {

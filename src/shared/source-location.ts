@@ -3,7 +3,7 @@ export function lineNumberFromSourceLocation(location: unknown): number {
     return 1
   }
 
-  const match = location.match(/^L(\d+)$/)
+  const match = location.match(/^L(\d+)(?:-L?(\d+))?$/)
   if (!match?.[1]) {
     return 1
   }

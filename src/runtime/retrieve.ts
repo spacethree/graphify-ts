@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs'
+import { basename } from 'node:path'
 
 import { KnowledgeGraph } from '../contracts/graph.js'
 import { godNodes, workspaceBridges } from '../pipeline/analyze.js'
@@ -6,11 +7,14 @@ import { type Communities } from '../pipeline/cluster.js'
 import { buildCommunityLabels } from '../pipeline/community-naming.js'
 import { lineNumberFromSourceLocation } from '../shared/source-location.js'
 import { relativizeSourceFile } from '../shared/source-path.js'
-import { communitiesFromGraph } from './serve.js'
+import { communitiesFromGraph, estimateQueryTokens } from './serve.js'
 
 const SNIPPET_HALF_WINDOW = 7
 const DERIVED_SNIPPET_HALF_WINDOW = 1
 const MAX_SNIPPET_LINE_LENGTH = 200
+const BM25_K1 = 1.2
+const BM25_B = 0.6
+const SEED_FUSION_SCORE_SCALE = 10
 
 const STOP_WORDS = new Set([
   'how', 'does', 'the', 'is', 'a', 'an', 'in', 'to',
@@ -22,14 +26,19 @@ const STOP_WORDS = new Set([
   'on', 'at', 'by', 'into', 'all', 'my', 'its', 'no', 'i',
 ])
 
-const CHARS_PER_TOKEN = 3
 const tokenWeightCache = new WeakMap<KnowledgeGraph, Map<string, Map<string, number>>>()
+const graphSignalCache = new WeakMap<KnowledgeGraph, RetrieveGraphSignals>()
+const averageLabelLengthCache = new WeakMap<KnowledgeGraph, number>()
 
 export interface RetrieveOptions {
   question: string
   budget: number
   community?: number
   fileType?: string
+  semantic?: boolean
+  semanticModel?: string
+  rerank?: boolean
+  rerankerModel?: string
 }
 
 export interface RetrieveMatchedNode {
@@ -84,6 +93,13 @@ export interface CompactRetrieveResult extends Omit<RetrieveResult, 'matched_nod
   shared_file_type?: string
 }
 
+interface RetrieveGraphSignals {
+  godNodeIds: ReadonlySet<string>
+  godNodeLabels: ReadonlySet<string>
+  bridgeNodeIds: ReadonlySet<string>
+  bridgeNodeLabels: ReadonlySet<string>
+}
+
 function matchedNodeId(node: Pick<RetrieveMatchedNode, 'node_id'>): string | null {
   return typeof node.node_id === 'string' && node.node_id.length > 0 ? node.node_id : null
 }
@@ -114,17 +130,52 @@ export function tokenizeLabel(label: string): string[] {
     .filter((token) => token.length > 1)
 }
 
-export function scoreNode(questionTokens: readonly string[], labelTokens: readonly string[], tokenWeights?: ReadonlyMap<string, number>): number {
-  let score = 0
-  for (const qt of questionTokens) {
-    const weight = tokenWeights?.get(qt) ?? 1
-    for (const lt of labelTokens) {
-      if (lt.startsWith(qt) || qt.startsWith(lt)) {
-        score += weight
-      }
+function tokenMatchCount(questionToken: string, labelTokens: readonly string[]): number {
+  let matches = 0
+  for (const labelToken of labelTokens) {
+    if (labelToken.startsWith(questionToken) || questionToken.startsWith(labelToken)) {
+      matches += 1
     }
   }
+  return matches
+}
+
+export function scoreNode(
+  questionTokens: readonly string[],
+  labelTokens: readonly string[],
+  tokenWeights?: ReadonlyMap<string, number>,
+  averageFieldLength: number = Math.max(labelTokens.length, 1),
+): number {
+  if (labelTokens.length === 0) {
+    return 0
+  }
+
+  let score = 0
+  const fieldLength = Math.max(labelTokens.length, 1)
+  const normalizedAverageLength = averageFieldLength > 0 ? averageFieldLength : fieldLength
+  for (const qt of questionTokens) {
+    const weight = tokenWeights?.get(qt) ?? 1
+    const termFrequency = tokenMatchCount(qt, labelTokens)
+    if (termFrequency === 0) {
+      continue
+    }
+
+    const denominator = termFrequency + BM25_K1 * (1 - BM25_B + BM25_B * (fieldLength / normalizedAverageLength))
+    score += weight * ((termFrequency * (BM25_K1 + 1)) / denominator)
+  }
   return score
+}
+
+function averageLabelLengthForGraph(graph: KnowledgeGraph): number {
+  const cached = averageLabelLengthCache.get(graph)
+  if (cached !== undefined) {
+    return cached
+  }
+
+  const labels = graph.nodeEntries().map(([, attributes]) => tokenizeLabel(String(attributes.label ?? '')).length).filter((length) => length > 0)
+  const averageLength = labels.length > 0 ? labels.reduce((total, length) => total + length, 0) / labels.length : 1
+  averageLabelLengthCache.set(graph, averageLength)
+  return averageLength
 }
 
 function buildTokenWeights(graph: KnowledgeGraph, questionTokens: readonly string[]): Map<string, number> {
@@ -139,7 +190,7 @@ function buildTokenWeights(graph: KnowledgeGraph, questionTokens: readonly strin
   for (const [, attributes] of graph.nodeEntries()) {
     const labelTokens = tokenizeLabel(String(attributes.label ?? ''))
     for (const qt of questionTokens) {
-      if (labelTokens.some((lt) => lt.startsWith(qt) || qt.startsWith(lt))) {
+      if (tokenMatchCount(qt, labelTokens) > 0) {
         matchCounts.set(qt, (matchCounts.get(qt) ?? 0) + 1)
       }
     }
@@ -147,7 +198,7 @@ function buildTokenWeights(graph: KnowledgeGraph, questionTokens: readonly strin
 
   const weights = new Map<string, number>()
   for (const [token, count] of matchCounts) {
-    weights.set(token, count > 0 ? Math.max(0.1, Math.log(totalNodes / count)) : 1)
+    weights.set(token, count > 0 ? Math.max(0.1, Math.log(1 + ((totalNodes - count + 0.5) / (count + 0.5)))) : 1)
   }
   return weights
 }
@@ -171,7 +222,7 @@ export function tokenWeightsForQuestion(graph: KnowledgeGraph, questionTokens: r
 }
 
 function estimateTokens(text: string): number {
-  return Math.max(1, Math.floor(text.length / CHARS_PER_TOKEN))
+  return estimateQueryTokens(text)
 }
 
 function estimateRetrieveEntryTokens(label: string, sourceFile: string, lineNumber: number, snippet: string | null): number {
@@ -187,18 +238,37 @@ function tokenCountForMatchedNodes(
   )
 }
 
-function readSnippet(sourceFile: string, lineNumber: number, options: { derived?: boolean } = {}): string | null {
+function fileLinesForSnippet(sourceFile: string, fileCache?: Map<string, string[] | null>): string[] | null {
+  const cached = fileCache?.get(sourceFile)
+  if (cached !== undefined) {
+    return cached
+  }
+
+  if (!existsSync(sourceFile)) {
+    fileCache?.set(sourceFile, null)
+    return null
+  }
+
+  const lines = readFileSync(sourceFile, 'utf8').split(/\r?\n/)
+  fileCache?.set(sourceFile, lines)
+  return lines
+}
+
+function readSnippet(
+  sourceFile: string,
+  lineNumber: number,
+  options: { derived?: boolean; fileCache?: Map<string, string[] | null> } = {},
+): string | null {
   if (!sourceFile || lineNumber <= 0) {
     return null
   }
 
   try {
-    if (!existsSync(sourceFile)) {
+    const lines = fileLinesForSnippet(sourceFile, options.fileCache)
+    if (!lines) {
       return null
     }
 
-    const content = readFileSync(sourceFile, 'utf8')
-    const lines = content.split(/\r?\n/)
     const zeroIndex = lineNumber - 1
     const halfWindow = options.derived ? DERIVED_SNIPPET_HALF_WINDOW : SNIPPET_HALF_WINDOW
     const start = Math.max(0, zeroIndex - halfWindow)
@@ -211,6 +281,59 @@ function readSnippet(sourceFile: string, lineNumber: number, options: { derived?
   } catch {
     return null
   }
+}
+
+function graphSignalsForRetrieve(
+  graph: KnowledgeGraph,
+  communities: Communities,
+  communityLabels: Record<number, string>,
+): RetrieveGraphSignals {
+  const cached = graphSignalCache.get(graph)
+  if (cached) {
+    return cached
+  }
+
+  const topGodNodes = godNodes(graph, 20)
+  const topBridgeNodes = workspaceBridges(graph, communities, communityLabels, 20)
+  const signals: RetrieveGraphSignals = {
+    godNodeIds: new Set(topGodNodes.map((node) => node.id)),
+    godNodeLabels: new Set(topGodNodes.slice(0, 10).map((node) => node.label)),
+    bridgeNodeIds: new Set(topBridgeNodes.map((node) => node.id)),
+    bridgeNodeLabels: new Set(topBridgeNodes.slice(0, 10).map((node) => node.label)),
+  }
+
+  graphSignalCache.set(graph, signals)
+  return signals
+}
+
+function collectRelationships(graph: KnowledgeGraph, includedIds: ReadonlySet<string>): RetrieveRelationship[] {
+  const relationships: RetrieveRelationship[] = []
+  const seen = new Set<string>()
+
+  for (const source of includedIds) {
+    for (const target of graph.neighbors(source)) {
+      if (!includedIds.has(target)) {
+        continue
+      }
+
+      const key = graph.isDirected() ? `${source}\u0000${target}` : [source, target].sort().join('\u0000')
+      if (seen.has(key)) {
+        continue
+      }
+      seen.add(key)
+
+      const attributes = graph.edgeAttributes(source, target)
+      relationships.push({
+        from_id: source,
+        from: String(graph.nodeAttributes(source).label ?? source),
+        to_id: target,
+        to: String(graph.nodeAttributes(target).label ?? target),
+        relation: String(attributes.relation ?? 'related_to'),
+      })
+    }
+  }
+
+  return relationships
 }
 
 function resolvedLineNumber(attributes: Record<string, unknown>): { lineNumber: number; derived: boolean } {
@@ -227,6 +350,15 @@ function resolvedLineNumber(attributes: Record<string, unknown>): { lineNumber: 
   }
 }
 
+function storedSnippetFromAttributes(attributes: Record<string, unknown>): string | null {
+  if (typeof attributes.snippet !== 'string') {
+    return null
+  }
+
+  const snippet = attributes.snippet.trim()
+  return snippet.length > 0 ? snippet : null
+}
+
 function parseCommunityId(raw: unknown): number | null {
   if (typeof raw === 'number' && Number.isFinite(raw)) {
     return raw
@@ -235,6 +367,65 @@ function parseCommunityId(raw: unknown): number | null {
     return Number(raw)
   }
   return null
+}
+
+function eligibleNodeEntries(graph: KnowledgeGraph, options: Pick<RetrieveOptions, 'community' | 'fileType'>): Array<[string, Record<string, unknown>]> {
+  return graph.nodeEntries().filter(([, attributes]) => {
+    const community = parseCommunityId(attributes.community)
+    if (options.community !== undefined && community !== options.community) {
+      return false
+    }
+
+    const fileType = String(attributes.file_type ?? '').trim().toLowerCase()
+    if (options.fileType && fileType !== options.fileType.trim().toLowerCase()) {
+      return false
+    }
+
+    return true
+  })
+}
+
+function scoredNodeFromGraphEntry(
+  id: string,
+  attributes: Record<string, unknown>,
+  frameworkProfile: FrameworkQuestionProfile,
+): ScoredNode {
+  const resolvedLine = resolvedLineNumber(attributes)
+  const nodeKind = String(attributes.node_kind ?? '')
+  const frameworkRole = String(attributes.framework_role ?? '')
+
+  return {
+    id,
+    label: String(attributes.label ?? ''),
+    sourceFile: String(attributes.source_file ?? ''),
+    lineNumber: resolvedLine.lineNumber,
+    lineNumberDerived: resolvedLine.derived,
+    storedSnippet: storedSnippetFromAttributes(attributes),
+    nodeKind,
+    framework: typeof attributes.framework === 'string' ? attributes.framework : undefined,
+    frameworkRole: frameworkRole || undefined,
+    fileType: String(attributes.file_type ?? '').trim().toLowerCase(),
+    fileNodeLike: isFileNodeLike(String(attributes.label ?? ''), String(attributes.source_file ?? '')),
+    community: parseCommunityId(attributes.community),
+    frameworkBoost: frameworkBoostForNode(frameworkProfile, nodeKind, frameworkRole),
+    exactLabelMatch: false,
+    sourcePathMatch: false,
+    evidenceTier: 0,
+    score: 0,
+    relevanceBand: 'related',
+  }
+}
+
+function semanticTextForNode(node: Pick<ScoredNode, 'label' | 'nodeKind' | 'frameworkRole' | 'sourceFile' | 'storedSnippet'>): string {
+  return [
+    node.label,
+    node.nodeKind,
+    node.frameworkRole,
+    node.sourceFile,
+    node.storedSnippet ?? '',
+  ]
+    .filter((value) => typeof value === 'string' && value.trim().length > 0)
+    .join('\n')
 }
 
 function storedCommunityLabelsFromGraph(graph: KnowledgeGraph): Record<number, string> {
@@ -258,16 +449,39 @@ interface SeedScoreBreakdown {
   total: number
 }
 
+interface SeedCandidate {
+  id: string
+  label: string
+  sourceFile: string
+  lineNumber: number
+  lineNumberDerived: boolean
+  storedSnippet: string | null
+  nodeKind: string
+  framework?: string | undefined
+  frameworkRole?: string | undefined
+  fileType: string
+  fileNodeLike: boolean
+  community: number | null
+  frameworkBoost: number
+  seedScore: SeedScoreBreakdown
+  exactLabelMatch: boolean
+  sourcePathMatch: boolean
+  evidenceTier: 0 | 1 | 2
+  relevanceBand: 'direct' | 'related' | 'peripheral'
+}
+
 interface ScoredNode {
   id: string
   label: string
   sourceFile: string
   lineNumber: number
   lineNumberDerived: boolean
+  storedSnippet: string | null
   nodeKind: string
   framework?: string | undefined
   frameworkRole?: string | undefined
   fileType: string
+  fileNodeLike: boolean
   community: number | null
   frameworkBoost: number
   exactLabelMatch: boolean
@@ -328,6 +542,22 @@ function normalizeSeedText(value: string): string {
   return tokenizeLabel(value).join('')
 }
 
+function isFileNodeLike(label: string, sourceFile: string): boolean {
+  if (!label || !sourceFile) {
+    return false
+  }
+
+  return label.trim().toLowerCase() === basename(sourceFile).trim().toLowerCase()
+}
+
+function questionLooksFileOriented(question: string, questionTokens: readonly string[]): boolean {
+  if (/\.[a-z0-9]{1,6}\b/i.test(question)) {
+    return true
+  }
+
+  return includesAnyToken(questionTokens, ['file', 'files', 'filepath', 'path', 'paths', 'directory', 'directories', 'folder', 'folders'])
+}
+
 function evidenceTierForSeedScore(score: SeedScoreBreakdown): 0 | 1 | 2 {
   if (score.labelExactScore > 0 || score.labelTokenScore > 0) {
     return 2
@@ -343,8 +573,27 @@ function compareScoredNodes(graph: KnowledgeGraph, left: ScoredNode, right: Scor
     right.evidenceTier - left.evidenceTier ||
     right.frameworkBoost - left.frameworkBoost ||
     right.score - left.score ||
+    Number(left.fileNodeLike) - Number(right.fileNodeLike) ||
     graph.degree(right.id) - graph.degree(left.id)
   )
+}
+
+export function reciprocalRankFuse(
+  rankings: ReadonlyArray<readonly string[]>,
+  options: { rankConstant?: number; weights?: readonly number[] } = {},
+): Map<string, number> {
+  const rankConstant = options.rankConstant ?? 10
+  const weights = options.weights ?? []
+  const fused = new Map<string, number>()
+
+  rankings.forEach((ranking, rankingIndex) => {
+    const rankingWeight = weights[rankingIndex] ?? 1
+    ranking.forEach((candidateId, index) => {
+      fused.set(candidateId, (fused.get(candidateId) ?? 0) + (rankingWeight / (rankConstant + index + 1)))
+    })
+  })
+
+  return fused
 }
 
 function scoreSeedCandidate(
@@ -354,11 +603,16 @@ function scoreSeedCandidate(
   sourceFile: string,
   communityLabel: string | null,
   tokenWeights: ReadonlyMap<string, number>,
+  averageLabelLength: number,
+  options: { fileNodeLike: boolean; fileOrientedQuestion: boolean },
 ): SeedScoreBreakdown {
   const labelExactScore = normalizeSeedText(question) !== '' && normalizeSeedText(question) === normalizeSeedText(label) ? 2 : 0
-  const labelTokenScore = scoreNode(questionTokens, tokenizeLabel(label), tokenWeights)
-  const sourcePathScore = scoreNode(questionTokens, tokenizeLabel(sourceFile), tokenWeights) * 0.25
-  const communityScore = communityLabel
+  const fileNodePenaltyApplies = options.fileNodeLike && !options.fileOrientedQuestion && labelExactScore === 0
+  const labelTokenScore = fileNodePenaltyApplies ? 0 : scoreNode(questionTokens, tokenizeLabel(label), tokenWeights, averageLabelLength)
+  const sourcePathScore = fileNodePenaltyApplies ? 0 : scoreNode(questionTokens, tokenizeLabel(sourceFile), tokenWeights) * 0.25
+  const communityScore = fileNodePenaltyApplies
+    ? 0
+    : communityLabel
     ? Math.min(scoreNode(questionTokens, tokenizeLabel(communityLabel)) * 0.1, 0.2)
     : 0
 
@@ -369,6 +623,21 @@ function scoreSeedCandidate(
     communityScore,
     total: labelExactScore + labelTokenScore + sourcePathScore + communityScore,
   }
+}
+
+function rankedSeedCandidateIds(
+  graph: KnowledgeGraph,
+  candidates: readonly SeedCandidate[],
+  scoreForCandidate: (candidate: SeedCandidate) => number,
+): string[] {
+  return candidates
+    .filter((candidate) => scoreForCandidate(candidate) > 0)
+    .sort((left, right) => (
+      scoreForCandidate(right) - scoreForCandidate(left) ||
+      right.seedScore.total - left.seedScore.total ||
+      graph.degree(right.id) - graph.degree(left.id)
+    ))
+    .map((candidate) => candidate.id)
 }
 
 function relationWeight(relation: string): number {
@@ -682,6 +951,7 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
   // Pre-compute community labels so seed scoring can treat them as secondary evidence.
   const communities = communitiesFromGraph(graph)
   const frameworkProfile = buildFrameworkQuestionProfile(question, questionTokens)
+  const fileOrientedQuestion = questionLooksFileOriented(question, questionTokens)
   const activeFrameworks = activeFrameworksForProfile(frameworkProfile)
   const communityLabels: Record<number, string> = {
     ...buildCommunityLabels(graph, communities),
@@ -690,7 +960,8 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
 
   // Step 1+2: Score all nodes with explicit seed evidence weights.
   const tokenWeights = tokenWeightsForQuestion(graph, questionTokens)
-  const scored: ScoredNode[] = []
+  const averageLabelLength = averageLabelLengthForGraph(graph)
+  const seedCandidates: SeedCandidate[] = []
   for (const [id, attributes] of graph.nodeEntries()) {
     const community = parseCommunityId(attributes.community)
     if (options.community !== undefined && community !== options.community) {
@@ -705,6 +976,7 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
     const label = String(attributes.label ?? '')
     const sourceFile = String(attributes.source_file ?? '')
     const nodeKind = String(attributes.node_kind ?? '')
+    const fileNodeLike = isFileNodeLike(label, sourceFile)
     const framework = typeof attributes.framework === 'string' ? attributes.framework : undefined
     const frameworkRole = String(attributes.framework_role ?? '')
     const score = scoreSeedCandidate(
@@ -714,30 +986,63 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
       sourceFile,
       community !== null ? (communityLabels[community] ?? null) : null,
       tokenWeights,
+      averageLabelLength,
+      { fileNodeLike, fileOrientedQuestion },
     )
 
     if (score.total > 0) {
       const resolvedLine = resolvedLineNumber(attributes)
-      scored.push({
+      seedCandidates.push({
         id,
         label,
         sourceFile,
         lineNumber: resolvedLine.lineNumber,
         lineNumberDerived: resolvedLine.derived,
+        storedSnippet: storedSnippetFromAttributes(attributes),
         nodeKind,
         framework,
         frameworkRole: frameworkRole || undefined,
         fileType,
+        fileNodeLike,
         community,
         frameworkBoost: frameworkBoostForNode(frameworkProfile, nodeKind, frameworkRole),
+        seedScore: score,
         exactLabelMatch: score.labelExactScore > 0,
         sourcePathMatch: score.sourcePathScore > 0,
         evidenceTier: evidenceTierForSeedScore(score),
-        score: score.total + frameworkBoostForNode(frameworkProfile, nodeKind, frameworkRole),
         relevanceBand: score.labelExactScore > 0 || score.labelTokenScore > 0 ? 'direct' : 'related',
       })
     }
   }
+
+  const fusedSeedScores = reciprocalRankFuse([
+    rankedSeedCandidateIds(graph, seedCandidates, (candidate) => candidate.seedScore.labelExactScore),
+    rankedSeedCandidateIds(graph, seedCandidates, (candidate) => candidate.seedScore.labelTokenScore),
+    rankedSeedCandidateIds(graph, seedCandidates, (candidate) => candidate.seedScore.sourcePathScore),
+    rankedSeedCandidateIds(graph, seedCandidates, (candidate) => candidate.seedScore.communityScore),
+  ], {
+    weights: [2, 1.5, 0.5, 0.25],
+  })
+  const scored: ScoredNode[] = seedCandidates.map((candidate) => ({
+    id: candidate.id,
+    label: candidate.label,
+    sourceFile: candidate.sourceFile,
+    lineNumber: candidate.lineNumber,
+    lineNumberDerived: candidate.lineNumberDerived,
+    storedSnippet: candidate.storedSnippet,
+    nodeKind: candidate.nodeKind,
+    framework: candidate.framework,
+    frameworkRole: candidate.frameworkRole,
+    fileType: candidate.fileType,
+    fileNodeLike: candidate.fileNodeLike,
+    community: candidate.community,
+    frameworkBoost: candidate.frameworkBoost,
+    exactLabelMatch: candidate.exactLabelMatch,
+    sourcePathMatch: candidate.sourcePathMatch,
+    evidenceTier: candidate.evidenceTier,
+    score: ((fusedSeedScores.get(candidate.id) ?? 0) * SEED_FUSION_SCORE_SCALE) + candidate.frameworkBoost,
+    relevanceBand: candidate.relevanceBand,
+  }))
 
   scored.sort((a, b) => compareScoredNodes(graph, a, b))
 
@@ -846,10 +1151,12 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
       sourceFile: String(attributes.source_file ?? ''),
       lineNumber: resolvedLine.lineNumber,
       lineNumberDerived: resolvedLine.derived,
+      storedSnippet: storedSnippetFromAttributes(attributes),
       nodeKind: String(attributes.node_kind ?? ''),
       framework: typeof attributes.framework === 'string' ? attributes.framework : undefined,
       frameworkRole: typeof attributes.framework_role === 'string' ? attributes.framework_role : undefined,
       fileType,
+      fileNodeLike: isFileNodeLike(String(attributes.label ?? ''), String(attributes.source_file ?? '')),
       community,
       frameworkBoost: 0,
       exactLabelMatch: false,
@@ -861,15 +1168,14 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
   }
 
   // Apply structural signal boosts before final sort
-  const godNodeList = new Set(godNodes(graph, 20).map((entry) => entry.id))
-  const bridgeNodeList = new Set(workspaceBridges(graph, communities, {}, 20).map((entry) => entry.id))
+  const retrieveGraphSignals = graphSignalsForRetrieve(graph, communities, communityLabels)
   const topSeed = scored.length > 0 ? scored[0] : undefined
   const seedCommunity = topSeed?.community
 
   for (const node of scored) {
     if (node.score === 0) continue
-    if (bridgeNodeList.has(node.id)) node.score += 0.3
-    if (godNodeList.has(node.id)) node.score -= 0.2
+    if (retrieveGraphSignals.bridgeNodeIds.has(node.id)) node.score += 0.3
+    if (retrieveGraphSignals.godNodeIds.has(node.id)) node.score -= 0.2
     if (seedCommunity !== undefined && node.community === seedCommunity && node.community !== -1) node.score += 0.1
   }
 
@@ -879,6 +1185,7 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
   // Step 4+5: Read snippets and assemble within budget
   const matchedNodes: RetrieveMatchedNode[] = []
   const includedIds = new Set<string>()
+  const snippetFileCache = new Map<string, string[] | null>()
   let tokenCount = 0
   const frameworkCompatibleCandidates = frameworkProfile.frameworkShaped
     ? scored.filter((node) => isFrameworkCompatible(activeFrameworks, node.framework))
@@ -920,7 +1227,10 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
     : [...secondaryCandidates, ...peripheralCandidates]
 
   for (const node of inclusionOrder) {
-    const snippet = readSnippet(node.sourceFile, node.lineNumber, { derived: node.lineNumberDerived })
+    const snippet = node.storedSnippet ?? readSnippet(node.sourceFile, node.lineNumber, {
+      derived: node.lineNumberDerived,
+      fileCache: snippetFileCache,
+    })
     const serializedSourceFile = relativizeSourceFile(node.sourceFile, rootPath)
     const nodeTokens = estimateRetrieveEntryTokens(node.label, serializedSourceFile, node.lineNumber, snippet)
 
@@ -953,18 +1263,7 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
   }
 
   // Collect relationships between included nodes
-  const relationships: RetrieveRelationship[] = []
-  for (const [source, target, attributes] of graph.edgeEntries()) {
-      if (includedIds.has(source) && includedIds.has(target)) {
-        relationships.push({
-          from_id: source,
-          from: String(graph.nodeAttributes(source).label ?? source),
-          to_id: target,
-          to: String(graph.nodeAttributes(target).label ?? target),
-          relation: String(attributes.relation ?? 'related_to'),
-        })
-    }
-  }
+  const relationships = collectRelationships(graph, includedIds)
 
   // Community context for included nodes
   const communityIds = new Set<number>()
@@ -983,11 +1282,6 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
     .sort((a, b) => b.node_count - a.node_count)
 
   // Graph signals: god nodes and bridge nodes among results
-  const godNodeLabels = new Set(godNodes(graph, 20).map((node) => node.label))
-  const bridgeNodeLabels = new Set(
-    workspaceBridges(graph, communities, communityLabels).map((bridge) => bridge.label),
-  )
-
   const includedLabels = new Set(matchedNodes.map((node) => node.label))
 
   return {
@@ -997,8 +1291,172 @@ export function retrieveContext(graph: KnowledgeGraph, options: RetrieveOptions)
     relationships,
     community_context: communityContext,
     graph_signals: {
-      god_nodes: [...includedLabels].filter((label) => godNodeLabels.has(label)),
-      bridge_nodes: [...includedLabels].filter((label) => bridgeNodeLabels.has(label)),
+      god_nodes: [...includedLabels].filter((label) => retrieveGraphSignals.godNodeLabels.has(label)),
+      bridge_nodes: [...includedLabels].filter((label) => retrieveGraphSignals.bridgeNodeLabels.has(label)),
+    },
+  }
+}
+
+export async function retrieveContextAsync(graph: KnowledgeGraph, options: RetrieveOptions): Promise<RetrieveResult> {
+  const lexicalResult = retrieveContext(graph, options)
+  if (options.semantic !== true && options.rerank !== true) {
+    return lexicalResult
+  }
+
+  const questionTokens = tokenizeQuestion(options.question)
+  if (questionTokens.length === 0) {
+    return lexicalResult
+  }
+
+  const frameworkProfile = buildFrameworkQuestionProfile(options.question, questionTokens)
+  const activeFrameworks = activeFrameworksForProfile(frameworkProfile)
+  const rootPath = typeof graph.graph.root_path === 'string' ? graph.graph.root_path : undefined
+  const communities = communitiesFromGraph(graph)
+  const communityLabels: Record<number, string> = {
+    ...buildCommunityLabels(graph, communities),
+    ...storedCommunityLabelsFromGraph(graph),
+  }
+  const retrieveGraphSignals = graphSignalsForRetrieve(graph, communities, communityLabels)
+
+  const lexicalScoresById = new Map(
+    lexicalResult.matched_nodes.flatMap((node) => {
+      const nodeId = matchedNodeId(node)
+      return nodeId ? [[nodeId, node.match_score] as const] : []
+    }),
+  )
+  const lexicalBandsById = new Map(
+    lexicalResult.matched_nodes.flatMap((node) => {
+      const nodeId = matchedNodeId(node)
+      return nodeId ? [[nodeId, node.relevance_band] as const] : []
+    }),
+  )
+
+  const candidatesById = new Map(
+    eligibleNodeEntries(graph, options)
+      .map(([id, attributes]) => [id, scoredNodeFromGraphEntry(id, attributes, frameworkProfile)] as const),
+  )
+  if (candidatesById.size === 0) {
+    return lexicalResult
+  }
+
+  let semanticScores = new Map<string, number>()
+  let rerankScores = new Map<string, number>()
+  if (options.semantic === true) {
+    const { rankCandidatesBySemanticSimilarity } = await import('./semantic.js')
+    semanticScores = await rankCandidatesBySemanticSimilarity(
+      options.question,
+      [...candidatesById.values()].map((node) => ({ id: node.id, text: semanticTextForNode(node) })),
+      options.semanticModel ? { model: options.semanticModel } : {},
+    )
+  }
+
+  const candidateIds = new Set<string>(lexicalScoresById.keys())
+  if (semanticScores.size > 0) {
+    for (const [candidateId] of [...semanticScores.entries()]
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, 8)) {
+      candidateIds.add(candidateId)
+    }
+  }
+
+  if (candidateIds.size === 0) {
+    return lexicalResult
+  }
+
+  const candidatePool = [...candidateIds]
+    .map((candidateId) => candidatesById.get(candidateId))
+    .filter((candidate): candidate is ScoredNode => candidate !== undefined)
+
+  if (options.rerank === true && candidatePool.length > 0) {
+    const { rerankCandidatesWithCrossEncoder } = await import('./semantic.js')
+    rerankScores = await rerankCandidatesWithCrossEncoder(
+      options.question,
+      candidatePool.map((node) => ({ id: node.id, text: semanticTextForNode(node) })),
+      options.rerankerModel ? { model: options.rerankerModel } : {},
+    )
+  }
+
+  for (const candidate of candidatePool) {
+    const lexicalScore = lexicalScoresById.get(candidate.id) ?? 0
+    const semanticScore = semanticScores.get(candidate.id) ?? 0
+    const rerankScore = rerankScores.get(candidate.id) ?? 0
+    candidate.score = lexicalScore + candidate.frameworkBoost + (semanticScore * 3) + (rerankScore * 4)
+    candidate.evidenceTier = lexicalScore > 0 ? 2 : semanticScore > 0 || rerankScore > 0 ? 1 : 0
+    candidate.relevanceBand = lexicalBandsById.get(candidate.id) ?? (semanticScore >= 0.75 || rerankScore >= 0.75 ? 'direct' : 'related')
+    candidate.exactLabelMatch = lexicalScore > 0
+  }
+
+  candidatePool.sort((left, right) => compareScoredNodes(graph, left, right))
+
+  const orderedCandidates = frameworkProfile.frameworkShaped
+    ? [
+        ...candidatePool.filter((node) => isFrameworkCompatible(activeFrameworks, node.framework)),
+        ...candidatePool.filter((node) => !isFrameworkCompatible(activeFrameworks, node.framework)),
+      ]
+    : candidatePool
+
+  const matchedNodes: RetrieveMatchedNode[] = []
+  const includedIds = new Set<string>()
+  const snippetFileCache = new Map<string, string[] | null>()
+  let tokenCount = 0
+
+  for (const node of orderedCandidates) {
+    const snippet = node.storedSnippet ?? readSnippet(node.sourceFile, node.lineNumber, {
+      derived: node.lineNumberDerived,
+      fileCache: snippetFileCache,
+    })
+    const serializedSourceFile = relativizeSourceFile(node.sourceFile, rootPath)
+    const nodeTokens = estimateRetrieveEntryTokens(node.label, serializedSourceFile, node.lineNumber, snippet)
+    if (tokenCount + nodeTokens > options.budget && matchedNodes.length > 0) {
+      break
+    }
+
+    matchedNodes.push({
+      node_id: node.id,
+      label: node.label,
+      source_file: serializedSourceFile,
+      line_number: node.lineNumber,
+      framework: node.framework,
+      framework_role: node.frameworkRole,
+      framework_boost: node.frameworkBoost,
+      file_type: node.fileType,
+      snippet,
+      match_score: node.score,
+      relevance_band: node.relevanceBand,
+      community: node.community,
+      community_label: node.community !== null ? (communityLabels[node.community] ?? null) : null,
+      ...(node.nodeKind.trim().length > 0 ? { node_kind: node.nodeKind } : {}),
+    })
+    includedIds.add(node.id)
+    tokenCount += nodeTokens
+  }
+
+  const relationships = collectRelationships(graph, includedIds)
+  const communityIds = new Set<number>()
+  for (const node of matchedNodes) {
+    if (node.community !== null) {
+      communityIds.add(node.community)
+    }
+  }
+
+  const communityContext: RetrieveCommunityContext[] = [...communityIds]
+    .map((id) => ({
+      id,
+      label: communityLabels[id] ?? `Community ${id}`,
+      node_count: (communities[id] ?? []).length,
+    }))
+    .sort((left, right) => right.node_count - left.node_count)
+
+  const includedLabels = new Set(matchedNodes.map((node) => node.label))
+  return {
+    question: options.question,
+    token_count: tokenCount,
+    matched_nodes: matchedNodes,
+    relationships,
+    community_context: communityContext,
+    graph_signals: {
+      god_nodes: [...includedLabels].filter((label) => retrieveGraphSignals.godNodeLabels.has(label)),
+      bridge_nodes: [...includedLabels].filter((label) => retrieveGraphSignals.bridgeNodeLabels.has(label)),
     },
   }
 }

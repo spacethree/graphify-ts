@@ -181,6 +181,21 @@ function confidenceScore(attributes: Record<string, unknown>): number {
   return 1.0
 }
 
+function exportableEdgeAttributes(attributes: Record<string, unknown>): Record<string, unknown> {
+  const {
+    _src: _internalSource,
+    _tgt: _internalTarget,
+    confidence_score: _derivedConfidenceScore,
+    weight,
+    ...rest
+  } = attributes
+
+  return {
+    ...rest,
+    ...(typeof weight === 'number' && Number.isFinite(weight) && weight !== 1 ? { weight } : {}),
+  }
+}
+
 function safeName(label: string): string {
   const sanitized = label
     .replace(/[\\/*?:"<>|#^[\]]/g, '')
@@ -346,8 +361,7 @@ export function toJson(
     links: graph.edgeEntries().map(([source, target, attributes]) => ({
       source,
       target,
-      ...attributes,
-      confidence_score: confidenceScore(attributes),
+      ...exportableEdgeAttributes(attributes),
     })),
     hyperedges: Array.isArray(graph.graph.hyperedges) ? graph.graph.hyperedges : [],
     community_labels: communityLabels,

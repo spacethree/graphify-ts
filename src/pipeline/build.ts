@@ -35,6 +35,24 @@ type BuildableExtraction = {
   output_tokens?: number
 }
 
+function derivedEdgeConfidenceScore(attributes: Record<string, unknown>): number | undefined {
+  if (typeof attributes.confidence_score === 'number' && Number.isFinite(attributes.confidence_score)) {
+    return attributes.confidence_score
+  }
+
+  const confidence = typeof attributes.confidence === 'string' ? attributes.confidence : undefined
+  switch (confidence) {
+    case 'AMBIGUOUS':
+      return 0.2
+    case 'INFERRED':
+      return 0.5
+    case 'EXTRACTED':
+      return 1
+    default:
+      return undefined
+  }
+}
+
 export function buildFromJson(extraction: unknown, options: BuildGraphOptions = {}): KnowledgeGraph {
   const graph = new KnowledgeGraph({ directed: options.directed === true })
   if (!isRecord(extraction)) {
@@ -78,8 +96,10 @@ export function buildFromJson(extraction: unknown, options: BuildGraphOptions = 
     }
 
     const { source: _source, target: _target, ...attributes } = edge
+    const confidenceScore = derivedEdgeConfidenceScore(attributes)
     graph.addEdge(source, target, {
       ...attributes,
+      ...(confidenceScore !== undefined ? { confidence_score: confidenceScore } : {}),
       _src: source,
       _tgt: target,
     })

@@ -1,7 +1,9 @@
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { build, buildFromJson } from '../../src/pipeline/build.js'
+import { toJson } from '../../src/pipeline/export.js'
 
 const FIXTURES_DIR = join(process.cwd(), 'tests', 'fixtures')
 
@@ -171,5 +173,55 @@ describe('build', () => {
     expect(graph.numberOfEdges()).toBe(2)
     expect(graph.edgeAttributes('n1', 'n2').relation).toBe('calls')
     expect(graph.edgeAttributes('n2', 'n1').relation).toBe('responds_to')
+  })
+
+  it('rebuilds derived edge metadata from pruned graph artifacts while preserving non-default weights', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'graphify-build-'))
+
+    try {
+      const graph = buildFromJson(
+        {
+          nodes: [
+            { id: 'n1', label: 'A', file_type: 'code', source_file: 'a.py' },
+            { id: 'n2', label: 'B', file_type: 'code', source_file: 'b.py' },
+          ],
+          edges: [
+            { source: 'n1', target: 'n2', relation: 'calls', confidence: 'EXTRACTED', source_file: 'a.py', weight: 1.0 },
+            { source: 'n2', target: 'n1', relation: 'references', confidence: 'INFERRED', source_file: 'b.py', weight: 0.5 },
+          ],
+        },
+        { directed: true },
+      )
+
+      const graphPath = join(tempDir, 'graph.json')
+      toJson(graph, { 0: ['n1', 'n2'] }, graphPath)
+
+      const artifact = JSON.parse(readFileSync(graphPath, 'utf8')) as {
+        nodes: Array<Record<string, unknown>>
+        directed: boolean
+        links: Array<Record<string, unknown>>
+      }
+
+      expect(artifact.links[0]).not.toHaveProperty('_src')
+      expect(artifact.links[0]).not.toHaveProperty('_tgt')
+      expect(artifact.links[0]).not.toHaveProperty('confidence_score')
+      expect(artifact.links[0]).not.toHaveProperty('weight')
+      expect(artifact.links[1]?.weight).toBe(0.5)
+
+      const rebuilt = buildFromJson(
+        {
+          ...artifact,
+          edges: artifact.links,
+        },
+        { directed: artifact.directed === true },
+      )
+
+      expect(rebuilt.edgeAttributes('n1', 'n2')._src).toBe('n1')
+      expect(rebuilt.edgeAttributes('n1', 'n2')._tgt).toBe('n2')
+      expect(rebuilt.edgeAttributes('n1', 'n2').confidence_score).toBe(1)
+      expect(rebuilt.edgeAttributes('n2', 'n1').confidence_score).toBe(0.5)
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true })
+    }
   })
 })

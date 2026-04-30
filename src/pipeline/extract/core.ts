@@ -9,6 +9,13 @@ import { classifyFile, FileType, type FileTypeValue } from '../detect.js'
 
 const EXTRACTION_STAGE = 'extract'
 const CAPABILITY_CACHE = new Map<string, string | null>()
+const MAX_STORED_SNIPPET_LINES = 25
+const MAX_STORED_SNIPPET_CHARS = 2_000
+
+export interface CreateNodeOptions {
+  endLine?: number
+  snippet?: string
+}
 
 function sourceFileTypeForNode(fileType: ExtractionNode['file_type']): FileTypeValue | null {
   switch (fileType) {
@@ -82,8 +89,8 @@ export function _makeId(...parts: string[]): string {
     .toLowerCase()
 }
 
-export function toLocation(line: number): string {
-  return `L${line}`
+export function toLocation(line: number, endLine?: number): string {
+  return typeof endLine === 'number' && endLine > line ? `L${line}-L${endLine}` : `L${line}`
 }
 
 export function normalizeLabel(label: string): string {
@@ -141,17 +148,48 @@ export function stripHashComment(line: string): string {
   return line
 }
 
-export function createNode(id: string, label: string, sourceFile: string, line: number, fileType: ExtractionNode['file_type'] = 'code'): ExtractionNode {
+function normalizeStoredSnippet(snippet: string | undefined): string | undefined {
+  if (typeof snippet !== 'string') {
+    return undefined
+  }
+
+  const normalized = snippet.replace(/\r\n?/g, '\n').trim()
+  if (!normalized) {
+    return undefined
+  }
+
+  const truncatedByLines = normalized.split('\n').slice(0, MAX_STORED_SNIPPET_LINES).join('\n').trim()
+  if (!truncatedByLines) {
+    return undefined
+  }
+
+  if (truncatedByLines.length <= MAX_STORED_SNIPPET_CHARS) {
+    return truncatedByLines
+  }
+
+  return `${truncatedByLines.slice(0, MAX_STORED_SNIPPET_CHARS).trimEnd()}...`
+}
+
+export function createNode(
+  id: string,
+  label: string,
+  sourceFile: string,
+  line: number,
+  fileType: ExtractionNode['file_type'] = 'code',
+  options: CreateNodeOptions = {},
+): ExtractionNode {
   const provenance = createExtractionProvenance(sourceFile, line, fileType)
+  const snippet = normalizeStoredSnippet(options.snippet)
 
   return {
     id,
     label: sanitizeLabel(label),
     file_type: fileType,
     source_file: sourceFile,
-    source_location: toLocation(line),
+    source_location: toLocation(line, options.endLine),
     layer: DEFAULT_EXTRACTION_LAYER,
     ...(provenance ? { provenance } : {}),
+    ...(snippet ? { snippet } : {}),
   }
 }
 

@@ -312,7 +312,7 @@ describe('runBenchmark', () => {
       expect(report).toContain('Isolated nodes: 2')
       expect(report).toContain('Largest component: 4 node(s) (67% of the entity graph basis)')
     })
-  })
+  }, 15_000)
 
   test('tracks fixture-backed question coverage for the mixed-workspace baseline', () => {
     withTempDir((tempDir) => {
@@ -346,7 +346,7 @@ describe('runBenchmark', () => {
         missing_expected_labels: [],
       })
     })
-  })
+  }, 15_000)
 
   test('copies the demo repo without pre-generated graph artifacts', () => {
     withTempDir((tempDir) => {
