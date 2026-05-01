@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>2026-04-30 GoValidate benchmark</title>
+    <link rel="stylesheet" href="../styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <a class="back-link" href="../">&larr; All benchmark pages</a>
+
+      <section class="hero">
+        <p class="eyebrow">Retrieval benchmark</p>
+        <h1>2026-04-30 — GoValidate native_agent benchmark</h1>
+        <p class="lede">
+          A real production NestJS + Next.js SaaS, measured with the same Claude Code
+          question twice: once with file tools only, once with graphify-ts available.
+        </p>
+      </section>
+
+      <section class="grid cards">
+        <article class="card">
+          <div class="metric">9 → 3</div>
+          <div class="metric-label">tool-call turns (3× fewer)</div>
+        </article>
+        <article class="card">
+          <div class="metric">96.4s → 34.7s</div>
+          <div class="metric-label">end-to-end latency (~2.77× faster)</div>
+        </article>
+        <article class="card">
+          <div class="metric">615,190 → 233,508</div>
+          <div class="metric-label">Anthropic-reported input tokens (2.63× less)</div>
+        </article>
+        <article class="card">
+          <div class="metric">$0.62 → $0.70</div>
+          <div class="metric-label">cold-start session cost (+13% from MCP overhead)</div>
+        </article>
+      </section>
+
+      <section class="panel">
+        <h2>Evidence files</h2>
+        <p class="muted">
+          These are the committed files used to compute the headline numbers. The benchmark
+          README explains the setup, caveats, and reproduction steps.
+        </p>
+        <ul class="link-list">
+          <li><a href="./README.md">README.md</a></li>
+          <li><a href="./verify.sh">verify.sh</a></li>
+          <li><a href="./baseline-session.json">baseline-session.json</a></li>
+          <li><a href="./graphify-session.json">graphify-session.json</a></li>
+        </ul>
+      </section>
+    </main>
+  </body>
+</html>

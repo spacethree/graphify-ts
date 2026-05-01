@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>2026-05-01 GoValidate PR review benchmark</title>
+    <link rel="stylesheet" href="../styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <a class="back-link" href="../">&larr; All benchmark pages</a>
+
+      <section class="hero">
+        <p class="eyebrow">PR review benchmark</p>
+        <h1>2026-05-01 — GoValidate PR review benchmark</h1>
+        <p class="lede">
+          A real production branch diff measured with <code>review-compare</code>, showing
+          how compact <code>pr_impact</code> packaging shrinks prompt size without changing
+          the review target.
+        </p>
+      </section>
+
+      <section class="grid cards">
+        <article class="card">
+          <div class="metric">63,310 → 8,740</div>
+          <div class="metric-label">prompt tokens (7.244× smaller)</div>
+        </article>
+        <article class="card">
+          <div class="metric">42,255 → 6,143</div>
+          <div class="metric-label">payload tokens (6.879× smaller)</div>
+        </article>
+        <article class="card">
+          <div class="metric">36</div>
+          <div class="metric-label">changed files in the measured diff</div>
+        </article>
+        <article class="card">
+          <div class="metric">143 / 3</div>
+          <div class="metric-label">seed count / hotspot count</div>
+        </article>
+      </section>
+
+      <section class="panel">
+        <h2>Evidence files</h2>
+        <p class="muted">
+          The wrapper stays short on purpose. Use these committed artifacts to inspect the
+          raw report, prompts, answers, and verification script.
+        </p>
+        <ul class="link-list">
+          <li><a href="./README.md">README.md</a></li>
+          <li><a href="./verify.sh">verify.sh</a></li>
+          <li><a href="./report.json">report.json</a></li>
+          <li><a href="./compact-prompt.txt">compact-prompt.txt</a></li>
+          <li><a href="./verbose-prompt.txt">verbose-prompt.txt</a></li>
+          <li><a href="./compact-answer.txt">compact-answer.txt</a></li>
+          <li><a href="./verbose-answer.txt">verbose-answer.txt</a></li>
+        </ul>
+      </section>
+    </main>
+  </body>
+</html>
