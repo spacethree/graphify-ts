@@ -496,9 +496,13 @@ function installMcpServer(projectDir: string, target: McpConfigTarget = 'claude'
   // Scoped name ensures npx resolves the package on first run.
   const npxCommand = nodePlatform === 'win32' ? 'npx.cmd' : 'npx'
   const npxArgs = ['--yes', installPackageSpecifier(), 'serve', '--stdio', graphPath]
+  // Default to the lean MCP tool surface ("core" = 6 tools). Reduces cache_creation
+  // overhead per session vs. advertising all tools. Users can opt into the legacy
+  // 21-tool surface by setting GRAPHIFY_TOOL_PROFILE=full in this env block.
+  const env = { GRAPHIFY_TOOL_PROFILE: 'core' }
   const serverConfig = isVscode
-    ? { type: 'stdio', command: npxCommand, args: npxArgs }
-    : { command: npxCommand, args: npxArgs }
+    ? { type: 'stdio', command: npxCommand, args: npxArgs, env }
+    : { command: npxCommand, args: npxArgs, env }
 
   // VS Code uses "servers" key, Claude/Cursor use "mcpServers"
   const serversKey = isVscode ? 'servers' : 'mcpServers'

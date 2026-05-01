@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
-import { describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { handleStdioRequest, serveGraphStdio } from '../../src/runtime/stdio-server.js'
 
@@ -81,6 +81,24 @@ function createTimeTravelResult(view: 'summary' | 'risk' | 'drift' | 'timeline' 
 }
 
 describe('stdio runtime', () => {
+  // These tests exercise tools across the full MCP surface (query_graph, shortest_path,
+  // relevant_files, feature_map, risk_map, implementation_checklist, etc.). The default
+  // tool profile in v0.10.1+ is "core" which gates non-core tools, so opt into "full"
+  // for the lifetime of this describe. Gating-specific assertions live in
+  // tests/unit/stdio-tool-profile.test.ts.
+  let previousToolProfile: string | undefined
+  beforeAll(() => {
+    previousToolProfile = process.env.GRAPHIFY_TOOL_PROFILE
+    process.env.GRAPHIFY_TOOL_PROFILE = 'full'
+  })
+  afterAll(() => {
+    if (previousToolProfile === undefined) {
+      delete process.env.GRAPHIFY_TOOL_PROFILE
+    } else {
+      process.env.GRAPHIFY_TOOL_PROFILE = previousToolProfile
+    }
+  })
+
   it('supports basic MCP initialize, tools/list, and tools/call flows', async () => {
     const root = createGraphFixtureRoot()
     try {
