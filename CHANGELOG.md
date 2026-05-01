@@ -4,6 +4,17 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-05-01
+
+### Changed
+
+- **Question-type MCP routing in installed guidance**: the generated Claude, Gemini, Cursor, and hook instructions now route agents to the matching graph tool for the task (`retrieve`, `relevant_files`, `feature_map`, `risk_map`, `implementation_checklist`, `impact`) instead of over-centralizing `retrieve` for every codebase question.
+
+### Fixed
+
+- **Install-guidance regression coverage**: release tests now assert that the generated Claude and Gemini instructions include the full routed tool set, including `impact`.
+- **Vitest suite stability on shared machines**: capped `maxWorkers` at `4` in `vitest.config.ts` and locked that contract with a regression test so full-suite runs stop timing out from worker oversubscription.
+
 ## [0.10.1] - 2026-05-01
 
 ### Added
