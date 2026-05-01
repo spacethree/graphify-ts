@@ -19,24 +19,24 @@ graphify-ts generate .
 graphify-ts claude install   # or cursor, copilot
 ```
 
-The agent gets 17 MCP tools. Here's what changes:
+The agent gets a lean 6-tool MCP surface by default (retrieve, impact, call_chain, community_overview, pr_impact, graph_stats). Set `GRAPHIFY_TOOL_PROFILE=full` in `.mcp.json` to opt into the full 21-tool advanced surface. Here's what changes:
 
 ---
 
-### 1. Token Efficiency — 384x Compression
+### 1. Fewer turns, faster sessions, fewer total tokens
 
-**Without graphify-ts:**
-Agent reads files one by one. To answer "How does the AI pipeline work?", it might read 20+ files (~50K tokens) and still miss connections.
+The credible measurement is end-to-end against a real coding agent, not against a synthetic baseline prompt. Numbers below are from `claude --output-format json` runs on a production NestJS + Next.js SaaS, captured 2026-04-30.
 
-**With graphify-ts (retrieve tool):**
-```
-Question: "How does the AI pipeline process an idea from submission to report?"
-Tokens used: 2,988
-Corpus size: 1,146,953 tokens
-Compression: 384x
-```
+| Metric | Baseline (no graphify) | Graphify | Δ |
+|---|---|---|---|
+| Tool-call turns | 9 | **3** | 3× fewer |
+| Latency | 96s | **35s** | ~2.8× faster |
+| Total input tokens (Anthropic-reported) | 615,190 | **233,508** | 2.63× less |
+| Cost per session | $0.62 | $0.70 | +13% on cold start; cheaper on multi-question sessions |
 
-One MCP call returns 56 relevant nodes with code snippets, relationships, and community context — in 3K tokens instead of 1.1M.
+Headline: **3× fewer turns**, ~2.8× faster, 2.6× fewer total input tokens. Graphify is unambiguously faster and uses fewer turns. Cold-start sessions pay an MCP-overhead premium of ~13%; multi-question sessions amortize and flip below baseline.
+
+Raw evidence (both `claude --output-format json` outputs and a `verify.sh` reproducer) is committed under [`docs/benchmarks/2026-04-30-govalidate/`](../docs/benchmarks/2026-04-30-govalidate/).
 
 ---
 
@@ -100,14 +100,16 @@ Merges graphs, infers cross-repo edges from shared types, and all MCP tools work
 
 ## Benchmark Summary
 
-| Metric | GoValidate (production SaaS) |
-|--------|------------------------------|
+| Metric | GoValidate (production SaaS, 2026-04-30) |
+|--------|------------------------------------------|
 | Corpus | 1,268 files · ~860K words |
 | Graph | 10,474 nodes · 14,687 edges |
 | Communities | 2,244 (Louvain) |
-| Retrieve compression | **384x** (3K tokens vs 1.1M) |
+| Tool-call turns | baseline 9 → graphify **3** (3× fewer) |
+| Avg session latency | baseline 96s → graphify **35s** (~2.8× faster) |
+| Total input tokens (Anthropic-reported) | baseline 615,190 → graphify **233,508** (2.63× less) |
+| Cost per session | baseline $0.62 → graphify $0.70 cold start (~+13%); amortizes on multi-question sessions |
 | Impact analysis (User entity) | 67 direct + 589 transitive dependents |
-| Generation time | ~30 seconds |
 | API keys required | **0** |
 | Cloud services required | **0** |
 

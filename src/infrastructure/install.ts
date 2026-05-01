@@ -105,7 +105,7 @@ function hookCommandWithFallback(matchJson: string, missJson: string): string {
 }
 
 const RETRIEVE_FIRST_MESSAGE =
-  'STOP. This project has a graphify-ts knowledge graph. You MUST call the retrieve MCP tool FIRST with your question before using Glob, Grep, Bash, Read, or Agent tools for codebase questions. The graph has 384x better token efficiency than raw file exploration. Only fall back to raw files if retrieve returns no results.'
+  'STOP. This project has a graphify-ts knowledge graph. Call mcp__graphify-ts__retrieve FIRST before using Glob, Grep, Bash, Read, or Agent tools. Graphify answers most codebase questions in 1 retrieve call instead of 5–10 sequential file reads (3x fewer turns, ~2.8x faster on a real production codebase). Only fall back to raw file tools if retrieve returns no relevant nodes.'
 
 const SETTINGS_HOOK = {
   // SECURITY: Keep this command static. Do not interpolate user-controlled input here.
