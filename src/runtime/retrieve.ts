@@ -225,7 +225,7 @@ function estimateTokens(text: string): number {
   return estimateQueryTokens(text)
 }
 
-function estimateRetrieveEntryTokens(label: string, sourceFile: string, lineNumber: number, snippet: string | null): number {
+export function estimateRetrieveEntryTokens(label: string, sourceFile: string, lineNumber: number, snippet: string | null): number {
   return estimateTokens(`${label} ${sourceFile}:${lineNumber} ${snippet ?? ''}`)
 }
 
@@ -254,7 +254,7 @@ function fileLinesForSnippet(sourceFile: string, fileCache?: Map<string, string[
   return lines
 }
 
-function readSnippet(
+export function readSnippet(
   sourceFile: string,
   lineNumber: number,
   options: { derived?: boolean; fileCache?: Map<string, string[] | null> } = {},
@@ -306,7 +306,7 @@ function graphSignalsForRetrieve(
   return signals
 }
 
-function collectRelationships(graph: KnowledgeGraph, includedIds: ReadonlySet<string>): RetrieveRelationship[] {
+export function collectRelationships(graph: KnowledgeGraph, includedIds: ReadonlySet<string>): RetrieveRelationship[] {
   const relationships: RetrieveRelationship[] = []
   const seen = new Set<string>()
 

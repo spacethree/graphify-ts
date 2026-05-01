@@ -7,7 +7,7 @@ import { validateGraphPath } from '../../shared/security.js'
 import { featureMap } from '../feature-map.js'
 import { implementationChecklist } from '../implementation-checklist.js'
 import { analyzeImpact, callChains, compactImpactResult } from '../impact.js'
-import { analyzePrImpact } from '../pr-impact.js'
+import { analyzePrImpact, compactPrImpactResult } from '../pr-impact.js'
 import { relevantFiles } from '../relevant-files.js'
 import { compactRetrieveResult, retrieveContext, retrieveContextAsync } from '../retrieve.js'
 import { riskMap } from '../risk-map.js'
@@ -184,15 +184,27 @@ export function handleToolCall(id: string | number | null, graphPath: string, pa
       return helpers.ok(id, helpers.textToolResult(JSON.stringify({ source: chainSource, target: chainTarget, chains, total: chains.length })))
     }
     case 'pr_impact': {
+      if (Object.hasOwn(toolArguments, 'compact') && typeof toolArguments.compact !== 'boolean') {
+        return helpers.failure(id, helpers.jsonrpcInvalidParams, 'compact must be a boolean')
+      }
+      if (Object.hasOwn(toolArguments, 'verbose') && typeof toolArguments.verbose !== 'boolean') {
+        return helpers.failure(id, helpers.jsonrpcInvalidParams, 'verbose must be a boolean')
+      }
       const prBaseBranch = helpers.stringParamAlias(toolArguments, ['base_branch', 'baseBranch'])
       const prDepth = helpers.numberParamAlias(toolArguments, ['depth'], { min: 1, max: 5 })
+      const prBudget = helpers.numberParamAlias(toolArguments, ['budget'], { min: 1, max: helpers.maxStdioTokenBudget })
+      if (Object.hasOwn(toolArguments, 'budget') && prBudget === null) {
+        return helpers.failure(id, helpers.jsonrpcInvalidParams, `budget must be a number between 1 and ${helpers.maxStdioTokenBudget}`)
+      }
       const graphDir = dirname(validateGraphPath(graphPath))
       const projectRoot = dirname(graphDir)
       const prResult = analyzePrImpact(graph, projectRoot, {
         ...(prBaseBranch ? { baseBranch: prBaseBranch } : {}),
         ...(prDepth !== null ? { depth: prDepth } : {}),
+        ...(prBudget !== null ? { budget: prBudget } : {}),
       })
-      return helpers.ok(id, helpers.textToolResult(JSON.stringify(prResult)))
+      const useVerbosePrImpact = toolArguments.verbose === true || toolArguments.compact === false
+      return helpers.ok(id, helpers.textToolResult(JSON.stringify(useVerbosePrImpact ? prResult : compactPrImpactResult(prResult))))
     }
     case 'retrieve': {
       const question = helpers.stringParam(toolArguments, 'question')

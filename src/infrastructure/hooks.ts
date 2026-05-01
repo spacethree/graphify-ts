@@ -1,5 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { join, resolve } from 'node:path'
+
+import { findGitRoot } from '../shared/git.js'
 
 export const HOOK_MARKER = '# graphify-hook-start'
 const HOOK_MARKER_END = '# graphify-hook-end'
@@ -23,20 +25,6 @@ ${CHECKOUT_MARKER_END}
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
-function gitRoot(path: string): string | null {
-  let current = resolve(path)
-  while (true) {
-    if (existsSync(join(current, '.git'))) {
-      return current
-    }
-    const parent = dirname(current)
-    if (parent === current) {
-      return null
-    }
-    current = parent
-  }
 }
 
 function ensureExecutable(hookPath: string): void {
@@ -86,7 +74,7 @@ function uninstallHook(hooksDir: string, name: string, marker: string, markerEnd
 }
 
 export function install(path = '.'): string {
-  const root = gitRoot(path)
+  const root = findGitRoot(path)
   if (!root) {
     throw new Error(`No git repository found at or above ${resolve(path)}`)
   }
@@ -99,7 +87,7 @@ export function install(path = '.'): string {
 }
 
 export function uninstall(path = '.'): string {
-  const root = gitRoot(path)
+  const root = findGitRoot(path)
   if (!root) {
     throw new Error(`No git repository found at or above ${resolve(path)}`)
   }
@@ -111,7 +99,7 @@ export function uninstall(path = '.'): string {
 }
 
 export function status(path = '.'): string {
-  const root = gitRoot(path)
+  const root = findGitRoot(path)
   if (!root) {
     return 'Not in a git repository.'
   }

@@ -4,6 +4,38 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+## [0.10.4] - 2026-05-01
+
+### Added
+
+- **`review-compare` real-repo benchmark command**: added a CLI flow that compares verbose versus compact `pr_impact` prompts for the current git diff, saves prompt/report artifacts under `graphify-out/review-compare/`, and can optionally execute both prompts through a user-supplied runner template.
+
+### Changed
+
+- **Compact review payload usefulness**: `pr_impact` compact output now carries typed `review_context` with supporting paths, likely test paths, and structural hotspots so the smaller review packet still points reviewers at the most relevant follow-up context.
+- **Compact review payload size on real repos**: compact `pr_impact` now trims oversized outer arrays (`changed_files`, `changed_ranges`, `seed_nodes`, `affected_communities`, `high_impact_nodes`) instead of only shrinking the inner review bundle, which cuts real review payload size dramatically on large live diffs.
+
+### Fixed
+
+- **Real-workspace PR diff detection**: `pr_impact` now discovers and reads diffs from nested git repositories under the graph root, so review mode works on multi-project workspaces instead of assuming the graph root itself is a git repo.
+- **Review benchmark output-dir validation**: `review-compare` now accepts nested output directories whose parents do not exist yet and correctly validates absolute external output paths against the target graph's own `graphify-out/` directory.
+- **CLI/runtime validation parity**: the `review-compare` parser no longer rejects valid absolute output directories before runtime can validate them against the selected graph workspace.
+
+## [0.10.3] - 2026-05-01
+
+### Added
+
+- **Diff-first PR review selection**: `pr_impact` now parses unified git diff hunks into `changed_ranges`, narrows to line-aware `seed_nodes`, falls back safely to file-level seeds when symbol line metadata is missing, and returns ranked review risks with severity/reason summaries.
+
+### Changed
+
+- **Compact-by-default PR review MCP output**: the MCP `pr_impact` tool now accepts `budget`, `verbose`, and `compact` flags, returns a compact default payload for review workflows, and preserves the full legacy-style result behind `verbose: true` or `compact: false`.
+- **Review bundle compaction and regression benchmarking**: compact PR review bundles now preserve seed-first context while trimming supporting snippets and re-filtering relationships/community context, with focused regression tests pinning materially smaller review payloads on a mixed review fixture.
+
+### Fixed
+
+- **PR diff/runtime edge cases**: normalized reversed source ranges, hardened macOS realpath matching between git diff paths and graph node files, and covered pure-deletion hunks so review selection stays stable across real repositories.
+
 ## [0.10.2] - 2026-05-01
 
 ### Changed

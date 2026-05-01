@@ -26,7 +26,7 @@ function inferGraphBase(graphPath: string): string {
   return resolve('graphify-out')
 }
 
-function findNearestExistingAncestor(targetPath: string): string | null {
+export function findNearestExistingAncestor(targetPath: string): string | null {
   let currentPath = resolve(targetPath)
 
   while (!existsSync(currentPath)) {

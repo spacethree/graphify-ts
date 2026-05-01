@@ -164,6 +164,25 @@ What this gives you:
 
 Important: `compare` may spend paid model tokens. It prints a warning before execution and requires `--yes` in non-interactive runs. For large prompts, use stdin or file redirection with `{prompt_file}`; avoid shell command substitution around `{prompt_file}` (for example `$(cat {prompt_file})`) because shell argument expansion can fail on full-repo baselines. If Gemini emits structured JSON with `usageMetadata`, `compare` records real reported input and total tokens. If the runner only returns answer text or malformed JSON, `compare` falls back to labeled local `cl100k_base` prompt estimates instead. Runner-backed `benchmark` and `eval` follow the same reported-usage vs. labeled-estimate fallback rules.
 
+## Real PR review proof with the current diff
+
+If your question is "is compact review mode actually small enough on a real PR?" use `review-compare` instead of question-based `compare`:
+
+```bash
+graphify-ts review-compare graphify-out/graph.json \
+  --exec 'cat {prompt_file} | claude -p' \
+  --yes
+```
+
+This produces:
+
+- one verbose `pr_impact` prompt and one compact `pr_impact` prompt for the current git diff
+- optional model answers for both review prompts
+- a saved artifact bundle in `graphify-out/review-compare/<timestamp>/`
+- prompt-token and payload-token deltas in `report.json`
+
+Use this proof when you are validating PR-review ergonomics rather than general question-answering. It is especially useful on large repos or multi-project workspaces because it can target an external graph path and still write output inside that target workspace's own `graphify-out/`.
+
 ## Run It on Your Own Codebase
 
 ```bash
@@ -181,6 +200,9 @@ graphify-ts eval graphify-out/graph.json --questions benchmark-questions.json --
 
 # If you want a real same-model A/B proof run
 graphify-ts compare "How does auth work?" --exec 'cat {prompt_file} | claude -p' --yes
+
+# If you want a real PR-review compact-vs-verbose proof run
+graphify-ts review-compare graphify-out/graph.json --exec 'cat {prompt_file} | claude -p' --yes
 
 # Gemini-safe compare runner with structured usage capture
 graphify-ts compare "How does auth work?" \
@@ -201,12 +223,14 @@ For an internal team rollout, the most convincing sequence is usually:
 
 1. Run `benchmark` and `eval` on one repo with your chosen runner to prove the graph is smaller to query and still retrieves the expected evidence.
 2. Run `compare` with your real model command to produce a saved baseline-vs-graphify answer bundle.
-3. If your system spans multiple repos, generate each graph separately and use `federate` before showing the agent workflow.
+3. If PR-review cost is the concern, run `review-compare` on a real diff to measure verbose-vs-compact review prompts directly.
+4. If your system spans multiple repos, generate each graph separately and use `federate` before showing the agent workflow.
 
 That progression keeps the proof honest:
 
 - `benchmark` and `eval` are runner-backed graph-quality measurements on labeled prompts
 - `compare` is the model-facing proof, with reported usage when the runner emits structured JSON and labeled estimates otherwise
+- `review-compare` is the PR-review proof, comparing verbose and compact `pr_impact` prompts on the same diff
 - `federate` is the production architecture proof for frontend/backend/shared or microservice splits
 
 ## Capability Coverage Matters

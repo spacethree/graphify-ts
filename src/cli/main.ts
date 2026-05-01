@@ -4,6 +4,7 @@ import { createInterface } from 'node:readline/promises'
 import { loadBenchmarkQuestions, type BenchmarkResult, printBenchmark, runBenchmark } from '../infrastructure/benchmark.js'
 import { evaluateRetrievalQuality, formatQualityReport } from '../infrastructure/benchmark/quality.js'
 import { runCompareCommand } from '../infrastructure/compare.js'
+import { runReviewCompareCommand } from '../infrastructure/review-compare.js'
 import { compareRefs } from '../infrastructure/time-travel.js'
 import { federate } from '../pipeline/federate.js'
 import { generateGraph, type GenerateGraphResult, type ProgressStep } from '../infrastructure/generate.js'
@@ -44,11 +45,13 @@ import {
   parsePathArgs,
   parsePlatformActionArgs,
   parseQueryArgs,
+  parseReviewCompareArgs,
   parseSaveResultArgs,
   parseServeArgs,
   parseTimeTravelArgs,
   parseWatchArgs,
   type CompareCliOptions,
+  type ReviewCompareCliOptions,
   type TimeTravelCliOptions,
   UsageError,
 } from './parser.js'
@@ -60,6 +63,12 @@ export interface CliIO {
 
 export interface CompareCommandContext {
   options: CompareCliOptions
+  io: CliIO
+  confirm(message: string): Promise<boolean>
+}
+
+export interface ReviewCompareCommandContext {
+  options: ReviewCompareCliOptions
   io: CliIO
   confirm(message: string): Promise<boolean>
 }
@@ -87,6 +96,7 @@ export interface CliDependencies {
   runBenchmark: (context: BenchmarkCommandContext) => Promise<BenchmarkResult> | BenchmarkResult
   runEval: (context: EvalCommandContext) => Promise<string | void> | string | void
   runCompare: (context: CompareCommandContext) => Promise<string | void> | string | void
+  runReviewCompare: (context: ReviewCompareCommandContext) => Promise<string | void> | string | void
   runTimeTravel: (context: TimeTravelCommandContext) => Promise<string | void> | string | void
   confirm: (message: string) => Promise<boolean>
   printBenchmark: (result: BenchmarkResult) => void
@@ -111,6 +121,7 @@ export interface CliDependencies {
 }
 
 const COMPARE_WARNING_MESSAGE = 'compare will execute a baseline prompt and a graphify prompt for each question. This may consume paid model tokens.'
+const REVIEW_COMPARE_WARNING_MESSAGE = 'review-compare will execute verbose and compact pr_impact prompts for the current git diff. This may consume paid model tokens.'
 const BENCHMARK_WARNING_MESSAGE = 'benchmark will execute the benchmark/eval runner. This may consume paid model tokens.'
 const EVAL_WARNING_MESSAGE = 'eval will execute the benchmark/eval runner. This may consume paid model tokens.'
 
@@ -141,6 +152,15 @@ const DEFAULT_DEPENDENCIES: CliDependencies = {
       execTemplate: options.execTemplate,
       baselineMode: options.baselineMode,
       limit: options.limit,
+    })
+  },
+  runReviewCompare: async ({ options }) => {
+    return await runReviewCompareCommand({
+      graphPath: options.graphPath,
+      execTemplate: options.execTemplate,
+      outputDir: options.outputDir,
+      ...(options.baseBranch !== null ? { baseBranch: options.baseBranch } : {}),
+      ...(options.budget !== null ? { budget: options.budget } : {}),
     })
   },
   runTimeTravel: async ({ options }) => {
@@ -302,6 +322,12 @@ export function formatHelp(binaryName = 'graphify-ts'): string {
     '    --baseline-mode MODE  full | bounded | native_agent (default full; native_agent runs --exec twice and reports Anthropic-billed usage)',
     '    --yes                 skip confirmation before running the paid prompt comparison',
     '    --limit N             cap processed prompts/questions for the comparison run',
+    '  review-compare [graph.json] compare full vs compact pr_impact review prompts on the current git diff',
+    '    --exec TEMPLATE       required command template; supports {prompt_file}, {mode}, and {output_file}',
+    '    --output-dir DIR      review compare output directory (default graphify-out/review-compare)',
+    '    --base-branch BRANCH  override the PR base branch used for diff selection',
+    '    --budget N            override the pr_impact review bundle token budget',
+    '    --yes                 skip confirmation before running the paid review comparison',
     '  time-travel <from> <to> compare two refs using on-demand cached graph snapshots',
     '    --view MODE          summary|risk|drift|timeline (default summary)',
     '    --json               emit machine-readable JSON',
@@ -472,6 +498,30 @@ export async function executeCli(argv: string[], io: CliIO = console, dependenci
         }
       }
       const output = await dependencies.runCompare({
+        options,
+        io,
+        confirm,
+      })
+      if (output !== undefined) {
+        io.log(output)
+      }
+      return 0
+    }
+
+    if (command === 'review-compare') {
+      const options = parseReviewCompareArgs(args)
+      const confirm = async (message: string) => await dependencies.confirm(message)
+      if (!(await confirmPaidCommand(
+        'review-compare',
+        REVIEW_COMPARE_WARNING_MESSAGE,
+        'Review compare cancelled.',
+        options.yes,
+        io,
+        dependencies,
+      ))) {
+        return 1
+      }
+      const output = await dependencies.runReviewCompare({
         options,
         io,
         confirm,

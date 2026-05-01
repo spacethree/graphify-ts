@@ -1,5 +1,5 @@
 import { KnowledgeGraph } from '../../src/contracts/graph.js'
-import { riskMap } from '../../src/runtime/risk-map.js'
+import { buildRankedRisk, compareRankedRisks, riskMap } from '../../src/runtime/risk-map.js'
 
 describe('riskMap', () => {
   it('returns blast radius risks plus structural hotspots for a feature question', () => {
@@ -104,5 +104,29 @@ describe('riskMap', () => {
       ]),
     )
     expect(result.starter_files[0]?.path).toBe('src/routes/users.ts')
+  })
+
+  it('sorts ranked risks by total score before tie-breaker signals', () => {
+    const lowerScoreMoreHotspots = buildRankedRisk({
+      label: 'LowerScoreMoreHotspots',
+      totalAffected: 1,
+      affectedFiles: ['src/one.ts'],
+      affectedCommunities: ['One'],
+      hotspotKinds: ['bridge', 'god node'],
+      dependentCount: 1,
+    })
+    const higherScoreFewerHotspots = buildRankedRisk({
+      label: 'HigherScoreFewerHotspots',
+      totalAffected: 20,
+      affectedFiles: ['src/two.ts'],
+      affectedCommunities: ['One'],
+      hotspotKinds: [],
+      dependentCount: 0,
+    })
+
+    expect([lowerScoreMoreHotspots, higherScoreFewerHotspots].sort(compareRankedRisks).map((risk) => risk.label)).toEqual([
+      'HigherScoreFewerHotspots',
+      'LowerScoreMoreHotspots',
+    ])
   })
 })
