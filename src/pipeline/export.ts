@@ -3,9 +3,9 @@ import { dirname, join, relative } from 'node:path'
 
 import { KnowledgeGraph } from '../contracts/graph.js'
 import { validateUrl } from '../shared/security.js'
-import { _nodeCommunityMap, type SemanticAnomaly } from './analyze.js'
+import { _nodeCommunityMap, type SemanticAnomaly, type WorkspaceBridge, workspaceBridges } from './analyze.js'
 import type { Communities } from './cluster.js'
-import { buildOverviewBridgeSummaries, nodeAnchorId, type OverviewBridgeSummary } from './export/overview-bridges.js'
+import { bridgePageFilename, buildOverviewBridgeSummaries, type OverviewBridgeSummary } from './export/overview-bridges.js'
 import { buildCommunitySummaryData } from './export/community-summary.js'
 import { buildOverviewSearchIndex, buildOverviewTopNodes, type OverviewSearchIndexEntry, type OverviewTopNode } from './export/overview-navigation.js'
 
@@ -83,6 +83,8 @@ interface HtmlNodeRecord {
   arxiv_id: string
   file_type: string
   degree: number
+  global_degree?: number
+  connected_communities?: string[]
   confidence: string
 }
 
@@ -121,6 +123,8 @@ interface InteractiveHtmlPageOptions {
   lede?: string
   backLinkHref?: string
   backLinkLabel?: string
+  degreeLabel?: string
+  initialSelectedNodeId?: string | null
 }
 
 interface OverviewCommunitySummary {
@@ -131,6 +135,11 @@ interface OverviewCommunitySummary {
   href: string
   pageMode: 'interactive' | 'summary'
   topNodes: OverviewTopNode[]
+}
+
+interface BridgeNodeMetadata {
+  global_degree: number
+  connected_communities: string[]
 }
 
 function escapeHtml(value: string): string {
@@ -339,6 +348,36 @@ function buildHtmlPayload(graph: KnowledgeGraph, communities: Communities, commu
   }
 }
 
+function buildBridgeMetadata(bridges: readonly WorkspaceBridge[]): Map<string, BridgeNodeMetadata> {
+  return new Map(
+    bridges.map((bridge) => [
+      bridge.id,
+      {
+        global_degree: bridge.degree,
+        connected_communities: bridge.connected_communities.map((community) => community.label),
+      },
+    ]),
+  )
+}
+
+function enrichPayloadWithBridgeMetadata(payload: HtmlPayload, bridgeMetadata: ReadonlyMap<string, BridgeNodeMetadata>): HtmlPayload {
+  return {
+    ...payload,
+    nodes: payload.nodes.map((node) => {
+      const metadata = bridgeMetadata.get(node.id)
+      if (!metadata) {
+        return node
+      }
+
+      return {
+        ...node,
+        global_degree: metadata.global_degree,
+        connected_communities: [...metadata.connected_communities],
+      }
+    }),
+  }
+}
+
 export function toJson(
   graph: KnowledgeGraph,
   communities: Communities,
@@ -400,6 +439,22 @@ function subgraphFromNodes(graph: KnowledgeGraph, nodeIds: string[]): KnowledgeG
   return subgraph
 }
 
+function filterCommunitiesForNodes(communities: Communities, nodeIds: ReadonlySet<string>): Communities {
+  return Object.fromEntries(
+    Object.entries(communities)
+      .map(([communityId, members]) => [communityId, members.filter((nodeId) => nodeIds.has(nodeId))] as const)
+      .filter(([, members]) => members.length > 0),
+  )
+}
+
+function bridgeNeighborhoodNodeIds(graph: KnowledgeGraph, nodeId: string): string[] {
+  if (!graph.hasNode(nodeId)) {
+    return []
+  }
+
+  return [nodeId, ...graph.incidentNeighbors(nodeId)].filter((candidate, index, items) => items.indexOf(candidate) === index)
+}
+
 function resolveHtmlExportMode(payload: HtmlPayload, requestedMode: HtmlExportOptions['mode'] = 'auto'): HtmlExportResult {
   if (requestedMode === 'inline') {
     return { mode: 'inline', communityPageCount: 0, reason: 'forced inline mode' }
@@ -428,6 +483,7 @@ function buildInteractiveHtml(payload: HtmlPayload, isDirected: boolean, options
     typeof options.backLinkHref === 'string' && options.backLinkHref.length > 0
       ? `<p class="muted" style="margin-bottom:10px;"><a class="back-link" href="${escapeHtml(options.backLinkHref)}">${escapeHtml(options.backLinkLabel ?? '← Back')}</a></p>`
       : ''
+  const degreeLabel = options.degreeLabel ?? 'Degree'
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -635,7 +691,9 @@ function buildInteractiveHtml(payload: HtmlPayload, isDirected: boolean, options
         <dt>Type</dt><dd id="selectedType"></dd>
         <dt>Community</dt><dd id="selectedCommunity"></dd>
         <dt>Confidence</dt><dd id="selectedConfidence"></dd>
-        <dt>Degree</dt><dd id="selectedDegree"></dd>
+        <dt>${escapeHtml(degreeLabel)}</dt><dd id="selectedDegree"></dd>
+        <dt id="selectedGlobalDegreeLabel" hidden>Global degree</dt><dd id="selectedGlobalDegree" hidden></dd>
+        <dt id="selectedConnectedCommunitiesLabel" hidden>Connected communities</dt><dd id="selectedConnectedCommunities" hidden></dd>
       </dl>
       <div class="toolbar">
         <button id="focusNeighborhood" class="primary small">Focus neighborhood</button>
@@ -661,6 +719,8 @@ const LEGEND = ${serializeForInlineScript(payload.legend)};
 const STATS = ${serializeForInlineScript(payload.stats)};
 const IS_DIRECTED = ${serializeForInlineScript(isDirected)};
 const EDGE_ARROWS = ${serializeForInlineScript(isDirected ? { to: { enabled: true, scaleFactor: 0.45 } } : {})};
+const PRIMARY_DEGREE_LABEL = ${serializeForInlineScript(degreeLabel)};
+const INITIAL_SELECTED_NODE_ID = ${serializeForInlineScript(options.initialSelectedNodeId ?? null)};
 
 const nodes = new vis.DataSet(RAW_NODES);
 const edges = new vis.DataSet(RAW_EDGES.map((edge) => ({ ...edge, arrows: EDGE_ARROWS, dashes: edge.dashes })));
@@ -712,6 +772,10 @@ const elements = {
   selectedCommunity: document.getElementById('selectedCommunity'),
   selectedConfidence: document.getElementById('selectedConfidence'),
   selectedDegree: document.getElementById('selectedDegree'),
+  selectedGlobalDegreeLabel: document.getElementById('selectedGlobalDegreeLabel'),
+  selectedGlobalDegree: document.getElementById('selectedGlobalDegree'),
+  selectedConnectedCommunitiesLabel: document.getElementById('selectedConnectedCommunitiesLabel'),
+  selectedConnectedCommunities: document.getElementById('selectedConnectedCommunities'),
   neighborList: document.getElementById('neighborList'),
   neighborsEmpty: document.getElementById('neighborsEmpty'),
   legend: document.getElementById('legend'),
@@ -848,7 +912,7 @@ function renderSearchMatches(query) {
     button.className = 'match-button small';
     const left = document.createElement('span');
     left.textContent = node.label;
-    const right = createMeta(node.community_name + ' · degree ' + node.degree, 'match-meta');
+    const right = createMeta(node.community_name + ' · ' + PRIMARY_DEGREE_LABEL.toLowerCase() + ' ' + node.degree, 'match-meta');
     button.append(left, right);
     button.addEventListener('click', () => selectNodeById(node.id, { focus: true }));
     elements.matches.appendChild(button);
@@ -934,6 +998,16 @@ function renderSelection(nodeId) {
   elements.selectedCommunity.textContent = node.community_name;
   elements.selectedConfidence.textContent = node.confidence;
   elements.selectedDegree.textContent = String(node.degree);
+  setOptionalMeta(
+    elements.selectedGlobalDegreeLabel,
+    elements.selectedGlobalDegree,
+    typeof node.global_degree === 'number' ? String(node.global_degree) : '',
+  );
+  setOptionalMeta(
+    elements.selectedConnectedCommunitiesLabel,
+    elements.selectedConnectedCommunities,
+    Array.isArray(node.connected_communities) && node.connected_communities.length > 0 ? node.connected_communities.join(', ') : '',
+  );
   renderNeighbors(nodeId);
 }
 
@@ -1042,6 +1116,8 @@ window.addEventListener('hashchange', () => {
 const initialHash = decodeURIComponent(window.location.hash.replace(/^#/, ''));
 if (initialHash && nodeIndex.has(initialHash)) {
   selectNodeById(initialHash, { focus: true });
+} else if (INITIAL_SELECTED_NODE_ID && nodeIndex.has(INITIAL_SELECTED_NODE_ID)) {
+  selectNodeById(INITIAL_SELECTED_NODE_ID, { focus: false });
 } else {
   network.fit({ animation: false });
 }
@@ -1055,6 +1131,7 @@ function buildCommunitySummaryHtml(payload: HtmlPayload, options: InteractiveHtm
     typeof options.backLinkHref === 'string' && options.backLinkHref.length > 0
       ? `<p class="muted" style="margin-bottom:10px;"><a class="back-link" href="${escapeHtml(options.backLinkHref)}">${escapeHtml(options.backLinkLabel ?? '← Back')}</a></p>`
       : ''
+  const degreeLabel = options.degreeLabel ?? 'Degree'
 
   const { summaryNodes, topNodes, topFiles } = buildCommunitySummaryData(payload.nodes)
 
@@ -1077,7 +1154,7 @@ function buildCommunitySummaryHtml(payload: HtmlPayload, options: InteractiveHtm
           .map(
             (node) => `<a class="list-link" href="#${escapeHtml(node.anchor_id)}">
   <strong>${escapeHtml(node.label)}</strong>
-  <span class="muted">degree ${node.degree} · ${escapeHtml(node.source_file || 'Unknown source')}</span>
+  <span class="muted">${escapeHtml(degreeLabel.toLowerCase())} ${node.degree} · ${escapeHtml(node.source_file || 'Unknown source')}</span>
 </a>`,
           )
           .join('\n')}</div>`
@@ -1284,7 +1361,9 @@ function buildCommunitySummaryHtml(payload: HtmlPayload, options: InteractiveHtm
         <div class="meta-row"><span>Source</span><code id="selectedSource"></code></div>
         <div class="meta-row"><span>Type</span><span id="selectedType"></span></div>
         <div class="meta-row"><span>Confidence</span><span id="selectedConfidence"></span></div>
-        <div class="meta-row"><span>Degree</span><span id="selectedDegree"></span></div>
+        <div class="meta-row"><span>${escapeHtml(degreeLabel)}</span><span id="selectedDegree"></span></div>
+        <div id="selectedGlobalDegreeRow" class="meta-row" hidden><span>Global degree</span><span id="selectedGlobalDegree"></span></div>
+        <div id="selectedConnectedCommunitiesRow" class="meta-row" hidden><span>Connected communities</span><span id="selectedConnectedCommunities"></span></div>
         <div id="selectedSourceUrlRow" class="meta-row" hidden><span>Source URL</span><a id="selectedSourceUrl" target="_blank" rel="noreferrer noopener"></a></div>
         <h4 style="margin-top:12px;">Related nodes</h4>
         <div id="selectedNeighbors" class="list"></div>
@@ -1306,6 +1385,7 @@ function buildCommunitySummaryHtml(payload: HtmlPayload, options: InteractiveHtm
 <script>
 const SUMMARY_NODES = ${serializeForInlineScript(summaryNodes)};
 const SEARCH_RESULT_LIMIT = 50;
+const PRIMARY_DEGREE_LABEL = ${serializeForInlineScript(degreeLabel)};
 const searchInput = document.getElementById('search');
 const matches = document.getElementById('matches');
 const selectionEmpty = document.getElementById('selectionEmpty');
@@ -1315,6 +1395,10 @@ const selectedSource = document.getElementById('selectedSource');
 const selectedType = document.getElementById('selectedType');
 const selectedConfidence = document.getElementById('selectedConfidence');
 const selectedDegree = document.getElementById('selectedDegree');
+const selectedGlobalDegreeRow = document.getElementById('selectedGlobalDegreeRow');
+const selectedGlobalDegree = document.getElementById('selectedGlobalDegree');
+const selectedConnectedCommunitiesRow = document.getElementById('selectedConnectedCommunitiesRow');
+const selectedConnectedCommunities = document.getElementById('selectedConnectedCommunities');
 const selectedSourceUrlRow = document.getElementById('selectedSourceUrlRow');
 const selectedSourceUrl = document.getElementById('selectedSourceUrl');
 const nodesByAnchor = new Map(SUMMARY_NODES.map((node) => [node.anchor_id, node]));
@@ -1354,6 +1438,10 @@ function renderSelection(anchorId) {
     selectedType.textContent = '';
     selectedConfidence.textContent = '';
     selectedDegree.textContent = '';
+    selectedGlobalDegreeRow.hidden = true;
+    selectedGlobalDegree.textContent = '';
+    selectedConnectedCommunitiesRow.hidden = true;
+    selectedConnectedCommunities.textContent = '';
     selectedSourceUrlRow.hidden = true;
     selectedSourceUrl.textContent = '';
     selectedSourceUrl.removeAttribute('href');
@@ -1367,6 +1455,20 @@ function renderSelection(anchorId) {
   selectedType.textContent = node.file_type || 'unknown';
   selectedConfidence.textContent = node.confidence;
   selectedDegree.textContent = String(node.degree);
+  if (typeof node.global_degree === 'number') {
+    selectedGlobalDegreeRow.hidden = false;
+    selectedGlobalDegree.textContent = String(node.global_degree);
+  } else {
+    selectedGlobalDegreeRow.hidden = true;
+    selectedGlobalDegree.textContent = '';
+  }
+  if (Array.isArray(node.connected_communities) && node.connected_communities.length > 0) {
+    selectedConnectedCommunitiesRow.hidden = false;
+    selectedConnectedCommunities.textContent = node.connected_communities.join(', ');
+  } else {
+    selectedConnectedCommunitiesRow.hidden = true;
+    selectedConnectedCommunities.textContent = '';
+  }
 
   if (typeof node.safe_source_url === 'string' && node.safe_source_url.length > 0) {
     selectedSourceUrlRow.hidden = false;
@@ -1430,9 +1532,9 @@ function renderMatches(query) {
     const title = document.createElement('strong');
     title.textContent = node.label;
 
-    const meta = document.createElement('div');
-    meta.className = 'match-meta';
-    meta.textContent = node.source_file + ' · degree ' + node.degree;
+  const meta = document.createElement('div');
+  meta.className = 'match-meta';
+  meta.textContent = node.source_file + ' · ' + PRIMARY_DEGREE_LABEL.toLowerCase() + ' ' + node.degree;
 
     link.append(title, meta);
     matches.appendChild(link);
@@ -1955,6 +2057,8 @@ export function toHtml(
   const payload = buildHtmlPayload(graph, communities, communityLabels)
   const htmlResult = resolveHtmlExportMode(payload, options.mode ?? 'auto')
   const communityPagesDir = join(dirname(outputPath), COMMUNITY_PAGES_DIRNAME)
+  const bridges = workspaceBridges(graph, communities, communityLabels)
+  const bridgeMetadata = buildBridgeMetadata(bridges)
 
   if (htmlResult.mode === 'inline') {
     rmSync(communityPagesDir, { recursive: true, force: true })
@@ -1973,7 +2077,7 @@ export function toHtml(
       const subgraph = subgraphFromNodes(graph, nodeIds)
       const subgraphCommunities = { 0: [...nodeIds] }
       const subgraphLabels = { 0: communityName }
-      const pagePayload = buildHtmlPayload(subgraph, subgraphCommunities, subgraphLabels)
+      const pagePayload = enrichPayloadWithBridgeMetadata(buildHtmlPayload(subgraph, subgraphCommunities, subgraphLabels), bridgeMetadata)
       const pageMode: OverviewCommunitySummary['pageMode'] =
         resolveHtmlExportMode(pagePayload, 'auto').mode === 'inline' ? 'interactive' : 'summary'
 
@@ -1983,16 +2087,18 @@ export function toHtml(
           ? buildInteractiveHtml(pagePayload, graph.isDirected(), {
               pageTitle: `${communityName} · graphify-ts`,
               heading: communityName,
-              lede: 'Focused community view. Use this page for interactive exploration without loading the entire graph at once.',
+              lede: 'Focused community view. This page shows only nodes inside this community; cross-community connections are hidden.',
               backLinkHref: relative(dirname(pagePath), outputPath).replaceAll('\\', '/'),
               backLinkLabel: '← Back to overview',
+              degreeLabel: 'Local degree',
             })
           : buildCommunitySummaryHtml(pagePayload, {
               pageTitle: `${communityName} · graphify-ts`,
               heading: communityName,
-              lede: 'This community is too large to render as one interactive graph without freezing the browser. Use the searchable node list and summaries below instead.',
+              lede: 'This community is too large to render as one interactive graph without freezing the browser. Use the searchable node list and summaries below instead. This page shows only nodes inside this community; cross-community connections are hidden.',
               backLinkHref: relative(dirname(pagePath), outputPath).replaceAll('\\', '/'),
               backLinkLabel: '← Back to overview',
+              degreeLabel: 'Local degree',
             }),
         'utf8',
       )
@@ -2012,13 +2118,40 @@ export function toHtml(
     .sort((left, right) => right.count - left.count || left.label.localeCompare(right.label))
 
   const communityPageModes = new Map(communitySummaries.map((community) => [community.id, community.pageMode]))
-  const bridgeSummaries: OverviewBridgeSummary[] = buildOverviewBridgeSummaries(
-    graph,
-    communities,
-    communityLabels,
-    communityPageModes,
-    COMMUNITY_PAGES_DIRNAME,
-  )
+  const bridgeSummaries: OverviewBridgeSummary[] = buildOverviewBridgeSummaries(bridges, COMMUNITY_PAGES_DIRNAME)
+
+  for (const bridge of bridges) {
+    const neighborhoodNodeIds = bridgeNeighborhoodNodeIds(graph, bridge.id)
+    if (neighborhoodNodeIds.length === 0) {
+      continue
+    }
+
+    const neighborhoodNodeSet = new Set(neighborhoodNodeIds)
+    const bridgePagePath = join(communityPagesDir, bridgePageFilename(bridge.id))
+    const bridgePayload = enrichPayloadWithBridgeMetadata(
+      buildHtmlPayload(
+        subgraphFromNodes(graph, neighborhoodNodeIds),
+        filterCommunitiesForNodes(communities, neighborhoodNodeSet),
+        communityLabels,
+      ),
+      bridgeMetadata,
+    )
+
+    writeFileSync(
+      bridgePagePath,
+      buildInteractiveHtml(bridgePayload, graph.isDirected(), {
+        pageTitle: `${bridge.label} · graphify-ts`,
+        heading: bridge.label,
+        lede: 'Bridge neighborhood view. This page shows the selected bridge node plus its immediate cross-community neighborhood.',
+        backLinkHref: relative(dirname(bridgePagePath), outputPath).replaceAll('\\', '/'),
+        backLinkLabel: '← Back to overview',
+        degreeLabel: 'Local degree',
+        initialSelectedNodeId: bridge.id,
+      }),
+      'utf8',
+    )
+  }
+
   const searchIndex = buildOverviewSearchIndex(payload.nodes, communityPageModes, COMMUNITY_PAGES_DIRNAME)
 
   writeFileSync(outputPath, buildOverviewHtml(payload.stats, searchIndex, communitySummaries, bridgeSummaries), 'utf8')

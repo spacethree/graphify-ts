@@ -8,6 +8,8 @@ export interface CommunitySummarySourceNode {
   safe_source_url: string
   file_type: string
   degree: number
+  global_degree?: number
+  connected_communities?: string[]
   confidence: string
 }
 
@@ -20,6 +22,8 @@ export interface CommunitySummaryNode {
   safe_source_url: string
   file_type: string
   degree: number
+  global_degree?: number
+  connected_communities?: string[]
   confidence: string
   search_text: string
 }
@@ -41,6 +45,10 @@ export function buildCommunitySummaryData(nodes: CommunitySummarySourceNode[]): 
     safe_source_url: node.safe_source_url,
     file_type: node.file_type,
     degree: node.degree,
+    ...(typeof node.global_degree === 'number' ? { global_degree: node.global_degree } : {}),
+    ...(Array.isArray(node.connected_communities) && node.connected_communities.length > 0
+      ? { connected_communities: [...node.connected_communities] }
+      : {}),
     confidence: node.confidence,
     search_text: `${node.label} ${node.source_file} ${node.source_location} ${node.file_type}`.toLowerCase(),
   }))

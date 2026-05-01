@@ -61,10 +61,10 @@ What you get in `graphify-out/`:
 
 ```text
 graphify-out/
-├── graph.html       interactive explorer (overview + community pages)
+├── graph.html       interactive explorer (overview + community + bridge pages)
 ├── GRAPH_REPORT.md  structure signals, god nodes, anomalies, suggested questions
 ├── graph.json       machine-readable graph for MCP tools and queries
-├── graph-pages/     per-community explorer pages
+├── graph-pages/     per-community and bridge neighborhood pages
 ├── docs/            auto-generated module documentation (with --docs)
 └── cache/           content-addressed extraction cache
 ```

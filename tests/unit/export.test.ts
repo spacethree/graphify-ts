@@ -234,13 +234,22 @@ describe('export', () => {
       )
 
       const overview = readFileSync(outputPath, 'utf8')
+      const bridgePage = readFileSync(
+        join(tempDir, 'graph-pages', `bridge-${Buffer.from('shared', 'utf8').toString('base64url')}.html`),
+        'utf8',
+      )
 
       expect(result.mode).toBe('overview')
       expect(overview).toContain('Workspace Bridges')
       expect(overview).toContain('Start with nodes that connect otherwise separate communities.')
       expect(overview).toContain('createSession()')
       expect(overview).toContain('connects Backend API, Web Session, Worker Jobs')
-      expect(overview).toContain('graph-pages/community-3.html#shared')
+      expect(overview).toContain(`graph-pages/bridge-${Buffer.from('shared', 'utf8').toString('base64url')}.html`)
+      expect(bridgePage).toContain('Bridge neighborhood view')
+      expect(bridgePage).toContain('This page shows the selected bridge node plus its immediate cross-community neighborhood.')
+      expect(bridgePage).toContain('Local degree')
+      expect(bridgePage).toContain('Global degree')
+      expect(bridgePage).toContain('Connected communities')
     })
   })
 
@@ -295,9 +304,11 @@ describe('export', () => {
       expect(result.mode).toBe('overview')
       expect(overview).toContain('Open community summary')
       expect(communityPage).toContain('This community is too large to render as one interactive graph')
+      expect(communityPage).toContain('This page shows only nodes inside this community; cross-community connections are hidden.')
       expect(communityPage).toContain('Top connected nodes')
       expect(communityPage).toContain('Search nodes by label or file')
       expect(communityPage).toContain('Selected node')
+      expect(communityPage).toContain('Local degree')
       expect(communityPage).toContain('const SUMMARY_NODES =')
       // vis-network is referenced only in the opt-in loadInteractiveGraph function, not eagerly loaded
       expect(communityPage).not.toContain('<script src="https://unpkg.com/vis-network')
@@ -365,6 +376,34 @@ describe('export', () => {
       expect(undirectedContent).toContain('const EDGE_ARROWS = {};')
       expect(directedContent).toContain('const IS_DIRECTED = true;')
       expect(directedContent).toContain('const EDGE_ARROWS = {"to":{"enabled":true,"scaleFactor":0.45}};')
+    })
+  })
+
+  it('adds local-scope labeling and hints to focused community pages', () => {
+    const graph = buildFromJson(
+      {
+        nodes: [
+          { id: 'api', label: 'loginUser()', file_type: 'code', source_file: '/repo/backend/api.ts' },
+          { id: 'shared', label: 'createSession()', file_type: 'code', source_file: '/repo/shared/auth.ts' },
+        ],
+        edges: [
+          { source: 'api', target: 'shared', relation: 'calls', confidence: 'EXTRACTED', source_file: '/repo/backend/api.ts' },
+        ],
+      },
+      { directed: true },
+    )
+
+    withTempDir((tempDir) => {
+      const outputPath = join(tempDir, 'graph.html')
+      toHtml(graph, { 0: ['api'], 1: ['shared'] }, outputPath, { 0: 'Backend API', 1: 'Shared Auth' }, { mode: 'overview' })
+
+      const communityPage = readFileSync(join(tempDir, 'graph-pages', 'community-1.html'), 'utf8')
+
+      expect(communityPage).toContain('Focused community view')
+      expect(communityPage).toContain('This page shows only nodes inside this community; cross-community connections are hidden.')
+      expect(communityPage).toContain('Local degree')
+      expect(communityPage).toContain('Global degree')
+      expect(communityPage).toContain('Connected communities')
     })
   })
 

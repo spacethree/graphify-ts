@@ -4,6 +4,17 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+## [0.10.5] - 2026-05-01
+
+### Changed
+
+- **Large-graph HTML export clarity**: overview exports now generate dedicated bridge neighborhood pages, and community pages label local-only connectivity as `Local degree` instead of reusing the ambiguous global `Degree` wording.
+
+### Fixed
+
+- **Bridge navigation mismatch**: workspace bridge cards no longer jump into a node's home community page where the cross-community context disappears; they now open a focused bridge neighborhood view that preserves the bridge node's immediate surrounding context.
+- **Community scope ambiguity**: interactive and summary community pages now explain that they only show in-community nodes, while bridge-aware nodes surface `Global degree` and `Connected communities` metadata when that broader context exists.
+
 ## [0.10.4] - 2026-05-01
 
 ### Added
