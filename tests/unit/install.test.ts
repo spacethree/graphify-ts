@@ -233,6 +233,11 @@ describe('install helpers', () => {
           expect(existsSync(join(projectDir, 'GEMINI.md'))).toBe(true)
           expect(existsSync(join(projectDir, '.gemini', 'settings.json'))).toBe(true)
           expect(readFileSync(join(projectDir, 'GEMINI.md'), 'utf8')).toContain('retrieve')
+          expect(readFileSync(join(projectDir, 'GEMINI.md'), 'utf8')).toContain('relevant_files')
+          expect(readFileSync(join(projectDir, 'GEMINI.md'), 'utf8')).toContain('feature_map')
+          expect(readFileSync(join(projectDir, 'GEMINI.md'), 'utf8')).toContain('risk_map')
+          expect(readFileSync(join(projectDir, 'GEMINI.md'), 'utf8')).toContain('implementation_checklist')
+          expect(readFileSync(join(projectDir, 'GEMINI.md'), 'utf8')).toContain('impact')
           expect(readFileSync(join(projectDir, '.gemini', 'settings.json'), 'utf8')).toContain('graphify-out')
 
           const uninstallMessage = geminiUninstall(projectDir, { homeDir })
@@ -295,6 +300,11 @@ describe('install helpers', () => {
       expect(existsSync(join(projectDir, '.claude', 'settings.json'))).toBe(true)
       expect(readFileSync(join(projectDir, 'CLAUDE.md'), 'utf8')).not.toContain('python3 -c')
       expect(readFileSync(join(projectDir, 'CLAUDE.md'), 'utf8')).toContain('retrieve')
+      expect(readFileSync(join(projectDir, 'CLAUDE.md'), 'utf8')).toContain('relevant_files')
+      expect(readFileSync(join(projectDir, 'CLAUDE.md'), 'utf8')).toContain('feature_map')
+      expect(readFileSync(join(projectDir, 'CLAUDE.md'), 'utf8')).toContain('risk_map')
+      expect(readFileSync(join(projectDir, 'CLAUDE.md'), 'utf8')).toContain('implementation_checklist')
+      expect(readFileSync(join(projectDir, 'CLAUDE.md'), 'utf8')).toContain('impact')
 
       const uninstallMessage = claudeUninstall(projectDir)
       expect(uninstallMessage).toMatch(/graphify-ts section removed|CLAUDE\.md was empty after removal/)

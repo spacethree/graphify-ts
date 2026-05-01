@@ -104,8 +104,11 @@ function hookCommandWithFallback(matchJson: string, missJson: string): string {
   return `node -e "var f;try{require('fs').accessSync('graphify-out/graph.json');f='${b64Match}'}catch(e){f='${b64Miss}'}process.stdout.write(Buffer.from(f,'base64').toString())"`
 }
 
+const MCP_ROUTING_GUIDANCE =
+  'Use the graph tool that matches the question: retrieve for direct codebase questions, relevant_files for where to open first, feature_map for the main areas and entry points, risk_map before editing, implementation_checklist for edit order and validation, and impact for blast radius.'
+
 const RETRIEVE_FIRST_MESSAGE =
-  'STOP. This project has a graphify-ts knowledge graph. Call mcp__graphify-ts__retrieve FIRST before using Glob, Grep, Bash, Read, or Agent tools. Graphify answers most codebase questions in 1 retrieve call instead of 5–10 sequential file reads (3x fewer turns, ~2.8x faster on a real production codebase). Only fall back to raw file tools if retrieve returns no relevant nodes.'
+  `STOP. This project has a graphify-ts knowledge graph. ${MCP_ROUTING_GUIDANCE} Graphify answers most codebase questions in 1 focused MCP call instead of 5–10 sequential file reads (3x fewer turns, ~2.8x faster on a real production codebase). Do not use Glob, Grep, Bash, Read, or Agent tools first. Only fall back to raw file tools if the graph tools cannot answer the question or the MCP server is unavailable.`
 
 const SETTINGS_HOOK = {
   // SECURITY: Keep this command static. Do not interpolate user-controlled input here.
@@ -176,9 +179,15 @@ const CLAUDE_MD_SECTION = `${SECTION_MARKER}
 
 IMPORTANT: This project has a graphify-ts knowledge graph. You MUST follow these rules:
 
-1. **BEFORE answering ANY codebase question**, call the \`retrieve\` MCP tool with your question and a token budget (default 3000). Do NOT use Glob, Grep, Bash, Read, or dispatch Agent/Explore subagents to search the codebase until you have called retrieve first.
-2. **Only fall back to raw file tools** if retrieve returns no relevant results or the MCP server is unavailable. In that case, read graphify-out/GRAPH_REPORT.md first.
-3. **For impact analysis** ("what breaks if I change X?"), use the \`impact\` MCP tool.
+1. **BEFORE answering ANY codebase question**, start with the graph tool that matches the question:
+   - \`retrieve\` for "how does X work?" and other direct codebase questions
+   - \`relevant_files\` for "which files should I open first?"
+   - \`feature_map\` for "what parts of the codebase are involved?"
+   - \`risk_map\` before editing to see likely hotspots
+   - \`implementation_checklist\` for edit order and validation checkpoints
+   - \`impact\` for "what breaks if I change X?"
+2. **Do NOT use Glob, Grep, Bash, Read, or dispatch Agent/Explore subagents first** for codebase questions.
+3. **Only fall back to raw file tools** if the graph tools cannot answer the question or the MCP server is unavailable. In that case, read graphify-out/GRAPH_REPORT.md first.
 4. **Do NOT dispatch Explore or research agents** for codebase questions — the knowledge graph already has the structural context they would spend tokens discovering.
 `
 
@@ -186,18 +195,30 @@ const AGENTS_MD_SECTION = `${SECTION_MARKER}
 
 IMPORTANT: This project has a graphify-ts knowledge graph. You MUST follow these rules:
 
-1. **BEFORE answering ANY codebase question**, call the \`retrieve\` MCP tool with your question and a token budget (default 3000). Do NOT search the codebase with other tools until you have called retrieve first.
-2. **Only fall back to raw file tools** if retrieve returns no relevant results or the MCP server is unavailable. In that case, read graphify-out/GRAPH_REPORT.md first.
-3. **For impact analysis** ("what breaks if I change X?"), use the \`impact\` MCP tool.
+1. **BEFORE answering ANY codebase question**, start with the graph tool that matches the question:
+   - \`retrieve\` for "how does X work?" and other direct codebase questions
+   - \`relevant_files\` for "which files should I open first?"
+   - \`feature_map\` for "what parts of the codebase are involved?"
+   - \`risk_map\` before editing to see likely hotspots
+   - \`implementation_checklist\` for edit order and validation checkpoints
+   - \`impact\` for "what breaks if I change X?"
+2. **Do NOT search the codebase with other tools first** for codebase questions.
+3. **Only fall back to raw file tools** if the graph tools cannot answer the question or the MCP server is unavailable. In that case, read graphify-out/GRAPH_REPORT.md first.
 `
 
 const GEMINI_MD_SECTION = `${SECTION_MARKER}
 
 IMPORTANT: This project has a graphify-ts knowledge graph. You MUST follow these rules:
 
-1. **BEFORE answering ANY codebase question**, call the \`retrieve\` MCP tool with your question and a token budget (default 3000). Do NOT search the codebase with other tools until you have called retrieve first.
-2. **Only fall back to raw file tools** if retrieve returns no relevant results or the MCP server is unavailable. In that case, read graphify-out/GRAPH_REPORT.md first.
-3. **For impact analysis** ("what breaks if I change X?"), use the \`impact\` MCP tool.
+1. **BEFORE answering ANY codebase question**, start with the graph tool that matches the question:
+   - \`retrieve\` for "how does X work?" and other direct codebase questions
+   - \`relevant_files\` for "which files should I open first?"
+   - \`feature_map\` for "what parts of the codebase are involved?"
+   - \`risk_map\` before editing to see likely hotspots
+   - \`implementation_checklist\` for edit order and validation checkpoints
+   - \`impact\` for "what breaks if I change X?"
+2. **Do NOT search the codebase with other tools first** for codebase questions.
+3. **Only fall back to raw file tools** if the graph tools cannot answer the question or the MCP server is unavailable. In that case, read graphify-out/GRAPH_REPORT.md first.
 `
 
 const SKILL_REGISTRATION_MARKER = '- **graphify-ts**'
@@ -219,9 +240,9 @@ export const GraphifyPlugin = async ({ directory }) => {
       if (!existsSync(join(directory, "graphify-out", "graph.json"))) return;
 
       if (input.tool === "bash") {
-        output.args.command =
-          'echo "[graphify-ts] Knowledge graph available. Use the retrieve MCP tool for codebase questions, or read graphify-out/GRAPH_REPORT.md for context." && ' +
-          output.args.command;
+          output.args.command =
+            'echo "[graphify-ts] Knowledge graph available. Use the graph tool that matches the question: retrieve, relevant_files, feature_map, risk_map, implementation_checklist, or impact. Read graphify-out/GRAPH_REPORT.md before raw file search if needed." && ' +
+            output.args.command;
         reminded = true;
       }
     },
@@ -230,15 +251,21 @@ export const GraphifyPlugin = async ({ directory }) => {
 `
 
 const CURSOR_RULE = `---
-description: graphify-ts knowledge graph — MUST use retrieve MCP tool before searching files
+description: graphify-ts knowledge graph — MUST use graphify MCP tools before searching files
 alwaysApply: true
 ---
 
 IMPORTANT: This project has a graphify-ts knowledge graph.
 
-1. **BEFORE answering ANY codebase question**, call the \`retrieve\` MCP tool with your question and a token budget (default 3000). Do NOT search the codebase with other tools until you have called retrieve first.
-2. **Only fall back to raw file tools** if retrieve returns no relevant results or the MCP server is unavailable. In that case, read graphify-out/GRAPH_REPORT.md first.
-3. **For impact analysis** ("what breaks if I change X?"), use the \`impact\` MCP tool.
+1. **BEFORE answering ANY codebase question**, start with the graph tool that matches the question:
+   - \`retrieve\` for "how does X work?" and other direct codebase questions
+   - \`relevant_files\` for "which files should I open first?"
+   - \`feature_map\` for "what parts of the codebase are involved?"
+   - \`risk_map\` before editing to see likely hotspots
+   - \`implementation_checklist\` for edit order and validation checkpoints
+   - \`impact\` for "what breaks if I change X?"
+2. **Do NOT search the codebase with other tools first** for codebase questions.
+3. **Only fall back to raw file tools** if the graph tools cannot answer the question or the MCP server is unavailable. In that case, read graphify-out/GRAPH_REPORT.md first.
 `
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -861,7 +888,7 @@ export function cursorUninstall(projectDir = '.'): string {
 export function claudeInstall(projectDir = '.'): string {
   const resolvedProjectDir = resolve(projectDir)
   const messages = [writeSection(join(resolvedProjectDir, 'CLAUDE.md'), CLAUDE_MD_SECTION), installClaudeHook(resolvedProjectDir), installMcpServer(resolvedProjectDir)]
-  messages.push('', 'Claude Code will now call the retrieve MCP tool BEFORE', 'searching raw files for any codebase question.')
+  messages.push('', 'Claude Code will now start with the matching graphify MCP tool', 'BEFORE searching raw files for any codebase question.')
   return messages.join('\n')
 }
 
