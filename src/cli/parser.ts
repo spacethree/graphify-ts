@@ -1,3 +1,5 @@
+import { isAbsolute, resolve } from 'node:path'
+
 import { validateGraphOutputPath } from '../shared/security.js'
 import { type InstallPlatform, isInstallPlatform } from '../infrastructure/install.js'
 
@@ -70,6 +72,15 @@ export interface CompareCliOptions {
   baselineMode: 'full' | 'bounded' | 'native_agent'
   yes: boolean
   limit: number | null
+}
+
+export interface ReviewCompareCliOptions {
+  graphPath: string
+  execTemplate: string
+  outputDir: string
+  baseBranch: string | null
+  budget: number | null
+  yes: boolean
 }
 
 export interface TimeTravelCliOptions {
@@ -240,6 +251,10 @@ function validateCliText(field: string, value: string): string {
     throw new UsageError(`error: ${field} exceeds maximum length of ${MAX_CLI_LABEL_LENGTH} characters`)
   }
   return value
+}
+
+function validateReviewCompareOutputDir(outputDir: string): string {
+  return isAbsolute(outputDir) ? resolve(outputDir) : validateGraphOutputPath(outputDir)
 }
 
 export function parseQueryArgs(args: string[]): QueryCliOptions {
@@ -775,6 +790,99 @@ export function parseCompareArgs(args: string[]): CompareCliOptions {
   outputDir = validateGraphOutputPath(outputDir)
 
   return { question, graphPath, execTemplate, questionsPath, outputDir, baselineMode, yes, limit }
+}
+
+export function parseReviewCompareArgs(args: string[]): ReviewCompareCliOptions {
+  const usage = 'Usage: graphify-ts review-compare [graph.json] --exec TEMPLATE [--output-dir DIR] [--base-branch BRANCH] [--budget N] [--yes]'
+  let graphPath = 'graphify-out/graph.json'
+  let execTemplate = ''
+  let outputDir = 'graphify-out/review-compare'
+  let baseBranch: string | null = null
+  let budget: number | null = null
+  let yes = false
+
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index]
+    if (!argument) {
+      continue
+    }
+
+    if (!argument.startsWith('--')) {
+      if (graphPath !== 'graphify-out/graph.json') {
+        throw new UsageError(usage)
+      }
+      graphPath = requireNonEmptyValue('graph path', argument)
+      continue
+    }
+
+    if (argument === '--exec') {
+      execTemplate = requireOptionValue('--exec', args[index + 1])
+      index += 1
+      continue
+    }
+
+    if (argument.startsWith('--exec=')) {
+      const [, value] = argument.split('=', 2)
+      execTemplate = requireOptionValue('--exec', value)
+      continue
+    }
+
+    if (argument === '--output-dir') {
+      outputDir = requireOptionValue('--output-dir', args[index + 1])
+      index += 1
+      continue
+    }
+
+    if (argument.startsWith('--output-dir=')) {
+      const [, value] = argument.split('=', 2)
+      outputDir = requireOptionValue('--output-dir', value)
+      continue
+    }
+
+    if (argument === '--base-branch') {
+      baseBranch = validateCliText('--base-branch', requireOptionValue('--base-branch', args[index + 1]))
+      index += 1
+      continue
+    }
+
+    if (argument.startsWith('--base-branch=')) {
+      const [, value] = argument.split('=', 2)
+      baseBranch = validateCliText('--base-branch', requireOptionValue('--base-branch', value))
+      continue
+    }
+
+    if (argument === '--budget') {
+      budget = parsePositiveDecimalInteger('--budget', requireOptionValue('--budget', args[index + 1]))
+      index += 1
+      continue
+    }
+
+    if (argument.startsWith('--budget=')) {
+      const [, value] = argument.split('=', 2)
+      budget = parsePositiveDecimalInteger('--budget', requireOptionValue('--budget', value))
+      continue
+    }
+
+    if (argument === '--yes') {
+      yes = true
+      continue
+    }
+
+    throw new UsageError(`error: unknown option for review-compare: ${argument}`)
+  }
+
+  if (execTemplate.length === 0) {
+    throw new UsageError('error: --exec is required')
+  }
+
+  return {
+    graphPath,
+    execTemplate,
+    outputDir: validateReviewCompareOutputDir(outputDir),
+    baseBranch,
+    budget,
+    yes,
+  }
 }
 
 export function parseTimeTravelArgs(args: string[]): TimeTravelCliOptions {

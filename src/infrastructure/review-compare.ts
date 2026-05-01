@@ -1,0 +1,405 @@
+import { spawn } from 'node:child_process'
+import { mkdirSync, realpathSync, writeFileSync } from 'node:fs'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+
+import { analyzePrImpact, compactPrImpactResult } from '../runtime/pr-impact.js'
+import { estimateQueryTokens, loadGraph } from '../runtime/serve.js'
+import { findNearestExistingAncestor, validateGraphPath } from '../shared/security.js'
+
+export type ReviewCompareMode = 'verbose' | 'compact'
+export type ReviewCompareRunStatus = 'not_run' | 'succeeded' | 'failed'
+
+export interface ReviewComparePromptArtifactPaths {
+  output_dir: string
+  verbose_prompt: string
+  compact_prompt: string
+  report: string
+}
+
+export interface ReviewCompareAnswerArtifactPaths {
+  verbose: string
+  compact: string
+}
+
+export interface ReviewCompareExecution {
+  mode: ReviewCompareMode
+  promptFile: string
+  outputFile: string
+  command: string
+}
+
+export interface ReviewCompareRunnerResult {
+  exitCode: number
+  stdout: string
+  stderr: string
+  elapsedMs: number
+}
+
+export interface ReviewCompareInput {
+  graphPath: string
+  execTemplate: string
+  outputDir: string
+  baseBranch?: string
+  budget?: number
+  now?: Date
+}
+
+export interface ReviewCompareReport {
+  graph_path: string
+  base_branch: string
+  budget: number
+  changed_files: string[]
+  seed_count: number
+  supporting_path_count: number
+  test_path_count: number
+  hotspot_count: number
+  verbose_payload_tokens: number
+  compact_payload_tokens: number
+  payload_reduction_ratio: number
+  verbose_prompt_tokens: number
+  compact_prompt_tokens: number
+  reduction_ratio: number
+  started_at: string
+  completed_at: string
+  elapsed_ms: Record<ReviewCompareMode, number>
+  status: Record<ReviewCompareMode, ReviewCompareRunStatus>
+  answer_paths: ReviewCompareAnswerArtifactPaths
+  exit_code: Record<ReviewCompareMode, number | null>
+  stderr: Record<ReviewCompareMode, string | null>
+  paths: ReviewComparePromptArtifactPaths
+}
+
+export interface ReviewCompareResult {
+  graph_path: string
+  output_root: string
+  report: ReviewCompareReport
+}
+
+export interface ExecuteReviewCompareRunsDependencies {
+  runner?: (execution: ReviewCompareExecution) => Promise<ReviewCompareRunnerResult>
+  now?: () => Date
+}
+
+const EXEC_TEMPLATE_PLACEHOLDER_PATTERN = /\{[a-z_][a-z0-9_]*\}/gi
+const REVIEW_COMPARE_EXEC_PLACEHOLDERS = new Set(['{prompt_file}', '{mode}', '{output_file}'])
+
+function timestampDirectoryName(date: Date): string {
+  return date.toISOString().slice(0, 19).replace(/:/g, '-')
+}
+
+function portablePath(path: string): string {
+  return relative(process.cwd(), path) || '.'
+}
+
+function inferProjectRootFromGraphPath(graphPath: string): string {
+  let currentPath = dirname(resolve(graphPath))
+
+  while (dirname(currentPath) !== currentPath) {
+    if (basename(currentPath) === 'graphify-out') {
+      return dirname(currentPath)
+    }
+    currentPath = dirname(currentPath)
+  }
+
+  return dirname(resolve(graphPath))
+}
+
+function validateOutputDirForGraph(graphPath: string, outputDir: string): string {
+  const projectRoot = realpathSync(inferProjectRootFromGraphPath(graphPath))
+  const baseDir = realpathSync(resolve(projectRoot, 'graphify-out'))
+  const resolvedOutputDir = isAbsolute(outputDir)
+    ? resolve(outputDir)
+    : outputDir === 'graphify-out' || outputDir.startsWith(`graphify-out${sep}`)
+      ? resolve(projectRoot, outputDir)
+      : resolve(outputDir)
+  const existingAncestor = findNearestExistingAncestor(resolvedOutputDir)
+  const normalizedOutputDir = existingAncestor === null
+    ? resolvedOutputDir
+    : resolve(realpathSync(existingAncestor), relative(existingAncestor, resolvedOutputDir))
+  const basePrefix = baseDir.endsWith(sep) ? baseDir : `${baseDir}${sep}`
+
+  if (normalizedOutputDir !== baseDir && !normalizedOutputDir.startsWith(basePrefix)) {
+    throw new Error(`Path ${JSON.stringify(outputDir)} escapes the allowed directory ${baseDir}. Only paths inside graphify-out/ are permitted.`)
+  }
+
+  return normalizedOutputDir
+}
+
+function answerFilePath(outputDir: string, mode: ReviewCompareMode): string {
+  return join(outputDir, `${mode}-answer.txt`)
+}
+
+function createOutputRoot(outputDir: string, date: Date): string {
+  mkdirSync(outputDir, { recursive: true })
+  const candidate = join(outputDir, timestampDirectoryName(date))
+  mkdirSync(candidate, { recursive: true })
+  return candidate
+}
+
+function shellEscape(value: string, platform: NodeJS.Platform = process.platform): string {
+  if (platform === 'win32') {
+    return `'${value.replaceAll("'", "''")}'`
+  }
+  return `'${value.replaceAll("'", `'\"'\"'`)}'`
+}
+
+function expandExecTemplate(
+  template: string,
+  values: Pick<ReviewCompareExecution, 'promptFile' | 'mode' | 'outputFile'>,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  return template.replaceAll(EXEC_TEMPLATE_PLACEHOLDER_PATTERN, (placeholder) => {
+    const normalizedPlaceholder = placeholder.toLowerCase()
+    if (!REVIEW_COMPARE_EXEC_PLACEHOLDERS.has(normalizedPlaceholder)) {
+      throw new Error(`Unknown review-compare exec placeholder: ${placeholder}`)
+    }
+    if (normalizedPlaceholder === '{prompt_file}') {
+      return shellEscape(values.promptFile, platform)
+    }
+    if (normalizedPlaceholder === '{mode}') {
+      return shellEscape(values.mode, platform)
+    }
+    return shellEscape(values.outputFile, platform)
+  })
+}
+
+async function defaultRunner(execution: ReviewCompareExecution): Promise<ReviewCompareRunnerResult> {
+  const startedAt = Date.now()
+  return await new Promise<ReviewCompareRunnerResult>((resolveExecution, rejectExecution) => {
+    const command =
+      process.platform === 'win32'
+        ? { file: 'powershell.exe', args: ['-NoProfile', '-Command', execution.command] }
+        : { file: '/bin/sh', args: ['-lc', execution.command] }
+    const child = spawn(command.file, command.args, { shell: false, stdio: ['ignore', 'pipe', 'pipe'] })
+
+    let stdout = ''
+    let stderr = ''
+    child.stdout?.on('data', (chunk: string | Buffer) => {
+      stdout += chunk.toString()
+    })
+    child.stderr?.on('data', (chunk: string | Buffer) => {
+      stderr += chunk.toString()
+    })
+    child.on('error', rejectExecution)
+    child.on('close', (code) => {
+      resolveExecution({
+        exitCode: code ?? 1,
+        stdout,
+        stderr,
+        elapsedMs: Date.now() - startedAt,
+      })
+    })
+  })
+}
+
+function summarizeStderr(stderr: string): string | null {
+  const trimmed = stderr.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+function computeReductionRatio(left: number, right: number): number {
+  if (left <= 0 || right <= 0) {
+    return 0
+  }
+  return Number((left / right).toFixed(3))
+}
+
+function formatTokenComparison(left: number, right: number): string {
+  if (left <= 0 || right <= 0) {
+    return 'n/a'
+  }
+  if (left === right) {
+    return 'same size'
+  }
+  if (left > right) {
+    return `${computeReductionRatio(left, right)}x smaller`
+  }
+  return `${Number((right / left).toFixed(3))}x larger`
+}
+
+function renderReviewPrompt(payload: unknown, mode: ReviewCompareMode): string {
+  return [
+    'Review the current git diff using only the provided pr_impact payload.',
+    'Summarize the changed areas, top risks, supporting files to inspect, likely tests to run, and structural hotspots to watch.',
+    `Mode: ${mode}`,
+    '',
+    'pr_impact payload:',
+    JSON.stringify(payload, null, 2),
+    '',
+    'Answer:',
+  ].join('\n')
+}
+
+function writeReport(report: ReviewCompareReport): void {
+  writeFileSync(
+    report.paths.report,
+    `${JSON.stringify(
+      {
+        ...report,
+        graph_path: portablePath(report.graph_path),
+        answer_paths: {
+          verbose: portablePath(report.answer_paths.verbose),
+          compact: portablePath(report.answer_paths.compact),
+        },
+        paths: {
+          output_dir: portablePath(report.paths.output_dir),
+          verbose_prompt: portablePath(report.paths.verbose_prompt),
+          compact_prompt: portablePath(report.paths.compact_prompt),
+          report: portablePath(report.paths.report),
+        },
+      },
+      null,
+      2,
+    )}\n`,
+    'utf8',
+  )
+}
+
+export function generateReviewCompareArtifacts(input: ReviewCompareInput): ReviewCompareResult {
+  const graphPath = validateGraphPath(input.graphPath)
+  const outputDir = validateOutputDirForGraph(graphPath, input.outputDir)
+  const graph = loadGraph(graphPath)
+  const projectRoot = realpathSync(inferProjectRootFromGraphPath(graphPath))
+  const now = input.now ?? new Date()
+  const outputRoot = createOutputRoot(outputDir, now)
+  const verbosePayload = analyzePrImpact(graph, projectRoot, {
+    ...(input.baseBranch ? { baseBranch: input.baseBranch } : {}),
+    ...(input.budget !== undefined ? { budget: input.budget } : {}),
+  })
+  const compactPayload = compactPrImpactResult(verbosePayload)
+  const verbosePrompt = renderReviewPrompt(verbosePayload, 'verbose')
+  const compactPrompt = renderReviewPrompt(compactPayload, 'compact')
+
+  const paths: ReviewComparePromptArtifactPaths = {
+    output_dir: outputRoot,
+    verbose_prompt: join(outputRoot, 'verbose-prompt.txt'),
+    compact_prompt: join(outputRoot, 'compact-prompt.txt'),
+    report: join(outputRoot, 'report.json'),
+  }
+  const answerPaths: ReviewCompareAnswerArtifactPaths = {
+    verbose: answerFilePath(outputRoot, 'verbose'),
+    compact: answerFilePath(outputRoot, 'compact'),
+  }
+
+  writeFileSync(paths.verbose_prompt, verbosePrompt, 'utf8')
+  writeFileSync(paths.compact_prompt, compactPrompt, 'utf8')
+
+  const verbosePayloadTokens = estimateQueryTokens(JSON.stringify(verbosePayload))
+  const compactPayloadTokens = estimateQueryTokens(JSON.stringify(compactPayload))
+  const verbosePromptTokens = estimateQueryTokens(verbosePrompt)
+  const compactPromptTokens = estimateQueryTokens(compactPrompt)
+
+  const report: ReviewCompareReport = {
+    graph_path: graphPath,
+    base_branch: verbosePayload.base_branch,
+    budget: verbosePayload.review_bundle.budget,
+    changed_files: verbosePayload.changed_files,
+    seed_count: verbosePayload.seed_nodes.length,
+    supporting_path_count: verbosePayload.review_context.supporting_paths.length,
+    test_path_count: verbosePayload.review_context.test_paths.length,
+    hotspot_count: verbosePayload.review_context.hotspots.length,
+    verbose_payload_tokens: verbosePayloadTokens,
+    compact_payload_tokens: compactPayloadTokens,
+    payload_reduction_ratio: computeReductionRatio(verbosePayloadTokens, compactPayloadTokens),
+    verbose_prompt_tokens: verbosePromptTokens,
+    compact_prompt_tokens: compactPromptTokens,
+    reduction_ratio: computeReductionRatio(verbosePromptTokens, compactPromptTokens),
+    started_at: now.toISOString(),
+    completed_at: now.toISOString(),
+    elapsed_ms: {
+      verbose: 0,
+      compact: 0,
+    },
+    status: {
+      verbose: 'not_run',
+      compact: 'not_run',
+    },
+    answer_paths: answerPaths,
+    exit_code: {
+      verbose: null,
+      compact: null,
+    },
+    stderr: {
+      verbose: null,
+      compact: null,
+    },
+    paths,
+  }
+
+  writeReport(report)
+
+  return {
+    graph_path: graphPath,
+    output_root: resolve(outputRoot),
+    report,
+  }
+}
+
+export async function executeReviewCompareRuns(
+  input: ReviewCompareInput,
+  dependencies: ExecuteReviewCompareRunsDependencies = {},
+): Promise<ReviewCompareResult> {
+  const result = generateReviewCompareArtifacts(input)
+  const runPrompt = dependencies.runner ?? defaultRunner
+  const now = dependencies.now ?? (() => new Date())
+
+  const executions: Array<{ mode: ReviewCompareMode; promptFile: string; outputFile: string }> = [
+    {
+      mode: 'verbose',
+      promptFile: result.report.paths.verbose_prompt,
+      outputFile: result.report.answer_paths.verbose,
+    },
+    {
+      mode: 'compact',
+      promptFile: result.report.paths.compact_prompt,
+      outputFile: result.report.answer_paths.compact,
+    },
+  ]
+
+  for (const execution of executions) {
+    try {
+      const command = expandExecTemplate(input.execTemplate, execution)
+      const executionResult = await runPrompt({
+        ...execution,
+        command,
+      })
+      writeFileSync(execution.outputFile, executionResult.stdout, 'utf8')
+      result.report.status[execution.mode] = executionResult.exitCode === 0 ? 'succeeded' : 'failed'
+      result.report.elapsed_ms[execution.mode] = executionResult.elapsedMs
+      result.report.exit_code[execution.mode] = executionResult.exitCode
+      result.report.stderr[execution.mode] = summarizeStderr(executionResult.stderr)
+    } catch (error) {
+      writeFileSync(execution.outputFile, '', 'utf8')
+      result.report.status[execution.mode] = 'failed'
+      result.report.elapsed_ms[execution.mode] = 0
+      result.report.exit_code[execution.mode] = null
+      result.report.stderr[execution.mode] = summarizeStderr(error instanceof Error ? error.message : String(error))
+    }
+    result.report.completed_at = now().toISOString()
+    writeReport(result.report)
+  }
+
+  return result
+}
+
+export function formatReviewCompareSummary(result: ReviewCompareResult): string {
+  return [
+    '[graphify review-compare] completed current diff comparison',
+    `- Output: ${result.output_root}`,
+    `- Prompt tokens: verbose ${result.report.verbose_prompt_tokens} · compact ${result.report.compact_prompt_tokens} · ${formatTokenComparison(result.report.verbose_prompt_tokens, result.report.compact_prompt_tokens)}`,
+    `- Payload tokens: verbose ${result.report.verbose_payload_tokens} · compact ${result.report.compact_payload_tokens} · ${formatTokenComparison(result.report.verbose_payload_tokens, result.report.compact_payload_tokens)}`,
+    `- Prompt runs: verbose ${result.report.status.verbose} (${result.report.elapsed_ms.verbose} ms) · compact ${result.report.status.compact} (${result.report.elapsed_ms.compact} ms)`,
+  ].join('\n')
+}
+
+export async function runReviewCompareCommand(
+  input: ReviewCompareInput,
+  dependencies: ExecuteReviewCompareRunsDependencies = {},
+): Promise<string> {
+  const result = await executeReviewCompareRuns(input, dependencies)
+  const failedRuns = [result.report.status.verbose, result.report.status.compact].filter((status) => status === 'failed').length
+  if (failedRuns > 0) {
+    throw new Error(`[graphify review-compare] ${failedRuns} prompt run(s) failed. Partial artifacts were saved under ${result.output_root}`)
+  }
+  return formatReviewCompareSummary(result)
+}

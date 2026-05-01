@@ -1,17 +1,24 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, realpathSync } from 'node:fs'
-import { isAbsolute, resolve } from 'node:path'
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import { KnowledgeGraph } from '../contracts/graph.js'
 import { godNodes, workspaceBridges } from '../pipeline/analyze.js'
 import { communitiesFromGraph } from './serve.js'
 import { buildCommunityLabels } from '../pipeline/community-naming.js'
 import { analyzeImpact, type ImpactResult } from './impact.js'
-import type { RetrieveCommunityContext, RetrieveMatchedNode, RetrieveRelationship } from './retrieve.js'
+import { estimateQueryTokens } from './serve.js'
+import type {
+  CompactRetrieveMatchedNode,
+  RetrieveCommunityContext,
+  RetrieveMatchedNode,
+  RetrieveRelationship,
+} from './retrieve.js'
 import { collectRelationships, estimateRetrieveEntryTokens, readSnippet } from './retrieve.js'
 import { lineNumberFromSourceLocation, lineRangeFromSourceLocation, type SourceLineRange } from '../shared/source-location.js'
 import { relativizeSourceFile } from '../shared/source-path.js'
-import { buildRankedRisk, compareRankedRisks, type RiskSeverity } from './risk-map.js'
+import { buildRankedRisk, compareRankedRisks, type RiskMapHotspot, type RiskSeverity } from './risk-map.js'
+import { findGitRoot } from '../shared/git.js'
 
 const MAX_DIFF_BYTES = 5_000_000
 const MAX_CHANGED_FILES = 200
@@ -20,7 +27,14 @@ const MAX_REVIEW_SEEDS = 12
 const MAX_SECOND_HOP_CANDIDATES = 4
 const MAX_COMPACT_PER_NODE_IMPACT = 5
 const MAX_COMPACT_REVIEW_SUPPORT_NODES = 3
+const MAX_COMPACT_CHANGED_FILES = 20
+const MAX_COMPACT_SEED_NODES = 12
+const MAX_COMPACT_AFFECTED_COMMUNITIES = 12
+const MAX_COMPACT_HIGH_IMPACT_NODES = 12
 const MAX_TOP_REVIEW_RISKS = 3
+const MAX_REVIEW_SUPPORTING_PATHS = 3
+const MAX_REVIEW_TEST_PATHS = 4
+const MAX_REVIEW_HOTSPOTS = 3
 
 export interface PrImpactOptions {
   baseBranch?: string
@@ -71,6 +85,11 @@ export interface PrImpactResult {
   total_blast_radius: number
   affected_files: string[]
   affected_communities: Array<{ id: number; label: string; node_count: number }>
+  review_context: {
+    supporting_paths: string[]
+    test_paths: string[]
+    hotspots: RiskMapHotspot[]
+  }
   review_bundle: PrReviewBundle
   risk_summary: {
     high_impact_nodes: string[]
@@ -89,6 +108,20 @@ export interface CompactPrImpactNodeImpact {
   affected_communities: number
 }
 
+export interface CompactPrReviewNode extends Omit<CompactRetrieveMatchedNode, 'node_id' | 'match_score'> {
+  node_id?: string
+  match_score?: number
+}
+
+export interface CompactPrReviewRelationship extends Omit<RetrieveRelationship, 'from_id' | 'to_id'> {}
+
+export interface CompactPrReviewBundle extends Omit<PrReviewBundle, 'token_count' | 'nodes' | 'relationships'> {
+  token_count: number
+  nodes: CompactPrReviewNode[]
+  relationships: CompactPrReviewRelationship[]
+  shared_file_type?: string
+}
+
 export interface CompactPrImpactResult extends Pick<
   PrImpactResult,
   | 'base_branch'
@@ -97,19 +130,26 @@ export interface CompactPrImpactResult extends Pick<
   | 'seed_nodes'
   | 'total_blast_radius'
   | 'affected_communities'
-  | 'review_bundle'
+  | 'review_context'
   | 'risk_summary'
 > {
   per_node_impact: CompactPrImpactNodeImpact[]
+  review_bundle: CompactPrReviewBundle
+}
+
+function stripReviewRelationshipIdentity(relationship: RetrieveRelationship): CompactPrReviewRelationship {
+  const { from_id: _fromId, to_id: _toId, ...rest } = relationship
+  return rest
 }
 
 function compactReviewBundle(
   reviewBundle: PrReviewBundle,
   seedNodes: readonly PrImpactSeedNode[],
-): PrReviewBundle {
+): CompactPrReviewBundle {
   const seedIds = new Set(seedNodes.map((node) => node.node_id))
   const seedLabels = new Set(seedNodes.map((node) => node.label))
-  const compactNodes: RetrieveMatchedNode[] = []
+  const compactNodes: CompactPrReviewNode[] = []
+  const includedRelationshipIds = new Set<string>()
   let supportNodes = 0
 
   for (const node of reviewBundle.nodes) {
@@ -118,30 +158,56 @@ function compactReviewBundle(
       continue
     }
 
-    compactNodes.push(isSeed ? node : { ...node, snippet: null })
+    const {
+      community_label: _communityLabel,
+      framework_boost: _frameworkBoost,
+      file_type: fileType,
+      node_id: nodeId,
+      match_score: matchScore,
+      ...rest
+    } = node
+
+    if (typeof nodeId === 'string' && nodeId.length > 0) {
+      includedRelationshipIds.add(nodeId)
+    }
+
+    compactNodes.push({
+      ...rest,
+      ...(isSeed && typeof nodeId === 'string' && nodeId.length > 0 ? { node_id: nodeId } : {}),
+      ...(isSeed ? { match_score: matchScore } : {}),
+      ...(isSeed ? { snippet: node.snippet } : { snippet: null }),
+      ...(fileType !== undefined ? { file_type: fileType } : {}),
+    })
     if (!isSeed) {
       supportNodes += 1
     }
   }
 
-  const includedIds = new Set(compactNodes.map((node) => node.node_id).filter((nodeId): nodeId is string => typeof nodeId === 'string'))
   const includedLabels = new Set(compactNodes.map((node) => node.label))
   const includedCommunities = new Set(compactNodes.flatMap((node) => (node.community === null ? [] : [node.community])))
+  const sharedFileType =
+    compactNodes.length > 0 && compactNodes.every((node) => node.file_type === compactNodes[0]?.file_type)
+      ? compactNodes[0]?.file_type
+      : undefined
+  const compactNodesWithoutSharedFileType = sharedFileType !== undefined
+    ? compactNodes.map(({ file_type: _fileType, ...node }) => node)
+    : compactNodes
+  const compactNodePayload = sharedFileType !== undefined
+    ? { shared_file_type: sharedFileType, nodes: compactNodesWithoutSharedFileType }
+    : compactNodesWithoutSharedFileType
 
   return {
     budget: reviewBundle.budget,
-    token_count: compactNodes.reduce(
-      (total, node) => total + estimateRetrieveEntryTokens(node.label, node.source_file, node.line_number, node.snippet),
-      0,
-    ),
-    nodes: compactNodes,
+    token_count: compactNodesWithoutSharedFileType.length === 0 ? 0 : estimateQueryTokens(JSON.stringify(compactNodePayload)),
+    nodes: compactNodesWithoutSharedFileType,
     relationships: reviewBundle.relationships.filter((relationship) => {
-      if (includedIds.size > 0 && relationship.from_id && relationship.to_id) {
-        return includedIds.has(relationship.from_id) && includedIds.has(relationship.to_id)
+      if (includedRelationshipIds.size > 0 && relationship.from_id && relationship.to_id) {
+        return includedRelationshipIds.has(relationship.from_id) && includedRelationshipIds.has(relationship.to_id)
       }
       return includedLabels.has(relationship.from) && includedLabels.has(relationship.to)
-    }),
+    }).map(stripReviewRelationshipIdentity),
     community_context: reviewBundle.community_context.filter((community) => includedCommunities.has(community.id)),
+    ...(sharedFileType !== undefined ? { shared_file_type: sharedFileType } : {}),
   }
 }
 
@@ -175,6 +241,7 @@ function gitDiffPatch(projectDir: string, gitArgs: string[]): string {
       cwd: projectDir,
       maxBuffer: MAX_DIFF_BYTES,
       encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
       timeout: 10_000,
     })
   } catch {
@@ -266,28 +333,100 @@ function mergeChangedFileRanges(changedSets: ParsedChangedFileRanges[]): ParsedC
     }))
 }
 
-function gitDiffFiles(projectDir: string, baseBranch: string): ParsedChangedFileRanges[] {
+function isPathWithin(rootPath: string, targetPath: string): boolean {
+  const relativePath = relative(rootPath, targetPath)
+  return relativePath === '' || (!relativePath.startsWith('..') && !isAbsolute(relativePath))
+}
+
+function mapRepoPathToProjectPath(projectDir: string, repoDir: string, repoRelativePath: string): string | null {
+  const absolutePath = normalizeProjectPath(projectDir, resolve(repoDir, repoRelativePath))
+  const relativePath = relative(projectDir, absolutePath)
+  if (relativePath === '' || relativePath === '..' || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) {
+    return null
+  }
+  return relativePath.replaceAll('\\', '/')
+}
+
+function gitDiffFilesForRepo(projectDir: string, repoDir: string, baseBranch: string): ParsedChangedFileRanges[] {
   const changedFiles = mergeChangedFileRanges([
-    ...parseUnifiedDiff(gitDiffPatch(projectDir, ['HEAD'])),
-    ...parseUnifiedDiff(gitDiffPatch(projectDir, ['--cached'])),
-    ...parseUnifiedDiff(gitDiffPatch(projectDir, [`${baseBranch}...HEAD`])),
+    ...parseUnifiedDiff(gitDiffPatch(repoDir, ['HEAD'])),
+    ...parseUnifiedDiff(gitDiffPatch(repoDir, ['--cached'])),
+    ...parseUnifiedDiff(gitDiffPatch(repoDir, [`${baseBranch}...HEAD`])),
   ])
+
+  return changedFiles
+    .map((changedFile) => {
+      const projectRelativePath = mapRepoPathToProjectPath(projectDir, repoDir, changedFile.path)
+      return projectRelativePath === null ? null : {
+        path: projectRelativePath,
+        lineRanges: changedFile.lineRanges,
+      }
+    })
+    .filter((changedFile): changedFile is ParsedChangedFileRanges => changedFile !== null)
+}
+
+function gitRepoRoots(graph: KnowledgeGraph, projectDir: string): string[] {
+  const repoRoots = new Set<string>()
+  const projectGitRoot = findGitRoot(projectDir)
+  if (projectGitRoot !== null) {
+    repoRoots.add(normalizeProjectPath('.', projectGitRoot))
+  }
+
+  const checkedSourceDirs = new Set<string>()
+  for (const [, attributes] of graph.nodeEntries()) {
+    const sourceFile = String(attributes.source_file ?? '')
+    if (sourceFile.trim().length === 0) {
+      continue
+    }
+
+    const normalizedSourceFile = normalizeProjectPath(projectDir, sourceFile)
+    if (!isPathWithin(projectDir, normalizedSourceFile)) {
+      continue
+    }
+
+    const sourceDir = dirname(normalizedSourceFile)
+    if (checkedSourceDirs.has(sourceDir)) {
+      continue
+    }
+    checkedSourceDirs.add(sourceDir)
+
+    const repoRoot = findGitRoot(sourceDir)
+    if (repoRoot === null) {
+      continue
+    }
+
+    const normalizedRepoRoot = normalizeProjectPath('.', repoRoot)
+    if (isPathWithin(projectDir, normalizedRepoRoot) || isPathWithin(normalizedRepoRoot, projectDir)) {
+      repoRoots.add(normalizedRepoRoot)
+    }
+  }
+
+  return [...repoRoots].sort((left, right) => left.localeCompare(right))
+}
+
+function gitDiffFiles(graph: KnowledgeGraph, projectDir: string, baseBranch: string): ParsedChangedFileRanges[] {
+  const changedFiles = mergeChangedFileRanges(
+    gitRepoRoots(graph, projectDir).flatMap((repoDir) => gitDiffFilesForRepo(projectDir, repoDir, baseBranch)),
+  )
 
   return changedFiles.slice(0, MAX_CHANGED_FILES)
 }
 
-function gitDetectBaseBranch(projectDir: string): string {
-  try {
-    execFileSync('git', ['rev-parse', '--verify', 'main'], {
-      cwd: projectDir,
-      encoding: 'utf8',
-      timeout: 5_000,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    })
-    return 'main'
-  } catch {
-    return 'master'
+function gitDetectBaseBranch(graph: KnowledgeGraph, projectDir: string): string {
+  for (const repoDir of gitRepoRoots(graph, projectDir)) {
+    try {
+      execFileSync('git', ['rev-parse', '--verify', 'main'], {
+        cwd: repoDir,
+        encoding: 'utf8',
+        timeout: 5_000,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      })
+      return 'main'
+    } catch {
+      continue
+    }
   }
+  return 'master'
 }
 
 function parseCommunityId(raw: unknown): number | null {
@@ -461,6 +600,157 @@ function relationWeight(relation: string): number {
   return 0.75
 }
 
+function portablePath(path: string): string {
+  return path.replaceAll('\\', '/')
+}
+
+function pushUniquePath(paths: string[], seen: Set<string>, path: string): void {
+  const normalizedPath = portablePath(path).trim()
+  if (normalizedPath.length === 0 || seen.has(normalizedPath)) {
+    return
+  }
+
+  seen.add(normalizedPath)
+  paths.push(normalizedPath)
+}
+
+function collectSupportingPaths(
+  reviewBundle: PrReviewBundle,
+  changedFiles: readonly string[],
+): string[] {
+  const changedFileSet = new Set(changedFiles.map((path) => portablePath(path)))
+  const supportingPaths: string[] = []
+  const seenPaths = new Set<string>()
+
+  for (const node of reviewBundle.nodes) {
+    const sourcePath = portablePath(node.source_file)
+    if (changedFileSet.has(sourcePath)) {
+      continue
+    }
+
+    pushUniquePath(supportingPaths, seenPaths, sourcePath)
+    if (supportingPaths.length >= MAX_REVIEW_SUPPORTING_PATHS) {
+      break
+    }
+  }
+
+  return supportingPaths
+}
+
+function testCandidatesForSourcePath(sourcePath: string): string[] {
+  const normalizedPath = portablePath(sourcePath)
+  const sourceDir = portablePath(dirname(normalizedPath))
+  const sourceExt = extname(normalizedPath)
+  const sourceBase = basename(normalizedPath, sourceExt)
+  const candidates = [
+    join(sourceDir, `${sourceBase}.test${sourceExt}`),
+    join(sourceDir, `${sourceBase}.spec${sourceExt}`),
+    join(sourceDir, '__tests__', `${sourceBase}.test${sourceExt}`),
+    join(sourceDir, '__tests__', `${sourceBase}.spec${sourceExt}`),
+    join('tests', `${sourceBase}.test${sourceExt}`),
+    join('tests', `${sourceBase}.spec${sourceExt}`),
+    join('test', `${sourceBase}.test${sourceExt}`),
+    join('test', `${sourceBase}.spec${sourceExt}`),
+    join(sourceDir, `test_${sourceBase}.py`),
+    join(sourceDir, `${sourceBase}_test.py`),
+    join('tests', `test_${sourceBase}.py`),
+    join('tests', `${sourceBase}_test.py`),
+  ]
+
+  return candidates.map((candidate) => portablePath(candidate))
+}
+
+function collectLikelyTestPaths(
+  projectDir: string,
+  changedFiles: readonly string[],
+  supportingPaths: readonly string[],
+): string[] {
+  const likelyTests: string[] = []
+  const seenPaths = new Set<string>()
+
+  for (const sourcePath of [...changedFiles, ...supportingPaths]) {
+    for (const candidate of testCandidatesForSourcePath(sourcePath)) {
+      if (!existsSync(resolve(projectDir, candidate))) {
+        continue
+      }
+
+      pushUniquePath(likelyTests, seenPaths, candidate)
+      if (likelyTests.length >= MAX_REVIEW_TEST_PATHS) {
+        return likelyTests
+      }
+    }
+  }
+
+  return likelyTests
+}
+
+function collectReviewHotspots(
+  graph: KnowledgeGraph,
+  communities: ReturnType<typeof communitiesFromGraph>,
+  communityLabels: Record<number, string>,
+  seedNodes: readonly PrImpactSeedNode[],
+  reviewBundle: PrReviewBundle,
+): RiskMapHotspot[] {
+  const bridgeSet = new Set(workspaceBridges(graph, communities, communityLabels, 20).map((bridge) => bridge.label))
+  const godSet = new Set(godNodes(graph, 20).map((node) => node.label))
+  const candidateLabels = [...new Set([
+    ...seedNodes.map((node) => node.label),
+    ...reviewBundle.nodes.map((node) => node.label),
+  ])]
+  const hotspots: RiskMapHotspot[] = []
+
+  for (const label of candidateLabels) {
+    const isBridge = bridgeSet.has(label)
+    const isGodNode = godSet.has(label)
+    if (!isBridge && !isGodNode) {
+      continue
+    }
+
+    if (isBridge && isGodNode) {
+      hotspots.push({
+        label,
+        type: 'bridge',
+        why: `${label} connects multiple communities in the changed review area and has unusually high graph degree for this workspace.`,
+      })
+    } else if (isBridge) {
+      hotspots.push({
+        label,
+        type: 'bridge',
+        why: `${label} connects multiple communities in the changed review area.`,
+      })
+    } else {
+      hotspots.push({
+        label,
+        type: 'god_node',
+        why: `${label} has unusually high graph degree for this workspace.`,
+      })
+    }
+    if (hotspots.length >= MAX_REVIEW_HOTSPOTS) {
+      return hotspots.slice(0, MAX_REVIEW_HOTSPOTS)
+    }
+  }
+
+  return hotspots
+}
+
+function buildReviewContext(
+  graph: KnowledgeGraph,
+  projectDir: string,
+  changedFiles: readonly string[],
+  seedNodes: readonly PrImpactSeedNode[],
+  reviewBundle: PrReviewBundle,
+  communities: ReturnType<typeof communitiesFromGraph>,
+  communityLabels: Record<number, string>,
+): PrImpactResult['review_context'] {
+  const supportingPaths = collectSupportingPaths(reviewBundle, changedFiles)
+
+  return {
+    supporting_paths: supportingPaths,
+    test_paths: collectLikelyTestPaths(projectDir, changedFiles, supportingPaths),
+    hotspots: collectReviewHotspots(graph, communities, communityLabels, seedNodes, reviewBundle),
+  }
+}
+
 function buildReviewBundle(
   graph: KnowledgeGraph,
   seedNodes: readonly PrImpactSeedNode[],
@@ -616,8 +906,8 @@ export function analyzePrImpact(
   options: PrImpactOptions = {},
 ): PrImpactResult {
   const resolvedDir = normalizeProjectPath('.', projectDir)
-  const baseBranch = options.baseBranch ?? gitDetectBaseBranch(resolvedDir)
-  const changedFiles = gitDiffFiles(resolvedDir, baseBranch)
+  const baseBranch = options.baseBranch ?? gitDetectBaseBranch(graph, resolvedDir)
+  const changedFiles = gitDiffFiles(graph, resolvedDir, baseBranch)
 
   if (changedFiles.length === 0) {
     return {
@@ -630,6 +920,11 @@ export function analyzePrImpact(
       total_blast_radius: 0,
       affected_files: [],
       affected_communities: [],
+      review_context: {
+        supporting_paths: [],
+        test_paths: [],
+        hotspots: [],
+      },
       review_bundle: {
         budget: options.budget ?? DEFAULT_REVIEW_BUDGET,
         token_count: 0,
@@ -650,6 +945,15 @@ export function analyzePrImpact(
   const seedNodes = selectSeedNodes(changedNodes, changedFiles, resolvedDir)
   const reviewBudget = options.budget ?? DEFAULT_REVIEW_BUDGET
   const reviewBundle = buildReviewBundle(graph, seedNodes, reviewBudget, communities, communityLabels, resolvedDir)
+  const reviewContext = buildReviewContext(
+    graph,
+    resolvedDir,
+    changedFiles.map((changedFile) => changedFile.path),
+    seedNodes,
+    reviewBundle,
+    communities,
+    communityLabels,
+  )
   const bridgeSet = new Set(workspaceBridges(graph, communities, communityLabels, 20).map((bridge) => bridge.label))
   const godSet = new Set(godNodes(graph, 20).map((node) => node.label))
 
@@ -732,6 +1036,7 @@ export function analyzePrImpact(
     affected_communities: [...allAffectedCommunities.entries()]
       .map(([id, label]) => ({ id, label, node_count: communities[id]?.length ?? 0 }))
       .sort((a, b) => b.node_count - a.node_count),
+    review_context: reviewContext,
     review_bundle: reviewBundle,
     risk_summary: {
       high_impact_nodes: highImpactNodes,
@@ -746,11 +1051,26 @@ export function analyzePrImpact(
 }
 
 export function compactPrImpactResult(result: PrImpactResult): CompactPrImpactResult {
+  const compactSeedNodes = result.seed_nodes.slice(0, MAX_COMPACT_SEED_NODES)
+  const compactChangedFiles: string[] = []
+  const seenChangedFiles = new Set<string>()
+  for (const sourceFile of [...compactSeedNodes.map((node) => node.source_file), ...result.changed_files]) {
+    if (sourceFile.trim().length === 0 || seenChangedFiles.has(sourceFile)) {
+      continue
+    }
+    seenChangedFiles.add(sourceFile)
+    compactChangedFiles.push(sourceFile)
+    if (compactChangedFiles.length >= MAX_COMPACT_CHANGED_FILES) {
+      break
+    }
+  }
+  const compactChangedFileSet = new Set(compactChangedFiles)
+
   return {
     base_branch: result.base_branch,
-    changed_files: result.changed_files,
-    changed_ranges: result.changed_ranges,
-    seed_nodes: result.seed_nodes,
+    changed_files: compactChangedFiles,
+    changed_ranges: result.changed_ranges.filter((entry) => compactChangedFileSet.has(entry.source_file)),
+    seed_nodes: compactSeedNodes,
     per_node_impact: result.per_node_impact
       .slice(0, MAX_COMPACT_PER_NODE_IMPACT)
       .map((impact) => ({
@@ -759,8 +1079,12 @@ export function compactPrImpactResult(result: PrImpactResult): CompactPrImpactRe
         affected_communities: impact.affected_communities,
       })),
     total_blast_radius: result.total_blast_radius,
-    affected_communities: result.affected_communities,
+    affected_communities: result.affected_communities.slice(0, MAX_COMPACT_AFFECTED_COMMUNITIES),
+    review_context: result.review_context,
     review_bundle: compactReviewBundle(result.review_bundle, result.seed_nodes),
-    risk_summary: result.risk_summary,
+    risk_summary: {
+      ...result.risk_summary,
+      high_impact_nodes: result.risk_summary.high_impact_nodes.slice(0, MAX_COMPACT_HIGH_IMPACT_NODES),
+    },
   }
 }

@@ -11,6 +11,7 @@ import { estimateQueryTokens } from '../../src/runtime/serve.js'
 function createRepo(options: { reviewHeavy?: boolean } = {}): string {
   const root = mkdtempSync(join(tmpdir(), 'graphify-ts-stdio-pr-impact-'))
   mkdirSync(join(root, 'src'), { recursive: true })
+  mkdirSync(join(root, 'tests'), { recursive: true })
   mkdirSync(join(root, 'graphify-out'), { recursive: true })
 
   const authLines = Array.from({ length: 40 }, (_, index) => `// auth filler ${index + 1}`)
@@ -27,6 +28,8 @@ function createRepo(options: { reviewHeavy?: boolean } = {}): string {
 
   writeFileSync(join(root, 'src', 'auth.ts'), `${authLines.join('\n')}\n`, 'utf8')
   writeFileSync(join(root, 'src', 'api.ts'), `${apiLines.join('\n')}\n`, 'utf8')
+  writeFileSync(join(root, 'tests', 'auth.test.ts'), 'describe("auth", () => {})\n', 'utf8')
+  writeFileSync(join(root, 'tests', 'api.test.ts'), 'describe("api", () => {})\n', 'utf8')
   const reviewFixtureFiles = options.reviewHeavy ? [
     {
       id: 'review_session',
@@ -431,9 +434,15 @@ describe('stdio pr impact', () => {
     )
     expect(compactPayload.review_bundle.token_count).toBeLessThan(verbosePayload.review_bundle.token_count)
     expect(compactPayload.review_bundle.nodes.length).toBeLessThanOrEqual(verbosePayload.review_bundle.nodes.length)
+    expect(compactPayload.review_bundle).toEqual(expect.objectContaining({ shared_file_type: 'code' }))
     expect(compactPayload.review_bundle.nodes.find((node: { label: string; snippet: string | null }) => node.label === 'ApiHandler')).toEqual(
       expect.objectContaining({ snippet: null }),
     )
+    expect(compactPayload.review_bundle.nodes.find((node: { label: string }) => node.label === 'ApiHandler')).not.toHaveProperty('node_id')
+    expect(compactPayload.review_bundle.nodes.find((node: { label: string }) => node.label === 'ApiHandler')).not.toHaveProperty('match_score')
+    expect(compactPayload.review_bundle.nodes.find((node: { label: string }) => node.label === 'ApiHandler')).not.toHaveProperty('community_label')
+    expect(compactPayload.review_bundle.nodes.find((node: { label: string }) => node.label === 'ApiHandler')).not.toHaveProperty('framework_boost')
+    expect(compactPayload.review_bundle.nodes.find((node: { label: string }) => node.label === 'ApiHandler')).not.toHaveProperty('file_type')
     expect(compactPayload.review_bundle.relationships).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -453,6 +462,8 @@ describe('stdio pr impact', () => {
         }),
       ]),
     )
+    expect(compactPayload.review_bundle.relationships[0]).not.toHaveProperty('from_id')
+    expect(compactPayload.review_bundle.relationships[0]).not.toHaveProperty('to_id')
     expect(verbosePayload.review_bundle.relationships).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -485,12 +496,23 @@ describe('stdio pr impact', () => {
         expect.objectContaining({ label: 'Review Ops' }),
       ]),
     )
+    expect(compactPayload.review_context).toEqual(expect.objectContaining({
+      supporting_paths: ['src/api.ts', 'src/audit-log.ts', 'src/review-session.ts'],
+      test_paths: expect.arrayContaining(['tests/auth.test.ts', 'tests/api.test.ts']),
+      hotspots: expect.arrayContaining([
+        expect.objectContaining({
+          label: 'authenticateUser',
+          type: expect.stringMatching(/bridge|god_node/),
+          why: expect.any(String),
+        }),
+      ]),
+    }))
     expect(fullReviewBundleTokens).toBe(1356)
-    expect(compactReviewBundleTokens).toBe(512)
-    expect(reviewBundleReductionRatio).toBe(2.648)
-    expect(fullPayloadTokens).toBe(1716)
-    expect(compactPayloadTokens).toBe(736)
-    expect(payloadReductionRatio).toBe(2.332)
+    expect(compactReviewBundleTokens).toBeLessThan(452)
+    expect(reviewBundleReductionRatio).toBeGreaterThan(3)
+    expect(fullPayloadTokens).toBeLessThan(1_900)
+    expect(compactPayloadTokens).toBeLessThan(780)
+    expect(payloadReductionRatio).toBeGreaterThan(2.4)
     expect(compactPayload.risk_summary.top_risks[0]).toEqual(
       expect.objectContaining({
         label: 'authenticateUser',

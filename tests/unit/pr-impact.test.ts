@@ -12,6 +12,7 @@ import { estimateQueryTokens } from '../../src/runtime/serve.js'
 function createRepo(): string {
   const root = mkdtempSync(join(tmpdir(), 'graphify-ts-pr-impact-'))
   mkdirSync(join(root, 'src'), { recursive: true })
+  mkdirSync(join(root, 'tests'), { recursive: true })
 
   const authLines = Array.from({ length: 40 }, (_, index) => `// auth filler ${index + 1}`)
   authLines[9] = 'export function authenticateUser(token: string) {'
@@ -30,12 +31,45 @@ function createRepo(): string {
 
   writeFileSync(join(root, 'src', 'auth.ts'), `${authLines.join('\n')}\n`, 'utf8')
   writeFileSync(join(root, 'src', 'api.ts'), `${apiLines.join('\n')}\n`, 'utf8')
+  writeFileSync(join(root, 'tests', 'auth.test.ts'), 'describe("auth", () => {})\n', 'utf8')
+  writeFileSync(join(root, 'tests', 'api.test.ts'), 'describe("api", () => {})\n', 'utf8')
 
   execFileSync('git', ['init', '-b', 'main'], { cwd: root, stdio: 'pipe' })
   execFileSync('git', ['config', 'user.email', 'graphify@example.com'], { cwd: root, stdio: 'pipe' })
   execFileSync('git', ['config', 'user.name', 'Graphify Test'], { cwd: root, stdio: 'pipe' })
   execFileSync('git', ['add', '.'], { cwd: root, stdio: 'pipe' })
   execFileSync('git', ['commit', '-m', 'Initial commit'], { cwd: root, stdio: 'pipe' })
+
+  return root
+}
+
+function createNestedRepoWorkspace(): string {
+  const root = mkdtempSync(join(tmpdir(), 'graphify-ts-pr-impact-workspace-'))
+  const backendRoot = join(root, 'backend')
+  mkdirSync(join(backendRoot, 'src'), { recursive: true })
+  mkdirSync(join(backendRoot, 'tests'), { recursive: true })
+
+  const authLines = Array.from({ length: 16 }, (_, index) => `// auth filler ${index + 1}`)
+  authLines[4] = 'export function authenticateUser(token: string) {'
+  authLines[5] = '  const parsed = token.trim()'
+  authLines[6] = '  const status = "ok"'
+  authLines[7] = '  return parsed.length > 0 ? status : "fail"'
+  authLines[8] = '}'
+
+  const apiLines = Array.from({ length: 10 }, (_, index) => `// api filler ${index + 1}`)
+  apiLines[2] = 'export function ApiHandler(token: string) {'
+  apiLines[3] = '  return authenticateUser(token)'
+  apiLines[4] = '}'
+
+  writeFileSync(join(backendRoot, 'src', 'auth.ts'), `${authLines.join('\n')}\n`, 'utf8')
+  writeFileSync(join(backendRoot, 'src', 'api.ts'), `${apiLines.join('\n')}\n`, 'utf8')
+  writeFileSync(join(backendRoot, 'tests', 'auth.test.ts'), 'describe("auth", () => {})\n', 'utf8')
+
+  execFileSync('git', ['init', '-b', 'main'], { cwd: backendRoot, stdio: 'pipe' })
+  execFileSync('git', ['config', 'user.email', 'graphify@example.com'], { cwd: backendRoot, stdio: 'pipe' })
+  execFileSync('git', ['config', 'user.name', 'Graphify Test'], { cwd: backendRoot, stdio: 'pipe' })
+  execFileSync('git', ['add', '.'], { cwd: backendRoot, stdio: 'pipe' })
+  execFileSync('git', ['commit', '-m', 'Initial commit'], { cwd: backendRoot, stdio: 'pipe' })
 
   return root
 }
@@ -82,6 +116,40 @@ function buildGraph(root: string): KnowledgeGraph {
     relation: 'calls',
     confidence: 'EXTRACTED',
     source_file: join(root, 'src', 'api.ts'),
+  })
+
+  return graph
+}
+
+function buildNestedRepoGraph(root: string): KnowledgeGraph {
+  const graph = new KnowledgeGraph({ directed: true })
+  graph.graph.root_path = root
+  graph.graph.community_labels = {
+    0: 'Auth Layer',
+    1: 'API Layer',
+  }
+
+  graph.addNode('auth_user', {
+    label: 'authenticateUser',
+    source_file: join(root, 'backend', 'src', 'auth.ts'),
+    source_location: 'L5-L9',
+    node_kind: 'function',
+    file_type: 'code',
+    community: 0,
+  })
+  graph.addNode('api_handler', {
+    label: 'ApiHandler',
+    source_file: join(root, 'backend', 'src', 'api.ts'),
+    source_location: 'L3-L5',
+    node_kind: 'function',
+    file_type: 'code',
+    community: 1,
+  })
+
+  graph.addEdge('api_handler', 'auth_user', {
+    relation: 'calls',
+    confidence: 'EXTRACTED',
+    source_file: join(root, 'backend', 'src', 'api.ts'),
   })
 
   return graph
@@ -399,6 +467,22 @@ describe('pr impact', () => {
     )
   })
 
+  it('collects changed files from nested git repos under the graph root', () => {
+    const root = createNestedRepoWorkspace()
+    repoRoots.push(root)
+    updateFile(root, 'backend/src/auth.ts', (content) => content.replace('  const status = "ok"', '  const status = token.startsWith("Bearer ") ? "ok" : "fail"'))
+
+    const result = analyzePrImpact(buildNestedRepoGraph(root), root, { budget: 240 })
+
+    expect(result.changed_files).toEqual(['backend/src/auth.ts'])
+    expect(result.seed_nodes).toEqual([
+      expect.objectContaining({
+        label: 'authenticateUser',
+        match_kind: 'line',
+      }),
+    ])
+  })
+
   it('returns an empty review bundle when the budget cannot fit the first review node', () => {
     const root = createRepo()
     repoRoots.push(root)
@@ -476,6 +560,13 @@ describe('pr impact', () => {
 
     const full = analyzePrImpact(buildGraph(root), root, { budget: 300 })
     const compact = compactPrImpactResult(full)
+    const compactSupportNode = compact.review_bundle.nodes.find((node) => node.label === 'ApiHandler') as Record<string, unknown> | undefined
+    const compactNodePayload = typeof compact.review_bundle.shared_file_type === 'string'
+      ? {
+          shared_file_type: compact.review_bundle.shared_file_type,
+          nodes: compact.review_bundle.nodes,
+        }
+      : compact.review_bundle.nodes
 
     expect(compact).toEqual(expect.objectContaining({
       base_branch: full.base_branch,
@@ -493,10 +584,19 @@ describe('pr impact', () => {
       label: 'authenticateUser',
       snippet: full.review_bundle.nodes[0]?.snippet ?? null,
     }))
-    expect(compact.review_bundle.nodes.find((node) => node.label === 'ApiHandler')).toEqual(expect.objectContaining({
-      snippet: null,
-    }))
-    expect(compact.review_bundle.token_count).toBeLessThan(full.review_bundle.token_count)
+    expect(compact.review_bundle).toHaveProperty('shared_file_type', 'code')
+    expect(compactSupportNode).toEqual(expect.objectContaining({ snippet: null }))
+    expect(compactSupportNode).not.toHaveProperty('node_id')
+    expect(compactSupportNode).not.toHaveProperty('match_score')
+    expect(compactSupportNode).not.toHaveProperty('community_label')
+    expect(compactSupportNode).not.toHaveProperty('framework_boost')
+    expect(compactSupportNode).not.toHaveProperty('file_type')
+    expect(compact.review_bundle.relationships[0]).not.toHaveProperty('from_id')
+    expect(compact.review_bundle.relationships[0]).not.toHaveProperty('to_id')
+    expect(compact.review_bundle.token_count).toBe(estimateQueryTokens(JSON.stringify(compactNodePayload)))
+    expect(estimateQueryTokens(JSON.stringify(compactNodePayload))).toBeLessThan(
+      estimateQueryTokens(JSON.stringify(full.review_bundle.nodes)),
+    )
     expect(compact.per_node_impact).toEqual(
       full.per_node_impact.slice(0, 5).map((impact) => ({
         node: impact.node,
@@ -545,6 +645,14 @@ describe('pr impact', () => {
     expect(compact.review_bundle.nodes.map((node) => node.label)).not.toEqual(
       expect.arrayContaining(['MergeQueueGate', 'ReviewSummaryDigest', 'ReviewerRosterSync', 'RiskEscalationDigest']),
     )
+    expect(compact.review_bundle).toHaveProperty('shared_file_type', 'code')
+    expect(compact.review_bundle.nodes.find((node) => node.label === 'ApiHandler')).toEqual(expect.not.objectContaining({
+      node_id: expect.any(String),
+      match_score: expect.any(Number),
+      community_label: expect.anything(),
+      framework_boost: expect.any(Number),
+      file_type: expect.any(String),
+    }))
     expect(compact.review_bundle.nodes.find((node) => node.label === 'ApiHandler')).toEqual(expect.objectContaining({ snippet: null }))
     expect(compact.review_bundle.relationships).toEqual(
       expect.arrayContaining([
@@ -589,6 +697,8 @@ describe('pr impact', () => {
         }),
       ]),
     )
+    expect(compact.review_bundle.relationships[0]).not.toHaveProperty('from_id')
+    expect(compact.review_bundle.relationships[0]).not.toHaveProperty('to_id')
     expect(compact.review_bundle.community_context).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ label: 'Auth Layer' }),
@@ -597,13 +707,24 @@ describe('pr impact', () => {
         expect.objectContaining({ label: 'Review Ops' }),
       ]),
     )
+    expect(compact.review_context).toEqual(expect.objectContaining({
+      supporting_paths: ['src/api.ts', 'src/audit-log.ts', 'src/review-session.ts'],
+      test_paths: expect.arrayContaining(['tests/auth.test.ts', 'tests/api.test.ts']),
+      hotspots: expect.arrayContaining([
+        expect.objectContaining({
+          label: 'authenticateUser',
+          type: expect.stringMatching(/bridge|god_node/),
+          why: expect.any(String),
+        }),
+      ]),
+    }))
     expect(compact.review_bundle.token_count).toBeLessThan(full.review_bundle.token_count)
     expect(fullReviewBundleTokens).toBe(1356)
-    expect(compactReviewBundleTokens).toBe(512)
-    expect(reviewBundleReductionRatio).toBe(2.648)
-    expect(fullPayloadTokens).toBe(1716)
-    expect(compactPayloadTokens).toBe(736)
-    expect(payloadReductionRatio).toBe(2.332)
+    expect(compactReviewBundleTokens).toBeLessThan(452)
+    expect(reviewBundleReductionRatio).toBeGreaterThan(3)
+    expect(fullPayloadTokens).toBeLessThan(1_900)
+    expect(compactPayloadTokens).toBeLessThan(780)
+    expect(payloadReductionRatio).toBeGreaterThan(2.4)
   })
 
   it('ranks the top review risks with severity and concise reasons', () => {
@@ -620,6 +741,27 @@ describe('pr impact', () => {
         reason: expect.any(String),
       }),
     )
+  })
+
+  it('adds typed review context for supporting paths, likely tests, and hotspots', () => {
+    const root = createRepo()
+    repoRoots.push(root)
+    updateFile(root, 'src/auth.ts', (content) => content.replace('  const status = "ok"', '  const status = token.startsWith("Bearer ") ? "ok" : "fail"'))
+
+    const result = analyzePrImpact(buildSecondHopCapGraph(root), root, { budget: 2_000 })
+
+    expect(result.review_context).toEqual(expect.objectContaining({
+      supporting_paths: ['src/api.ts', 'src/audit-log.ts', 'src/review-session.ts'],
+      test_paths: expect.arrayContaining(['tests/auth.test.ts', 'tests/api.test.ts']),
+      hotspots: expect.arrayContaining([
+        expect.objectContaining({
+          label: 'authenticateUser',
+          type: expect.stringMatching(/bridge|god_node/),
+          why: expect.any(String),
+        }),
+      ]),
+    }))
+    expect(new Set(result.review_context.hotspots.map((hotspot) => hotspot.label)).size).toBe(result.review_context.hotspots.length)
   })
 
   it('preserves full per-node impact ordering in the compact view when totals tie', () => {
@@ -652,6 +794,11 @@ describe('pr impact', () => {
       total_blast_radius: 3,
       affected_files: [],
       affected_communities: [],
+      review_context: {
+        supporting_paths: [],
+        test_paths: [],
+        hotspots: [],
+      },
       review_bundle: {
         budget: 100,
         token_count: 0,
@@ -671,5 +818,202 @@ describe('pr impact', () => {
       'AlphaNode',
       'LaterNode',
     ])
+  })
+
+  it('keeps empty-string file types on compact review nodes when file types are mixed', () => {
+    const full: PrImpactResult = {
+      base_branch: 'main',
+      changed_files: ['src/auth.ts'],
+      changed_ranges: [{ source_file: 'src/auth.ts', line_ranges: [{ start: 12, end: 12 }] }],
+      changed_nodes: [],
+      seed_nodes: [],
+      per_node_impact: [],
+      total_blast_radius: 0,
+      affected_files: [],
+      affected_communities: [],
+      review_context: {
+        supporting_paths: [],
+        test_paths: [],
+        hotspots: [],
+      },
+      review_bundle: {
+        budget: 200,
+        token_count: 10,
+        nodes: [
+          {
+            label: 'authenticateUser',
+            source_file: 'src/auth.ts',
+            line_number: 12,
+            file_type: '',
+            snippet: 'const status = "ok"',
+            match_score: 9,
+            relevance_band: 'direct',
+            community: 0,
+            community_label: 'Auth Layer',
+          },
+          {
+            label: 'ApiHandler',
+            source_file: 'src/api.ts',
+            line_number: 5,
+            file_type: 'code',
+            snippet: null,
+            match_score: 4,
+            relevance_band: 'related',
+            community: 1,
+            community_label: 'API Layer',
+          },
+        ],
+        relationships: [],
+        community_context: [],
+      },
+      risk_summary: {
+        high_impact_nodes: [],
+        cross_community_changes: 0,
+        top_risks: [],
+      },
+    }
+
+    const compact = compactPrImpactResult(full)
+
+    expect(compact.review_bundle).not.toHaveProperty('shared_file_type')
+    expect(compact.review_bundle.nodes[0]).toHaveProperty('file_type', '')
+  })
+
+  it('hoists empty-string file types when every compact review node shares them', () => {
+    const full: PrImpactResult = {
+      base_branch: 'main',
+      changed_files: ['src/auth.ts'],
+      changed_ranges: [{ source_file: 'src/auth.ts', line_ranges: [{ start: 12, end: 12 }] }],
+      changed_nodes: [],
+      seed_nodes: [],
+      per_node_impact: [],
+      total_blast_radius: 0,
+      affected_files: [],
+      affected_communities: [],
+      review_context: {
+        supporting_paths: [],
+        test_paths: [],
+        hotspots: [],
+      },
+      review_bundle: {
+        budget: 200,
+        token_count: 10,
+        nodes: [
+          {
+            label: 'authenticateUser',
+            source_file: 'src/auth.ts',
+            line_number: 12,
+            file_type: '',
+            snippet: 'const status = "ok"',
+            match_score: 9,
+            relevance_band: 'direct',
+            community: 0,
+            community_label: 'Auth Layer',
+          },
+          {
+            label: 'resolveReviewerSession',
+            source_file: 'src/review-session.ts',
+            line_number: 1,
+            file_type: '',
+            snippet: null,
+            match_score: 4,
+            relevance_band: 'related',
+            community: 2,
+            community_label: 'Review Ops',
+          },
+        ],
+        relationships: [],
+        community_context: [],
+      },
+      risk_summary: {
+        high_impact_nodes: [],
+        cross_community_changes: 0,
+        top_risks: [],
+      },
+    }
+
+    const compact = compactPrImpactResult(full)
+
+    expect(compact.review_bundle).toHaveProperty('shared_file_type', '')
+    expect(compact.review_bundle.nodes[0]).not.toHaveProperty('file_type')
+    expect(compact.review_bundle.nodes[1]).not.toHaveProperty('file_type')
+  })
+
+  it('trims oversized outer payload arrays in compact review mode', () => {
+    const full: PrImpactResult = {
+      base_branch: 'main',
+      changed_files: Array.from({ length: 30 }, (_, index) => `src/file-${index + 1}.ts`),
+      changed_ranges: Array.from({ length: 30 }, (_, index) => ({
+        source_file: `src/file-${index + 1}.ts`,
+        line_ranges: [{ start: index + 1, end: index + 1 }],
+      })),
+      changed_nodes: [],
+      seed_nodes: Array.from({ length: 30 }, (_, index) => ({
+        node_id: `seed-${index + 1}`,
+        label: `Seed${index + 1}`,
+        source_file: `src/file-${index + 1}.ts`,
+        node_kind: 'function',
+        community: index,
+        community_label: `Community ${index + 1}`,
+        line_number: index + 1,
+        source_location: `L${index + 1}-L${index + 1}`,
+        match_kind: 'line',
+      })),
+      per_node_impact: [],
+      total_blast_radius: 30,
+      affected_files: [],
+      affected_communities: Array.from({ length: 24 }, (_, index) => ({
+        id: index,
+        label: `Community ${index + 1}`,
+        node_count: 100 - index,
+      })),
+      review_context: {
+        supporting_paths: [],
+        test_paths: [],
+        hotspots: [],
+      },
+      review_bundle: {
+        budget: 500,
+        token_count: 25,
+        nodes: [
+          {
+            node_id: 'seed-1',
+            label: 'Seed1',
+            source_file: 'src/file-1.ts',
+            line_number: 1,
+            file_type: 'code',
+            snippet: 'return true',
+            match_score: 9,
+            relevance_band: 'direct',
+            community: 0,
+            community_label: 'Community 1',
+          },
+        ],
+        relationships: [],
+        community_context: [],
+      },
+      risk_summary: {
+        high_impact_nodes: Array.from({ length: 24 }, (_, index) => `Risk${index + 1}`),
+        cross_community_changes: 12,
+        top_risks: [
+          {
+            label: 'Seed1',
+            severity: 'high',
+            reason: 'Wide review surface',
+          },
+        ],
+      },
+    }
+
+    const compact = compactPrImpactResult(full)
+
+    expect(compact.changed_files).toHaveLength(20)
+    expect(compact.changed_ranges).toHaveLength(20)
+    expect(compact.seed_nodes).toHaveLength(12)
+    expect(compact.affected_communities).toHaveLength(12)
+    expect(compact.risk_summary.high_impact_nodes).toHaveLength(12)
+    expect(compact.changed_files[0]).toBe('src/file-1.ts')
+    expect(compact.changed_ranges.map((entry) => entry.source_file)).toEqual(compact.changed_files)
+    expect(estimateQueryTokens(JSON.stringify(compact))).toBeLessThan(estimateQueryTokens(JSON.stringify(full)))
   })
 })

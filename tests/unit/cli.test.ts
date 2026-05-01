@@ -14,6 +14,7 @@ import {
   parsePathArgs,
   parsePlatformActionArgs,
   parseQueryArgs,
+  parseReviewCompareArgs,
   parseSaveResultArgs,
   parseServeArgs,
   parseTimeTravelArgs,
@@ -100,6 +101,7 @@ function createDependencies(): CliDependencies {
     },
     runEval: () => 'graphify retrieval quality benchmark\nRecall: 100.0%\ncreate session login',
     runCompare: async () => 'compare command is not implemented yet',
+    runReviewCompare: async () => 'review compare command is not implemented yet',
     runTimeTravel: async () => 'time-travel command is not implemented yet',
     confirm: async () => true,
     printBenchmark: () => {},
@@ -394,6 +396,61 @@ describe('cli parser', () => {
     expect(() => parseCompareArgs(['--exec', 'claude -p "$(cat {prompt_file})"'])).toThrow('Usage: graphify-ts compare')
   })
 
+  it('parses review-compare args with optional overrides', () => {
+    const externalOutputDir = resolve('/tmp', 'graphify-ts-review-compare-external')
+
+    expect(parseReviewCompareArgs(['--exec', 'claude -p "$(cat {prompt_file})"'])).toEqual({
+      graphPath: 'graphify-out/graph.json',
+      execTemplate: 'claude -p "$(cat {prompt_file})"',
+      outputDir: resolve('graphify-out/review-compare'),
+      baseBranch: null,
+      budget: null,
+      yes: false,
+    })
+
+    expect(parseReviewCompareArgs([
+      'custom.json',
+      '--exec',
+      'gemini -p "$(cat {prompt_file})"',
+      '--output-dir',
+      'graphify-out/review-compare/custom',
+      '--base-branch',
+      'origin/main',
+      '--budget',
+      '1800',
+      '--yes',
+    ])).toEqual({
+      graphPath: 'custom.json',
+      execTemplate: 'gemini -p "$(cat {prompt_file})"',
+      outputDir: resolve('graphify-out/review-compare/custom'),
+      baseBranch: 'origin/main',
+      budget: 1800,
+      yes: true,
+    })
+
+    expect(parseReviewCompareArgs([
+      '/tmp/graph.json',
+      '--exec',
+      'gemini -p "$(cat {prompt_file})"',
+      '--output-dir',
+      externalOutputDir,
+    ])).toEqual({
+      graphPath: '/tmp/graph.json',
+      execTemplate: 'gemini -p "$(cat {prompt_file})"',
+      outputDir: externalOutputDir,
+      baseBranch: null,
+      budget: null,
+      yes: false,
+    })
+  })
+
+  it('rejects invalid review-compare args', () => {
+    expect(() => parseReviewCompareArgs([])).toThrow('error: --exec is required')
+    expect(() => parseReviewCompareArgs(['one.json', 'two.json', '--exec', 'claude -p "$(cat {prompt_file})"'])).toThrow('Usage: graphify-ts review-compare')
+    expect(() => parseReviewCompareArgs(['--budget', '1.5', '--exec', 'claude -p "$(cat {prompt_file})"'])).toThrow('error: --budget must be a positive integer')
+    expect(() => parseReviewCompareArgs(['--output-dir', '../outside', '--exec', 'claude -p "$(cat {prompt_file})"'])).toThrow('Only paths inside graphify-out/ are permitted')
+  })
+
   it.each([
     { args: ['main', 'HEAD'], view: 'summary' as const },
     { args: ['main', 'HEAD', '--view', 'risk'], view: 'risk' as const },
@@ -644,6 +701,8 @@ describe('cli main', () => {
     expect(help).toContain('    --baseline-mode MODE  full | bounded | native_agent (default full; native_agent runs --exec twice and reports Anthropic-billed usage)')
     expect(help).toContain('    --yes                 skip confirmation before running the paid prompt comparison')
     expect(help).toContain('    --limit N             cap processed prompts/questions for the comparison run')
+    expect(help).toContain('review-compare [graph.json] compare full vs compact pr_impact review prompts on the current git diff')
+    expect(help).toContain('    --output-dir DIR      review compare output directory (default graphify-out/review-compare)')
     expect(help).toContain('time-travel <from> <to> compare two refs using on-demand cached graph snapshots')
     expect(help).toContain('    --view MODE          summary|risk|drift|timeline (default summary)')
     expect(help).toContain('    --json               emit machine-readable JSON')
@@ -716,6 +775,60 @@ describe('cli main', () => {
     })
     expect(compareRequest.io).toBe(io)
     await expect(compareRequest.confirm('Proceed?')).resolves.toBe(true)
+    expect(confirmCalls).toBe(1)
+  })
+
+  it('routes review-compare through the injected dependency after parsing args', async () => {
+    const { io, logs, errors } = createIo()
+    const dependencies = createDependencies()
+    let capturedRequest: unknown
+    let confirmCalls = 0
+
+    dependencies.runReviewCompare = async (request) => {
+      capturedRequest = request
+      return 'review compare result'
+    }
+    dependencies.confirm = async () => {
+      confirmCalls += 1
+      return true
+    }
+
+    const exitCode = await executeCli(
+      [
+        'review-compare',
+        'custom.json',
+        '--exec',
+        'claude -p "$(cat {prompt_file})"',
+        '--output-dir',
+        'graphify-out/review-compare/custom',
+        '--base-branch',
+        'origin/main',
+        '--budget',
+        '1800',
+        '--yes',
+      ],
+      io,
+      dependencies,
+    )
+
+    expect(exitCode).toBe(0)
+    expect(logs).toEqual(['review compare result'])
+    expect(errors).toEqual([])
+    const reviewCompareRequest = capturedRequest as {
+      options: ReturnType<typeof parseReviewCompareArgs>
+      io: typeof io
+      confirm: (message: string) => Promise<boolean>
+    }
+    expect(reviewCompareRequest.options).toEqual({
+      graphPath: 'custom.json',
+      execTemplate: 'claude -p "$(cat {prompt_file})"',
+      outputDir: resolve('graphify-out/review-compare/custom'),
+      baseBranch: 'origin/main',
+      budget: 1800,
+      yes: true,
+    })
+    expect(reviewCompareRequest.io).toBe(io)
+    await expect(reviewCompareRequest.confirm('Proceed?')).resolves.toBe(true)
     expect(confirmCalls).toBe(1)
   })
 
