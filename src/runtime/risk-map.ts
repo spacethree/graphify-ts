@@ -8,9 +8,11 @@ import { relativizeSourceFile } from '../shared/source-path.js'
 
 export interface RiskMapOptions extends FeatureMapOptions {}
 
+export type RiskSeverity = 'high' | 'medium' | 'low'
+
 export interface RiskMapRisk {
   label: string
-  severity: 'high' | 'medium' | 'low'
+  severity: RiskSeverity
   reason: string
   affected_files: string[]
   affected_communities: string[]
@@ -37,6 +39,21 @@ interface RiskCandidate {
   matchScore: number
 }
 
+export interface RiskSummaryCandidate {
+  label: string
+  totalAffected: number
+  affectedFiles: readonly string[]
+  affectedCommunities: readonly string[]
+  hotspotKinds: readonly string[]
+  dependentCount: number
+}
+
+interface RankedRiskDetails extends RiskMapRisk {
+  score: number
+  hotspot_count: number
+  dependent_count: number
+}
+
 function storedCommunityLabels(graph: KnowledgeGraph): Record<number, string> {
   const raw = graph.graph.community_labels
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
@@ -50,7 +67,16 @@ function storedCommunityLabels(graph: KnowledgeGraph): Record<number, string> {
   )
 }
 
-function severityForRisk(score: number, affectedCommunities: number): 'high' | 'medium' | 'low' {
+export function scoreRisk(
+  totalAffected: number,
+  affectedCommunityCount: number,
+  hotspotCount: number,
+  dependentCount: number,
+): number {
+  return totalAffected * 2 + affectedCommunityCount + hotspotCount * 6 + dependentCount * 2
+}
+
+export function severityForRisk(score: number, affectedCommunities: number): RiskSeverity {
   if (score >= 6 || affectedCommunities >= 2) {
     return 'high'
   }
@@ -60,7 +86,7 @@ function severityForRisk(score: number, affectedCommunities: number): 'high' | '
   return 'low'
 }
 
-function summarizeRisk(
+export function summarizeRisk(
   label: string,
   affectedFiles: readonly string[],
   affectedCommunities: readonly string[],
@@ -70,6 +96,34 @@ function summarizeRisk(
   const communityPart = `${affectedCommunities.length} communit${affectedCommunities.length === 1 ? 'y' : 'ies'}`
   const hotspotPart = hotspotKinds.length > 0 ? ` Includes ${hotspotKinds.join(' and ')} hotspot exposure.` : ''
   return `${label} propagates into ${filePart} across ${communityPart}.${hotspotPart}`
+}
+
+export function buildRankedRisk(candidate: RiskSummaryCandidate): RankedRiskDetails {
+  const hotspotCount = candidate.hotspotKinds.length
+  const score = scoreRisk(
+    candidate.totalAffected,
+    candidate.affectedCommunities.length,
+    hotspotCount,
+    candidate.dependentCount,
+  )
+
+  return {
+    label: candidate.label,
+    severity: severityForRisk(score, candidate.affectedCommunities.length),
+    reason: summarizeRisk(candidate.label, candidate.affectedFiles, candidate.affectedCommunities, candidate.hotspotKinds),
+    affected_files: [...candidate.affectedFiles],
+    affected_communities: [...candidate.affectedCommunities],
+    score,
+    hotspot_count: hotspotCount,
+    dependent_count: candidate.dependentCount,
+  }
+}
+
+export function compareRankedRisks(left: RankedRiskDetails, right: RankedRiskDetails): number {
+  return right.hotspot_count - left.hotspot_count
+    || right.dependent_count - left.dependent_count
+    || right.score - left.score
+    || left.label.localeCompare(right.label)
 }
 
 export function riskMap(graph: KnowledgeGraph, options: RiskMapOptions): RiskMapResult {
@@ -112,21 +166,17 @@ export function riskMap(graph: KnowledgeGraph, options: RiskMapOptions): RiskMap
         ...(godSet.has(candidate.label) ? ['god node'] : []),
       ]
       const dependentCount = candidate.nodeId ? graph.predecessors(candidate.nodeId).length : 0
-      const score = impact.total_affected * 2 + affectedCommunities.length + hotspotKinds.length * 6 + dependentCount * 2
-
-      return {
+      return buildRankedRisk({
         label: candidate.label,
-        severity: severityForRisk(score, affectedCommunities.length),
-        reason: summarizeRisk(candidate.label, affectedFiles, affectedCommunities, hotspotKinds),
-        affected_files: affectedFiles,
-        affected_communities: affectedCommunities,
-        hotspot_count: hotspotKinds.length,
-        dependent_count: dependentCount,
-        score,
-      }
+        totalAffected: impact.total_affected,
+        affectedFiles,
+        affectedCommunities,
+        hotspotKinds,
+        dependentCount,
+      })
     })
     .filter((risk) => risk.score > 0)
-    .sort((left, right) => right.hotspot_count - left.hotspot_count || right.dependent_count - left.dependent_count || right.score - left.score || left.label.localeCompare(right.label))
+    .sort(compareRankedRisks)
     .slice(0, options.limit ?? 5)
     .map(({ score: _score, hotspot_count: _hotspotCount, dependent_count: _dependentCount, ...risk }) => risk)
 

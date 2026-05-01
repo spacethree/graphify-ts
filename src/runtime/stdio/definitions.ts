@@ -206,6 +206,9 @@ export const MCP_TOOLS: McpToolDefinition[] = [
       properties: {
         base_branch: { type: 'string', description: 'Base branch to diff against (default: auto-detect main/master)' },
         depth: { type: 'number', description: 'Blast radius depth (default 3)' },
+        budget: { type: 'number', description: 'Review bundle token budget (default 2000)' },
+        verbose: { type: 'boolean', description: 'Optional: return the legacy verbose pr_impact payload instead of the default compact response.' },
+        compact: { type: 'boolean', description: 'Deprecated alias: use verbose=false or omit both flags for the default compact response.' },
       },
     },
   },

@@ -4,6 +4,21 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+## [0.10.3] - 2026-05-01
+
+### Added
+
+- **Diff-first PR review selection**: `pr_impact` now parses unified git diff hunks into `changed_ranges`, narrows to line-aware `seed_nodes`, falls back safely to file-level seeds when symbol line metadata is missing, and returns ranked review risks with severity/reason summaries.
+
+### Changed
+
+- **Compact-by-default PR review MCP output**: the MCP `pr_impact` tool now accepts `budget`, `verbose`, and `compact` flags, returns a compact default payload for review workflows, and preserves the full legacy-style result behind `verbose: true` or `compact: false`.
+- **Review bundle compaction and regression benchmarking**: compact PR review bundles now preserve seed-first context while trimming supporting snippets and re-filtering relationships/community context, with focused regression tests pinning materially smaller review payloads on a mixed review fixture.
+
+### Fixed
+
+- **PR diff/runtime edge cases**: normalized reversed source ranges, hardened macOS realpath matching between git diff paths and graph node files, and covered pure-deletion hunks so review selection stays stable across real repositories.
+
 ## [0.10.2] - 2026-05-01
 
 ### Changed
