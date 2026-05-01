@@ -90,7 +90,8 @@ describe('package metadata', () => {
   it('keeps the declared project license aligned with MIT', () => {
     expect(loadPackageManifest().license).toBe('MIT')
     expect(loadReadme()).toContain('[![license MIT]')
-    expect(loadReadme()).toContain('licensed under **MIT**')
+    expect(loadReadme()).toContain('## License')
+    expect(loadReadme()).toContain('MIT. Use it, fork it, ship it.')
     expect(loadContributingGuide()).toContain("licensed under this project's MIT license")
   })
 

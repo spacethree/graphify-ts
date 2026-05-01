@@ -41,8 +41,10 @@ describe('public marketing copy honesty', () => {
       })
     }
 
-    it('replaces the stale "Generation time" headline with measured session latency', () => {
-      expect(content).toMatch(/35s.*96s|35 ?s.*96 ?s|session latency/i)
+    it('documents the measured latency benchmark with current README wording', () => {
+      expect(content).toContain('| **Latency**')
+      expect(content).toMatch(/35 sec|35 ?s/i)
+      expect(content).toMatch(/96 sec|96 ?s/i)
     })
   })
 })
