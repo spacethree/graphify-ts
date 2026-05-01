@@ -4,6 +4,12 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+## [0.10.7] - 2026-05-02
+
+### Changed
+
+- **README benchmark framing**: removed the top-level benchmark cost row and softened the surrounding copy so the published package page leads with speed, fewer turns, and local/privacy value instead of a cold-start model-cost caveat.
+
 ## [0.10.6] - 2026-05-02
 
 ### Changed
