@@ -54,7 +54,27 @@ What gets saved under `graphify-out/compare/<timestamp>/`:
 
 When Gemini emits structured JSON with `usageMetadata`, `compare` captures real reported input and total tokens in `report.json` and the terminal summary. If the runner only returns answer text or malformed JSON, `compare` falls back to labeled local `cl100k_base` prompt estimates instead. Use this when you need customer-proof or your own apples-to-apples answer comparison. It can spend paid model tokens, just like runner-backed `benchmark` and `eval`; the difference is that `compare` saves paired answers, while `benchmark` and `eval` score a labeled question set.
 
-## 3. Production and multi-repo proof
+## 3. PR-review proof on a real diff
+
+`review-compare` is the proof path for review mode. It compares the **verbose** and **compact** `pr_impact` prompts for the current git diff, saves both payload-backed prompts, and can optionally run both through your own model runner.
+
+```bash
+graphify-ts review-compare graphify-out/graph.json \
+  --exec 'cat {prompt_file} | claude -p' \
+  --yes
+```
+
+What gets saved under `graphify-out/review-compare/<timestamp>/`:
+
+- `verbose-prompt.txt`
+- `compact-prompt.txt`
+- `verbose-answer.txt`
+- `compact-answer.txt`
+- `report.json`
+
+Use this when the question is not "graphify vs. naive baseline", but "did compact review mode make the PR-review prompt materially smaller while keeping the same review surface shape?" The report includes prompt-token deltas, payload-token deltas, run statuses, and elapsed times for both modes.
+
+## 4. Production and multi-repo proof
 
 For real systems, the strongest proof is usually:
 
@@ -91,6 +111,7 @@ What this proves that a single-repo demo cannot:
 | "Does the graph improve retrieval quality on a labeled set?" | `eval` |
 | "Does the graph reduce prompt size while keeping expected evidence?" | `benchmark` |
 | "Will my actual model answer better with graphify than with a naive baseline, and optionally capture provider-reported usage?" | `compare` |
+| "Did compact review mode actually shrink the real PR-review prompt on my current diff?" | `review-compare` |
 | "Can this work across frontend/backend/shared repos?" | `federate` + `serve --stdio` |
 
 For the narrative production benchmark and the GoValidate numbers, see [`examples/why-graphify.md`](../examples/why-graphify.md). For exact support coverage by language and file type, see [`language-capability-matrix.md`](./language-capability-matrix.md).

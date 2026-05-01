@@ -114,23 +114,54 @@ These examples show what your AI agent sees when it calls graphify-ts MCP tools.
 {
   "base_branch": "main",
   "changed_files": ["src/entities/User.ts", "src/modules/auth/auth.service.ts"],
-  "changed_nodes": [
-    { "label": "User", "community_label": "Backend User" },
-    { "label": "AuthService", "community_label": "Backend Auth" }
+  "changed_ranges": [
+    { "source_file": "src/entities/User.ts", "line_ranges": [{ "start": 42, "end": 48 }] },
+    { "source_file": "src/modules/auth/auth.service.ts", "line_ranges": [{ "start": 10, "end": 18 }] }
   ],
+  "seed_nodes": [
+    { "node_id": "user_entity", "label": "User", "community_label": "Backend User", "match_kind": "line" },
+    { "node_id": "auth_service", "label": "AuthService", "community_label": "Backend Auth", "match_kind": "line" }
+  ],
+  "review_context": {
+    "supporting_paths": ["src/modules/users/user.repository.ts"],
+    "test_paths": ["tests/auth/auth.service.test.ts"],
+    "hotspots": [{ "label": "User", "type": "bridge", "why": "User connects multiple communities in the changed review area." }]
+  },
+  "review_bundle": {
+    "budget": 2000,
+    "token_count": 512,
+    "shared_file_type": "code",
+    "nodes": [
+      { "node_id": "user_entity", "label": "User", "source_file": "src/entities/User.ts", "line_number": 42, "snippet": "export class User {}", "match_score": 9, "relevance_band": "direct", "community": 7 },
+      { "label": "UserRepository", "source_file": "src/modules/users/user.repository.ts", "line_number": 15, "snippet": null, "relevance_band": "related", "community": 8 }
+    ],
+    "relationships": [
+      { "from": "UserRepository", "to": "User", "relation": "uses" }
+    ],
+    "community_context": [
+      { "id": 7, "label": "Backend User", "node_count": 24 }
+    ]
+  },
   "per_node_impact": [
-    { "node": "User", "direct_dependents": 67, "transitive_dependents": 589, "affected_communities": 42 },
-    { "node": "AuthService", "direct_dependents": 12, "transitive_dependents": 45, "affected_communities": 8 }
+    { "node": "User", "total_dependents": 656, "affected_communities": 42 },
+    { "node": "AuthService", "total_dependents": 57, "affected_communities": 8 }
   ],
   "total_blast_radius": 634,
+  "affected_communities": [
+    { "id": 7, "label": "Backend User", "node_count": 24 },
+    { "id": 8, "label": "Backend Auth", "node_count": 18 }
+  ],
   "risk_summary": {
     "high_impact_nodes": ["User", "AuthService"],
-    "cross_community_changes": 2
+    "cross_community_changes": 2,
+    "top_risks": [
+      { "label": "User", "severity": "high", "reason": "High blast radius across 42 communities." }
+    ]
   }
 }
 ```
 
-**What the agent does with this:** "This PR changes 2 high-impact nodes. User alone has a blast radius of 656. Combined with AuthService, 634 unique nodes could be affected. I'd recommend running the full test suite and reviewing the auth module consumers."
+**What the agent does with this:** "This PR changes 2 line-matched high-impact nodes. The compact review bundle already points at the key supporting file and likely auth test, and `User` is flagged as a bridge hotspot with the largest blast radius. I'd review the user repository path first, then run the auth service tests before merging."
 
 ---
 

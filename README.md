@@ -19,6 +19,7 @@
 - **Understand mainstream JS/TS app structure** with framework-aware extraction for Express, Redux Toolkit, React Router, NestJS, and Next.js
 - **Explore the graph** through interactive HTML, reports, and CLI commands
 - **Analyze blast radius** before making changes — know what breaks across modules and repos
+- **Benchmark review-mode prompts on real diffs** with `review-compare` before trusting a compact PR-review surface
 - **Federate multiple repos** into a single queryable super-graph
 
 ## Install
@@ -120,6 +121,26 @@ What `compare` does:
 
 Use `compare` when you want a showcase or a customer-proof answer bundle. Use `benchmark` and `eval` when you want repeatable runner-backed question-set metrics; they report provider usage when available and clearly label local token-estimate fallback when it is not.
 
+## Real PR review compare (same diff, same model)
+
+`review-compare` is the proof path for review mode. Instead of comparing two answers to a question, it compares the **verbose** and **compact** `pr_impact` prompts for the current git diff, saves both prompts, and can optionally run both through your own terminal model command.
+
+```bash
+graphify-ts review-compare graphify-out/graph.json \
+  --exec 'cat {prompt_file} | claude -p' \
+  --yes
+```
+
+What `review-compare` does:
+
+- Builds both verbose and compact `pr_impact` payloads for the current diff.
+- Expands runner placeholders: `{prompt_file}`, `{mode}`, and `{output_file}`.
+- Writes artifacts under `graphify-out/review-compare/<timestamp>/` with `verbose-prompt.txt`, `compact-prompt.txt`, `verbose-answer.txt`, `compact-answer.txt`, and `report.json`.
+- Reports prompt-token and payload-token deltas between verbose and compact review mode.
+- Supports external graph paths and output directories inside the target graph workspace's own `graphify-out/`, which matters for multi-project real repos.
+
+Use `review-compare` when the question is "did compact review mode actually shrink the real PR-review prompt enough?" rather than "did graphify beat a naive baseline on one question?"
+
 ## Graph time travel (ref-to-ref graph compare)
 
 Use `graphify-ts time-travel <from> <to>` to compare two git refs through local graph snapshots:
@@ -158,7 +179,7 @@ When an agent connects via `graphify-ts serve --stdio`, it gets these tools:
 | `implementation_checklist` | Change-planning checklist — question → ordered edit steps plus validation checkpoints for entry points and shared risks |
 | `impact` | Blast radius analysis — "if I change X, what could break?" with compact directed dependents, affected communities, and path evidence by default; supports `verbose: true` for the legacy fuller payload |
 | `call_chain` | Execution path tracing — all paths from A to B filtered by edge type |
-| `pr_impact` | PR risk analysis — git diff → affected nodes → aggregate blast radius |
+| `pr_impact` | PR risk analysis — git diff → line-aware seed nodes → compact review bundle, typed `review_context`, ranked risks, and aggregate blast radius by default; supports verbose output when explicitly requested |
 | `community_details` | Hierarchical community data at micro/mid/macro zoom levels |
 | `community_overview` | Quick overview of all communities — names, sizes, top nodes |
 | `query_graph` | Graph traversal for a natural language question |
@@ -179,7 +200,7 @@ The agent uses these tools to answer questions like:
 - "What order should I edit this feature, and what should I validate after?" → `implementation_checklist` returns an edit sequence plus validation checkpoints
 - "What breaks if I refactor SessionManager?" → `impact` shows directed dependents, affected communities, and the highest-signal propagation paths
 - "How does a request flow from the API to the database?" → `call_chain` traces the execution path
-- "Is this PR safe to merge?" → `pr_impact` computes blast radius of all changes
+- "Is this PR safe to merge?" → `pr_impact` returns compact changed seeds, a review bundle, supporting paths, likely tests, hotspots, and ranked risks for the current diff
 - "What changed between main and HEAD?" → `time_travel_compare` builds or reuses local snapshots and returns a summary, risk, drift, or timeline view
 
 ## Multi-Repo Federation
@@ -214,6 +235,7 @@ This merges graphs and infers cross-repo connections from shared types and funct
 | `benchmark [graph.json]` | Measure token reduction and structure signals |
 | `eval [graph.json]` | Measure retrieval quality: recall, MRR, and snippet coverage |
 | `compare [question]` | Run a real baseline-vs-graphify prompt comparison through your own terminal LLM command |
+| `review-compare [graph.json]` | Compare verbose-vs-compact `pr_impact` prompts for the current git diff |
 | `time-travel <from> <to>` | Compare two refs via on-demand local graph snapshots (`summary` default; `risk`, `drift`, `timeline` optional) |
 | `install --platform claude` | Install home-level Claude skill |
 | `claude install` | Install project-local Claude integration with MCP auto-start |
