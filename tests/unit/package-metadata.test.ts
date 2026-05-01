@@ -30,6 +30,10 @@ function loadContributingGuide(): string {
   return readFileSync(join(process.cwd(), 'CONTRIBUTING.md'), 'utf8')
 }
 
+function loadVitestConfig(): string {
+  return readFileSync(join(process.cwd(), 'vitest.config.ts'), 'utf8')
+}
+
 function loadLanguageCapabilityMatrix(): string {
   return readFileSync(join(process.cwd(), 'docs', 'language-capability-matrix.md'), 'utf8')
 }
@@ -122,5 +126,11 @@ describe('package metadata', () => {
     expect(isAtLeastVersion(devDependencies.vite, [6, 4, 2])).toBe(true)
     expect(dependencies['@xenova/transformers']).toBeUndefined()
     expect(typeof dependencies['@huggingface/transformers']).toBe('string')
+  })
+
+  it('caps vitest worker parallelism to keep the full suite stable on shared machines', () => {
+    const vitestConfig = loadVitestConfig()
+
+    expect(vitestConfig).toContain('maxWorkers: 4')
   })
 })

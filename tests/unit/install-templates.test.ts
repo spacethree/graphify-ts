@@ -64,4 +64,17 @@ describe('install hook payload', () => {
       expect(decoded).toContain('retrieve')
     })
   })
+
+  it('decoded hook payload routes agents to the focused MCP tools by question type', () => {
+    withTempDir((projectDir) => {
+      claudeInstall(projectDir)
+      const settings = readFileSync(join(projectDir, '.claude', 'settings.json'), 'utf8')
+      const decoded = decodeHookPayload(settings)
+      expect(decoded).toContain('relevant_files')
+      expect(decoded).toContain('feature_map')
+      expect(decoded).toContain('risk_map')
+      expect(decoded).toContain('implementation_checklist')
+      expect(decoded).toContain('impact')
+    })
+  })
 })
