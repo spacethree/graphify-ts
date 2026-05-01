@@ -21,13 +21,12 @@ NestJS + Next.js SaaS, 1,268 files, ~860K words. Same question, same Claude Opus
 | **Tool-call turns**    | 9                   | **3**            | **3× fewer** |
 | **Latency**            | 96 sec              | **35 sec**       | **2.8× faster** |
 | **Input tokens**       | 615,190             | **233,508**      | **2.6× fewer** |
-| **Cost per session**   | $0.62               | $0.70 cold / often below baseline from question 2 onward | neutral-to-better on multi-question sessions |
 | **API keys**           | —                   | **0**            | local + private |
 | **Cloud services**     | —                   | **0**            | local + private |
 
 **[Reproduce these numbers](docs/benchmarks/2026-04-30-govalidate/verify.sh)** with one shell script against the committed evidence files.
 
-> **The honest summary**: graphify-ts trades a one-time MCP-overhead premium at session start (about +13% on a single-question cold run) for fewer turns, faster answers, and amortized lower cost on multi-question sessions. In our measured run, latency and turn-count wins were unconditional.
+> **The honest summary**: graphify-ts adds a one-time MCP/tool overhead at session start, but in the measured run it still cut turns and latency substantially. Cost trade-offs depend on session length; see **Honest disclosure** below.
 
 ---
 
@@ -52,7 +51,7 @@ Other agents: `cursor install`, `copilot install`, `gemini install`, `aider inst
 ```text
 You ask Claude:  "How does the v2 idea generation pipeline work end-to-end?"
 
-Without graphify-ts (9 turns, $0.62, 96 sec):
+Without graphify-ts (9 turns, 96 sec):
   Turn 1  → Glob "**/pipeline/**"
   Turn 2  → Grep "orchestrator"
   Turn 3  → Read planner/orchestrator.worker.ts
@@ -63,7 +62,7 @@ Without graphify-ts (9 turns, $0.62, 96 sec):
   Turn 8  → Read queue-registry.service.ts
   Turn 9  → Synthesize answer
 
-With graphify-ts (3 turns, $0.70 cold start, 35 sec):
+With graphify-ts (3 turns, 35 sec):
   Turn 1  → mcp__graphify-ts__retrieve(question, budget=5000)
   Turn 2  → (returns 15 ranked nodes, snippets, communities, paths in ONE response)
   Turn 3  → Synthesize answer
@@ -80,7 +79,7 @@ graphify-ts is most valuable when one of these is true.
 
 ### "Our Claude Code bill is rising and I can't explain why."
 
-A team of 5 engineers asking 20 codebase questions/day each is roughly **$60/day** in baseline Claude session costs. graphify-ts cuts per-session input tokens by 2.6× and finishes in a third of the turns on the codebase the team is asking about. Multi-question sessions amortize the cold-start cache below baseline. **The honest framing for finance is "lower Claude bill on multi-question sessions, neutral on cold one-shots, faster answers everywhere"** — verifiable on your own repo with `graphify-ts compare`.
+A team of 5 engineers asking 20 codebase questions/day each is roughly **$60/day** in baseline Claude session costs. graphify-ts cuts per-session input tokens by 2.6× and finishes in a third of the turns on the codebase the team is asking about. Because cold starts add MCP overhead, the right finance story is **"measure your own session mix: graphify-ts is reliably faster, and multi-question sessions can amortize the overhead"** — verifiable on your own repo with `graphify-ts compare`.
 
 ### "Code review takes our seniors hours."
 
