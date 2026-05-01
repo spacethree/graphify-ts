@@ -12,6 +12,7 @@ import {
   defaultInstallPlatform,
   geminiInstall,
   geminiUninstall,
+  installCopilotMcp,
   installSkill,
   isAgentPlatform,
   isInstallPlatform,
@@ -315,6 +316,77 @@ describe('install helpers', () => {
       const packageJson = JSON.parse(readFileSync('package.json', 'utf8')) as { version: string }
 
       expect(mcpConfig.mcpServers?.['graphify-ts']?.args?.[1]).toBe(`@mohammednagy/graphify-ts@${packageJson.version}`)
+    })
+  })
+
+  it('writes GRAPHIFY_TOOL_PROFILE=core in the generated Claude .mcp.json env block', () => {
+    withTempDir((projectDir) => {
+      claudeInstall(projectDir)
+
+      const mcpConfig = JSON.parse(readFileSync(join(projectDir, '.mcp.json'), 'utf8')) as {
+        mcpServers?: {
+          'graphify-ts'?: {
+            env?: Record<string, string>
+          }
+        }
+      }
+
+      expect(mcpConfig.mcpServers?.['graphify-ts']?.env).toBeDefined()
+      expect(mcpConfig.mcpServers?.['graphify-ts']?.env?.GRAPHIFY_TOOL_PROFILE).toBe('core')
+    })
+  })
+
+  it('writes GRAPHIFY_TOOL_PROFILE=core in the generated Cursor .cursor/mcp.json env block', () => {
+    withTempDir((projectDir) => {
+      cursorInstall(projectDir)
+
+      const mcpConfig = JSON.parse(readFileSync(join(projectDir, '.cursor', 'mcp.json'), 'utf8')) as {
+        mcpServers?: {
+          'graphify-ts'?: {
+            env?: Record<string, string>
+          }
+        }
+      }
+
+      expect(mcpConfig.mcpServers?.['graphify-ts']?.env?.GRAPHIFY_TOOL_PROFILE).toBe('core')
+    })
+  })
+
+  it('preserves a user-customized GRAPHIFY_TOOL_PROFILE=full when re-running claude install', () => {
+    withTempDir((projectDir) => {
+      claudeInstall(projectDir)
+      // Simulate a user opting into the legacy 21-tool surface plus an unrelated env entry.
+      const mcpJsonPath = join(projectDir, '.mcp.json')
+      const mcpConfig = JSON.parse(readFileSync(mcpJsonPath, 'utf8')) as {
+        mcpServers: { 'graphify-ts': { env: Record<string, string> } }
+      }
+      mcpConfig.mcpServers['graphify-ts'].env.GRAPHIFY_TOOL_PROFILE = 'full'
+      mcpConfig.mcpServers['graphify-ts'].env.HTTP_PROXY = 'http://corp.example:8080'
+      writeFileSync(mcpJsonPath, JSON.stringify(mcpConfig, null, 2), 'utf8')
+
+      claudeInstall(projectDir)
+
+      const reinstalled = JSON.parse(readFileSync(mcpJsonPath, 'utf8')) as {
+        mcpServers: { 'graphify-ts': { env: Record<string, string> } }
+      }
+      expect(reinstalled.mcpServers['graphify-ts'].env.GRAPHIFY_TOOL_PROFILE).toBe('full')
+      expect(reinstalled.mcpServers['graphify-ts'].env.HTTP_PROXY).toBe('http://corp.example:8080')
+    })
+  })
+
+  it('writes GRAPHIFY_TOOL_PROFILE=core in the generated VS Code Copilot .vscode/mcp.json env block', () => {
+    withTempDir((projectDir) => {
+      installCopilotMcp(projectDir)
+
+      const mcpConfig = JSON.parse(readFileSync(join(projectDir, '.vscode', 'mcp.json'), 'utf8')) as {
+        servers?: {
+          'graphify-ts'?: {
+            env?: Record<string, string>
+          }
+        }
+      }
+
+      expect(mcpConfig.servers?.['graphify-ts']?.env?.GRAPHIFY_TOOL_PROFILE).toBe('core')
     })
   })
 

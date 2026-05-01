@@ -299,7 +299,7 @@ export function formatHelp(binaryName = 'graphify-ts'): string {
     '    --exec TEMPLATE       required command template; supports {prompt_file}, {question}, {mode}, and {output_file}',
     '    --questions PATH      load questions from a JSON file instead of a positional question',
     '    --output-dir DIR      compare output directory (default graphify-out/compare)',
-    '    --baseline-mode MODE  choose full or bounded baseline context (default full)',
+    '    --baseline-mode MODE  full | bounded | native_agent (default full; native_agent runs --exec twice and reports Anthropic-billed usage)',
     '    --yes                 skip confirmation before running the paid prompt comparison',
     '    --limit N             cap processed prompts/questions for the comparison run',
     '  time-travel <from> <to> compare two refs using on-demand cached graph snapshots',

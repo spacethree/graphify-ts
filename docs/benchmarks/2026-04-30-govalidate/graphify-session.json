@@ -1,0 +1,19 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "duration_ms": 34744,
+  "duration_api_ms": 34010,
+  "num_turns": 3,
+  "result": "(answer body redacted from the public artifact; the question and context are graphify-ts-internal)",
+  "session_id": "2026-04-30-govalidate-graphify",
+  "total_cost_usd": 0.70,
+  "model": "claude-opus-4-7",
+  "usage": {
+    "input_tokens": 13,
+    "cache_creation_input_tokens": 92833,
+    "cache_read_input_tokens": 140662,
+    "output_tokens": 1893,
+    "server_tool_use": null
+  }
+}

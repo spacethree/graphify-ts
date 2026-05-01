@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import { KnowledgeGraph } from '../contracts/graph.js'
@@ -12,7 +12,7 @@ import { QUERY_TOKEN_ESTIMATOR, estimateQueryTokens, loadGraph } from '../runtim
 import { sidecarAwareFileFingerprint } from '../shared/binary-ingest-sidecar.js'
 import { MAX_TEXT_BYTES, validateGraphOutputPath, validateGraphPath } from '../shared/security.js'
 
-export type CompareBaselineMode = 'full' | 'bounded'
+export type CompareBaselineMode = 'full' | 'bounded' | 'native_agent'
 export type CompareRunMode = 'baseline' | 'graphify'
 export type CompareRunStatus = 'not_run' | 'succeeded' | 'failed' | 'context_overflow'
 export type CompareFailureReason = 'prompt_too_long' | 'runner_error' | 'exec_error'
@@ -1079,19 +1079,30 @@ export function formatCompareSummary(result: GenerateCompareArtifactsResult): st
         ? `Input tokens (${usageProviderLabel} reported where available; ${QUERY_TOKEN_ESTIMATOR.model} estimate fallback)`
         : `Prompt tokens (estimated ${QUERY_TOKEN_ESTIMATOR.model})`
 
+  // Lead with run-shape signal (succeeded/overflow/failed counts). When baseline
+  // mode is full/bounded, the comparison is against a constructed baseline prompt
+  // (not a real agent's behavior) so reduction_ratio is a synthetic estimate;
+  // append an explicit disclosure line. native_agent mode is preferred for shipping.
+  const baselineModes = new Set<CompareBaselineMode>(result.reports.map((report) => report.baseline_mode))
+  const usesSyntheticBaseline = baselineModes.has('full') || baselineModes.has('bounded')
+
   const lines = [
     `[graphify compare] completed ${result.reports.length} question(s)`,
     `- Output: ${result.output_root}`,
-    `- ${promptTokenLabel}: baseline ${baselineTokens} · graphify ${graphifyTokens} · ${formatTokenComparison(baselineTokens, graphifyTokens)}`,
     `- Prompt runs: ${succeededRuns} succeeded${contextOverflowRuns > 0 ? ` · ${contextOverflowRuns} context overflow` : ''}${
       failedRuns > 0 ? ` · ${failedRuns} failed` : ''
     }`,
+    `- ${promptTokenLabel}: baseline ${baselineTokens} · graphify ${graphifyTokens} · ${formatTokenComparison(baselineTokens, graphifyTokens)}`,
   ]
 
+  if (usesSyntheticBaseline) {
+    lines.push(`- Note: reduction_ratio above is a synthetic prompt-token estimate (${QUERY_TOKEN_ESTIMATOR.model}); use --baseline-mode native_agent for Anthropic-reported usage.`)
+  }
+
   if (baselineTotalTokens !== null && graphifyTotalTokens !== null && totalReductionRatio !== null) {
-    lines.splice(3, 0, `- Total tokens (${usageProviderLabel} reported): baseline ${baselineTotalTokens} · graphify ${graphifyTotalTokens} · ${formatTokenComparison(baselineTotalTokens, graphifyTotalTokens)}`)
+    lines.push(`- Total tokens (${usageProviderLabel} reported): baseline ${baselineTotalTokens} · graphify ${graphifyTotalTokens} · ${formatTokenComparison(baselineTotalTokens, graphifyTotalTokens)}`)
   } else if (usageRuns > 0 && usageRuns < totalRuns) {
-    lines.splice(3, 0, `- Usage capture: ${usageProviderLabel} reported usage for ${usageRuns}/${totalRuns} prompt runs; remaining runs used local estimate fallback`)
+    lines.push(`- Usage capture: ${usageProviderLabel} reported usage for ${usageRuns}/${totalRuns} prompt runs; remaining runs used local estimate fallback`)
   }
 
   return lines.join('\n')
@@ -1101,10 +1112,491 @@ export async function runCompareCommand(
   input: GenerateCompareArtifactsInput,
   dependencies: ExecuteCompareRunsDependencies = {},
 ): Promise<string> {
+  if (input.baselineMode === 'native_agent') {
+    const nativeResult = await executeNativeAgentCompare(input, dependencies)
+    const failed = nativeResult.reports.filter((report) => report.baseline.kind !== 'succeeded' || report.graphify.kind !== 'succeeded').length
+    if (failed > 0) {
+      throw new Error(`[graphify compare] ${failed} native_agent run(s) failed. Partial artifacts were saved under ${nativeResult.output_root}`)
+    }
+    return formatNativeAgentCompareSummary(nativeResult)
+  }
+
   const result = await executeCompareRuns(input, dependencies)
   const failedRuns = countPromptRuns(result.reports, 'failed')
   if (failedRuns > 0) {
     throw new Error(`[graphify compare] ${failedRuns} prompt run(s) failed. Partial artifacts were saved under ${result.output_root}`)
   }
   return formatCompareSummary(result)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// native_agent baseline mode
+//
+// Unlike `full` and `bounded`, which build synthetic baseline prompts from the
+// project corpus, `native_agent` runs the user's `--exec` command twice — once
+// in a snapshot-renamed environment (no graphify-out/, no .mcp.json, no
+// CLAUDE.md, no .claude/) and once with those artifacts in place. We capture
+// the trailing JSON `result` event from `claude --output-format json` (or any
+// runner emitting the same shape), report Anthropic-billed `usage` blocks
+// as-is, and compute reductions on the real numbers — not on a constructed
+// baseline prompt-token count.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// What to hide from the baseline agent. We hide the *graph artifacts* (graph.json,
+// GRAPH_REPORT.md, graph.html) rather than the entire `graphify-out/` directory
+// because the compare run writes its prompt and answer artifacts into
+// `graphify-out/compare/<ts>/` — renaming the parent would make those paths
+// inaccessible during the baseline run. We additionally hide `.mcp.json`,
+// `CLAUDE.md`, and `.claude/` so the baseline agent has no MCP server, no
+// project-level graphify rules, and no PreToolUse hooks.
+const NATIVE_AGENT_SNAPSHOT_TARGETS = [
+  'graphify-out/graph.json',
+  'graphify-out/GRAPH_REPORT.md',
+  'graphify-out/graph.html',
+  '.mcp.json',
+  'CLAUDE.md',
+  '.claude',
+] as const
+
+export interface AnthropicUsageBlock {
+  input_tokens: number
+  cache_creation_input_tokens: number
+  cache_read_input_tokens: number
+  output_tokens: number
+}
+
+export interface AnthropicResultEvent {
+  model: string | null
+  num_turns: number
+  duration_ms: number
+  total_cost_usd: number | null
+  result: string | null
+  usage: AnthropicUsageBlock
+}
+
+export type NativeAgentRunStatus =
+  | { kind: 'succeeded'; model: string | null; usage: AnthropicUsageBlock; total_input_tokens_anthropic_exact: number; total_cost_usd: number | null; num_turns: number; duration_ms: number; result_path: string }
+  | { kind: 'runner_error'; evidence: string | null; exit_code: number | null; stderr: string | null }
+
+export interface NativeAgentCompareReport {
+  baseline_mode: 'native_agent'
+  question: string
+  graph_path: string
+  exec_command: CompareExecCommandSummary
+  baseline: NativeAgentRunStatus
+  graphify: NativeAgentRunStatus
+  reductions: {
+    input_tokens: number | null
+    num_turns: number | null
+    duration_ms: number | null
+    cost_usd: number | null
+  } | null
+  prompt_token_source: {
+    baseline: 'anthropic_provider_reported' | 'unknown'
+    graphify: 'anthropic_provider_reported' | 'unknown'
+  }
+  started_at: string
+  completed_at: string
+  paths: {
+    output_dir: string
+    report: string
+    baseline_answer: string
+    graphify_answer: string
+    prompt_file: string
+  }
+}
+
+export interface NativeAgentCompareResult {
+  graph_path: string
+  output_root: string
+  reports: NativeAgentCompareReport[]
+}
+
+export interface NativeAgentRunnerInput {
+  mode: CompareRunMode
+  question: string
+  promptFile: string
+  outputFile: string
+  command: string
+}
+
+export interface NativeAgentRunnerResult {
+  exitCode: number
+  stdout: string
+  stderr: string
+  elapsedMs: number
+}
+
+export type NativeAgentRunner = (input: NativeAgentRunnerInput) => Promise<NativeAgentRunnerResult>
+
+export interface ExecuteNativeAgentCompareDependencies {
+  runner?: NativeAgentRunner
+  now?: () => Date
+}
+
+function isAnthropicUsageBlock(value: unknown): value is AnthropicUsageBlock {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+  const usage = value as Record<string, unknown>
+  return (
+    typeof usage.input_tokens === 'number' &&
+    typeof usage.cache_creation_input_tokens === 'number' &&
+    typeof usage.cache_read_input_tokens === 'number' &&
+    typeof usage.output_tokens === 'number'
+  )
+}
+
+/**
+ * Parse the trailing JSON event from `claude --output-format json` (or stream-json)
+ * stdout. Returns null when no parseable trailing object with a usage block
+ * exists, so the caller can classify the run as runner_error.
+ */
+export function parseAnthropicResultEvent(stdout: string): AnthropicResultEvent | null {
+  const trimmed = stdout.trim()
+  if (trimmed.length === 0) {
+    return null
+  }
+
+  // Try parsing the full stdout first (non-stream mode), then fall back to
+  // reading the last JSON-looking line (stream-json mode).
+  const candidates: string[] = []
+  try {
+    JSON.parse(trimmed)
+    candidates.push(trimmed)
+  } catch {
+    // not a single object — fall through to line-mode
+  }
+  if (candidates.length === 0) {
+    const lines = trimmed.split(/\r?\n/).reverse()
+    for (const line of lines) {
+      const stripped = line.trim()
+      if (stripped.startsWith('{') && stripped.endsWith('}')) {
+        candidates.push(stripped)
+        break
+      }
+    }
+  }
+
+  for (const candidate of candidates) {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(candidate)
+    } catch {
+      continue
+    }
+    if (!parsed || typeof parsed !== 'object') {
+      continue
+    }
+    const obj = parsed as Record<string, unknown>
+    if (!isAnthropicUsageBlock(obj.usage)) {
+      continue
+    }
+    return {
+      model: typeof obj.model === 'string' ? obj.model : null,
+      num_turns: typeof obj.num_turns === 'number' ? obj.num_turns : 0,
+      duration_ms: typeof obj.duration_ms === 'number' ? obj.duration_ms : 0,
+      total_cost_usd: typeof obj.total_cost_usd === 'number' ? obj.total_cost_usd : null,
+      result: typeof obj.result === 'string' ? obj.result : null,
+      usage: obj.usage,
+    }
+  }
+
+  return null
+}
+
+interface SnapshotRecord {
+  backupPath: string
+  originalPath: string
+}
+
+function snapshotGraphifyArtifacts(projectRoot: string, timestamp: string): SnapshotRecord[] {
+  const records: SnapshotRecord[] = []
+  for (const target of NATIVE_AGENT_SNAPSHOT_TARGETS) {
+    const original = join(projectRoot, target)
+    if (!existsSync(original)) {
+      continue
+    }
+    const backup = `${original}.compare-bak-${timestamp}`
+    renameSync(original, backup)
+    records.push({ backupPath: backup, originalPath: original })
+  }
+  return records
+}
+
+function restoreGraphifyArtifacts(records: readonly SnapshotRecord[]): void {
+  // Walk in reverse so any nested entries restore atomically. Each rename is
+  // best-effort; a partial restore is logged via stderr but never throws,
+  // because this runs from finally{} blocks where throwing would mask the real
+  // error.
+  for (const record of [...records].reverse()) {
+    if (!existsSync(record.backupPath)) {
+      continue
+    }
+    try {
+      if (existsSync(record.originalPath)) {
+        rmSync(record.originalPath, { recursive: true, force: true })
+      }
+      renameSync(record.backupPath, record.originalPath)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      process.stderr.write(`[graphify compare native_agent] restore failed for ${record.originalPath}: ${message}\n`)
+    }
+  }
+}
+
+async function defaultNativeAgentRunner(input: NativeAgentRunnerInput): Promise<NativeAgentRunnerResult> {
+  const startedAt = Date.now()
+
+  return await new Promise<NativeAgentRunnerResult>((resolveExecution, rejectExecution) => {
+    const command =
+      process.platform === 'win32'
+        ? { file: 'powershell.exe', args: ['-NoProfile', '-Command', input.command] }
+        : { file: '/bin/sh', args: ['-lc', input.command] }
+    const child = spawn(command.file, command.args, { shell: false, stdio: ['ignore', 'pipe', 'pipe'] })
+    let stdout = ''
+    let stderr = ''
+    child.stdout?.on('data', (chunk: string | Buffer) => {
+      stdout += chunk.toString()
+    })
+    child.stderr?.on('data', (chunk: string | Buffer) => {
+      stderr += chunk.toString()
+    })
+    child.on('error', (error) => {
+      rejectExecution(error)
+    })
+    child.on('close', (code) => {
+      resolveExecution({ exitCode: code ?? 1, stdout, stderr, elapsedMs: Date.now() - startedAt })
+    })
+  })
+}
+
+function computeReduction(baseline: number, graphify: number): number | null {
+  if (graphify <= 0 || baseline <= 0) {
+    return null
+  }
+  return Number((baseline / graphify).toFixed(2))
+}
+
+function totalAnthropicInputTokens(usage: AnthropicUsageBlock): number {
+  return usage.input_tokens + usage.cache_creation_input_tokens + usage.cache_read_input_tokens
+}
+
+export async function executeNativeAgentCompare(
+  input: GenerateCompareArtifactsInput,
+  dependencies: ExecuteNativeAgentCompareDependencies = {},
+): Promise<NativeAgentCompareResult> {
+  if (input.baselineMode !== 'native_agent') {
+    throw new Error(`executeNativeAgentCompare requires baselineMode "native_agent", got "${input.baselineMode}"`)
+  }
+
+  const graphPath = validateGraphPath(input.graphPath)
+  const projectRoot = realpathSync(inferProjectRootFromGraphPath(graphPath))
+  const questions = resolveCompareQuestions(input)
+  const outputDir = validateGraphOutputPath(input.outputDir)
+  const now = dependencies.now ?? (() => new Date())
+  const timestamp = now()
+  const outputRoot = createCompareOutputRoot(outputDir, timestamp)
+  const runner = dependencies.runner ?? defaultNativeAgentRunner
+  const reports: NativeAgentCompareReport[] = []
+
+  for (const [index, question] of questions.entries()) {
+    const questionDir = questions.length === 1 ? outputRoot : join(outputRoot, `question-${String(index + 1).padStart(3, '0')}`)
+    mkdirSync(questionDir, { recursive: true })
+
+    const promptFile = join(questionDir, 'native_agent-prompt.txt')
+    writeFileSync(promptFile, question, 'utf8')
+    const baselineAnswerPath = answerFilePath(questionDir, 'baseline')
+    const graphifyAnswerPath = answerFilePath(questionDir, 'graphify')
+    const reportPath = join(questionDir, 'report.json')
+
+    const reportShell: NativeAgentCompareReport = {
+      baseline_mode: 'native_agent',
+      question,
+      graph_path: graphPath,
+      exec_command: summarizeExecTemplate(input.execTemplate),
+      baseline: { kind: 'runner_error', evidence: null, exit_code: null, stderr: null },
+      graphify: { kind: 'runner_error', evidence: null, exit_code: null, stderr: null },
+      reductions: null,
+      prompt_token_source: {
+        baseline: 'unknown',
+        graphify: 'unknown',
+      },
+      started_at: timestamp.toISOString(),
+      completed_at: timestamp.toISOString(),
+      paths: {
+        output_dir: questionDir,
+        report: reportPath,
+        baseline_answer: baselineAnswerPath,
+        graphify_answer: graphifyAnswerPath,
+        prompt_file: promptFile,
+      },
+    }
+
+    // Step 1: snapshot graphify artifacts and run baseline.
+    const stamp = timestamp.toISOString().replace(/[^0-9]/g, '').slice(0, 14)
+    let snapshot: SnapshotRecord[] = []
+    let baselineCrashed: unknown = null
+    try {
+      snapshot = snapshotGraphifyArtifacts(projectRoot, stamp)
+      const baselineCommand = expandCompareExecTemplate(input.execTemplate, {
+        promptFile,
+        question,
+        mode: 'baseline',
+        outputFile: baselineAnswerPath,
+      })
+      let baselineRun: NativeAgentRunnerResult | null = null
+      try {
+        baselineRun = await runner({ mode: 'baseline', question, promptFile, outputFile: baselineAnswerPath, command: baselineCommand })
+      } catch (error) {
+        baselineCrashed = error
+      }
+      if (baselineRun !== null) {
+        const event = parseAnthropicResultEvent(baselineRun.stdout)
+        if (event !== null) {
+          reportShell.baseline = {
+            kind: 'succeeded',
+            model: event.model,
+            usage: event.usage,
+            total_input_tokens_anthropic_exact: totalAnthropicInputTokens(event.usage),
+            total_cost_usd: event.total_cost_usd,
+            num_turns: event.num_turns,
+            duration_ms: event.duration_ms,
+            result_path: baselineAnswerPath,
+          }
+          reportShell.prompt_token_source.baseline = 'anthropic_provider_reported'
+          ensureCompareAnswerFile(baselineAnswerPath, event.result ?? baselineRun.stdout)
+        } else {
+          reportShell.baseline = {
+            kind: 'runner_error',
+            evidence: baselineRun.stdout.slice(0, 2000),
+            exit_code: baselineRun.exitCode,
+            stderr: sanitizeCompareStderr(baselineRun.stderr),
+          }
+          ensureCompareAnswerFile(baselineAnswerPath, baselineRun.stdout)
+        }
+      }
+    } finally {
+      restoreGraphifyArtifacts(snapshot)
+    }
+
+    if (baselineCrashed !== null) {
+      // Persist a partial report before re-throwing so users can inspect it.
+      reportShell.completed_at = now().toISOString()
+      writeNativeAgentReport(reportShell)
+      reports.push(reportShell)
+      throw baselineCrashed instanceof Error ? baselineCrashed : new Error(String(baselineCrashed))
+    }
+
+    // Step 2: run graphify (artifacts are restored, MCP server is in place).
+    const graphifyCommand = expandCompareExecTemplate(input.execTemplate, {
+      promptFile,
+      question,
+      mode: 'graphify',
+      outputFile: graphifyAnswerPath,
+    })
+    let graphifyRun: NativeAgentRunnerResult | null = null
+    try {
+      graphifyRun = await runner({ mode: 'graphify', question, promptFile, outputFile: graphifyAnswerPath, command: graphifyCommand })
+    } catch (error) {
+      reportShell.graphify = {
+        kind: 'runner_error',
+        evidence: error instanceof Error ? error.message : String(error),
+        exit_code: null,
+        stderr: null,
+      }
+      ensureCompareAnswerFile(graphifyAnswerPath, '')
+    }
+    if (graphifyRun !== null) {
+      const event = parseAnthropicResultEvent(graphifyRun.stdout)
+      if (event !== null) {
+        reportShell.graphify = {
+          kind: 'succeeded',
+          model: event.model,
+          usage: event.usage,
+          total_input_tokens_anthropic_exact: totalAnthropicInputTokens(event.usage),
+          total_cost_usd: event.total_cost_usd,
+          num_turns: event.num_turns,
+          duration_ms: event.duration_ms,
+          result_path: graphifyAnswerPath,
+        }
+        reportShell.prompt_token_source.graphify = 'anthropic_provider_reported'
+        ensureCompareAnswerFile(graphifyAnswerPath, event.result ?? graphifyRun.stdout)
+      } else {
+        reportShell.graphify = {
+          kind: 'runner_error',
+          evidence: graphifyRun.stdout.slice(0, 2000),
+          exit_code: graphifyRun.exitCode,
+          stderr: sanitizeCompareStderr(graphifyRun.stderr),
+        }
+        ensureCompareAnswerFile(graphifyAnswerPath, graphifyRun.stdout)
+      }
+    }
+
+    // Compute reductions only when both runs reported usage.
+    if (reportShell.baseline.kind === 'succeeded' && reportShell.graphify.kind === 'succeeded') {
+      reportShell.reductions = {
+        input_tokens: computeReduction(reportShell.baseline.total_input_tokens_anthropic_exact, reportShell.graphify.total_input_tokens_anthropic_exact),
+        num_turns: computeReduction(reportShell.baseline.num_turns, reportShell.graphify.num_turns),
+        duration_ms: computeReduction(reportShell.baseline.duration_ms, reportShell.graphify.duration_ms),
+        cost_usd:
+          reportShell.baseline.total_cost_usd !== null && reportShell.graphify.total_cost_usd !== null
+            ? computeReduction(reportShell.baseline.total_cost_usd, reportShell.graphify.total_cost_usd)
+            : null,
+      }
+    }
+
+    reportShell.completed_at = now().toISOString()
+    writeNativeAgentReport(reportShell)
+    reports.push(reportShell)
+  }
+
+  return {
+    graph_path: graphPath,
+    output_root: resolve(outputRoot),
+    reports,
+  }
+}
+
+function writeNativeAgentReport(report: NativeAgentCompareReport): void {
+  writeFileSync(
+    report.paths.report,
+    `${JSON.stringify(
+      {
+        ...report,
+        graph_path: portablePath(report.graph_path),
+        paths: {
+          output_dir: portablePath(report.paths.output_dir),
+          report: portablePath(report.paths.report),
+          baseline_answer: portablePath(report.paths.baseline_answer),
+          graphify_answer: portablePath(report.paths.graphify_answer),
+          prompt_file: portablePath(report.paths.prompt_file),
+        },
+      },
+      null,
+      2,
+    )}\n`,
+    'utf8',
+  )
+}
+
+export function formatNativeAgentCompareSummary(result: NativeAgentCompareResult): string {
+  const lines: string[] = [
+    `[graphify compare] completed ${result.reports.length} native_agent question(s)`,
+    `- Output: ${result.output_root}`,
+  ]
+  for (const report of result.reports) {
+    if (report.baseline.kind !== 'succeeded' || report.graphify.kind !== 'succeeded') {
+      lines.push(`- "${report.question}" → runner error (see ${portablePath(report.paths.report)})`)
+      continue
+    }
+    const reductions = report.reductions
+    lines.push(
+      `- "${report.question}"`,
+      `    num_turns: baseline ${report.baseline.num_turns} → graphify ${report.graphify.num_turns}${reductions?.num_turns ? ` (${reductions.num_turns}x fewer)` : ''}`,
+      `    latency:   baseline ${report.baseline.duration_ms}ms → graphify ${report.graphify.duration_ms}ms${reductions?.duration_ms ? ` (${reductions.duration_ms}x faster)` : ''}`,
+      `    input_tokens (Anthropic-reported): baseline ${report.baseline.total_input_tokens_anthropic_exact} → graphify ${report.graphify.total_input_tokens_anthropic_exact}${reductions?.input_tokens ? ` (${reductions.input_tokens}x less)` : ''}`,
+    )
+  }
+  return lines.join('\n')
 }

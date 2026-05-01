@@ -311,6 +311,37 @@ export const MCP_TOOLS: McpToolDefinition[] = [
   },
 ]
 
+export type McpToolProfile = 'core' | 'full'
+
+/**
+ * The minimal set of tools shipped by default. Keeps cache_creation overhead
+ * low on Claude Code session start. Opt into the full surface by setting
+ * GRAPHIFY_TOOL_PROFILE=full in the MCP server env block.
+ */
+export const CORE_TOOL_NAMES = ['retrieve', 'impact', 'call_chain', 'community_overview', 'pr_impact', 'graph_stats'] as const
+
+export type McpCoreToolName = (typeof CORE_TOOL_NAMES)[number]
+
+export function activeMcpTools(profile: McpToolProfile = 'core'): McpToolDefinition[] {
+  if (profile === 'full') {
+    return MCP_TOOLS
+  }
+  const core = new Set<string>(CORE_TOOL_NAMES)
+  return MCP_TOOLS.filter((tool) => core.has(tool.name))
+}
+
+export function resolveToolProfileFromEnv(env: NodeJS.ProcessEnv = process.env): McpToolProfile {
+  const raw = (env.GRAPHIFY_TOOL_PROFILE ?? '').trim().toLowerCase()
+  return raw === 'full' ? 'full' : 'core'
+}
+
+export function isCoreToolName(name: string, profile: McpToolProfile = 'core'): boolean {
+  if (profile === 'full') {
+    return true
+  }
+  return (CORE_TOOL_NAMES as readonly string[]).includes(name)
+}
+
 export const MCP_PROMPTS: McpPromptDefinition[] = [
   {
     name: 'graph_query_prompt',

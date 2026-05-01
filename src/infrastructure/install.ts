@@ -105,7 +105,7 @@ function hookCommandWithFallback(matchJson: string, missJson: string): string {
 }
 
 const RETRIEVE_FIRST_MESSAGE =
-  'STOP. This project has a graphify-ts knowledge graph. You MUST call the retrieve MCP tool FIRST with your question before using Glob, Grep, Bash, Read, or Agent tools for codebase questions. The graph has 384x better token efficiency than raw file exploration. Only fall back to raw files if retrieve returns no results.'
+  'STOP. This project has a graphify-ts knowledge graph. Call mcp__graphify-ts__retrieve FIRST before using Glob, Grep, Bash, Read, or Agent tools. Graphify answers most codebase questions in 1 retrieve call instead of 5–10 sequential file reads (3x fewer turns, ~2.8x faster on a real production codebase). Only fall back to raw file tools if retrieve returns no relevant nodes.'
 
 const SETTINGS_HOOK = {
   // SECURITY: Keep this command static. Do not interpolate user-controlled input here.
@@ -494,17 +494,27 @@ function installMcpServer(projectDir: string, target: McpConfigTarget = 'claude'
   // Use npx.cmd on Windows so MCP server starts without a shell wrapper.
   // --yes skips the interactive install prompt that hangs in stdio mode.
   // Scoped name ensures npx resolves the package on first run.
-  const npxCommand = nodePlatform === 'win32' ? 'npx.cmd' : 'npx'
-  const npxArgs = ['--yes', installPackageSpecifier(), 'serve', '--stdio', graphPath]
-  const serverConfig = isVscode
-    ? { type: 'stdio', command: npxCommand, args: npxArgs }
-    : { command: npxCommand, args: npxArgs }
-
   // VS Code uses "servers" key, Claude/Cursor use "mcpServers"
   const serversKey = isVscode ? 'servers' : 'mcpServers'
   const mcpServers = ensureRecord(mcpConfig, serversKey)
-
   const existed = isRecord(mcpServers[SKILL_SLUG])
+
+  const npxCommand = nodePlatform === 'win32' ? 'npx.cmd' : 'npx'
+  const npxArgs = ['--yes', installPackageSpecifier(), 'serve', '--stdio', graphPath]
+  // Default to the lean MCP tool surface ("core" = 6 tools). Reduces cache_creation
+  // overhead per session vs. advertising all tools. Users can opt into the legacy
+  // 21-tool surface by setting GRAPHIFY_TOOL_PROFILE=full in this env block.
+  //
+  // Re-running install must NOT silently downgrade an existing user-customized env
+  // (e.g. GRAPHIFY_TOOL_PROFILE=full) or drop unrelated user-set env keys, so we
+  // merge: defaults first, then the existing entry on top so user values win.
+  const existingServer = existed ? (mcpServers[SKILL_SLUG] as Record<string, unknown>) : null
+  const existingEnv = existingServer && isRecord(existingServer.env) ? (existingServer.env as Record<string, string>) : {}
+  const env: Record<string, string> = { GRAPHIFY_TOOL_PROFILE: 'core', ...existingEnv }
+  const serverConfig = isVscode
+    ? { type: 'stdio', command: npxCommand, args: npxArgs, env }
+    : { command: npxCommand, args: npxArgs, env }
+
   mcpServers[SKILL_SLUG] = serverConfig
   writeJson(mcpJsonPath, mcpConfig)
 

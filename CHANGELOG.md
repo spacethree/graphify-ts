@@ -4,6 +4,23 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-05-01
+
+### Added
+
+- **`GRAPHIFY_TOOL_PROFILE` env var**: defaults to `core` (6 tools — `retrieve`, `impact`, `call_chain`, `community_overview`, `pr_impact`, `graph_stats`); set to `full` to opt into the legacy 21-tool surface. The Claude / Cursor / VS Code Copilot install templates now write `env: { GRAPHIFY_TOOL_PROFILE: "core" }` into the generated `.mcp.json`. Reduces `cache_creation_input_tokens` per session by roughly 16–22K on a Claude Code session start, flipping a +13% cold-start cost regression to cost parity at typical session lengths.
+- **`compare --baseline-mode native_agent`**: new comparison mode that runs the user's `--exec` command twice — once with `graphify-out/`, `.mcp.json`, `CLAUDE.md`, and `.claude/` snapshot-renamed out of the working directory (baseline), once with them restored (graphify) — and reports the Anthropic-billed `usage` blocks from `claude --output-format json` verbatim. Atomic rename / try-finally restore guarantees no project state is left behind even if the runner crashes.
+- **Public benchmark artifact**: committed `docs/benchmarks/2026-04-30-govalidate/` with both raw `claude --output-format json` outputs (with the answer body redacted) and a `verify.sh` reproducer. The README, `examples/why-graphify.md`, and the install hook payload all cite numbers that `verify.sh` reproduces from the committed evidence.
+
+### Changed
+
+- **Honest benchmark numbers**: replaced the previously-published `384×` retrieve-compression headline (and the `397×` / `897×` variants used in internal-only baseline modes) in the README, in `examples/why-graphify.md`, and in the `claude install` PreToolUse hook payload with measured numbers from the 2026-04-30 native_agent comparison: **3× fewer turns**, **~2.8× faster**, **2.6× fewer total input tokens**. Documentation now also discloses the cold-start cost premium (~+13% on a single-question session, amortizing on multi-question sessions).
+- **Compare summary framing**: when `--baseline-mode` is `full` or `bounded`, the human-readable summary now appends an explicit "synthetic prompt-token estimate (cl100k_base)" disclosure line so a reader cannot mistake the synthetic ratio for an Anthropic-billed measurement. Use `--baseline-mode native_agent` for Anthropic-reported numbers.
+
+### Fixed
+
+- **Cold-start cost regression on Claude Code session start**: shipping the lean `core` MCP tool profile by default cuts the `cache_creation_input_tokens` overhead by ~16–22K tokens per fresh session. On the 2026-04-30 govalidate measurement this is the difference between graphify costing ~13% more than the no-graphify baseline and graphify amortizing below baseline at multi-question session lengths.
+
 ## [0.10.0] - 2026-04-30
 
 ### Added

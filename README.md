@@ -275,15 +275,19 @@ graphify-ts generate . --include-docs  # include markdown/text files
 
 ## Benchmarks — Real Numbers from a Production Codebase
 
-Measured on a production NestJS + Next.js SaaS (1,268 files, ~860K words):
+Measured 2026-04-30 against a production NestJS + Next.js SaaS (1,268 files, ~860K words). Both runs used `claude --output-format json`; numbers come from Anthropic-reported `usage` fields, not local estimates. Full evidence is committed under [`docs/benchmarks/2026-04-30-govalidate/`](docs/benchmarks/2026-04-30-govalidate/).
 
-| Metric | Value |
-|--------|-------|
-| Retrieve compression | **384x** (3K tokens vs 1.1M corpus) |
-| Impact analysis (User entity) | 67 direct + 589 transitive dependents across 318 files |
-| Community detection | 10,474 nodes → 2,244 communities (Louvain) |
-| Generation time | ~30 seconds |
-| API keys required | **0** |
+| Metric | Baseline (no graphify) | Graphify (core profile) |
+|--------|------------------------|-------------------------|
+| Tool-call turns | 9 | **3** (3× fewer) |
+| Avg session latency | 96s | **35s** (~2.8× faster) |
+| Total input tokens (Anthropic-reported) | 615,190 | **233,508** (2.63× less) |
+| Cost per session | $0.62 | $0.70 (cold start) → cheaper on multi-question sessions |
+| Impact analysis (User entity) | n/a | 67 direct + 589 transitive dependents across 318 files |
+| Community detection | n/a | 10,474 nodes → 2,244 communities (Louvain) |
+| API keys required | — | **0** |
+
+Cold-start sessions pay an MCP-overhead premium of roughly 13%; multi-question sessions amortize the premium below baseline. Graphify is unambiguously **faster and uses fewer turns** at any session length; cost parity depends on session length.
 
 See [`examples/why-graphify.md`](examples/why-graphify.md) for detailed benchmarks and [`examples/mcp-tool-examples.md`](examples/mcp-tool-examples.md) for real MCP tool input/output.
 

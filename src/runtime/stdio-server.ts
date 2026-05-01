@@ -5,7 +5,7 @@ import type { Readable, Writable } from 'node:stream'
 
 import { compareRefs } from '../infrastructure/time-travel.js'
 import { diffGraphs } from './diff.js'
-import { MCP_PROMPTS, MCP_TOOLS, type McpPromptDefinition } from './stdio/definitions.js'
+import { MCP_PROMPTS, MCP_TOOLS, activeMcpTools, isCoreToolName, resolveToolProfileFromEnv, type McpPromptDefinition } from './stdio/definitions.js'
 import { handleCompletion, handlePromptGet, promptDefinitionsForGraph, readStoredCommunityLabels } from './stdio/prompts.js'
 import {
   emitResourceNotifications,
@@ -543,9 +543,20 @@ export function handleStdioRequest(
           maxResourceBytes: MAX_STDIO_RESOURCE_BYTES,
           maxResourceSubscriptions: MAX_RESOURCE_SUBSCRIPTIONS,
         })
-      case 'tools/list':
-        return ok(id, { tools: MCP_TOOLS })
-      case 'tools/call':
+      case 'tools/list': {
+        const profile = resolveToolProfileFromEnv()
+        return ok(id, { tools: activeMcpTools(profile) })
+      }
+      case 'tools/call': {
+        const profile = resolveToolProfileFromEnv()
+        const toolName = stringParam(params, 'name')
+        if (toolName !== null && !isCoreToolName(toolName, profile)) {
+          return failure(
+            id,
+            JSONRPC_METHOD_NOT_FOUND,
+            `Tool '${toolName}' is not enabled in the active graphify-ts MCP tool profile. Set GRAPHIFY_TOOL_PROFILE=full in your MCP server config (e.g. .mcp.json for Claude, .cursor/mcp.json for Cursor, .vscode/mcp.json for VS Code Copilot) to enable advanced tools.`,
+          )
+        }
         return handleToolCallRequest(id, graphPath, params, {
           ok,
           failure,
@@ -569,6 +580,7 @@ export function handleStdioRequest(
           maxStdioHops: MAX_STDIO_HOPS,
           maxStdioTokenBudget: MAX_STDIO_TOKEN_BUDGET,
         })
+      }
       case 'ping':
         return ok(id, { ok: true })
       case 'query':
