@@ -448,6 +448,7 @@ describe('cli parser', () => {
     expect(() => parseReviewCompareArgs([])).toThrow('error: --exec is required')
     expect(() => parseReviewCompareArgs(['one.json', 'two.json', '--exec', 'claude -p "$(cat {prompt_file})"'])).toThrow('Usage: graphify-ts review-compare')
     expect(() => parseReviewCompareArgs(['--budget', '1.5', '--exec', 'claude -p "$(cat {prompt_file})"'])).toThrow('error: --budget must be a positive integer')
+    expect(() => parseReviewCompareArgs(['--budget', '100001', '--exec', 'claude -p "$(cat {prompt_file})"'])).toThrow('error: --budget must be <= 100000')
     expect(() => parseReviewCompareArgs(['--output-dir', '../outside', '--exec', 'claude -p "$(cat {prompt_file})"'])).toThrow('Only paths inside graphify-out/ are permitted')
   })
 

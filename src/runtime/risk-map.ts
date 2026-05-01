@@ -120,9 +120,9 @@ export function buildRankedRisk(candidate: RiskSummaryCandidate): RankedRiskDeta
 }
 
 export function compareRankedRisks(left: RankedRiskDetails, right: RankedRiskDetails): number {
-  return right.hotspot_count - left.hotspot_count
+  return right.score - left.score
+    || right.hotspot_count - left.hotspot_count
     || right.dependent_count - left.dependent_count
-    || right.score - left.score
     || left.label.localeCompare(right.label)
 }
 

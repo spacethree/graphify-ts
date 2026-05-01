@@ -852,14 +852,14 @@ export function parseReviewCompareArgs(args: string[]): ReviewCompareCliOptions 
     }
 
     if (argument === '--budget') {
-      budget = parsePositiveDecimalInteger('--budget', requireOptionValue('--budget', args[index + 1]))
+      budget = parseBudget(requireOptionValue('--budget', args[index + 1]))
       index += 1
       continue
     }
 
     if (argument.startsWith('--budget=')) {
       const [, value] = argument.split('=', 2)
-      budget = parsePositiveDecimalInteger('--budget', requireOptionValue('--budget', value))
+      budget = parseBudget(requireOptionValue('--budget', value))
       continue
     }
 

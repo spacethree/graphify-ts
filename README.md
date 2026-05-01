@@ -137,7 +137,7 @@ What `review-compare` does:
 - Expands runner placeholders: `{prompt_file}`, `{mode}`, and `{output_file}`.
 - Writes artifacts under `graphify-out/review-compare/<timestamp>/` with `verbose-prompt.txt`, `compact-prompt.txt`, `verbose-answer.txt`, `compact-answer.txt`, and `report.json`.
 - Reports prompt-token and payload-token deltas between verbose and compact review mode.
-- Supports external graph paths and output directories inside the target graph workspace's own `graphify-out/`, which matters for multi-project real repos.
+- Supports external graph paths and output directories inside the target graph workspace's own `graphify-out/`, which matters for real multi-project repositories.
 
 Use `review-compare` when the question is "did compact review mode actually shrink the real PR-review prompt enough?" rather than "did graphify beat a naive baseline on one question?"
 
