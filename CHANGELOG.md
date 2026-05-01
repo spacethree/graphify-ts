@@ -4,6 +4,12 @@ All notable changes to the TypeScript package will be documented in this file.
 
 ## [Unreleased]
 
+## [0.10.6] - 2026-05-02
+
+### Changed
+
+- **README refresh for the published package**: repositioned the npm/GitHub landing copy around the measured production benchmark, a faster quickstart, clearer local-first/privacy guarantees, and explicit trade-off disclosure for cold-start versus multi-question sessions.
+
 ## [0.10.5] - 2026-05-01
 
 ### Changed
