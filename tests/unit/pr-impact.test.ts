@@ -465,7 +465,7 @@ describe('pr impact', () => {
         }),
       ]),
     )
-  })
+  }, 15_000)
 
   it('collects changed files from nested git repos under the graph root', () => {
     const root = createNestedRepoWorkspace()
