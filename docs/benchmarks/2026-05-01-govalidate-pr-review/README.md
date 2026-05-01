@@ -1,10 +1,10 @@
-# 2026-05-02 — GoValidate PR review benchmark
+# 2026-05-01 — GoValidate PR review benchmark
 
 This directory contains the raw evidence for graphify-ts's real PR-review benchmark on the GoValidate Platform codebase. The numbers below come directly from the committed `report.json` produced by `review-compare`.
 
 ## Setup
 
-- **Codebase under test:** `govalidate/platform`, a real production repo at `/Users/mohammednaji/Desktop/projects/works/govalidate/platform`.
+- **Codebase under test:** `govalidate/platform`, a real production repo checked out at `/path/to/govalidate/platform`.
 - **Compared base branch:** `origin/main`.
 - **What `review-compare` measures:** the same live branch diff is converted into two `pr_impact` prompts:
   1. **verbose** — expanded PR-impact context
@@ -37,7 +37,7 @@ This benchmark captures a real branch diff in `govalidate/platform` and shows th
 ## Reproducing the headline numbers from this directory
 
 ```bash
-bash docs/benchmarks/2026-05-02-govalidate-pr-review/verify.sh
+bash docs/benchmarks/2026-05-01-govalidate-pr-review/verify.sh
 ```
 
 Output:
@@ -57,10 +57,13 @@ hotspot_count           : 3
 ## Reproducing end-to-end in the benchmark repo
 
 ```bash
-cd /Users/mohammednaji/Desktop/projects/works/govalidate/platform
-node /Users/mohammednaji/Desktop/projects/graphify-ts/.worktrees/proof-distribution/dist/src/cli/bin.js generate . --no-html
+GRAPHIFY_TS_CLI=/path/to/graphify-ts/dist/src/cli/bin.js
+PLATFORM_REPO=/path/to/govalidate/platform
 
-node /Users/mohammednaji/Desktop/projects/graphify-ts/.worktrees/proof-distribution/dist/src/cli/bin.js review-compare graphify-out/graph.json \
+cd "$PLATFORM_REPO"
+node "$GRAPHIFY_TS_CLI" generate . --no-html
+
+node "$GRAPHIFY_TS_CLI" review-compare graphify-out/graph.json \
   --base-branch origin/main \
   --exec 'cat {prompt_file} | claude -p' \
   --yes
