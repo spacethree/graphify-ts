@@ -165,6 +165,7 @@ The only command that hits an external service is the optional `compare` / `revi
 
 - [Quick start guide](docs/proof-workflows.md) — three reproducible workflows: local proof, A/B compare, federated proof
 - [Language and capability matrix](docs/language-capability-matrix.md) — exactly what each file type and language gets
+- [Marketplace listing pack](docs/distribution/marketplaces/README.md) — reusable Smithery / awesome-mcp submission assets
 - [Why graphify (with detailed numbers)](examples/why-graphify.md) — the long-form evidence
 - [MCP tool examples](examples/mcp-tool-examples.md) — real input/output for every tool
 - [Architectural comparison](docs/research-2026-05-01-architectural-comparison.md) — vs aider / token-savior / code-review-graph / Cody
