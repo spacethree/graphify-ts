@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Reproducer for the 2026-05-02 GoValidate PR-review benchmark.
+# Reproducer for the 2026-05-01 GoValidate PR-review benchmark.
 #
 # Reads the committed `review-compare` report and prints the headline numbers so
 # anyone can independently verify the README claims from the raw artifact.
