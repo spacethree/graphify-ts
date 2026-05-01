@@ -23,7 +23,7 @@ This directory contains the raw evidence for graphify-ts's headline benchmark nu
 
 Where the totals come from:
 
-```
+```text
 baseline_total_input_tokens = 14 + 40,648 + 574,528 = 615,190
 graphify_total_input_tokens = 13 + 92,833 + 140,662 = 233,508
 ```
@@ -55,20 +55,22 @@ graphify_total_cost_usd      : $0.70
 ## Reproducing end-to-end on your own codebase
 
 ```bash
-# 1. Generate a graph for the codebase you want to test against.
-graphify-ts generate /path/to/your/repo
-graphify-ts claude install --project /path/to/your/repo
+# 1. From inside the repo you want to test against, generate a graph
+#    and wire up the MCP server / project rules.
+cd /path/to/your/repo
+graphify-ts generate .
+graphify-ts claude install   # writes .mcp.json + CLAUDE.md section + .claude/settings.json hook
 
 # 2. Run a native_agent compare. graphify-ts will:
-#    - snapshot graphify-out/, .mcp.json, CLAUDE.md, .claude/
+#    - snapshot graphify-out/graph.json, .mcp.json, CLAUDE.md, .claude/
 #    - run --exec once without those files (baseline)
 #    - restore them
 #    - run --exec once with them in place (graphify)
 #    - parse Anthropic-reported usage from each --output-format json result
 graphify-ts compare "your real question here" \
-  --graph /path/to/your/repo/graphify-out/graph.json \
+  --graph graphify-out/graph.json \
   --baseline-mode native_agent \
-  --exec 'cd /path/to/your/repo && claude --output-format json -p "{question}"' \
+  --exec 'claude --output-format json -p "{question}"' \
   --yes
 ```
 

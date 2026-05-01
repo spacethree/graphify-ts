@@ -494,21 +494,27 @@ function installMcpServer(projectDir: string, target: McpConfigTarget = 'claude'
   // Use npx.cmd on Windows so MCP server starts without a shell wrapper.
   // --yes skips the interactive install prompt that hangs in stdio mode.
   // Scoped name ensures npx resolves the package on first run.
+  // VS Code uses "servers" key, Claude/Cursor use "mcpServers"
+  const serversKey = isVscode ? 'servers' : 'mcpServers'
+  const mcpServers = ensureRecord(mcpConfig, serversKey)
+  const existed = isRecord(mcpServers[SKILL_SLUG])
+
   const npxCommand = nodePlatform === 'win32' ? 'npx.cmd' : 'npx'
   const npxArgs = ['--yes', installPackageSpecifier(), 'serve', '--stdio', graphPath]
   // Default to the lean MCP tool surface ("core" = 6 tools). Reduces cache_creation
   // overhead per session vs. advertising all tools. Users can opt into the legacy
   // 21-tool surface by setting GRAPHIFY_TOOL_PROFILE=full in this env block.
-  const env = { GRAPHIFY_TOOL_PROFILE: 'core' }
+  //
+  // Re-running install must NOT silently downgrade an existing user-customized env
+  // (e.g. GRAPHIFY_TOOL_PROFILE=full) or drop unrelated user-set env keys, so we
+  // merge: defaults first, then the existing entry on top so user values win.
+  const existingServer = existed ? (mcpServers[SKILL_SLUG] as Record<string, unknown>) : null
+  const existingEnv = existingServer && isRecord(existingServer.env) ? (existingServer.env as Record<string, string>) : {}
+  const env: Record<string, string> = { GRAPHIFY_TOOL_PROFILE: 'core', ...existingEnv }
   const serverConfig = isVscode
     ? { type: 'stdio', command: npxCommand, args: npxArgs, env }
     : { command: npxCommand, args: npxArgs, env }
 
-  // VS Code uses "servers" key, Claude/Cursor use "mcpServers"
-  const serversKey = isVscode ? 'servers' : 'mcpServers'
-  const mcpServers = ensureRecord(mcpConfig, serversKey)
-
-  const existed = isRecord(mcpServers[SKILL_SLUG])
   mcpServers[SKILL_SLUG] = serverConfig
   writeJson(mcpJsonPath, mcpConfig)
 

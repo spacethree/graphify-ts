@@ -19,7 +19,7 @@ graphify-ts generate .
 graphify-ts claude install   # or cursor, copilot
 ```
 
-The agent gets a lean 6-tool MCP surface by default (retrieve, impact, call_chain, community_overview, pr_impact, graph_stats). Set `GRAPHIFY_TOOL_PROFILE=full` in `.mcp.json` to opt into the full 21-tool advanced surface. Here's what changes:
+The agent gets a lean 6-tool MCP surface by default (retrieve, impact, call_chain, community_overview, pr_impact, graph_stats). Set `GRAPHIFY_TOOL_PROFILE=full` in your MCP config (`.mcp.json` for Claude, `.cursor/mcp.json` for Cursor, `.vscode/mcp.json` for VS Code Copilot) to opt into the full 21-tool advanced surface. Here's what changes:
 
 ---
 
