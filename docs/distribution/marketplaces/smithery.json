@@ -46,12 +46,18 @@
     "fullProfileCount": 21
   },
   "links": {
-    "hostedBenchmarks": "https://mohanagy.github.io/graphify-ts/",
-    "retrievalBenchmark": "https://mohanagy.github.io/graphify-ts/2026-04-30-govalidate/",
-    "prReviewBenchmark": "https://mohanagy.github.io/graphify-ts/2026-05-01-govalidate-pr-review/"
+    "currentProofHub": "https://github.com/mohanagy/graphify-ts/tree/main/docs/benchmarks",
+    "currentRetrievalProof": "https://github.com/mohanagy/graphify-ts/tree/main/docs/benchmarks/2026-04-30-govalidate",
+    "currentPrReviewProof": "https://github.com/mohanagy/graphify-ts/tree/main/docs/benchmarks/2026-05-01-govalidate-pr-review",
+    "postDeployPages": {
+      "benchmarkHub": "https://mohanagy.github.io/graphify-ts/",
+      "retrievalBenchmark": "https://mohanagy.github.io/graphify-ts/2026-04-30-govalidate/",
+      "prReviewBenchmark": "https://mohanagy.github.io/graphify-ts/2026-05-01-govalidate-pr-review/"
+    }
   },
   "notes": [
     "Repo-side draft manifest for future Smithery submission copy.",
-    "Grounded in current README, package.json, benchmark docs, and MCP tool definitions."
+    "Grounded in current README, package.json, benchmark docs, and MCP tool definitions.",
+    "GitHub Pages URLs are post-deploy only; current proof links point to repo-backed benchmark artifacts on main."
   ]
 }

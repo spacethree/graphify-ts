@@ -14,8 +14,8 @@ This directory is the source of truth for marketplace and directory submission c
 
 ## Key proof points
 
-- **Measured retrieval benchmark:** 3× fewer tool-call turns, 2.8× faster latency, and 2.6× fewer input tokens on a real 1,268-file NestJS + Next.js production codebase. Source: `README.md`, `docs/benchmarks/2026-04-30-govalidate/README.md`.
-- **Measured PR-review benchmark:** compact `pr_impact` prompts were 7.244× smaller than verbose prompts, with 6.879× smaller payloads, on a real 36-file production diff. Source: `docs/benchmarks/2026-05-01-govalidate-pr-review/README.md`.
+- **Measured retrieval benchmark:** 3x fewer tool-call turns, 2.8x faster latency, and 2.6x fewer input tokens on a real 1,268-file NestJS + Next.js production codebase. Source: `README.md`, `docs/benchmarks/2026-04-30-govalidate/README.md`.
+- **Measured PR-review benchmark:** compact `pr_impact` prompts were 7.244x smaller than verbose prompts, with 6.879x smaller payloads, on a real 36-file production diff. Source: `docs/benchmarks/2026-05-01-govalidate-pr-review/README.md`.
 - **Local-first deployment:** no telemetry, no cloud, no API key required by default; the MCP integration runs as a local stdio subprocess. Source: `README.md`.
 - **Practical MCP surface:** default core profile ships `retrieve`, `impact`, `call_chain`, `community_overview`, `pr_impact`, and `graph_stats`, with 21 tools available via `GRAPHIFY_TOOL_PROFILE=full`. Source: `src/runtime/stdio/definitions.ts`, `README.md`.
 
@@ -45,16 +45,19 @@ graphify-ts aider install
 - **Repository:** https://github.com/mohanagy/graphify-ts
 - **Homepage:** https://github.com/mohanagy/graphify-ts#readme
 - **Package:** https://www.npmjs.com/package/@mohammednagy/graphify-ts
-- **Hosted benchmark landing page:** https://mohanagy.github.io/graphify-ts/
-- **Hosted retrieval benchmark page:** https://mohanagy.github.io/graphify-ts/2026-04-30-govalidate/
-- **Hosted PR-review benchmark page:** https://mohanagy.github.io/graphify-ts/2026-05-01-govalidate-pr-review/
+- **Current benchmark proof hub (GitHub repo artifacts):** https://github.com/mohanagy/graphify-ts/tree/main/docs/benchmarks
+- **Current retrieval proof bundle (GitHub repo artifacts):** https://github.com/mohanagy/graphify-ts/tree/main/docs/benchmarks/2026-04-30-govalidate
+- **Current PR-review proof bundle (GitHub repo artifacts):** https://github.com/mohanagy/graphify-ts/tree/main/docs/benchmarks/2026-05-01-govalidate-pr-review
+- **Post-deploy GitHub Pages benchmark hub (after Pages deploys from `main`):** https://mohanagy.github.io/graphify-ts/
+- **Post-deploy GitHub Pages retrieval page (after Pages deploys from `main`):** https://mohanagy.github.io/graphify-ts/2026-04-30-govalidate/
+- **Post-deploy GitHub Pages PR-review page (after Pages deploys from `main`):** https://mohanagy.github.io/graphify-ts/2026-05-01-govalidate-pr-review/
 
 ## Submission asset placeholders
 
 Use these placeholders if a marketplace or PR template asks for screenshots, demos, or branded links later.
 
 - **Screenshot placeholder:** `TBD — terminal quickstart after \`graphify-ts generate .\` and \`graphify-ts claude install\``
-- **Screenshot placeholder:** `TBD — hosted benchmark landing page at https://mohanagy.github.io/graphify-ts/`
-- **Screenshot placeholder:** `TBD — PR-review proof page showing compact vs verbose \`pr_impact\` results`
+- **Screenshot placeholder:** `TBD — benchmark proof hub in the GitHub repo (live now); optional Pages swap after deploy from main`
+- **Screenshot placeholder:** `TBD — repo-backed PR-review proof bundle showing compact vs verbose \`pr_impact\` results`
 - **Demo link placeholder:** `TBD — short install / retrieval walkthrough clip`
 - **Logo/icon placeholder:** `TBD — square project mark for registries that support icons`
