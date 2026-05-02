@@ -8,7 +8,7 @@ Local-first MCP server and CLI that turns your repo into a knowledge graph so AI
 
 graphify-ts builds a local knowledge graph from your codebase, then exposes that graph through an MCP stdio server for tools like Claude Code, Cursor, GitHub Copilot, Gemini CLI, and Aider. Its wedge is privacy-preserving codebase understanding plus diff-aware PR review: instead of making an agent crawl your repo with repeated file reads, graphify-ts returns ranked graph context in one MCP call and can analyze changed lines with `pr_impact`, `risk_map`, and `review-compare`.
 
-The proof is committed in the GitHub repo today: on a real 1,268-file production codebase, graphify-ts cut tool-call turns from 9 to 3, reduced latency from 96 seconds to 35 seconds, and reduced total input tokens from 615,190 to 233,508. A separate PR-review benchmark shows compact `pr_impact` packaging shrinking prompts 7.244x on a real production diff. GitHub Pages wrappers can be linked after the Pages workflow deploys from `main`.
+The proof is committed in the GitHub repo today: on a real 1,268-file production codebase, graphify-ts cut tool-call turns from 9 to 3, reduced latency from 96 seconds to 35 seconds, and reduced total input tokens from 615,190 to 233,508. A separate PR-review benchmark shows compact `pr_impact` packaging shrinking prompts 7.252x on a real production diff. GitHub Pages wrappers can be linked after the Pages workflow deploys from `main`.
 
 ## Feature bullets
 
@@ -35,7 +35,7 @@ graphify-ts claude install
 
 - Current proof hub (GitHub repo artifacts): https://github.com/mohanagy/graphify-ts/tree/main/docs/benchmarks
 - Current retrieval proof bundle: https://github.com/mohanagy/graphify-ts/tree/main/docs/benchmarks/2026-04-30-govalidate
-- Current PR-review proof bundle: https://github.com/mohanagy/graphify-ts/tree/main/docs/benchmarks/2026-05-01-govalidate-pr-review
+- Current PR-review proof bundle: https://github.com/mohanagy/graphify-ts/tree/main/docs/benchmarks/2026-05-02-govalidate-pr-review
 - Post-deploy GitHub Pages benchmark landing page (after deploy from `main`): https://mohanagy.github.io/graphify-ts/
 - Post-deploy GitHub Pages retrieval page (after deploy from `main`): https://mohanagy.github.io/graphify-ts/2026-04-30-govalidate/
-- Post-deploy GitHub Pages PR-review page (after deploy from `main`): https://mohanagy.github.io/graphify-ts/2026-05-01-govalidate-pr-review/
+- Post-deploy GitHub Pages PR-review page (after deploy from `main`): https://mohanagy.github.io/graphify-ts/2026-05-02-govalidate-pr-review/

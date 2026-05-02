@@ -1,4 +1,4 @@
-# 2026-05-01 — GoValidate PR review benchmark
+# 2026-05-02 — GoValidate PR review benchmark
 
 This directory contains the raw evidence for graphify-ts's real PR-review benchmark on the GoValidate Platform codebase. The numbers below come directly from the committed `report.json` produced by `review-compare`.
 
@@ -10,14 +10,14 @@ This directory contains the raw evidence for graphify-ts's real PR-review benchm
   1. **verbose** — expanded PR-impact context
   2. **compact** — condensed PR-impact context
 - **Runner:** `cat {prompt_file} | claude -p`
-- **Committed artifact source:** `platform/graphify-out/review-compare/2026-05-01T23-23-54/`
+- **Committed artifact source:** `platform/graphify-out/review-compare/2026-05-02T09-44-12/`
 
 ## Headline numbers (copied from `report.json`)
 
 | Metric | Verbose | Compact | Δ |
 |---|---:|---:|---:|
-| Prompt tokens | 63,310 | **8,740** | 7.244× smaller |
-| Payload tokens | 42,255 | **6,143** | 6.879× smaller |
+| Prompt tokens | 63,024 | **8,690** | 7.252× smaller |
+| Payload tokens | 41,969 | **6,093** | 6.888× smaller |
 | Changed files in diff | 36 | 36 | same |
 | Seed count | 143 | 143 | same |
 | Hotspot count | 3 | 3 | same |
@@ -37,18 +37,18 @@ This benchmark captures a real branch diff in `govalidate/platform` and shows th
 ## Reproducing the headline numbers from this directory
 
 ```bash
-bash docs/benchmarks/2026-05-01-govalidate-pr-review/verify.sh
+bash docs/benchmarks/2026-05-02-govalidate-pr-review/verify.sh
 ```
 
 Output:
 
 ```text
-verbose_prompt_tokens   : 63310
-compact_prompt_tokens   : 8740
-prompt_reduction_ratio  : 7.244x
-verbose_payload_tokens  : 42255
-compact_payload_tokens  : 6143
-payload_reduction_ratio : 6.879x
+verbose_prompt_tokens   : 63024
+compact_prompt_tokens   : 8690
+prompt_reduction_ratio  : 7.252x
+verbose_payload_tokens  : 41969
+compact_payload_tokens  : 6093
+payload_reduction_ratio : 6.888x
 changed_files           : 36
 seed_count              : 143
 hotspot_count           : 3

@@ -158,7 +158,7 @@ The only command that hits an external service is the optional `compare` / `revi
 - [Benchmark proof hub (repo artifacts)](https://github.com/mohanagy/graphify-ts/tree/main/docs/benchmarks) — live now; browse the committed benchmark wrappers and evidence in GitHub
 - [GitHub Pages benchmark hub](https://mohanagy.github.io/graphify-ts/) — post-deploy wrapper once Pages is live from `main`
 - [Retrieval benchmark artifact](docs/benchmarks/2026-04-30-govalidate/) — raw `claude --output-format json` evidence + `verify.sh`
-- [PR review benchmark artifact](docs/benchmarks/2026-05-01-govalidate-pr-review/) — `review-compare` report, prompts, answers, `verify.sh`
+- [PR review benchmark artifact](docs/benchmarks/2026-05-02-govalidate-pr-review/) — `review-compare` report, prompts, answers, `verify.sh`
 
 ---
 

@@ -392,11 +392,11 @@ pr_impact payload:
       "match_kind": "line"
     },
     {
-      "node_id": "users_mohammednaji_desktop_projects_works_govalidate_platform_src_app_admin_pipeline_ideaid_page_state_ts_mergerunsections",
+      "node_id": "review_node_7f12cd2cd21a376b",
       "label": "mergeRunSections()",
       "source_file": "src/app/admin/pipeline/[ideaId]/page-state.ts",
       "node_kind": "function",
-      "community": 481,
+      "community": 478,
       "community_label": "Merge Run Sections",
       "line_number": 59,
       "source_location": "L59",
@@ -414,11 +414,11 @@ pr_impact payload:
       "match_kind": "line"
     },
     {
-      "node_id": "users_mohammednaji_desktop_projects_works_govalidate_platform_src_app_admin_pipeline_ideaid_page_state_ts_mergelivecost",
+      "node_id": "review_node_f66e03ea2490e8ed",
       "label": "mergeLiveCost()",
       "source_file": "src/app/admin/pipeline/[ideaId]/page-state.ts",
       "node_kind": "function",
-      "community": 480,
+      "community": 477,
       "community_label": "Merge Live Cost",
       "line_number": 118,
       "source_location": "L118",
@@ -436,11 +436,11 @@ pr_impact payload:
       "match_kind": "line"
     },
     {
-      "node_id": "users_mohammednaji_desktop_projects_works_govalidate_platform_src_app_admin_pipeline_ideaid_page_state_ts_resolveoverviewtotals",
+      "node_id": "review_node_393ef245f029660e",
       "label": "resolveOverviewTotals()",
       "source_file": "src/app/admin/pipeline/[ideaId]/page-state.ts",
       "node_kind": "function",
-      "community": 484,
+      "community": 481,
       "community_label": "Resolve Overview Totals",
       "line_number": 128,
       "source_location": "L128",
@@ -718,7 +718,7 @@ pr_impact payload:
         "line_number": 1,
         "snippet": "'use client'\n\nimport { XMarkIcon } from '@heroicons/react/24/outline'\nimport { useState } from 'react'\n\nimport { cn } from '@/lib/cn'\n\nimport { SmartContent } from './SmartContent'",
         "relevance_band": "direct",
-        "community": 269,
+        "community": 272,
         "node_id": "recommendationbadge",
         "match_score": 10
       },
@@ -749,7 +749,7 @@ pr_impact payload:
         "line_number": 1,
         "snippet": "'use client'\n\nimport {\n  CheckCircleIcon,\n  ClockIcon,\n  ExclamationTriangleIcon,\n  ForwardIcon,\n  LockClosedIcon,",
         "relevance_band": "direct",
-        "community": 284,
+        "community": 287,
         "node_id": "sectionprogresscard",
         "match_score": 10
       },
@@ -934,7 +934,7 @@ pr_impact payload:
         "node_count": 3
       },
       {
-        "id": 269,
+        "id": 272,
         "label": "Features Recommendation Badge",
         "node_count": 3
       },
@@ -944,7 +944,7 @@ pr_impact payload:
         "node_count": 3
       },
       {
-        "id": 284,
+        "id": 287,
         "label": "Features Section Progress Card",
         "node_count": 3
       },

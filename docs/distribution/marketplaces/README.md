@@ -15,7 +15,7 @@ This directory is the source of truth for marketplace and directory submission c
 ## Key proof points
 
 - **Measured retrieval benchmark:** 3x fewer tool-call turns, 2.8x faster latency, and 2.6x fewer input tokens on a real 1,268-file NestJS + Next.js production codebase. Source: `README.md`, `docs/benchmarks/2026-04-30-govalidate/README.md`.
-- **Measured PR-review benchmark:** compact `pr_impact` prompts were 7.244x smaller than verbose prompts, with 6.879x smaller payloads, on a real 36-file production diff. Source: `docs/benchmarks/2026-05-01-govalidate-pr-review/README.md`.
+- **Measured PR-review benchmark:** compact `pr_impact` prompts were 7.252x smaller than verbose prompts, with 6.888x smaller payloads, on a real 36-file production diff. Source: `docs/benchmarks/2026-05-02-govalidate-pr-review/README.md`.
 - **Local-first deployment:** no telemetry, no cloud, no API key required by default; the MCP integration runs as a local stdio subprocess. Source: `README.md`.
 - **Practical MCP surface:** default core profile ships `retrieve`, `impact`, `call_chain`, `community_overview`, `pr_impact`, and `graph_stats`, with 21 tools available via `GRAPHIFY_TOOL_PROFILE=full`. Source: `src/runtime/stdio/definitions.ts`, `README.md`.
 
@@ -47,10 +47,10 @@ graphify-ts aider install
 - **Package:** https://www.npmjs.com/package/@mohammednagy/graphify-ts
 - **Current benchmark proof hub (GitHub repo artifacts):** https://github.com/mohanagy/graphify-ts/tree/main/docs/benchmarks
 - **Current retrieval proof bundle (GitHub repo artifacts):** https://github.com/mohanagy/graphify-ts/tree/main/docs/benchmarks/2026-04-30-govalidate
-- **Current PR-review proof bundle (GitHub repo artifacts):** https://github.com/mohanagy/graphify-ts/tree/main/docs/benchmarks/2026-05-01-govalidate-pr-review
+- **Current PR-review proof bundle (GitHub repo artifacts):** https://github.com/mohanagy/graphify-ts/tree/main/docs/benchmarks/2026-05-02-govalidate-pr-review
 - **Post-deploy GitHub Pages benchmark hub (after Pages deploys from `main`):** https://mohanagy.github.io/graphify-ts/
 - **Post-deploy GitHub Pages retrieval page (after Pages deploys from `main`):** https://mohanagy.github.io/graphify-ts/2026-04-30-govalidate/
-- **Post-deploy GitHub Pages PR-review page (after Pages deploys from `main`):** https://mohanagy.github.io/graphify-ts/2026-05-01-govalidate-pr-review/
+- **Post-deploy GitHub Pages PR-review page (after Pages deploys from `main`):** https://mohanagy.github.io/graphify-ts/2026-05-02-govalidate-pr-review/
 
 ## Submission asset placeholders
 

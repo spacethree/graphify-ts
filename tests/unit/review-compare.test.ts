@@ -12,11 +12,20 @@ import {
 } from '../../src/infrastructure/review-compare.js'
 import { estimateQueryTokens } from '../../src/runtime/serve.js'
 
-function createRepo(): string {
+function createRepo(options: { pathLikeNodeIds?: boolean } = {}): string {
   const root = mkdtempSync(join(tmpdir(), 'graphify-ts-review-compare-'))
   mkdirSync(join(root, 'src'), { recursive: true })
   mkdirSync(join(root, 'tests'), { recursive: true })
   mkdirSync(join(root, 'graphify-out'), { recursive: true })
+  const authNodeId = options.pathLikeNodeIds
+    ? 'users_testuser_desktop_projects_demo_src_auth_ts_authenticateuser'
+    : 'auth_user'
+  const apiNodeId = options.pathLikeNodeIds
+    ? 'users_testuser_desktop_projects_demo_src_api_ts_apihandler'
+    : 'api_handler'
+  const auditNodeId = options.pathLikeNodeIds
+    ? 'users_testuser_desktop_projects_demo_src_audit_log_ts_appendauthaudit'
+    : 'audit_logger'
 
   writeFileSync(join(root, 'src', 'auth.ts'), [
     'export function authenticateUser(token: string) {',
@@ -51,7 +60,7 @@ function createRepo(): string {
       },
       nodes: [
         {
-          id: 'auth_user',
+          id: authNodeId,
           label: 'authenticateUser',
           source_file: join(root, 'src', 'auth.ts'),
           source_location: 'L1-L5',
@@ -60,7 +69,7 @@ function createRepo(): string {
           community: 0,
         },
         {
-          id: 'api_handler',
+          id: apiNodeId,
           label: 'ApiHandler',
           source_file: join(root, 'src', 'api.ts'),
           source_location: 'L1-L3',
@@ -69,7 +78,7 @@ function createRepo(): string {
           community: 1,
         },
         {
-          id: 'audit_logger',
+          id: auditNodeId,
           label: 'appendAuthAudit',
           source_file: join(root, 'src', 'audit-log.ts'),
           source_location: 'L1-L3',
@@ -80,15 +89,15 @@ function createRepo(): string {
       ],
       edges: [
         {
-          source: 'api_handler',
-          target: 'auth_user',
+          source: apiNodeId,
+          target: authNodeId,
           relation: 'calls',
           confidence: 'EXTRACTED',
           source_file: join(root, 'src', 'api.ts'),
         },
         {
-          source: 'auth_user',
-          target: 'audit_logger',
+          source: authNodeId,
+          target: auditNodeId,
           relation: 'calls',
           confidence: 'EXTRACTED',
           source_file: join(root, 'src', 'auth.ts'),
@@ -169,6 +178,26 @@ describe('review compare', () => {
     expect(result.report.paths.output_dir).toContain(join('review-compare', 'session1'))
     expect(readFileSync(result.report.paths.verbose_prompt, 'utf8')).toContain('"changed_files"')
     expect(readFileSync(result.report.paths.compact_prompt, 'utf8')).toContain('"review_context"')
+  })
+
+  it('sanitizes path-derived node ids in persisted review prompts', () => {
+    const root = createRepo({ pathLikeNodeIds: true })
+    repoRoots.push(root)
+
+    const result = generateReviewCompareArtifacts({
+      graphPath: join(root, 'graphify-out', 'graph.json'),
+      outputDir: join(root, 'graphify-out', 'review-compare'),
+      execTemplate: 'claude -p "$(cat {prompt_file})"',
+      now: new Date('2026-05-01T21:00:00.000Z'),
+    })
+
+    const verbosePrompt = readFileSync(result.report.paths.verbose_prompt, 'utf8')
+    const compactPrompt = readFileSync(result.report.paths.compact_prompt, 'utf8')
+
+    expect(verbosePrompt).not.toContain('users_testuser_desktop_projects_demo_src_auth_ts_authenticateuser')
+    expect(compactPrompt).not.toContain('users_testuser_desktop_projects_demo_src_auth_ts_authenticateuser')
+    expect(verbosePrompt).toMatch(/"node_id": "review_node_[0-9a-f]+"/)
+    expect(compactPrompt).toMatch(/"node_id": "review_node_[0-9a-f]+"/)
   })
 
   it('executes review compare prompts sequentially and saves answer artifacts', async () => {

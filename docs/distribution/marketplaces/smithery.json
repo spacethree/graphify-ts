@@ -48,11 +48,11 @@
   "links": {
     "currentProofHub": "https://github.com/mohanagy/graphify-ts/tree/main/docs/benchmarks",
     "currentRetrievalProof": "https://github.com/mohanagy/graphify-ts/tree/main/docs/benchmarks/2026-04-30-govalidate",
-    "currentPrReviewProof": "https://github.com/mohanagy/graphify-ts/tree/main/docs/benchmarks/2026-05-01-govalidate-pr-review",
+    "currentPrReviewProof": "https://github.com/mohanagy/graphify-ts/tree/main/docs/benchmarks/2026-05-02-govalidate-pr-review",
     "postDeployPages": {
       "benchmarkHub": "https://mohanagy.github.io/graphify-ts/",
       "retrievalBenchmark": "https://mohanagy.github.io/graphify-ts/2026-04-30-govalidate/",
-      "prReviewBenchmark": "https://mohanagy.github.io/graphify-ts/2026-05-01-govalidate-pr-review/"
+      "prReviewBenchmark": "https://mohanagy.github.io/graphify-ts/2026-05-02-govalidate-pr-review/"
     }
   },
   "notes": [

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { mkdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
@@ -82,6 +83,23 @@ export interface ExecuteReviewCompareRunsDependencies {
 
 const EXEC_TEMPLATE_PLACEHOLDER_PATTERN = /\{[a-z_][a-z0-9_]*\}/gi
 const REVIEW_COMPARE_EXEC_PLACEHOLDERS = new Set(['{prompt_file}', '{mode}', '{output_file}'])
+const REVIEW_PROMPT_ID_FIELDS = new Set(['node_id', 'from_id', 'to_id'])
+const PATH_DERIVED_ID_TOKENS = new Set([
+  'users',
+  'user',
+  'home',
+  'desktop',
+  'documents',
+  'downloads',
+  'projects',
+  'project',
+  'workspace',
+  'workspaces',
+  'src',
+  'app',
+  'tmp',
+  'var',
+])
 
 function timestampDirectoryName(date: Date): string {
   return date.toISOString().slice(0, 19).replace(/:/g, '-')
@@ -217,6 +235,47 @@ function formatTokenComparison(left: number, right: number): string {
   return `${Number((right / left).toFixed(3))}x larger`
 }
 
+function isPathDerivedIdentifier(value: string): boolean {
+  if (value.includes('/') || value.includes('\\')) {
+    return true
+  }
+
+  const tokens = value.toLowerCase().split(/[^a-z0-9]+/).filter((token) => token.length > 0)
+  if (tokens.length < 4) {
+    return false
+  }
+
+  const matchingTokens = tokens.filter((token) => PATH_DERIVED_ID_TOKENS.has(token)).length
+  return matchingTokens >= 2
+}
+
+function sanitizePersistedIdentifier(value: string): string {
+  return `review_node_${createHash('sha256').update(value).digest('hex').slice(0, 16)}`
+}
+
+function sanitizePersistedReviewPayload<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((entry) => sanitizePersistedReviewPayload(entry)) as T
+  }
+
+  if (value && typeof value === 'object') {
+    const sanitizedEntries = Object.entries(value).map(([key, entryValue]) => {
+      if (
+        REVIEW_PROMPT_ID_FIELDS.has(key) &&
+        typeof entryValue === 'string' &&
+        entryValue.length > 0 &&
+        isPathDerivedIdentifier(entryValue)
+      ) {
+        return [key, sanitizePersistedIdentifier(entryValue)]
+      }
+      return [key, sanitizePersistedReviewPayload(entryValue)]
+    })
+    return Object.fromEntries(sanitizedEntries) as T
+  }
+
+  return value
+}
+
 function renderReviewPrompt(payload: unknown, mode: ReviewCompareMode): string {
   return [
     'Review the current git diff using only the provided pr_impact payload.',
@@ -267,8 +326,10 @@ export function generateReviewCompareArtifacts(input: ReviewCompareInput): Revie
     ...(input.budget !== undefined ? { budget: input.budget } : {}),
   })
   const compactPayload = compactPrImpactResult(verbosePayload)
-  const verbosePrompt = renderReviewPrompt(verbosePayload, 'verbose')
-  const compactPrompt = renderReviewPrompt(compactPayload, 'compact')
+  const persistedVerbosePayload = sanitizePersistedReviewPayload(verbosePayload)
+  const persistedCompactPayload = sanitizePersistedReviewPayload(compactPayload)
+  const verbosePrompt = renderReviewPrompt(persistedVerbosePayload, 'verbose')
+  const compactPrompt = renderReviewPrompt(persistedCompactPayload, 'compact')
 
   const paths: ReviewComparePromptArtifactPaths = {
     output_dir: outputRoot,
@@ -284,8 +345,8 @@ export function generateReviewCompareArtifacts(input: ReviewCompareInput): Revie
   writeFileSync(paths.verbose_prompt, verbosePrompt, 'utf8')
   writeFileSync(paths.compact_prompt, compactPrompt, 'utf8')
 
-  const verbosePayloadTokens = estimateQueryTokens(JSON.stringify(verbosePayload))
-  const compactPayloadTokens = estimateQueryTokens(JSON.stringify(compactPayload))
+  const verbosePayloadTokens = estimateQueryTokens(JSON.stringify(persistedVerbosePayload))
+  const compactPayloadTokens = estimateQueryTokens(JSON.stringify(persistedCompactPayload))
   const verbosePromptTokens = estimateQueryTokens(verbosePrompt)
   const compactPromptTokens = estimateQueryTokens(compactPrompt)
 

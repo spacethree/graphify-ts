@@ -637,11 +637,11 @@ pr_impact payload:
       "source_location": "L59-L116"
     },
     {
-      "node_id": "users_mohammednaji_desktop_projects_works_govalidate_platform_src_app_admin_pipeline_ideaid_page_state_ts_mergerunsections",
+      "node_id": "review_node_7f12cd2cd21a376b",
       "label": "mergeRunSections()",
       "source_file": "src/app/admin/pipeline/[ideaId]/page-state.ts",
       "node_kind": "function",
-      "community": 481,
+      "community": 478,
       "community_label": "Merge Run Sections",
       "line_number": 59,
       "source_location": "L59"
@@ -657,11 +657,11 @@ pr_impact payload:
       "source_location": "L118-L126"
     },
     {
-      "node_id": "users_mohammednaji_desktop_projects_works_govalidate_platform_src_app_admin_pipeline_ideaid_page_state_ts_mergelivecost",
+      "node_id": "review_node_f66e03ea2490e8ed",
       "label": "mergeLiveCost()",
       "source_file": "src/app/admin/pipeline/[ideaId]/page-state.ts",
       "node_kind": "function",
-      "community": 480,
+      "community": 477,
       "community_label": "Merge Live Cost",
       "line_number": 118,
       "source_location": "L118"
@@ -677,11 +677,11 @@ pr_impact payload:
       "source_location": "L128-L144"
     },
     {
-      "node_id": "users_mohammednaji_desktop_projects_works_govalidate_platform_src_app_admin_pipeline_ideaid_page_state_ts_resolveoverviewtotals",
+      "node_id": "review_node_393ef245f029660e",
       "label": "resolveOverviewTotals()",
       "source_file": "src/app/admin/pipeline/[ideaId]/page-state.ts",
       "node_kind": "function",
-      "community": 484,
+      "community": 481,
       "community_label": "Resolve Overview Totals",
       "line_number": 128,
       "source_location": "L128"
@@ -697,11 +697,11 @@ pr_impact payload:
       "source_location": "L146-L155"
     },
     {
-      "node_id": "users_mohammednaji_desktop_projects_works_govalidate_platform_src_app_admin_pipeline_ideaid_page_state_ts_shouldrefetchrundetail",
+      "node_id": "review_node_913c6be0a67ca957",
       "label": "shouldRefetchRunDetail()",
       "source_file": "src/app/admin/pipeline/[ideaId]/page-state.ts",
       "node_kind": "function",
-      "community": 485,
+      "community": 482,
       "community_label": "Should Refetch Run Detail",
       "line_number": 146,
       "source_location": "L146"
@@ -717,11 +717,11 @@ pr_impact payload:
       "source_location": "L157-L225"
     },
     {
-      "node_id": "users_mohammednaji_desktop_projects_works_govalidate_platform_src_app_admin_pipeline_ideaid_page_state_ts_resolvehydratedpipelinestatus",
+      "node_id": "review_node_65bae8ca4af7d272",
       "label": "resolveHydratedPipelineStatus()",
       "source_file": "src/app/admin/pipeline/[ideaId]/page-state.ts",
       "node_kind": "function",
-      "community": 482,
+      "community": 479,
       "community_label": "Resolve Hydrated Pipeline Status",
       "line_number": 157,
       "source_location": "L157"
@@ -737,11 +737,11 @@ pr_impact payload:
       "source_location": "L227-L254"
     },
     {
-      "node_id": "users_mohammednaji_desktop_projects_works_govalidate_platform_src_app_admin_pipeline_ideaid_page_state_ts_isterminalrunsnapshot",
+      "node_id": "review_node_916951115940e316",
       "label": "isTerminalRunSnapshot()",
       "source_file": "src/app/admin/pipeline/[ideaId]/page-state.ts",
       "node_kind": "function",
-      "community": 479,
+      "community": 476,
       "community_label": "Is Terminal Run Snapshot",
       "line_number": 227,
       "source_location": "L227"
@@ -757,11 +757,11 @@ pr_impact payload:
       "source_location": "L256-L282"
     },
     {
-      "node_id": "users_mohammednaji_desktop_projects_works_govalidate_platform_src_app_admin_pipeline_ideaid_page_state_ts_resolvelivepipelinestatus",
+      "node_id": "review_node_3c54260b99fe43dd",
       "label": "resolveLivePipelineStatus()",
       "source_file": "src/app/admin/pipeline/[ideaId]/page-state.ts",
       "node_kind": "function",
-      "community": 483,
+      "community": 480,
       "community_label": "Resolve Live Pipeline Status",
       "line_number": 256,
       "source_location": "L256"
@@ -777,7 +777,7 @@ pr_impact payload:
       "source_location": "L284-L288"
     },
     {
-      "node_id": "users_mohammednaji_desktop_projects_works_govalidate_platform_src_nextjs_page_admin_pipeline_ideaid",
+      "node_id": "review_node_7d079e43c05b7775",
       "label": "page /admin/pipeline/[ideaId]",
       "source_file": "src/app/admin/pipeline/[ideaId]/page.tsx",
       "node_kind": "component",
@@ -967,7 +967,7 @@ pr_impact payload:
       "source_location": "L1000-L1291"
     },
     {
-      "node_id": "users_mohammednaji_desktop_projects_works_govalidate_platform_src_nextjs_page_admin_pipeline",
+      "node_id": "review_node_5d86288373fbc59d",
       "label": "page /admin/pipeline",
       "source_file": "src/app/admin/pipeline/page.tsx",
       "node_kind": "component",
@@ -1271,7 +1271,7 @@ pr_impact payload:
       "label": "usePipelineAdmin.ts",
       "source_file": "src/features/admin/hooks/usePipelineAdmin.ts",
       "node_kind": "",
-      "community": 439,
+      "community": 453,
       "community_label": "Features Use Pipeline Admin",
       "line_number": 1,
       "source_location": "L1"
@@ -1281,7 +1281,7 @@ pr_impact payload:
       "label": "UsePipelineAdminReturn",
       "source_file": "src/features/admin/hooks/usePipelineAdmin.ts",
       "node_kind": "",
-      "community": 439,
+      "community": 453,
       "community_label": "Features Use Pipeline Admin",
       "line_number": 26,
       "source_location": "L26-L35"
@@ -1291,7 +1291,7 @@ pr_impact payload:
       "label": "usePipelineAdmin()",
       "source_file": "src/features/admin/hooks/usePipelineAdmin.ts",
       "node_kind": "",
-      "community": 440,
+      "community": 454,
       "community_label": "Features Use Pipeline Admin — Admin",
       "line_number": 37,
       "source_location": "L37-L133"
@@ -1301,7 +1301,7 @@ pr_impact payload:
       "label": "refresh()",
       "source_file": "src/features/admin/hooks/usePipelineAdmin.ts",
       "node_kind": "",
-      "community": 440,
+      "community": 454,
       "community_label": "Features Use Pipeline Admin — Admin",
       "line_number": 119,
       "source_location": "L119-L121"
@@ -1311,7 +1311,7 @@ pr_impact payload:
       "label": "usePipelineRunDetail.ts",
       "source_file": "src/features/admin/hooks/usePipelineRunDetail.ts",
       "node_kind": "",
-      "community": 441,
+      "community": 455,
       "community_label": "Features Use Pipeline Run Detail",
       "line_number": 1,
       "source_location": "L1"
@@ -1321,7 +1321,7 @@ pr_impact payload:
       "label": "usePipelineRunDetail()",
       "source_file": "src/features/admin/hooks/usePipelineRunDetail.ts",
       "node_kind": "",
-      "community": 441,
+      "community": 455,
       "community_label": "Features Use Pipeline Run Detail",
       "line_number": 7,
       "source_location": "L7-L31"
@@ -1531,7 +1531,7 @@ pr_impact payload:
       "label": "RecommendationBadge.tsx",
       "source_file": "src/features/idea-details/components/RecommendationBadge.tsx",
       "node_kind": "",
-      "community": 269,
+      "community": 272,
       "community_label": "Features Recommendation Badge",
       "line_number": 1,
       "source_location": "L1"
@@ -1541,7 +1541,7 @@ pr_impact payload:
       "label": "RecommendationBadgeProps",
       "source_file": "src/features/idea-details/components/RecommendationBadge.tsx",
       "node_kind": "",
-      "community": 269,
+      "community": 272,
       "community_label": "Features Recommendation Badge",
       "line_number": 12,
       "source_location": "L12-L19"
@@ -1551,7 +1551,7 @@ pr_impact payload:
       "label": "RecommendationBadge()",
       "source_file": "src/features/idea-details/components/RecommendationBadge.tsx",
       "node_kind": "function",
-      "community": 269,
+      "community": 272,
       "community_label": "Features Recommendation Badge",
       "line_number": 62,
       "source_location": "L62-L178"
@@ -1691,7 +1691,7 @@ pr_impact payload:
       "label": "RunwayTab.tsx",
       "source_file": "src/features/idea-details/components/tabs/RunwayTab.tsx",
       "node_kind": "",
-      "community": 44,
+      "community": 45,
       "community_label": "Features Runway Tab",
       "line_number": 1,
       "source_location": "L1"
@@ -1701,7 +1701,7 @@ pr_impact payload:
       "label": "RunwayTabProps",
       "source_file": "src/features/idea-details/components/tabs/RunwayTab.tsx",
       "node_kind": "",
-      "community": 44,
+      "community": 45,
       "community_label": "Features Runway Tab",
       "line_number": 21,
       "source_location": "L21-L23"
@@ -1711,7 +1711,7 @@ pr_impact payload:
       "label": "getPriorityBadgeClass()",
       "source_file": "src/features/idea-details/components/tabs/RunwayTab.tsx",
       "node_kind": "",
-      "community": 44,
+      "community": 45,
       "community_label": "Features Runway Tab",
       "line_number": 26,
       "source_location": "L26-L33"
@@ -1731,7 +1731,7 @@ pr_impact payload:
       "label": "GlassSection()",
       "source_file": "src/features/idea-details/components/tabs/RunwayTab.tsx",
       "node_kind": "component",
-      "community": 44,
+      "community": 45,
       "community_label": "Features Runway Tab",
       "line_number": 408,
       "source_location": "L408-L438"
@@ -2311,7 +2311,7 @@ pr_impact payload:
       "label": "SectionProgressCard.tsx",
       "source_file": "src/features/ideas/components/SectionProgressCard.tsx",
       "node_kind": "",
-      "community": 284,
+      "community": 287,
       "community_label": "Features Section Progress Card",
       "line_number": 1,
       "source_location": "L1"
@@ -2321,7 +2321,7 @@ pr_impact payload:
       "label": "SectionProgressCardProps",
       "source_file": "src/features/ideas/components/SectionProgressCard.tsx",
       "node_kind": "",
-      "community": 284,
+      "community": 287,
       "community_label": "Features Section Progress Card",
       "line_number": 17,
       "source_location": "L17-L20"
@@ -2331,7 +2331,7 @@ pr_impact payload:
       "label": "Spinner()",
       "source_file": "src/features/ideas/components/SectionProgressCard.tsx",
       "node_kind": "component",
-      "community": 284,
+      "community": 287,
       "community_label": "Features Section Progress Card",
       "line_number": 78,
       "source_location": "L78-L101"
@@ -2381,7 +2381,7 @@ pr_impact payload:
       "label": "progress.types.ts",
       "source_file": "src/features/ideas/types/progress.types.ts",
       "node_kind": "",
-      "community": 265,
+      "community": 268,
       "community_label": "Features Progress Types",
       "line_number": 1,
       "source_location": "L1"
@@ -2391,7 +2391,7 @@ pr_impact payload:
       "label": "ProgressBroadcast",
       "source_file": "src/features/ideas/types/progress.types.ts",
       "node_kind": "",
-      "community": 265,
+      "community": 268,
       "community_label": "Features Progress Types",
       "line_number": 11,
       "source_location": "L11-L42"
@@ -2401,7 +2401,7 @@ pr_impact payload:
       "label": "SectionProgress",
       "source_file": "src/features/ideas/types/progress.types.ts",
       "node_kind": "",
-      "community": 265,
+      "community": 268,
       "community_label": "Features Progress Types",
       "line_number": 44,
       "source_location": "L44-L48"
@@ -3026,11 +3026,11 @@ pr_impact payload:
       "match_kind": "line"
     },
     {
-      "node_id": "users_mohammednaji_desktop_projects_works_govalidate_platform_src_app_admin_pipeline_ideaid_page_state_ts_mergerunsections",
+      "node_id": "review_node_7f12cd2cd21a376b",
       "label": "mergeRunSections()",
       "source_file": "src/app/admin/pipeline/[ideaId]/page-state.ts",
       "node_kind": "function",
-      "community": 481,
+      "community": 478,
       "community_label": "Merge Run Sections",
       "line_number": 59,
       "source_location": "L59",
@@ -3048,11 +3048,11 @@ pr_impact payload:
       "match_kind": "line"
     },
     {
-      "node_id": "users_mohammednaji_desktop_projects_works_govalidate_platform_src_app_admin_pipeline_ideaid_page_state_ts_mergelivecost",
+      "node_id": "review_node_f66e03ea2490e8ed",
       "label": "mergeLiveCost()",
       "source_file": "src/app/admin/pipeline/[ideaId]/page-state.ts",
       "node_kind": "function",
-      "community": 480,
+      "community": 477,
       "community_label": "Merge Live Cost",
       "line_number": 118,
       "source_location": "L118",
@@ -3070,11 +3070,11 @@ pr_impact payload:
       "match_kind": "line"
     },
     {
-      "node_id": "users_mohammednaji_desktop_projects_works_govalidate_platform_src_app_admin_pipeline_ideaid_page_state_ts_resolveoverviewtotals",
+      "node_id": "review_node_393ef245f029660e",
       "label": "resolveOverviewTotals()",
       "source_file": "src/app/admin/pipeline/[ideaId]/page-state.ts",
       "node_kind": "function",
-      "community": 484,
+      "community": 481,
       "community_label": "Resolve Overview Totals",
       "line_number": 128,
       "source_location": "L128",
@@ -3092,11 +3092,11 @@ pr_impact payload:
       "match_kind": "line"
     },
     {
-      "node_id": "users_mohammednaji_desktop_projects_works_govalidate_platform_src_app_admin_pipeline_ideaid_page_state_ts_shouldrefetchrundetail",
+      "node_id": "review_node_913c6be0a67ca957",
       "label": "shouldRefetchRunDetail()",
       "source_file": "src/app/admin/pipeline/[ideaId]/page-state.ts",
       "node_kind": "function",
-      "community": 485,
+      "community": 482,
       "community_label": "Should Refetch Run Detail",
       "line_number": 146,
       "source_location": "L146",
@@ -3114,11 +3114,11 @@ pr_impact payload:
       "match_kind": "line"
     },
     {
-      "node_id": "users_mohammednaji_desktop_projects_works_govalidate_platform_src_app_admin_pipeline_ideaid_page_state_ts_resolvehydratedpipelinestatus",
+      "node_id": "review_node_65bae8ca4af7d272",
       "label": "resolveHydratedPipelineStatus()",
       "source_file": "src/app/admin/pipeline/[ideaId]/page-state.ts",
       "node_kind": "function",
-      "community": 482,
+      "community": 479,
       "community_label": "Resolve Hydrated Pipeline Status",
       "line_number": 157,
       "source_location": "L157",
@@ -3136,11 +3136,11 @@ pr_impact payload:
       "match_kind": "line"
     },
     {
-      "node_id": "users_mohammednaji_desktop_projects_works_govalidate_platform_src_app_admin_pipeline_ideaid_page_state_ts_isterminalrunsnapshot",
+      "node_id": "review_node_916951115940e316",
       "label": "isTerminalRunSnapshot()",
       "source_file": "src/app/admin/pipeline/[ideaId]/page-state.ts",
       "node_kind": "function",
-      "community": 479,
+      "community": 476,
       "community_label": "Is Terminal Run Snapshot",
       "line_number": 227,
       "source_location": "L227",
@@ -3158,11 +3158,11 @@ pr_impact payload:
       "match_kind": "line"
     },
     {
-      "node_id": "users_mohammednaji_desktop_projects_works_govalidate_platform_src_app_admin_pipeline_ideaid_page_state_ts_resolvelivepipelinestatus",
+      "node_id": "review_node_3c54260b99fe43dd",
       "label": "resolveLivePipelineStatus()",
       "source_file": "src/app/admin/pipeline/[ideaId]/page-state.ts",
       "node_kind": "function",
-      "community": 483,
+      "community": 480,
       "community_label": "Resolve Live Pipeline Status",
       "line_number": 256,
       "source_location": "L256",
@@ -3180,7 +3180,7 @@ pr_impact payload:
       "match_kind": "line"
     },
     {
-      "node_id": "users_mohammednaji_desktop_projects_works_govalidate_platform_src_nextjs_page_admin_pipeline_ideaid",
+      "node_id": "review_node_7d079e43c05b7775",
       "label": "page /admin/pipeline/[ideaId]",
       "source_file": "src/app/admin/pipeline/[ideaId]/page.tsx",
       "node_kind": "component",
@@ -3389,7 +3389,7 @@ pr_impact payload:
       "match_kind": "line"
     },
     {
-      "node_id": "users_mohammednaji_desktop_projects_works_govalidate_platform_src_nextjs_page_admin_pipeline",
+      "node_id": "review_node_5d86288373fbc59d",
       "label": "page /admin/pipeline",
       "source_file": "src/app/admin/pipeline/page.tsx",
       "node_kind": "component",
@@ -3635,7 +3635,7 @@ pr_impact payload:
       "label": "usePipelineAdmin.ts",
       "source_file": "src/features/admin/hooks/usePipelineAdmin.ts",
       "node_kind": "",
-      "community": 439,
+      "community": 453,
       "community_label": "Features Use Pipeline Admin",
       "line_number": 1,
       "source_location": "L1",
@@ -3646,7 +3646,7 @@ pr_impact payload:
       "label": "UsePipelineAdminReturn",
       "source_file": "src/features/admin/hooks/usePipelineAdmin.ts",
       "node_kind": "",
-      "community": 439,
+      "community": 453,
       "community_label": "Features Use Pipeline Admin",
       "line_number": 26,
       "source_location": "L26-L35",
@@ -3657,7 +3657,7 @@ pr_impact payload:
       "label": "usePipelineAdmin()",
       "source_file": "src/features/admin/hooks/usePipelineAdmin.ts",
       "node_kind": "",
-      "community": 440,
+      "community": 454,
       "community_label": "Features Use Pipeline Admin — Admin",
       "line_number": 37,
       "source_location": "L37-L133",
@@ -3668,7 +3668,7 @@ pr_impact payload:
       "label": "refresh()",
       "source_file": "src/features/admin/hooks/usePipelineAdmin.ts",
       "node_kind": "",
-      "community": 440,
+      "community": 454,
       "community_label": "Features Use Pipeline Admin — Admin",
       "line_number": 119,
       "source_location": "L119-L121",
@@ -3679,7 +3679,7 @@ pr_impact payload:
       "label": "usePipelineRunDetail.ts",
       "source_file": "src/features/admin/hooks/usePipelineRunDetail.ts",
       "node_kind": "",
-      "community": 441,
+      "community": 455,
       "community_label": "Features Use Pipeline Run Detail",
       "line_number": 1,
       "source_location": "L1",
@@ -3690,7 +3690,7 @@ pr_impact payload:
       "label": "usePipelineRunDetail()",
       "source_file": "src/features/admin/hooks/usePipelineRunDetail.ts",
       "node_kind": "",
-      "community": 441,
+      "community": 455,
       "community_label": "Features Use Pipeline Run Detail",
       "line_number": 7,
       "source_location": "L7-L31",
@@ -3833,7 +3833,7 @@ pr_impact payload:
       "label": "RecommendationBadge.tsx",
       "source_file": "src/features/idea-details/components/RecommendationBadge.tsx",
       "node_kind": "",
-      "community": 269,
+      "community": 272,
       "community_label": "Features Recommendation Badge",
       "line_number": 1,
       "source_location": "L1",
@@ -3844,7 +3844,7 @@ pr_impact payload:
       "label": "RecommendationBadgeProps",
       "source_file": "src/features/idea-details/components/RecommendationBadge.tsx",
       "node_kind": "",
-      "community": 269,
+      "community": 272,
       "community_label": "Features Recommendation Badge",
       "line_number": 12,
       "source_location": "L12-L19",
@@ -3855,7 +3855,7 @@ pr_impact payload:
       "label": "RecommendationBadge()",
       "source_file": "src/features/idea-details/components/RecommendationBadge.tsx",
       "node_kind": "function",
-      "community": 269,
+      "community": 272,
       "community_label": "Features Recommendation Badge",
       "line_number": 62,
       "source_location": "L62-L178",
@@ -4361,7 +4361,7 @@ pr_impact payload:
       "label": "SectionProgressCard.tsx",
       "source_file": "src/features/ideas/components/SectionProgressCard.tsx",
       "node_kind": "",
-      "community": 284,
+      "community": 287,
       "community_label": "Features Section Progress Card",
       "line_number": 1,
       "source_location": "L1",
@@ -4372,7 +4372,7 @@ pr_impact payload:
       "label": "SectionProgressCardProps",
       "source_file": "src/features/ideas/components/SectionProgressCard.tsx",
       "node_kind": "",
-      "community": 284,
+      "community": 287,
       "community_label": "Features Section Progress Card",
       "line_number": 17,
       "source_location": "L17-L20",
@@ -4383,7 +4383,7 @@ pr_impact payload:
       "label": "Spinner()",
       "source_file": "src/features/ideas/components/SectionProgressCard.tsx",
       "node_kind": "component",
-      "community": 284,
+      "community": 287,
       "community_label": "Features Section Progress Card",
       "line_number": 78,
       "source_location": "L78-L101",
@@ -4438,7 +4438,7 @@ pr_impact payload:
       "label": "progress.types.ts",
       "source_file": "src/features/ideas/types/progress.types.ts",
       "node_kind": "",
-      "community": 265,
+      "community": 268,
       "community_label": "Features Progress Types",
       "line_number": 1,
       "source_location": "L1",
@@ -4449,7 +4449,7 @@ pr_impact payload:
       "label": "ProgressBroadcast",
       "source_file": "src/features/ideas/types/progress.types.ts",
       "node_kind": "",
-      "community": 265,
+      "community": 268,
       "community_label": "Features Progress Types",
       "line_number": 11,
       "source_location": "L11-L42",
@@ -4460,7 +4460,7 @@ pr_impact payload:
       "label": "SectionProgress",
       "source_file": "src/features/ideas/types/progress.types.ts",
       "node_kind": "",
-      "community": 265,
+      "community": 268,
       "community_label": "Features Progress Types",
       "line_number": 44,
       "source_location": "L44-L48",
@@ -5635,7 +5635,7 @@ pr_impact payload:
       "node_count": 9
     },
     {
-      "id": 46,
+      "id": 47,
       "label": "App Skeletons",
       "node_count": 8
     },
@@ -5660,7 +5660,7 @@ pr_impact payload:
       "node_count": 8
     },
     {
-      "id": 41,
+      "id": 43,
       "label": "Features Renewal",
       "node_count": 8
     },
@@ -5670,17 +5670,17 @@ pr_impact payload:
       "node_count": 8
     },
     {
-      "id": 47,
+      "id": 48,
       "label": "Components Standard Typography",
       "node_count": 8
     },
     {
-      "id": 44,
+      "id": 45,
       "label": "Features Runway Tab",
       "node_count": 8
     },
     {
-      "id": 45,
+      "id": 46,
       "label": "UI Score Display",
       "node_count": 8
     },
@@ -5690,7 +5690,7 @@ pr_impact payload:
       "node_count": 8
     },
     {
-      "id": 42,
+      "id": 44,
       "label": "Features Use Subscription State",
       "node_count": 8
     },
@@ -5705,7 +5705,7 @@ pr_impact payload:
       "node_count": 8
     },
     {
-      "id": 48,
+      "id": 41,
       "label": "App Account Settings Section",
       "node_count": 8
     },
@@ -6380,7 +6380,7 @@ pr_impact payload:
       "node_count": 3
     },
     {
-      "id": 266,
+      "id": 269,
       "label": "Components Progress Tracker — Progress",
       "node_count": 3
     },
@@ -6395,7 +6395,7 @@ pr_impact payload:
       "node_count": 3
     },
     {
-      "id": 268,
+      "id": 271,
       "label": "Components Quick Actions",
       "node_count": 3
     },
@@ -6465,7 +6465,7 @@ pr_impact payload:
       "node_count": 3
     },
     {
-      "id": 270,
+      "id": 273,
       "label": "Features Records Table",
       "node_count": 3
     },
@@ -6525,7 +6525,7 @@ pr_impact payload:
       "node_count": 3
     },
     {
-      "id": 280,
+      "id": 283,
       "label": "App Use Saved Selection",
       "node_count": 3
     },
@@ -6535,7 +6535,7 @@ pr_impact payload:
       "node_count": 3
     },
     {
-      "id": 294,
+      "id": 297,
       "label": "Shared Upgrade Required Modal",
       "node_count": 3
     },
@@ -6545,37 +6545,37 @@ pr_impact payload:
       "node_count": 3
     },
     {
-      "id": 275,
+      "id": 278,
       "label": "App Saved Bulk Actions",
       "node_count": 3
     },
     {
-      "id": 276,
+      "id": 279,
       "label": "App Saved Empty State",
       "node_count": 3
     },
     {
-      "id": 277,
+      "id": 280,
       "label": "App Saved Filters",
       "node_count": 3
     },
     {
-      "id": 278,
+      "id": 281,
       "label": "App Saved Grid",
       "node_count": 3
     },
     {
-      "id": 279,
+      "id": 282,
       "label": "App Saved Header",
       "node_count": 3
     },
     {
-      "id": 282,
+      "id": 285,
       "label": "App Saved Pagination",
       "node_count": 3
     },
     {
-      "id": 285,
+      "id": 288,
       "label": "App Select Row",
       "node_count": 3
     },
@@ -6585,22 +6585,22 @@ pr_impact payload:
       "node_count": 3
     },
     {
-      "id": 269,
+      "id": 272,
       "label": "Features Recommendation Badge",
       "node_count": 3
     },
     {
-      "id": 283,
+      "id": 286,
       "label": "Features Search Filters",
       "node_count": 3
     },
     {
-      "id": 284,
+      "id": 287,
       "label": "Features Section Progress Card",
       "node_count": 3
     },
     {
-      "id": 289,
+      "id": 292,
       "label": "UI Skeleton",
       "node_count": 3
     },
@@ -6610,7 +6610,7 @@ pr_impact payload:
       "node_count": 3
     },
     {
-      "id": 272,
+      "id": 275,
       "label": "Features Renewal Modal",
       "node_count": 3
     },
@@ -6620,17 +6620,17 @@ pr_impact payload:
       "node_count": 3
     },
     {
-      "id": 271,
+      "id": 274,
       "label": "Features Renewal — Coupon",
       "node_count": 3
     },
     {
-      "id": 264,
+      "id": 267,
       "label": "Features Problem Solution Cards",
       "node_count": 3
     },
     {
-      "id": 291,
+      "id": 294,
       "label": "Features Strengths Challenges",
       "node_count": 3
     },
@@ -6640,7 +6640,7 @@ pr_impact payload:
       "node_count": 3
     },
     {
-      "id": 274,
+      "id": 277,
       "label": "Features Risk Overview",
       "node_count": 3
     },
@@ -6665,17 +6665,17 @@ pr_impact payload:
       "node_count": 3
     },
     {
-      "id": 299,
+      "id": 266,
       "label": "App — Campaigns",
       "node_count": 3
     },
     {
-      "id": 297,
+      "id": 264,
       "label": "App",
       "node_count": 3
     },
     {
-      "id": 298,
+      "id": 265,
       "label": "App — Landing",
       "node_count": 3
     },
@@ -6705,7 +6705,7 @@ pr_impact payload:
       "node_count": 3
     },
     {
-      "id": 267,
+      "id": 270,
       "label": "Lib Progress Validation — Progress",
       "node_count": 3
     },
@@ -6720,7 +6720,7 @@ pr_impact payload:
       "node_count": 3
     },
     {
-      "id": 281,
+      "id": 284,
       "label": "Features Saved Ideas",
       "node_count": 3
     },
@@ -6735,7 +6735,7 @@ pr_impact payload:
       "node_count": 3
     },
     {
-      "id": 265,
+      "id": 268,
       "label": "Features Progress Types",
       "node_count": 3
     },
@@ -6775,12 +6775,12 @@ pr_impact payload:
       "node_count": 2
     },
     {
-      "id": 436,
+      "id": 450,
       "label": "Features Use Landing Pages",
       "node_count": 2
     },
     {
-      "id": 441,
+      "id": 455,
       "label": "Features Use Pipeline Run Detail",
       "node_count": 2
     },
@@ -6795,7 +6795,7 @@ pr_impact payload:
       "node_count": 2
     },
     {
-      "id": 439,
+      "id": 453,
       "label": "Features Use Pipeline Admin",
       "node_count": 2
     },
@@ -6840,7 +6840,7 @@ pr_impact payload:
       "node_count": 2
     },
     {
-      "id": 408,
+      "id": 422,
       "label": "Components Recent Ideas",
       "node_count": 2
     },
@@ -6860,12 +6860,12 @@ pr_impact payload:
       "node_count": 2
     },
     {
-      "id": 413,
+      "id": 427,
       "label": "Components Saved Ideas",
       "node_count": 2
     },
     {
-      "id": 425,
+      "id": 439,
       "label": "App Sync Banner",
       "node_count": 2
     },
@@ -6885,7 +6885,7 @@ pr_impact payload:
       "node_count": 2
     },
     {
-      "id": 407,
+      "id": 421,
       "label": "App Purchase Credits — Purchase",
       "node_count": 2
     },
@@ -6900,12 +6900,12 @@ pr_impact payload:
       "node_count": 2
     },
     {
-      "id": 404,
+      "id": 418,
       "label": "App Providers",
       "node_count": 2
     },
     {
-      "id": 427,
+      "id": 441,
       "label": "Features Types — Domain",
       "node_count": 2
     },
@@ -6915,7 +6915,7 @@ pr_impact payload:
       "node_count": 2
     },
     {
-      "id": 431,
+      "id": 445,
       "label": "App Use Billing — Change",
       "node_count": 2
     },
@@ -6925,7 +6925,7 @@ pr_impact payload:
       "node_count": 2
     },
     {
-      "id": 417,
+      "id": 431,
       "label": "Components Service Worker Unregister",
       "node_count": 2
     },
@@ -6960,7 +6960,7 @@ pr_impact payload:
       "node_count": 2
     },
     {
-      "id": 434,
+      "id": 448,
       "label": "Features Use Idea Status Updates",
       "node_count": 2
     },
@@ -6975,7 +6975,7 @@ pr_impact payload:
       "node_count": 2
     },
     {
-      "id": 411,
+      "id": 425,
       "label": "Features Risk Analysis Tab",
       "node_count": 2
     },
@@ -6985,27 +6985,27 @@ pr_impact payload:
       "node_count": 2
     },
     {
-      "id": 435,
+      "id": 449,
       "label": "Hooks Use In Progress Ideas",
       "node_count": 2
     },
     {
-      "id": 423,
+      "id": 437,
       "label": "Shared Socket",
       "node_count": 2
     },
     {
-      "id": 429,
+      "id": 443,
       "label": "App Usage Insights — Insights",
       "node_count": 2
     },
     {
-      "id": 415,
+      "id": 429,
       "label": "App Section",
       "node_count": 2
     },
     {
-      "id": 416,
+      "id": 430,
       "label": "App Section Divider",
       "node_count": 2
     },
@@ -7020,12 +7020,12 @@ pr_impact payload:
       "node_count": 2
     },
     {
-      "id": 440,
+      "id": 454,
       "label": "Features Use Pipeline Admin — Admin",
       "node_count": 2
     },
     {
-      "id": 406,
+      "id": 420,
       "label": "App Purchase Credits",
       "node_count": 2
     },
@@ -7040,12 +7040,12 @@ pr_impact payload:
       "node_count": 2
     },
     {
-      "id": 409,
+      "id": 423,
       "label": "Components Revenue Area Chart",
       "node_count": 2
     },
     {
-      "id": 412,
+      "id": 426,
       "label": "Components Risk Gauge Chart — Chart",
       "node_count": 2
     },
@@ -7065,7 +7065,7 @@ pr_impact payload:
       "node_count": 2
     },
     {
-      "id": 414,
+      "id": 428,
       "label": "Features Scoring Ledger Display — Display",
       "node_count": 2
     },
@@ -7075,77 +7075,77 @@ pr_impact payload:
       "node_count": 2
     },
     {
-      "id": 428,
+      "id": 442,
       "label": "Shared Typography — Default",
       "node_count": 2
     },
     {
-      "id": 453,
+      "id": 414,
       "label": "App — Sign",
       "node_count": 2
     },
     {
-      "id": 444,
+      "id": 405,
       "label": "App — Campaigns (2)",
       "node_count": 2
     },
     {
-      "id": 445,
+      "id": 406,
       "label": "App — Cost",
       "node_count": 2
     },
     {
-      "id": 447,
+      "id": 408,
       "label": "App — Campaigns (4)",
       "node_count": 2
     },
     {
-      "id": 446,
+      "id": 407,
       "label": "App — Campaigns (3)",
       "node_count": 2
     },
     {
-      "id": 448,
+      "id": 409,
       "label": "App — Coupons",
       "node_count": 2
     },
     {
-      "id": 449,
+      "id": 410,
       "label": "App — Email",
       "node_count": 2
     },
     {
-      "id": 450,
+      "id": 411,
       "label": "App — Invites",
       "node_count": 2
     },
     {
-      "id": 443,
+      "id": 404,
       "label": "App — Error",
       "node_count": 2
     },
     {
-      "id": 451,
+      "id": 412,
       "label": "App — Code",
       "node_count": 2
     },
     {
-      "id": 452,
+      "id": 413,
       "label": "App — Settings",
       "node_count": 2
     },
     {
-      "id": 454,
+      "id": 415,
       "label": "App — Ideas",
       "node_count": 2
     },
     {
-      "id": 455,
+      "id": 416,
       "label": "App — Users",
       "node_count": 2
     },
     {
-      "id": 456,
+      "id": 417,
       "label": "App — Waitlist",
       "node_count": 2
     },
@@ -7160,7 +7160,7 @@ pr_impact payload:
       "node_count": 2
     },
     {
-      "id": 419,
+      "id": 433,
       "label": "Features Share Modal — Modal",
       "node_count": 2
     },
@@ -7175,7 +7175,7 @@ pr_impact payload:
       "node_count": 2
     },
     {
-      "id": 437,
+      "id": 451,
       "label": "Hooks Use Onboarding — Onboarding",
       "node_count": 2
     },
@@ -7220,7 +7220,7 @@ pr_impact payload:
       "node_count": 2
     },
     {
-      "id": 405,
+      "id": 419,
       "label": "Features Public Idea Details Page",
       "node_count": 2
     },
@@ -7265,7 +7265,7 @@ pr_impact payload:
       "node_count": 2
     },
     {
-      "id": 433,
+      "id": 447,
       "label": "Features Use Domain Management — Status",
       "node_count": 2
     }
@@ -7482,7 +7482,7 @@ pr_impact payload:
         "snippet": "'use client'\n\nimport { XMarkIcon } from '@heroicons/react/24/outline'\nimport { useState } from 'react'\n\nimport { cn } from '@/lib/cn'\n\nimport { SmartContent } from './SmartContent'",
         "match_score": 10,
         "relevance_band": "direct",
-        "community": 269,
+        "community": 272,
         "community_label": "Features Recommendation Badge"
       },
       {
@@ -7519,7 +7519,7 @@ pr_impact payload:
         "snippet": "'use client'\n\nimport {\n  CheckCircleIcon,\n  ClockIcon,\n  ExclamationTriangleIcon,\n  ForwardIcon,\n  LockClosedIcon,",
         "match_score": 10,
         "relevance_band": "direct",
-        "community": 284,
+        "community": 287,
         "community_label": "Features Section Progress Card"
       },
       {
@@ -7729,7 +7729,7 @@ pr_impact payload:
         "node_count": 3
       },
       {
-        "id": 269,
+        "id": 272,
         "label": "Features Recommendation Badge",
         "node_count": 3
       },
@@ -7739,7 +7739,7 @@ pr_impact payload:
         "node_count": 3
       },
       {
-        "id": 284,
+        "id": 287,
         "label": "Features Section Progress Card",
         "node_count": 3
       },

@@ -44,25 +44,25 @@
   "supporting_path_count": 0,
   "test_path_count": 2,
   "hotspot_count": 3,
-  "verbose_payload_tokens": 42255,
-  "compact_payload_tokens": 6143,
-  "payload_reduction_ratio": 6.879,
-  "verbose_prompt_tokens": 63310,
-  "compact_prompt_tokens": 8740,
-  "reduction_ratio": 7.244,
-  "started_at": "2026-05-01T23:23:54.817Z",
-  "completed_at": "2026-05-01T23:26:04.586Z",
+  "verbose_payload_tokens": 41969,
+  "compact_payload_tokens": 6093,
+  "payload_reduction_ratio": 6.888,
+  "verbose_prompt_tokens": 63024,
+  "compact_prompt_tokens": 8690,
+  "reduction_ratio": 7.252,
+  "started_at": "2026-05-02T09:44:12.700Z",
+  "completed_at": "2026-05-02T09:45:53.060Z",
   "elapsed_ms": {
-    "verbose": 92392,
-    "compact": 36736
+    "verbose": 62387,
+    "compact": 37465
   },
   "status": {
     "verbose": "succeeded",
     "compact": "succeeded"
   },
   "answer_paths": {
-    "verbose": "graphify-out/review-compare/2026-05-01T23-23-54/verbose-answer.txt",
-    "compact": "graphify-out/review-compare/2026-05-01T23-23-54/compact-answer.txt"
+    "verbose": "graphify-out/review-compare/2026-05-02T09-44-12/verbose-answer.txt",
+    "compact": "graphify-out/review-compare/2026-05-02T09-44-12/compact-answer.txt"
   },
   "exit_code": {
     "verbose": 0,
@@ -73,9 +73,9 @@
     "compact": null
   },
   "paths": {
-    "output_dir": "graphify-out/review-compare/2026-05-01T23-23-54",
-    "verbose_prompt": "graphify-out/review-compare/2026-05-01T23-23-54/verbose-prompt.txt",
-    "compact_prompt": "graphify-out/review-compare/2026-05-01T23-23-54/compact-prompt.txt",
-    "report": "graphify-out/review-compare/2026-05-01T23-23-54/report.json"
+    "output_dir": "graphify-out/review-compare/2026-05-02T09-44-12",
+    "verbose_prompt": "graphify-out/review-compare/2026-05-02T09-44-12/verbose-prompt.txt",
+    "compact_prompt": "graphify-out/review-compare/2026-05-02T09-44-12/compact-prompt.txt",
+    "report": "graphify-out/review-compare/2026-05-02T09-44-12/report.json"
   }
 }

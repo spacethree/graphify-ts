@@ -1,0 +1,109 @@
+## PR Impact Review (verbose)
+
+### Changed Areas
+
+**1. New Admin Pipeline Detail Page (largest change)**
+- `src/app/admin/pipeline/[ideaId]/page.tsx` — 1,291-line monolith (component, side panel, DAG, error display, helpers all colocated). High structural complexity.
+- `src/app/admin/pipeline/[ideaId]/page-state.ts` (288 lines) — extracted state-merging logic (`mergeRunSections`, `mergeLiveCost`, `resolveOverviewTotals`, `shouldRefetchRunDetail`, `resolveHydratedPipelineStatus`, `isTerminalRunSnapshot`, `resolveLivePipelineStatus`).
+- `src/app/admin/pipeline/[ideaId]/page-state.test.ts` (430 lines) — comprehensive new tests for the extracted state logic.
+- `src/app/admin/pipeline/page.tsx` — new dashboard with tabs (runs/failures/stuck/costs).
+
+**2. New Admin Components/Hooks/Services**
+- New: `PipelineCostBreakdownPanel`, `PipelineFailuresList`, `PipelineRunsTable`, `PipelineSummaryCards`.
+- New hooks: `usePipelineAdmin`, `usePipelineRunDetail`.
+- New service: `pipeline-api.ts` (`createPipelineApi`).
+- New types: `pipeline.types.ts` (`PipelineRunSummary`, `PipelineRunDetail`, `PipelineRunDetailFull`, `PipelineFailure`, `PipelineRunSection`, `PipelineCostBreakdown`).
+
+**3. Pipeline Status Sync Refactor (idea-details)**
+- `pipeline-status-sync.ts` rewritten (330 lines) with new helpers: `resolveBaseIdeaForPipelineSync`, `syncIdeaWithPipelineStatus`, `resolveIdeaStatus`, `hasAnalyzingSection`, `resolveProgressMessage`, `hasPersistedAnalysisData`, `isFreshRetryRunStatus`, `resolveFallbackLiveProgress`, `resolvePreferredLiveProgress`, `isTerminalLiveProgress`.
+- `pipeline-status-sync.test.ts` — 620-line test suite (new).
+- `useIdeaData.ts` updated to consume new sync helpers.
+
+**4. Ideas Pipeline UI (V2 progress visualization)**
+- New: `IdeaProgressV2.tsx`, `PipelineDAG.tsx` (393 lines, Desktop+Mobile variants), `PipelineDAGNode.tsx`, `SectionProgressCard.tsx`.
+- New hook: `useIdeaProgress.ts` (188 lines).
+- New types: `progress.types.ts` (`ProgressBroadcast`, `SectionProgress`).
+- `IdeaCard.tsx` heavily modified — new helpers (`isIdeaInProgress`, `hasScoreData`), updated layout (lines 122–171, 318–395, 463–564).
+
+**5. Idea Details Touch-ups**
+- New `RecommendationBadge.tsx` (178 lines) integrated into `IdeaHero`, `RunwayTab`, `LetsBuildTab`.
+- `LetsBuildTab.tsx` significant changes (new helpers, copy-prompt flow).
+- `IdeaMetricsReview.tsx`, `MetricDetailModal.tsx`, `RedesignedIdeaDetailsPage.tsx` — minor updates.
+
+**6. Cross-cutting**
+- `src/components/layout.tsx` — small Sidebar additions (lines 28, 103–108, 505–506).
+- `src/shared/lib/api.ts` — new `IdeaPipelineStatusResponse` type (L271–298), additions in `Idea` type and `useAuthenticatedApiService`.
+- `src/shared/config/feature-flags.ts` — new flag entries.
+
+---
+
+### Top Risks
+
+| # | Risk | Severity |
+|---|------|----------|
+| 1 | **`page.tsx` is a 1,291-line god file** mixing page, side panel, DAG, error UI, helpers, and waves logic. Hard to test, easy to break in maintenance. | **High** |
+| 2 | **State logic split across `page-state.ts` and components** — mergers (`mergeRunSections`, `mergeLiveCost`) are pure but consumed by the giant page; correctness of the live-vs-hydrated reconciliation is critical for the admin UX. Tests exist, verify they cover terminal-state edge cases. | **High** |
+| 3 | **`pipeline-status-sync.ts` rewrite affects `useIdeaData` → all idea detail pages** (transitive dependents ≈ 350). A regression in `resolveIdeaStatus`/`isTerminalLiveProgress` would silently corrupt status display across the product. | **High** |
+| 4 | **Duplicated DAG implementations** — `PipelineDAG.tsx` (ideas feature) and `PipelineRunDAG()` inside `page.tsx` both implement `computeWaves`/`groupByWave`/`getEdgeColor`. Drift risk; edge-case bugs likely to fix in only one. | **Medium** |
+| 5 | **`IdeaCard.tsx` major rework** with broad transitive impact (≈ 446 dependents). Pipeline-in-progress vs. score-data branching changed; visual regressions likely on dashboard/saved/grid views. | **Medium** |
+| 6 | **`shared/lib/api.ts` type changes** (`IdeaPipelineStatusResponse`, `Idea` updates) — affects ~500 downstream consumers. Verify new fields are optional or backfilled. | **Medium** |
+| 7 | **New feature flag wiring** — confirm flag default state matches intended rollout (admin pipeline page, V2 progress visualization). | **Medium** |
+| 8 | **`SidePanel()` (326 lines, 10 direct dependents)** — bridge node connecting many communities. High coupling means a prop signature change cascades. | **Medium** |
+
+---
+
+### Supporting Files to Inspect
+
+Files not in the diff but worth checking for compatibility:
+
+- `src/features/idea-details/hooks/useIdeaData.ts` — consumer of `pipeline-status-sync` rewrite (verify all call sites updated).
+- `src/features/idea-details/hooks/useIdeaStatusUpdates.ts` — likely intersects with progress sync.
+- `src/components/EnhancedIdeaDetails.tsx`, `IdeaProgressTimeline.tsx` — older progress UIs that may overlap with `IdeaProgressV2`.
+- `src/lib/progressValidation.ts`, `src/lib/substatus.ts` — referenced by sync helpers; check status enum mappings.
+- `src/shared/lib/admin-api.ts` — confirm `pipeline-api.ts` doesn't duplicate or conflict.
+- `src/hooks/useSocket.ts` — `useIdeaProgress` and `PipelineRunDetailPage` both subscribe; check channel/event shape consistency.
+- `src/features/idea-details/components/IdeaProgressTimeline.tsx`, `ProgressTracker.tsx` — possible legacy overlap.
+
+---
+
+### Likely Tests to Run
+
+1. **New unit tests (must pass):**
+   - `src/app/admin/pipeline/[ideaId]/page-state.test.ts`
+   - `src/features/idea-details/hooks/pipeline-status-sync.test.ts`
+2. **Regression suites:**
+   - Idea details page tests (RedesignedIdeaDetailsPage, tab components)
+   - Idea card / dashboard grid tests
+   - Any existing admin pipeline tests
+3. **E2E / manual smoke:**
+   - `/admin/pipeline` dashboard — tab switching, empty/loading/error states
+   - `/admin/pipeline/[ideaId]` — DAG render, side panel, live socket updates, terminal-state UI
+   - Idea details — progress V2, RecommendationBadge in IdeaHero/RunwayTab/LetsBuildTab
+   - Idea card grid — in-progress vs. completed rendering, bookmark click, navigation
+   - LetsBuildTab — generate plan flow, copy prompt, area selection
+4. **Type check** the whole repo — `api.ts` and `pipeline.types.ts` changes can ripple silently.
+
+---
+
+### Structural Hotspots to Watch
+
+- **`PipelineRunDetailPage()` (page.tsx L1000–1291)** — **bridge + god node**, 12 direct dependents, propagates to 265 files. Any prop/hook change breaks many consumers.
+- **`SidePanel()` (page.tsx L645–970)** — **bridge node**, 326 lines, 10 direct dependents. Candidate for extraction into `src/features/admin/components/`.
+- **`PipelineDashboardPage()` (admin/pipeline/page.tsx)** — **bridge node**; orchestrates 4 new admin components plus the `usePipelineAdmin` hook.
+- **`IdeaCard()` (594 lines)** — already large, getting larger; touches 11 direct dependents and ~446 transitive.
+- **`LetsBuildTab()` (462 lines)** — touches 8 direct dependents and gained extract/strip area helpers + copy-prompt logic.
+- **`pipeline-status-sync.ts`** — single module now owns idea↔pipeline reconciliation; bugs here are subtle and ripple across all idea views.
+- **Cross-community changes: 50** — this PR cuts across many architectural boundaries; review for unintentional coupling.
+
+---
+
+### Recommended Review Order
+
+1. `page-state.ts` + its test (the pure logic foundation).
+2. `pipeline-status-sync.ts` + its test (highest blast radius).
+3. New admin types + service + hooks (small, well-bounded).
+4. `page.tsx` (1,291 lines) — focus on `SidePanel` and `PipelineRunDAG` for extraction opportunities.
+5. `IdeaProgressV2` + `PipelineDAG` + `PipelineDAGNode` + `SectionProgressCard` (V2 visualization stack).
+6. `IdeaCard.tsx` diff — visual regression hotspot.
+7. `RecommendationBadge` integration sites.
+8. `api.ts` and `feature-flags.ts` deltas.
