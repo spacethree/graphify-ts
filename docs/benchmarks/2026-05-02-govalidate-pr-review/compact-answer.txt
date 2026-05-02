@@ -1,0 +1,34 @@
+## PR Impact Review — Compact
+
+### Changed Areas
+- **Admin Pipeline Dashboard (new)** — `src/app/admin/pipeline/page.tsx` + extracted feature module under `src/features/admin/` (components: `PipelineSummaryCards`, `PipelineRunsTable`, `PipelineFailuresList`, `PipelineCostBreakdownPanel`; hooks: `usePipelineAdmin`, `usePipelineRunDetail`; services: `pipeline-api`; types: `pipeline.types`).
+- **Pipeline Run Detail page** — large rewrite of `src/app/admin/pipeline/[ideaId]/page.tsx` (1,291 lines) with extracted **pure state module** `page-state.ts` (288 lines) + companion test (430 lines).
+- **Idea Details UX** — new `RecommendationBadge` (178 lines), wired into `IdeaHero`, `LetsBuildTab`, `RunwayTab`; tweaks to `IdeaMetricsReview` and `RedesignedIdeaDetailsPage`.
+- **Layout** — minor sidebar/nav touches in `src/components/layout.tsx`.
+
+### Top Risks
+1. **PipelineRunDetailPage (high)** — bridge + god-node hotspot, 1,291-line file, 265-file blast radius. Heavy risk of regression in live-cost merging, status hydration, and section synchronization.
+2. **page-state.ts merge functions** — `mergeRunSections`, `mergeLiveCost`, `resolveOverviewTotals`, `resolveHydratedPipelineStatus`, `isTerminalRunSnapshot`, `resolveLivePipelineStatus`. Pure but central; subtle precedence bugs (live vs. hydrated vs. snapshot) can corrupt UI totals or stall terminal transitions.
+3. **IdeaMetricsReview (high)** — 277-file propagation; small line edits but huge dependent surface.
+4. **Cross-community surface** — 50 cross-community changes, blast radius 1,059. Admin module extraction risks duplicate exports or broken barrels in `src/features/admin/index.ts`.
+5. **RecommendationBadge embedding** — added to three high-traffic tabs/heroes; risk of layout regressions and double-rendering across tab switches.
+
+### Supporting Files to Inspect
+- `src/features/idea-details/hooks/pipeline-status-sync.ts` — invariants relied on by `resolveHydratedPipelineStatus`.
+- `src/features/ideas/types/progress.types.ts` — types consumed by `page-state.ts`.
+- `src/features/admin/index.ts` — barrel changes (lines 7, 19–25, 34–36, 40–43, 47).
+- `src/features/ideas/components/PipelineDAG.tsx` + `IdeaProgressV2.tsx` — sibling consumers of pipeline status that could drift.
+- `src/features/idea-details/components/SmartContent.tsx` — used by both `RecommendationBadge` and `LetsBuildTab` rewrite.
+
+### Likely Tests to Run
+- `src/app/admin/pipeline/[ideaId]/page-state.test.ts` (new, 430 lines — verify branch coverage on `mergeRunSections` precedence and `isTerminalRunSnapshot`).
+- `src/features/idea-details/hooks/pipeline-status-sync.test.ts` (existing companion).
+- Any integration/E2E covering: admin dashboard tabs (runs/failures/stuck/costs), pipeline detail live updates via socket, IdeaDetails Lets-Build / Runway tab rendering.
+- Manual: socket-driven live-cost updates, terminal-state transitions, RecommendationBadge open/close on each tab.
+
+### Structural Hotspots to Watch
+- **`SidePanel()`** (page.tsx:645) — bridge node connecting pipeline status, cost, and section selection.
+- **`PipelineRunDetailPage()`** — bridge + god-node; verify `subscribeTo` cleanup and `selectedSectionId` reset on idea change.
+- **`PipelineDashboardPage()`** — bridge node; tab state + data-fetching coordination via `usePipelineAdmin`.
+- **Admin barrel (`features/admin/index.ts`)** — multiple range edits suggest re-export reshuffle; check for circular imports or missed exports against new components/hooks/types.
+- **`mergeRunSections` / `mergeLiveCost`** — pure helpers but high-leverage; ensure immutability (no in-place mutation of run sections) per project rules.

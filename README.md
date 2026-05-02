@@ -153,14 +153,23 @@ The only command that hits an external service is the optional `compare` / `revi
 
 ---
 
+## Public proof
+
+- [Benchmark proof hub (repo artifacts)](https://github.com/mohanagy/graphify-ts/tree/main/docs/benchmarks) — live now; browse the committed benchmark wrappers and evidence in GitHub
+- [GitHub Pages benchmark hub](https://mohanagy.github.io/graphify-ts/) — post-deploy wrapper once Pages is live from `main`
+- [Retrieval benchmark artifact](docs/benchmarks/2026-04-30-govalidate/) — raw `claude --output-format json` evidence + `verify.sh`
+- [PR review benchmark artifact](docs/benchmarks/2026-05-02-govalidate-pr-review/) — `review-compare` report, prompts, answers, `verify.sh`
+
+---
+
 ## Documentation
 
 - [Quick start guide](docs/proof-workflows.md) — three reproducible workflows: local proof, A/B compare, federated proof
 - [Language and capability matrix](docs/language-capability-matrix.md) — exactly what each file type and language gets
+- [Marketplace listing pack](docs/distribution/marketplaces/README.md) — reusable Smithery / awesome-mcp submission assets
 - [Why graphify (with detailed numbers)](examples/why-graphify.md) — the long-form evidence
 - [MCP tool examples](examples/mcp-tool-examples.md) — real input/output for every tool
 - [Architectural comparison](docs/research-2026-05-01-architectural-comparison.md) — vs aider / token-savior / code-review-graph / Cody
-- [Public benchmark](docs/benchmarks/2026-04-30-govalidate/) — raw `claude --output-format json` evidence + `verify.sh`
 - [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Changelog](CHANGELOG.md)
 
 ---

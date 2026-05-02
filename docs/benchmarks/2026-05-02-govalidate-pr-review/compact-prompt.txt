@@ -1,0 +1,995 @@
+Review the current git diff using only the provided pr_impact payload.
+Summarize the changed areas, top risks, supporting files to inspect, likely tests to run, and structural hotspots to watch.
+Mode: compact
+
+pr_impact payload:
+{
+  "base_branch": "origin/main",
+  "changed_files": [
+    "src/app/admin/pipeline/[ideaId]/page-state.ts",
+    "src/app/admin/pipeline/[ideaId]/page-state.test.ts",
+    "src/app/admin/pipeline/[ideaId]/page.tsx",
+    "src/app/admin/pipeline/page.tsx",
+    "src/components/layout.tsx",
+    "src/features/admin/components/PipelineCostBreakdownPanel.tsx",
+    "src/features/admin/components/PipelineFailuresList.tsx",
+    "src/features/admin/components/PipelineRunsTable.tsx",
+    "src/features/admin/components/PipelineSummaryCards.tsx",
+    "src/features/admin/hooks/usePipelineAdmin.ts",
+    "src/features/admin/hooks/usePipelineRunDetail.ts",
+    "src/features/admin/index.ts",
+    "src/features/admin/services/pipeline-api.ts",
+    "src/features/admin/types/pipeline.types.ts",
+    "src/features/idea-details/components/IdeaHero.tsx",
+    "src/features/idea-details/components/IdeaMetricsReview.tsx",
+    "src/features/idea-details/components/RecommendationBadge.tsx",
+    "src/features/idea-details/components/RedesignedIdeaDetailsPage.tsx",
+    "src/features/idea-details/components/tabs/LetsBuildTab.tsx",
+    "src/features/idea-details/components/tabs/RunwayTab.tsx"
+  ],
+  "changed_ranges": [
+    {
+      "source_file": "src/app/admin/pipeline/[ideaId]/page-state.test.ts",
+      "line_ranges": [
+        {
+          "start": 1,
+          "end": 430
+        }
+      ]
+    },
+    {
+      "source_file": "src/app/admin/pipeline/[ideaId]/page-state.ts",
+      "line_ranges": [
+        {
+          "start": 1,
+          "end": 288
+        }
+      ]
+    },
+    {
+      "source_file": "src/app/admin/pipeline/[ideaId]/page.tsx",
+      "line_ranges": [
+        {
+          "start": 1,
+          "end": 1291
+        }
+      ]
+    },
+    {
+      "source_file": "src/app/admin/pipeline/page.tsx",
+      "line_ranges": [
+        {
+          "start": 1,
+          "end": 158
+        }
+      ]
+    },
+    {
+      "source_file": "src/components/layout.tsx",
+      "line_ranges": [
+        {
+          "start": 28,
+          "end": 28
+        },
+        {
+          "start": 103,
+          "end": 108
+        },
+        {
+          "start": 505,
+          "end": 506
+        }
+      ]
+    },
+    {
+      "source_file": "src/features/admin/components/PipelineCostBreakdownPanel.tsx",
+      "line_ranges": [
+        {
+          "start": 1,
+          "end": 81
+        }
+      ]
+    },
+    {
+      "source_file": "src/features/admin/components/PipelineFailuresList.tsx",
+      "line_ranges": [
+        {
+          "start": 1,
+          "end": 61
+        }
+      ]
+    },
+    {
+      "source_file": "src/features/admin/components/PipelineRunsTable.tsx",
+      "line_ranges": [
+        {
+          "start": 1,
+          "end": 122
+        }
+      ]
+    },
+    {
+      "source_file": "src/features/admin/components/PipelineSummaryCards.tsx",
+      "line_ranges": [
+        {
+          "start": 1,
+          "end": 73
+        }
+      ]
+    },
+    {
+      "source_file": "src/features/admin/hooks/usePipelineAdmin.ts",
+      "line_ranges": [
+        {
+          "start": 1,
+          "end": 133
+        }
+      ]
+    },
+    {
+      "source_file": "src/features/admin/hooks/usePipelineRunDetail.ts",
+      "line_ranges": [
+        {
+          "start": 1,
+          "end": 31
+        }
+      ]
+    },
+    {
+      "source_file": "src/features/admin/index.ts",
+      "line_ranges": [
+        {
+          "start": 7,
+          "end": 7
+        },
+        {
+          "start": 19,
+          "end": 25
+        },
+        {
+          "start": 34,
+          "end": 36
+        },
+        {
+          "start": 40,
+          "end": 43
+        },
+        {
+          "start": 47,
+          "end": 47
+        }
+      ]
+    },
+    {
+      "source_file": "src/features/admin/services/pipeline-api.ts",
+      "line_ranges": [
+        {
+          "start": 1,
+          "end": 92
+        }
+      ]
+    },
+    {
+      "source_file": "src/features/admin/types/pipeline.types.ts",
+      "line_ranges": [
+        {
+          "start": 1,
+          "end": 99
+        }
+      ]
+    },
+    {
+      "source_file": "src/features/idea-details/components/IdeaHero.tsx",
+      "line_ranges": [
+        {
+          "start": 5,
+          "end": 5
+        },
+        {
+          "start": 75,
+          "end": 81
+        }
+      ]
+    },
+    {
+      "source_file": "src/features/idea-details/components/IdeaMetricsReview.tsx",
+      "line_ranges": [
+        {
+          "start": 65,
+          "end": 80
+        },
+        {
+          "start": 84,
+          "end": 87
+        }
+      ]
+    },
+    {
+      "source_file": "src/features/idea-details/components/RecommendationBadge.tsx",
+      "line_ranges": [
+        {
+          "start": 1,
+          "end": 178
+        }
+      ]
+    },
+    {
+      "source_file": "src/features/idea-details/components/RedesignedIdeaDetailsPage.tsx",
+      "line_ranges": [
+        {
+          "start": 211,
+          "end": 213
+        }
+      ]
+    },
+    {
+      "source_file": "src/features/idea-details/components/tabs/LetsBuildTab.tsx",
+      "line_ranges": [
+        {
+          "start": 39,
+          "end": 39
+        },
+        {
+          "start": 43,
+          "end": 72
+        },
+        {
+          "start": 224,
+          "end": 253
+        },
+        {
+          "start": 255,
+          "end": 264
+        },
+        {
+          "start": 266,
+          "end": 286
+        },
+        {
+          "start": 288,
+          "end": 289
+        },
+        {
+          "start": 294,
+          "end": 294
+        },
+        {
+          "start": 296,
+          "end": 296
+        },
+        {
+          "start": 301,
+          "end": 301
+        },
+        {
+          "start": 305,
+          "end": 306
+        },
+        {
+          "start": 310,
+          "end": 312
+        },
+        {
+          "start": 314,
+          "end": 315
+        },
+        {
+          "start": 318,
+          "end": 318
+        },
+        {
+          "start": 321,
+          "end": 326
+        },
+        {
+          "start": 329,
+          "end": 339
+        },
+        {
+          "start": 341,
+          "end": 357
+        },
+        {
+          "start": 359,
+          "end": 360
+        },
+        {
+          "start": 365,
+          "end": 396
+        }
+      ]
+    },
+    {
+      "source_file": "src/features/idea-details/components/tabs/RunwayTab.tsx",
+      "line_ranges": [
+        {
+          "start": 18,
+          "end": 18
+        },
+        {
+          "start": 364,
+          "end": 369
+        }
+      ]
+    }
+  ],
+  "seed_nodes": [
+    {
+      "node_id": "page_state",
+      "label": "page-state.ts",
+      "source_file": "src/app/admin/pipeline/[ideaId]/page-state.ts",
+      "node_kind": "",
+      "community": 58,
+      "community_label": "App Page State",
+      "line_number": 1,
+      "source_location": "L1",
+      "match_kind": "line"
+    },
+    {
+      "node_id": "page_state_adminpipelinesection",
+      "label": "AdminPipelineSection",
+      "source_file": "src/app/admin/pipeline/[ideaId]/page-state.ts",
+      "node_kind": "",
+      "community": 58,
+      "community_label": "App Page State",
+      "line_number": 6,
+      "source_location": "L6-L17",
+      "match_kind": "line"
+    },
+    {
+      "node_id": "page_state_livecoststate",
+      "label": "LiveCostState",
+      "source_file": "src/app/admin/pipeline/[ideaId]/page-state.ts",
+      "node_kind": "",
+      "community": 58,
+      "community_label": "App Page State",
+      "line_number": 19,
+      "source_location": "L19-L23",
+      "match_kind": "line"
+    },
+    {
+      "node_id": "page_state_runtotalssource",
+      "label": "RunTotalsSource",
+      "source_file": "src/app/admin/pipeline/[ideaId]/page-state.ts",
+      "node_kind": "",
+      "community": 58,
+      "community_label": "App Page State",
+      "line_number": 25,
+      "source_location": "L25-L28",
+      "match_kind": "line"
+    },
+    {
+      "node_id": "page_state_mergerunsectionsoptions",
+      "label": "MergeRunSectionsOptions",
+      "source_file": "src/app/admin/pipeline/[ideaId]/page-state.ts",
+      "node_kind": "",
+      "community": 58,
+      "community_label": "App Page State",
+      "line_number": 30,
+      "source_location": "L30-L32",
+      "match_kind": "line"
+    },
+    {
+      "node_id": "page_state_hydratedrunstatussource",
+      "label": "HydratedRunStatusSource",
+      "source_file": "src/app/admin/pipeline/[ideaId]/page-state.ts",
+      "node_kind": "",
+      "community": 58,
+      "community_label": "App Page State",
+      "line_number": 34,
+      "source_location": "L34-L57",
+      "match_kind": "line"
+    },
+    {
+      "node_id": "page_state_mergerunsections",
+      "label": "mergeRunSections()",
+      "source_file": "src/app/admin/pipeline/[ideaId]/page-state.ts",
+      "node_kind": "",
+      "community": 391,
+      "community_label": "App Page State — Merge",
+      "line_number": 59,
+      "source_location": "L59-L116",
+      "match_kind": "line"
+    },
+    {
+      "node_id": "review_node_7f12cd2cd21a376b",
+      "label": "mergeRunSections()",
+      "source_file": "src/app/admin/pipeline/[ideaId]/page-state.ts",
+      "node_kind": "function",
+      "community": 478,
+      "community_label": "Merge Run Sections",
+      "line_number": 59,
+      "source_location": "L59",
+      "match_kind": "line"
+    },
+    {
+      "node_id": "page_state_mergelivecost",
+      "label": "mergeLiveCost()",
+      "source_file": "src/app/admin/pipeline/[ideaId]/page-state.ts",
+      "node_kind": "",
+      "community": 78,
+      "community_label": "App Page State — Pipeline",
+      "line_number": 118,
+      "source_location": "L118-L126",
+      "match_kind": "line"
+    },
+    {
+      "node_id": "review_node_f66e03ea2490e8ed",
+      "label": "mergeLiveCost()",
+      "source_file": "src/app/admin/pipeline/[ideaId]/page-state.ts",
+      "node_kind": "function",
+      "community": 477,
+      "community_label": "Merge Live Cost",
+      "line_number": 118,
+      "source_location": "L118",
+      "match_kind": "line"
+    },
+    {
+      "node_id": "page_state_resolveoverviewtotals",
+      "label": "resolveOverviewTotals()",
+      "source_file": "src/app/admin/pipeline/[ideaId]/page-state.ts",
+      "node_kind": "",
+      "community": 58,
+      "community_label": "App Page State",
+      "line_number": 128,
+      "source_location": "L128-L144",
+      "match_kind": "line"
+    },
+    {
+      "node_id": "review_node_393ef245f029660e",
+      "label": "resolveOverviewTotals()",
+      "source_file": "src/app/admin/pipeline/[ideaId]/page-state.ts",
+      "node_kind": "function",
+      "community": 481,
+      "community_label": "Resolve Overview Totals",
+      "line_number": 128,
+      "source_location": "L128",
+      "match_kind": "line"
+    }
+  ],
+  "per_node_impact": [
+    {
+      "node": "IdeaMetricsReview()",
+      "total_dependents": 605,
+      "affected_communities": 282
+    },
+    {
+      "node": "PipelineRunDetailPage()",
+      "total_dependents": 601,
+      "affected_communities": 272
+    },
+    {
+      "node": "PipelineDashboardPage()",
+      "total_dependents": 601,
+      "affected_communities": 272
+    },
+    {
+      "node": "mergeRunSections()",
+      "total_dependents": 598,
+      "affected_communities": 271
+    },
+    {
+      "node": "mergeLiveCost()",
+      "total_dependents": 598,
+      "affected_communities": 271
+    }
+  ],
+  "total_blast_radius": 1059,
+  "affected_communities": [
+    {
+      "id": 0,
+      "label": "Shared API",
+      "node_count": 81
+    },
+    {
+      "id": 1,
+      "label": "Features Use",
+      "node_count": 61
+    },
+    {
+      "id": 2,
+      "label": "Shared Admin API",
+      "node_count": 46
+    },
+    {
+      "id": 4,
+      "label": "Features Ideas Types",
+      "node_count": 30
+    },
+    {
+      "id": 6,
+      "label": "App Page",
+      "node_count": 24
+    },
+    {
+      "id": 7,
+      "label": "Types Validation Metrics",
+      "node_count": 22
+    },
+    {
+      "id": 9,
+      "label": "App Page — Props",
+      "node_count": 16
+    },
+    {
+      "id": 10,
+      "label": "Components Card",
+      "node_count": 13
+    },
+    {
+      "id": 11,
+      "label": "Shared Utils",
+      "node_count": 13
+    },
+    {
+      "id": 14,
+      "label": "Features Idea Detail Sections",
+      "node_count": 12
+    },
+    {
+      "id": 13,
+      "label": "Features Use Dashboard Logic",
+      "node_count": 12
+    },
+    {
+      "id": 18,
+      "label": "App Page — Handle",
+      "node_count": 11
+    }
+  ],
+  "review_context": {
+    "supporting_paths": [],
+    "test_paths": [
+      "src/app/admin/pipeline/[ideaId]/page-state.test.ts",
+      "src/features/idea-details/hooks/pipeline-status-sync.test.ts"
+    ],
+    "hotspots": [
+      {
+        "label": "SidePanel()",
+        "type": "bridge",
+        "why": "SidePanel() connects multiple communities in the changed review area."
+      },
+      {
+        "label": "PipelineRunDetailPage()",
+        "type": "bridge",
+        "why": "PipelineRunDetailPage() connects multiple communities in the changed review area and has unusually high graph degree for this workspace."
+      },
+      {
+        "label": "PipelineDashboardPage()",
+        "type": "bridge",
+        "why": "PipelineDashboardPage() connects multiple communities in the changed review area."
+      }
+    ]
+  },
+  "review_bundle": {
+    "budget": 2000,
+    "token_count": 3149,
+    "nodes": [
+      {
+        "label": "PipelineDAG.tsx",
+        "source_file": "src/features/ideas/components/PipelineDAG.tsx",
+        "line_number": 1,
+        "snippet": "'use client'\n\nimport React, { useCallback, useEffect, useRef, useState } from 'react'\n\nimport { cn } from '@/lib/cn'\n\nimport type { SectionProgress } from '../types/progress.types'\n",
+        "relevance_band": "direct",
+        "community": 82,
+        "node_id": "pipelinedag",
+        "match_score": 10
+      },
+      {
+        "label": "page-state.ts",
+        "source_file": "src/app/admin/pipeline/[ideaId]/page-state.ts",
+        "line_number": 1,
+        "snippet": "import type {\n  PipelineStatus,\n  ProgressBroadcast,\n} from '@/features/ideas/types/progress.types'\n\nexport interface AdminPipelineSection {\n  sectionId: string\n  title: string",
+        "relevance_band": "direct",
+        "community": 58,
+        "node_id": "page_state",
+        "match_score": 10
+      },
+      {
+        "label": "pipeline-status-sync.ts",
+        "source_file": "src/features/idea-details/hooks/pipeline-status-sync.ts",
+        "line_number": 1,
+        "snippet": "import { getStatusOrderIndex } from '@/lib/progressValidation'\nimport {\n  IdeaStatus,\n  type Idea,\n  type IdeaPipelineStatusResponse,\n} from '@/shared/lib/api'\n\nexport function resolveBaseIdeaForPipelineSync(",
+        "relevance_band": "direct",
+        "community": 22,
+        "node_id": "pipeline_status_sync",
+        "match_score": 10
+      },
+      {
+        "label": "IdeaProgressV2.tsx",
+        "source_file": "src/features/ideas/components/IdeaProgressV2.tsx",
+        "line_number": 1,
+        "snippet": "'use client'\n\nimport { Squares2X2Icon, ShareIcon } from '@heroicons/react/24/outline'\nimport {\n  CheckCircleIcon,\n  CpuChipIcon,\n  ExclamationTriangleIcon,\n  SparklesIcon,",
+        "relevance_band": "direct",
+        "community": 29,
+        "node_id": "ideaprogressv2",
+        "match_score": 10
+      },
+      {
+        "label": "PipelineRunDetailPage()",
+        "source_file": "src/app/admin/pipeline/[ideaId]/page.tsx",
+        "line_number": 1000,
+        "snippet": "  )\n}\n\n// ---------------------------------------------------------------------------\n// Main Page\n// ---------------------------------------------------------------------------\n\nexport default function PipelineRunDetailPage() {\n  const params = useParams<{ ideaId: string }>()\n  const ideaId = params.ideaId\n  const { run, isLoading, error, refetch } = usePipelineRunDetail(ideaId)\n  const { subscribeTo } = useSocket()\n\n  const [selectedSectionId, setSelectedSectionId] = useState<string | null>(\n    null",
+        "relevance_band": "direct",
+        "community": 78,
+        "node_kind": "component",
+        "node_id": "page_pipelinerundetailpage",
+        "match_score": 10
+      },
+      {
+        "label": "IdeaCard()",
+        "source_file": "src/features/ideas/components/IdeaCard.tsx",
+        "line_number": 172,
+        "snippet": "  return (\n    idea.status === IdeaStatus.COMPLETED &&\n    (idea.metrics?.compositeScore ?? 0) > 0 &&\n    (idea.metrics?.metrics?.length ?? 0) > 0\n  )\n}\n\nexport function IdeaCard({\n  idea,\n  onClick,\n  hideBookmark = false,\n  onView,\n  onLike: _onLike,\n}: IdeaCardProps) {\n  const router = useRouter()",
+        "relevance_band": "direct",
+        "community": 17,
+        "node_kind": "function",
+        "node_id": "ideacard_ideacard",
+        "match_score": 10
+      },
+      {
+        "label": "SidePanel()",
+        "source_file": "src/app/admin/pipeline/[ideaId]/page.tsx",
+        "line_number": 645,
+        "snippet": "  )\n}\n\n// ---------------------------------------------------------------------------\n// Side Panel\n// ---------------------------------------------------------------------------\n\nfunction SidePanel({\n  run,\n  pipelineStatus,\n  sections,\n  selectedSection,\n  cost,\n  percent,\n  totalSections,",
+        "relevance_band": "direct",
+        "community": 76,
+        "node_kind": "component",
+        "node_id": "page_sidepanel",
+        "match_score": 10
+      },
+      {
+        "label": "IdeaMetricsReview()",
+        "source_file": "src/features/idea-details/components/IdeaMetricsReview.tsx",
+        "line_number": 28,
+        "snippet": "interface IdeaMetricsReviewProps {\n  idea: Idea\n  onProceed: () => void | Promise<void>\n  isLoading?: boolean\n  showActionButton?: boolean // New prop to control whether to show the \"Proceed\" button\n}\n\nexport function IdeaMetricsReview({\n  idea,\n  onProceed,\n  isLoading = false,\n  showActionButton = true, // Default to true for backward compatibility\n}: IdeaMetricsReviewProps) {\n  const [selectedMetric, setSelectedMetric] = useState<ModalMetric | null>(null)\n  const [proceeding, setProceeding] = useState(false)",
+        "relevance_band": "direct",
+        "community": 70,
+        "node_kind": "function",
+        "node_id": "ideametricsreview_ideametricsreview",
+        "match_score": 10
+      },
+      {
+        "label": "LetsBuildTab()",
+        "source_file": "src/features/idea-details/components/tabs/LetsBuildTab.tsx",
+        "line_number": 33,
+        "snippet": "import { SmartContent } from '../SmartContent'\n\ninterface LetsBuildTabProps {\n  idea: Idea\n  readOnly?: boolean\n}\n\nexport function LetsBuildTab({ idea, readOnly = false }: LetsBuildTabProps) {\n  const letsBuild = idea.letsBuild\n  const mergedGlossary = { ...idea.glossary, ...idea.synthesis?.glossary }\n  const [copied, setCopied] = useState(false)\n  const [isGenerating, setIsGenerating] = useState(false)\n  const [isCopying, setIsCopying] = useState(false)\n  const [selectedAreaId, setSelectedAreaId] = useState<string | null>(null)\n  const { getToken } = useAuth()",
+        "relevance_band": "direct",
+        "community": 39,
+        "node_kind": "function",
+        "node_id": "letsbuildtab_letsbuildtab",
+        "match_score": 10
+      },
+      {
+        "label": "MetricDetailModal()",
+        "source_file": "src/features/ideas/components/MetricDetailModal.tsx",
+        "line_number": 22,
+        "snippet": "\ninterface Props {\n  isOpen: boolean\n  onClose: () => void\n  metric: Metric\n}\n\nexport function MetricDetailModal({ isOpen, onClose, metric }: Props) {\n  const [areAllComponentsExpanded, setAreAllComponentsExpanded] =\n    useState(false)\n\n  if (!isOpen) return null\n\n  const formatMetricName = (name: string) => {\n    return name.charAt(0).toUpperCase() + name.slice(1)",
+        "relevance_band": "direct",
+        "community": 102,
+        "node_kind": "function",
+        "node_id": "metricdetailmodal_metricdetailmodal",
+        "match_score": 10
+      },
+      {
+        "label": "syncIdeaWithPipelineStatus()",
+        "source_file": "src/features/idea-details/hooks/pipeline-status-sync.ts",
+        "line_number": 74,
+        "snippet": "      }\n    }\n  }\n\n  return freshIdea\n}\n\nexport function syncIdeaWithPipelineStatus(\n  idea: Idea,\n  pipelineStatus: IdeaPipelineStatusResponse | null,\n  liveProgress: Idea['currentProgress'] = idea.currentProgress\n): Idea {\n  if (!pipelineStatus || pipelineStatus.pipelineVersion !== 'v2') {\n    const fallbackLiveProgress = resolveFallbackLiveProgress(idea, liveProgress)\n    const isTerminalIdea =",
+        "relevance_band": "direct",
+        "community": 22,
+        "node_id": "pipeline_status_sync_syncideawithpipelinestatus",
+        "match_score": 10
+      },
+      {
+        "label": "PipelineDashboardPage()",
+        "source_file": "src/app/admin/pipeline/page.tsx",
+        "line_number": 22,
+        "snippet": "const TABS: { key: PipelineTab; label: string }[] = [\n  { key: 'runs', label: 'Recent Runs' },\n  { key: 'failures', label: 'Failures' },\n  { key: 'stuck', label: 'Stuck' },\n  { key: 'costs', label: 'Cost Breakdown' },\n]\n\nexport default function PipelineDashboardPage() {\n  const {\n    summary,\n    recentRuns,\n    failures,\n    stuckRuns,\n    costBreakdown,\n    isLoading,",
+        "relevance_band": "direct",
+        "community": 252,
+        "node_kind": "component",
+        "node_id": "page_pipelinedashboardpage",
+        "match_score": 10
+      },
+      {
+        "label": "PipelineCostBreakdownPanel.tsx",
+        "source_file": "src/features/admin/components/PipelineCostBreakdownPanel.tsx",
+        "line_number": 1,
+        "snippet": "import type { PipelineCostBreakdown } from '../types/pipeline.types'\n\ninterface PipelineCostBreakdownPanelProps {\n  costBreakdown: PipelineCostBreakdown\n}\n\ninterface CostEntry {\n  key: string",
+        "relevance_band": "direct",
+        "community": 81,
+        "node_id": "pipelinecostbreakdownpanel",
+        "match_score": 10
+      },
+      {
+        "label": "PipelineRunsTable.tsx",
+        "source_file": "src/features/admin/components/PipelineRunsTable.tsx",
+        "line_number": 1,
+        "snippet": "import Link from 'next/link'\n\nimport type { PipelineRunDetail } from '../types/pipeline.types'\n\ninterface PipelineRunsTableProps {\n  runs: PipelineRunDetail[]\n  title?: string\n  emptyMessage?: string",
+        "relevance_band": "direct",
+        "community": 83,
+        "node_id": "pipelinerunstable",
+        "match_score": 10
+      },
+      {
+        "label": "RecommendationBadge.tsx",
+        "source_file": "src/features/idea-details/components/RecommendationBadge.tsx",
+        "line_number": 1,
+        "snippet": "'use client'\n\nimport { XMarkIcon } from '@heroicons/react/24/outline'\nimport { useState } from 'react'\n\nimport { cn } from '@/lib/cn'\n\nimport { SmartContent } from './SmartContent'",
+        "relevance_band": "direct",
+        "community": 272,
+        "node_id": "recommendationbadge",
+        "match_score": 10
+      },
+      {
+        "label": "pipeline.types.ts",
+        "source_file": "src/features/admin/types/pipeline.types.ts",
+        "line_number": 1,
+        "snippet": "/**\n * Pipeline Admin Dashboard Types\n *\n * Types for the v2 pipeline run monitoring dashboard.\n */\n\nexport interface PipelineRunSummary {\n  total: number",
+        "relevance_band": "direct",
+        "community": 104,
+        "node_id": "pipeline_types",
+        "match_score": 10
+      },
+      {
+        "label": "DesktopDAG()",
+        "source_file": "src/features/ideas/components/PipelineDAG.tsx",
+        "line_number": 137,
+        "snippet": "      return '#6b7280' // gray-500\n  }\n}\n\n/**\n * Desktop DAG with SVG edges overlay.\n */\nconst DesktopDAG: React.FC<{ sections: DAGSection[] }> = ({ sections }) => {\n  const containerRef = useRef<HTMLDivElement>(null)\n  const nodeRefs = useRef<Map<string, HTMLDivElement>>(new Map())\n  const [positions, setPositions] = useState<Map<string, NodePosition>>(\n    new Map()\n  )\n\n  const waveMap = computeWaves(sections)",
+        "relevance_band": "direct",
+        "community": 260,
+        "node_kind": "component",
+        "node_id": "pipelinedag_desktopdag",
+        "match_score": 10
+      },
+      {
+        "label": "SectionProgressCard.tsx",
+        "source_file": "src/features/ideas/components/SectionProgressCard.tsx",
+        "line_number": 1,
+        "snippet": "'use client'\n\nimport {\n  CheckCircleIcon,\n  ClockIcon,\n  ExclamationTriangleIcon,\n  ForwardIcon,\n  LockClosedIcon,",
+        "relevance_band": "direct",
+        "community": 287,
+        "node_id": "sectionprogresscard",
+        "match_score": 10
+      },
+      {
+        "label": "resolveBaseIdeaForPipelineSync()",
+        "source_file": "src/features/idea-details/hooks/pipeline-status-sync.ts",
+        "line_number": 8,
+        "snippet": "import { getStatusOrderIndex } from '@/lib/progressValidation'\nimport {\n  IdeaStatus,\n  type Idea,\n  type IdeaPipelineStatusResponse,\n} from '@/shared/lib/api'\n\nexport function resolveBaseIdeaForPipelineSync(\n  freshIdea: Idea,\n  existingIdea: Idea | undefined,\n  pipelineStatus: IdeaPipelineStatusResponse | null\n): Idea {\n  if (!existingIdea) {\n    return freshIdea\n  }",
+        "relevance_band": "direct",
+        "community": 165,
+        "node_id": "pipeline_status_sync_resolvebaseideaforpipelinesync",
+        "match_score": 10
+      },
+      {
+        "label": "PipelineDAGNode.tsx",
+        "source_file": "src/features/ideas/components/PipelineDAGNode.tsx",
+        "line_number": 1,
+        "snippet": "'use client'\n\nimport {\n  CheckCircleIcon,\n  ClockIcon,\n  ExclamationTriangleIcon,\n  ForwardIcon,\n  LockClosedIcon,",
+        "relevance_band": "direct",
+        "community": 398,
+        "node_id": "pipelinedagnode",
+        "match_score": 10
+      },
+      {
+        "label": "PipelineFailuresList.tsx",
+        "source_file": "src/features/admin/components/PipelineFailuresList.tsx",
+        "line_number": 1,
+        "snippet": "import type { PipelineFailure } from '../types/pipeline.types'\n\ninterface PipelineFailuresListProps {\n  failures: PipelineFailure[]\n}\n\nfunction formatRelativeTime(dateStr: string): string {\n  const date = new Date(dateStr)",
+        "relevance_band": "direct",
+        "community": 166,
+        "node_id": "pipelinefailureslist",
+        "match_score": 10
+      },
+      {
+        "label": "RedesignedIdeaDetailsPage()",
+        "source_file": "src/features/idea-details/components/RedesignedIdeaDetailsPage.tsx",
+        "line_number": 51,
+        "snippet": "  RiskAnalysisTab,\n  EvidenceTab,\n  // AssumptionsTab, // Temporarily hidden - See docs/assumptions-section-hiding.md\n  RunwayTab,\n  LetsBuildTab,\n} from './tabs'\n\nexport default function RedesignedIdeaDetailsPage() {\n  const { getToken } = useAuth()\n  const params = useParams()\n  const router = useRouter()\n  const queryClient = useQueryClient()\n  const searchParams = useSearchParams()\n  const pathname = usePathname()\n",
+        "relevance_band": "direct",
+        "community": 171,
+        "node_kind": "function",
+        "node_id": "redesignedideadetailspage_redesignedideadetailspage",
+        "match_score": 10
+      },
+      {
+        "label": "useIdeaProgress.ts",
+        "source_file": "src/features/ideas/hooks/useIdeaProgress.ts",
+        "line_number": 1,
+        "snippet": "'use client'\n\nimport { useCallback, useEffect, useRef, useState } from 'react'\n\nimport { useSocket } from '@/hooks/useSocket'\n\nimport type {\n  PipelineStatus,",
+        "relevance_band": "direct",
+        "community": 29,
+        "node_id": "useideaprogress",
+        "match_score": 10
+      }
+    ],
+    "relationships": [
+      {
+        "from": "PipelineDAG.tsx",
+        "to": "IdeaProgressV2.tsx",
+        "relation": "imports_from"
+      },
+      {
+        "from": "PipelineDAG.tsx",
+        "to": "PipelineDAGNode.tsx",
+        "relation": "imports_from"
+      },
+      {
+        "from": "PipelineDAG.tsx",
+        "to": "DesktopDAG()",
+        "relation": "contains"
+      },
+      {
+        "from": "pipeline-status-sync.ts",
+        "to": "resolveBaseIdeaForPipelineSync()",
+        "relation": "contains"
+      },
+      {
+        "from": "pipeline-status-sync.ts",
+        "to": "syncIdeaWithPipelineStatus()",
+        "relation": "contains"
+      },
+      {
+        "from": "IdeaProgressV2.tsx",
+        "to": "useIdeaProgress.ts",
+        "relation": "imports_from"
+      },
+      {
+        "from": "IdeaProgressV2.tsx",
+        "to": "SectionProgressCard.tsx",
+        "relation": "imports_from"
+      },
+      {
+        "from": "PipelineRunDetailPage()",
+        "to": "SidePanel()",
+        "relation": "renders"
+      }
+    ],
+    "community_context": [
+      {
+        "id": 17,
+        "label": "Features Idea Card",
+        "node_count": 11
+      },
+      {
+        "id": 22,
+        "label": "Features Pipeline Status Sync",
+        "node_count": 10
+      },
+      {
+        "id": 29,
+        "label": "Features Idea Progress V2",
+        "node_count": 9
+      },
+      {
+        "id": 39,
+        "label": "Features Lets Build Tab",
+        "node_count": 8
+      },
+      {
+        "id": 58,
+        "label": "App Page State",
+        "node_count": 7
+      },
+      {
+        "id": 82,
+        "label": "Features Pipeline Dag",
+        "node_count": 6
+      },
+      {
+        "id": 78,
+        "label": "App Page State — Pipeline",
+        "node_count": 6
+      },
+      {
+        "id": 76,
+        "label": "App Page — Icon",
+        "node_count": 6
+      },
+      {
+        "id": 70,
+        "label": "Features Idea Metrics Review",
+        "node_count": 6
+      },
+      {
+        "id": 81,
+        "label": "Features Pipeline Cost Breakdown Panel",
+        "node_count": 6
+      },
+      {
+        "id": 83,
+        "label": "Features Pipeline Runs Table",
+        "node_count": 6
+      },
+      {
+        "id": 102,
+        "label": "Features Metric Detail Modal",
+        "node_count": 5
+      },
+      {
+        "id": 104,
+        "label": "Features Pipeline Types",
+        "node_count": 5
+      },
+      {
+        "id": 165,
+        "label": "Features Pipeline Status Sync — Idea",
+        "node_count": 4
+      },
+      {
+        "id": 166,
+        "label": "Features Pipeline Failures List",
+        "node_count": 4
+      },
+      {
+        "id": 171,
+        "label": "Features Redesigned Idea Details Page",
+        "node_count": 4
+      },
+      {
+        "id": 252,
+        "label": "App Page — Pipeline",
+        "node_count": 3
+      },
+      {
+        "id": 272,
+        "label": "Features Recommendation Badge",
+        "node_count": 3
+      },
+      {
+        "id": 260,
+        "label": "Features Pipeline Dag — Collect",
+        "node_count": 3
+      },
+      {
+        "id": 287,
+        "label": "Features Section Progress Card",
+        "node_count": 3
+      },
+      {
+        "id": 398,
+        "label": "Features Pipeline Dag Node",
+        "node_count": 2
+      }
+    ],
+    "shared_file_type": "code"
+  },
+  "risk_summary": {
+    "high_impact_nodes": [
+      "AdminPipelineSection",
+      "LiveCostState",
+      "RunTotalsSource",
+      "MergeRunSectionsOptions",
+      "HydratedRunStatusSource",
+      "mergeRunSections()",
+      "mergeLiveCost()",
+      "resolveOverviewTotals()",
+      "shouldRefetchRunDetail()",
+      "resolveHydratedPipelineStatus()",
+      "isTerminalRunSnapshot()",
+      "resolveLivePipelineStatus()"
+    ],
+    "cross_community_changes": 50,
+    "top_risks": [
+      {
+        "label": "PipelineRunDetailPage()",
+        "severity": "high",
+        "reason": "PipelineRunDetailPage() propagates into 265 files across 272 communities. Includes bridge and god node hotspot exposure."
+      },
+      {
+        "label": "IdeaMetricsReview()",
+        "severity": "high",
+        "reason": "IdeaMetricsReview() propagates into 277 files across 282 communities."
+      },
+      {
+        "label": "PipelineDashboardPage()",
+        "severity": "high",
+        "reason": "PipelineDashboardPage() propagates into 265 files across 272 communities. Includes bridge hotspot exposure."
+      }
+    ]
+  }
+}
+
+Answer:

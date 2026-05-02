@@ -1,0 +1,81 @@
+{
+  "graph_path": "graphify-out/graph.json",
+  "base_branch": "origin/main",
+  "budget": 2000,
+  "changed_files": [
+    "src/app/admin/pipeline/[ideaId]/page-state.test.ts",
+    "src/app/admin/pipeline/[ideaId]/page-state.ts",
+    "src/app/admin/pipeline/[ideaId]/page.tsx",
+    "src/app/admin/pipeline/page.tsx",
+    "src/components/layout.tsx",
+    "src/features/admin/components/PipelineCostBreakdownPanel.tsx",
+    "src/features/admin/components/PipelineFailuresList.tsx",
+    "src/features/admin/components/PipelineRunsTable.tsx",
+    "src/features/admin/components/PipelineSummaryCards.tsx",
+    "src/features/admin/hooks/usePipelineAdmin.ts",
+    "src/features/admin/hooks/usePipelineRunDetail.ts",
+    "src/features/admin/index.ts",
+    "src/features/admin/services/pipeline-api.ts",
+    "src/features/admin/types/pipeline.types.ts",
+    "src/features/idea-details/components/IdeaHero.tsx",
+    "src/features/idea-details/components/IdeaMetricsReview.tsx",
+    "src/features/idea-details/components/RecommendationBadge.tsx",
+    "src/features/idea-details/components/RedesignedIdeaDetailsPage.tsx",
+    "src/features/idea-details/components/tabs/LetsBuildTab.tsx",
+    "src/features/idea-details/components/tabs/RunwayTab.tsx",
+    "src/features/idea-details/hooks/pipeline-status-sync.test.ts",
+    "src/features/idea-details/hooks/pipeline-status-sync.ts",
+    "src/features/idea-details/hooks/useIdeaData.ts",
+    "src/features/ideas/components/IdeaCard.tsx",
+    "src/features/ideas/components/IdeaProgressV2.tsx",
+    "src/features/ideas/components/MetricDetailModal.tsx",
+    "src/features/ideas/components/PipelineDAG.tsx",
+    "src/features/ideas/components/PipelineDAGNode.tsx",
+    "src/features/ideas/components/SectionProgressCard.tsx",
+    "src/features/ideas/components/index.ts",
+    "src/features/ideas/hooks/useIdeaProgress.ts",
+    "src/features/ideas/index.ts",
+    "src/features/ideas/types/index.ts",
+    "src/features/ideas/types/progress.types.ts",
+    "src/shared/config/feature-flags.ts",
+    "src/shared/lib/api.ts"
+  ],
+  "seed_count": 143,
+  "supporting_path_count": 0,
+  "test_path_count": 2,
+  "hotspot_count": 3,
+  "verbose_payload_tokens": 41969,
+  "compact_payload_tokens": 6093,
+  "payload_reduction_ratio": 6.888,
+  "verbose_prompt_tokens": 63024,
+  "compact_prompt_tokens": 8690,
+  "reduction_ratio": 7.252,
+  "started_at": "2026-05-02T09:44:12.700Z",
+  "completed_at": "2026-05-02T09:45:53.060Z",
+  "elapsed_ms": {
+    "verbose": 62387,
+    "compact": 37465
+  },
+  "status": {
+    "verbose": "succeeded",
+    "compact": "succeeded"
+  },
+  "answer_paths": {
+    "verbose": "graphify-out/review-compare/2026-05-02T09-44-12/verbose-answer.txt",
+    "compact": "graphify-out/review-compare/2026-05-02T09-44-12/compact-answer.txt"
+  },
+  "exit_code": {
+    "verbose": 0,
+    "compact": 0
+  },
+  "stderr": {
+    "verbose": null,
+    "compact": null
+  },
+  "paths": {
+    "output_dir": "graphify-out/review-compare/2026-05-02T09-44-12",
+    "verbose_prompt": "graphify-out/review-compare/2026-05-02T09-44-12/verbose-prompt.txt",
+    "compact_prompt": "graphify-out/review-compare/2026-05-02T09-44-12/compact-prompt.txt",
+    "report": "graphify-out/review-compare/2026-05-02T09-44-12/report.json"
+  }
+}

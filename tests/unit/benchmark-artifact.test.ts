@@ -5,6 +5,7 @@ import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 const ARTIFACT_DIR = resolve('docs', 'benchmarks', '2026-04-30-govalidate')
+const REVIEW_ARTIFACT_DIR = resolve('docs', 'benchmarks', '2026-05-02-govalidate-pr-review')
 
 describe('public benchmark artifact (2026-04-30 govalidate)', () => {
   const baseline = JSON.parse(readFileSync(resolve(ARTIFACT_DIR, 'baseline-session.json'), 'utf8')) as {
@@ -74,12 +75,43 @@ describe('public benchmark artifact (2026-04-30 govalidate)', () => {
     expect(result.status).toBe(0)
     expect(result.stdout).toContain('baseline_total_input_tokens : 615190')
     expect(result.stdout).toContain('graphify_total_input_tokens : 233508')
-  })
+  }, 15_000)
 
   it('verify.sh contains no absolute paths (uses $DIR)', () => {
     const verify = readFileSync(resolve(ARTIFACT_DIR, 'verify.sh'), 'utf8')
     expect(verify).toContain('$DIR')
     expect(verify).not.toMatch(/\/Users\/[^\s'"]+/)
     expect(verify).not.toMatch(/\/home\/[^\s'"]+/)
+  })
+})
+
+describe('public benchmark artifact (2026-05-02 govalidate pr review)', () => {
+  const readme = readFileSync(resolve(REVIEW_ARTIFACT_DIR, 'README.md'), 'utf8')
+  const report = JSON.parse(readFileSync(resolve(REVIEW_ARTIFACT_DIR, 'report.json'), 'utf8')) as {
+    verbose_prompt_tokens: number
+    compact_prompt_tokens: number
+  }
+  const verbosePrompt = readFileSync(resolve(REVIEW_ARTIFACT_DIR, 'verbose-prompt.txt'), 'utf8')
+  const compactPrompt = readFileSync(resolve(REVIEW_ARTIFACT_DIR, 'compact-prompt.txt'), 'utf8')
+
+  it('committed review benchmark files exist with the expected structure', () => {
+    expect(typeof report.verbose_prompt_tokens).toBe('number')
+    expect(typeof report.compact_prompt_tokens).toBe('number')
+    expect(readme).toContain('GoValidate PR review benchmark')
+  })
+
+  it('review prompt artifacts do not contain absolute or username-derived node ids', () => {
+    for (const prompt of [verbosePrompt, compactPrompt]) {
+      expect(prompt).not.toMatch(/\/Users\/[^\s'"]+/)
+      expect(prompt).not.toMatch(/users_[a-z0-9]+_desktop_/i)
+      expect(prompt).not.toContain('mohammednaji')
+    }
+  })
+
+  it('review benchmark verify.sh exits 0', () => {
+    const result = spawnSync('bash', [resolve(REVIEW_ARTIFACT_DIR, 'verify.sh')], { encoding: 'utf8' })
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('verbose_prompt_tokens')
+    expect(result.stdout).toContain('compact_prompt_tokens')
   })
 })

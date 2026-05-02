@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>graphify-ts benchmark proofs</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <p class="eyebrow">graphify-ts benchmark proofs</p>
+        <h1>Hosted benchmark pages</h1>
+        <p class="lede">
+          Public wrappers for the committed benchmark evidence. Each page stays short and
+          links straight to the repo-backed files used to verify the numbers.
+        </p>
+      </section>
+
+      <section class="grid cards">
+        <article class="card">
+          <p class="eyebrow">Retrieval benchmark</p>
+          <h2>2026-04-30 — GoValidate native_agent</h2>
+          <p class="muted">
+            Same production codebase, same Claude model, with and without graphify-ts.
+          </p>
+          <ul class="inline-links">
+            <li><a href="./2026-04-30-govalidate/">Open page</a></li>
+            <li><a href="./2026-04-30-govalidate/README.md">README.md</a></li>
+            <li><a href="./2026-04-30-govalidate/verify.sh">verify.sh</a></li>
+          </ul>
+        </article>
+
+        <article class="card">
+          <p class="eyebrow">PR review benchmark</p>
+          <h2>2026-05-02 — GoValidate review-compare</h2>
+          <p class="muted">
+            Compact vs verbose <code>pr_impact</code> prompts on a real production branch diff.
+          </p>
+          <ul class="inline-links">
+            <li><a href="./2026-05-02-govalidate-pr-review/">Open page</a></li>
+            <li><a href="./2026-05-02-govalidate-pr-review/report.json">report.json</a></li>
+            <li><a href="./2026-05-02-govalidate-pr-review/verify.sh">verify.sh</a></li>
+          </ul>
+        </article>
+      </section>
+    </main>
+  </body>
+</html>
