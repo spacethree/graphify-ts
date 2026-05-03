@@ -47,9 +47,12 @@
   --bar-baseline-edge:   rgba(100, 116, 141, 0.55);
   --bar-graphify:        rgba(83, 58, 253, 0.18);
   --bar-graphify-edge:   var(--c-purple);
-  /* Bar fills — saturated, used in the actual chart so the proportion reads at a glance */
-  --bar-baseline-fill:   rgba(100, 116, 141, 0.55);
-  --bar-graphify-fill:   rgba(83, 58, 253, 0.70);
+  /* Bar fills — SOLID, used in the actual chart. The track behind them is
+     almost-invisible so the solid fill is what your eye reads as "the bar". */
+  --bar-baseline-fill:   var(--c-body);     /* solid slate #64748d */
+  --bar-graphify-fill:   var(--c-purple);   /* solid Stripe purple #533afd */
+  --bar-track-bg:        rgba(15, 23, 42, 0.04);
+  --bar-track-edge:      rgba(15, 23, 42, 0.10);
 
   /* ---- Type ----------------------------------------------------------- */
   /* Inter is the open-source stand-in for sohne-var; both ship "ss01" + "tnum" */
@@ -473,10 +476,10 @@ code {
   border: 1px solid var(--bar-graphify-edge);
 }
 .bar-row .bar {
-  height: 16px;
-  background: var(--c-bg-soft);
+  height: 18px;
+  background: var(--bar-track-bg);
   border-radius: var(--r-sm);
-  border: 1px solid var(--c-border);
+  border: 1px solid var(--bar-track-edge);
   overflow: hidden;
   position: relative;
 }
@@ -488,11 +491,9 @@ code {
 }
 .bar-row .bar .fill.baseline {
   background: var(--bar-baseline-fill);
-  box-shadow: inset 0 0 0 1px var(--bar-baseline-edge);
 }
 .bar-row .bar .fill.graphify {
   background: var(--bar-graphify-fill);
-  box-shadow: inset 0 0 0 1px var(--bar-graphify-edge);
 }
 .bar-row .value {
   font-family: var(--font-mono);
