@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import * as ts from 'typescript'
 
 import {
   agentsInstall,
@@ -20,6 +21,8 @@ import {
 } from '../../src/infrastructure/install.js'
 import { normalizeAssertionPath } from './helpers/platform.js'
 
+const PACKAGE_CLI_RELATIVE_PATH = join('dist', 'src', 'cli', 'bin.js')
+
 const BUNDLED_ASSET_CONTENT = {
   'skill.md': '# graphify-ts\n\nLocal bundled Claude skill\n',
   'skill-aider.md': '# graphify-ts\n\nAider bundled skill.\n',
@@ -31,6 +34,35 @@ const BUNDLED_ASSET_CONTENT = {
   'skill-trae.md': '# graphify-ts\n\nTrae bundled skill.\n',
   'skill-windows.md': '# graphify-ts\n\nWindows bundled skill.\n',
 } as const
+
+interface OpenCodeConfig {
+  shell?: string
+  plugin?: string[]
+  mcp?: {
+    [name: string]:
+      | {
+          type?: string
+          command?: string[]
+          enabled?: boolean
+          environment?: Record<string, string>
+          url?: string
+        }
+      | undefined
+    graphify?: {
+      type?: string
+      command?: string[]
+      enabled?: boolean
+      environment?: Record<string, string>
+    }
+    other?: {
+      type?: string
+      command?: string[]
+      enabled?: boolean
+      environment?: Record<string, string>
+      url?: string
+    }
+  }
+}
 
 function withTempDir(callback: (tempDir: string) => void): void {
   const tempDir = mkdtempSync(join(tmpdir(), 'graphify-ts-install-'))
@@ -54,12 +86,31 @@ function withBundledPackageRoot(callback: (packageRoot: string) => void): void {
   })
 }
 
+function withOpenCodePackageRoot(callback: (packageRoot: string, cliPath: string) => void): void {
+  withTempDir((packageRoot) => {
+    const cliPath = join(packageRoot, PACKAGE_CLI_RELATIVE_PATH)
+    mkdirSync(join(packageRoot, 'dist', 'src', 'cli'), { recursive: true })
+    writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: 'graphify-ts-test', bin: { 'graphify-ts': PACKAGE_CLI_RELATIVE_PATH } }), 'utf8')
+    writeFileSync(cliPath, '#!/usr/bin/env node\n', 'utf8')
+
+    callback(packageRoot, cliPath)
+  })
+}
+
 function countOccurrences(content: string, needle: string): number {
   if (needle.length === 0) {
     return 0
   }
 
   return content.split(needle).length - 1
+}
+
+function readJsoncConfig(filePath: string): OpenCodeConfig {
+  const parsed = ts.parseConfigFileTextToJson(filePath, readFileSync(filePath, 'utf8'))
+  if (parsed.error) {
+    throw new Error(String(parsed.error.messageText))
+  }
+  return parsed.config as OpenCodeConfig
 }
 
 describe('install helpers', () => {
@@ -436,30 +487,181 @@ describe('install helpers', () => {
       expect(readFileSync(join(projectDir, 'AGENTS.md'), 'utf8')).not.toContain('python3 -c')
       expect(existsSync(join(projectDir, '.codex', 'hooks.json'))).toBe(true)
 
-      const opencodeMessage = agentsInstall(projectDir, 'opencode')
-      expect(opencodeMessage).toMatch(/graphify-ts section (written|updated) in/)
-      expect(existsSync(join(projectDir, '.opencode', 'plugins', 'graphify-ts.js'))).toBe(true)
-      expect(existsSync(join(projectDir, 'opencode.json'))).toBe(true)
+      withOpenCodePackageRoot((packageRoot, cliPath) => {
+        const opencodeMessage = agentsInstall(projectDir, 'opencode', { packageRoot })
+        expect(opencodeMessage).toMatch(/graphify-ts section (written|updated) in/)
+        expect(opencodeMessage).toContain('opencode.json -> MCP server registered')
+        expect(existsSync(join(projectDir, '.opencode', 'plugins', 'graphify-ts.js'))).toBe(true)
+        expect(existsSync(join(projectDir, 'opencode.json'))).toBe(true)
+
+        const opencodeConfig = JSON.parse(readFileSync(join(projectDir, 'opencode.json'), 'utf8')) as OpenCodeConfig
+        expect(opencodeConfig.plugin).toContain('.opencode/plugins/graphify-ts.js')
+        expect(opencodeConfig.mcp?.graphify).toEqual({
+          type: 'local',
+          command: [process.execPath, cliPath, 'serve', '--stdio', join(projectDir, 'graphify-out', 'graph.json')],
+          enabled: true,
+        })
+      })
+    })
+  })
+
+  it('preserves unrelated OpenCode config while updating graphify MCP', () => {
+    withTempDir((projectDir) => {
+      writeFileSync(
+        join(projectDir, 'opencode.json'),
+        JSON.stringify(
+          {
+            plugin: ['custom-plugin'],
+            mcp: {
+              other: { type: 'remote', url: 'https://example.com/mcp' },
+              graphify: {
+                type: 'local',
+                command: ['old-command'],
+                environment: { HTTP_PROXY: 'http://proxy.example' },
+              },
+            },
+          },
+          null,
+          2,
+        ),
+        'utf8',
+      )
+
+      withOpenCodePackageRoot((packageRoot, cliPath) => {
+        const installMessage = agentsInstall(projectDir, 'opencode', { packageRoot })
+        const opencodeConfig = JSON.parse(readFileSync(join(projectDir, 'opencode.json'), 'utf8')) as OpenCodeConfig
+
+        expect(installMessage).toContain('opencode.json -> MCP server updated')
+        expect(opencodeConfig.plugin).toEqual(['custom-plugin', '.opencode/plugins/graphify-ts.js'])
+        expect(opencodeConfig.mcp?.other).toEqual({ type: 'remote', url: 'https://example.com/mcp' })
+        expect(opencodeConfig.mcp?.graphify).toEqual({
+          type: 'local',
+          command: [process.execPath, cliPath, 'serve', '--stdio', join(projectDir, 'graphify-out', 'graph.json')],
+          enabled: true,
+          environment: { HTTP_PROXY: 'http://proxy.example' },
+        })
+      })
+    })
+  })
+
+  it('fails OpenCode install when the resolved package CLI is missing', () => {
+    withTempDir((packageRoot) => {
+      writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: 'graphify-ts-test', bin: { 'graphify-ts': PACKAGE_CLI_RELATIVE_PATH } }), 'utf8')
+
+      withTempDir((projectDir) => {
+        expect(() => agentsInstall(projectDir, 'opencode', { packageRoot })).toThrow(
+          `Could not locate graphify-ts CLI at ${join(packageRoot, PACKAGE_CLI_RELATIVE_PATH)} declared by ${join(packageRoot, 'package.json')}`,
+        )
+      })
+    })
+  })
+
+  it('uses an existing OpenCode JSONC config instead of creating duplicate JSON config', () => {
+    withTempDir((projectDir) => {
+      writeFileSync(
+        join(projectDir, 'opencode.jsonc'),
+        `{
+          // Existing project-specific OpenCode config.
+          "plugin": ["custom-plugin",],
+          "mcp": {
+            "other": { "type": "remote", "url": "https://example.com/mcp", },
+          },
+        }
+        `,
+        'utf8',
+      )
+
+      withOpenCodePackageRoot((packageRoot, cliPath) => {
+        const installMessage = agentsInstall(projectDir, 'opencode', { packageRoot })
+        const installedContent = readFileSync(join(projectDir, 'opencode.jsonc'), 'utf8')
+        const installedConfig = readJsoncConfig(join(projectDir, 'opencode.jsonc'))
+
+        expect(installMessage).toContain('opencode.jsonc -> plugin registered')
+        expect(installMessage).toContain('opencode.jsonc -> MCP server registered')
+        expect(existsSync(join(projectDir, 'opencode.json'))).toBe(false)
+        expect(installedContent).toContain('// Existing project-specific OpenCode config.')
+        expect(installedContent).toContain('"plugin": ["custom-plugin", ".opencode/plugins/graphify-ts.js",]')
+        expect(installedContent).toContain('"other": { "type": "remote", "url": "https://example.com/mcp", },')
+        expect(installedConfig.plugin).toEqual(['custom-plugin', '.opencode/plugins/graphify-ts.js'])
+        expect(installedConfig.mcp?.other).toEqual({ type: 'remote', url: 'https://example.com/mcp' })
+        expect(installedConfig.mcp?.graphify).toEqual({
+          type: 'local',
+          command: [process.execPath, cliPath, 'serve', '--stdio', join(projectDir, 'graphify-out', 'graph.json')],
+          enabled: true,
+        })
+
+        const reinstallMessage = agentsInstall(projectDir, 'opencode', { packageRoot })
+        expect(reinstallMessage).toContain('opencode.jsonc -> plugin already registered (no change)')
+        expect(readFileSync(join(projectDir, 'opencode.jsonc'), 'utf8')).toBe(installedContent)
+
+        const uninstallMessage = agentsUninstall(projectDir, 'opencode')
+        const uninstalledContent = readFileSync(join(projectDir, 'opencode.jsonc'), 'utf8')
+        const uninstalledConfig = readJsoncConfig(join(projectDir, 'opencode.jsonc'))
+
+        expect(uninstallMessage).toContain('opencode.jsonc -> plugin deregistered')
+        expect(uninstallMessage).toContain('opencode.jsonc -> MCP server removed')
+        expect(existsSync(join(projectDir, 'opencode.json'))).toBe(false)
+        expect(uninstalledContent).toContain('// Existing project-specific OpenCode config.')
+        expect(uninstalledConfig.plugin).toEqual(['custom-plugin'])
+        expect(uninstalledConfig.mcp?.other).toEqual({ type: 'remote', url: 'https://example.com/mcp' })
+        expect(uninstalledConfig.mcp?.graphify).toBeUndefined()
+      })
+    })
+  })
+
+  it('uninstalls OpenCode plugin and MCP config while preserving unrelated config', () => {
+    withTempDir((projectDir) => {
+      writeFileSync(join(projectDir, 'AGENTS.md'), '# Existing rules\n\nKeep calm.\n', 'utf8')
+      writeFileSync(
+        join(projectDir, 'opencode.json'),
+        JSON.stringify(
+          {
+            shell: '/bin/zsh',
+            plugin: ['custom-plugin'],
+            mcp: { other: { type: 'remote', url: 'https://example.com/mcp' } },
+          },
+          null,
+          2,
+        ),
+        'utf8',
+      )
+      withOpenCodePackageRoot((packageRoot) => {
+        agentsInstall(projectDir, 'opencode', { packageRoot })
+      })
+
+      const uninstallMessage = agentsUninstall(projectDir, 'opencode')
+      const opencodeConfig = JSON.parse(readFileSync(join(projectDir, 'opencode.json'), 'utf8')) as OpenCodeConfig
+
+      expect(uninstallMessage).toContain('opencode.json -> plugin deregistered')
+      expect(uninstallMessage).toContain('opencode.json -> MCP server removed')
+      expect(existsSync(join(projectDir, '.opencode', 'plugins', 'graphify-ts.js'))).toBe(false)
+      expect(opencodeConfig.shell).toBe('/bin/zsh')
+      expect(opencodeConfig.plugin).toEqual(['custom-plugin'])
+      expect(opencodeConfig.mcp?.other).toEqual({ type: 'remote', url: 'https://example.com/mcp' })
+      expect(opencodeConfig.mcp?.graphify).toBeUndefined()
+      expect(readFileSync(join(projectDir, 'AGENTS.md'), 'utf8')).toContain('Keep calm.')
     })
   })
 
   it('keeps codex and opencode project integrations idempotent across repeated installs', () => {
     withTempDir((projectDir) => {
-      agentsInstall(projectDir, 'codex')
-      agentsInstall(projectDir, 'opencode')
-      const firstAgentsMd = readFileSync(join(projectDir, 'AGENTS.md'), 'utf8')
-      const firstCodexHooks = readFileSync(join(projectDir, '.codex', 'hooks.json'), 'utf8')
-      const firstOpenCodeConfig = readFileSync(join(projectDir, 'opencode.json'), 'utf8')
+      withOpenCodePackageRoot((packageRoot) => {
+        agentsInstall(projectDir, 'codex')
+        agentsInstall(projectDir, 'opencode', { packageRoot })
+        const firstAgentsMd = readFileSync(join(projectDir, 'AGENTS.md'), 'utf8')
+        const firstCodexHooks = readFileSync(join(projectDir, '.codex', 'hooks.json'), 'utf8')
+        const firstOpenCodeConfig = readFileSync(join(projectDir, 'opencode.json'), 'utf8')
 
-      agentsInstall(projectDir, 'codex')
-      agentsInstall(projectDir, 'opencode')
+        agentsInstall(projectDir, 'codex')
+        agentsInstall(projectDir, 'opencode', { packageRoot })
 
-      expect(readFileSync(join(projectDir, 'AGENTS.md'), 'utf8')).toBe(firstAgentsMd)
-      expect(readFileSync(join(projectDir, '.codex', 'hooks.json'), 'utf8')).toBe(firstCodexHooks)
-      expect(readFileSync(join(projectDir, 'opencode.json'), 'utf8')).toBe(firstOpenCodeConfig)
-      expect(countOccurrences(firstAgentsMd, '## graphify-ts')).toBe(1)
-      expect(countOccurrences(firstCodexHooks, 'graphify-out')).toBeGreaterThan(0)
-      expect(countOccurrences(firstOpenCodeConfig, '.opencode/plugins/graphify-ts.js')).toBe(1)
+        expect(readFileSync(join(projectDir, 'AGENTS.md'), 'utf8')).toBe(firstAgentsMd)
+        expect(readFileSync(join(projectDir, '.codex', 'hooks.json'), 'utf8')).toBe(firstCodexHooks)
+        expect(readFileSync(join(projectDir, 'opencode.json'), 'utf8')).toBe(firstOpenCodeConfig)
+        expect(countOccurrences(firstAgentsMd, '## graphify-ts')).toBe(1)
+        expect(countOccurrences(firstCodexHooks, 'graphify-out')).toBeGreaterThan(0)
+        expect(countOccurrences(firstOpenCodeConfig, '.opencode/plugins/graphify-ts.js')).toBe(1)
+      })
     })
   })
 

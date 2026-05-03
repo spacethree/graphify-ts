@@ -718,6 +718,7 @@ describe('cli main', () => {
     expect(help).toContain('gemini <install|uninstall>')
     expect(help).toContain('copilot <install|uninstall>')
     expect(help).toContain('codex <install|uninstall>')
+    expect(help).toContain('opencode <install|uninstall>')
   })
 
   it('routes compare through the injected dependency after parsing args', async () => {
@@ -1369,6 +1370,7 @@ describe('cli main', () => {
     const copilotInstallExitCode = await executeCli(['copilot', 'install'], io, createDependencies())
     const copilotUninstallExitCode = await executeCli(['copilot', 'uninstall'], io, createDependencies())
     const codexExitCode = await executeCli(['codex', 'uninstall'], io, createDependencies())
+    const opencodeExitCode = await executeCli(['opencode', 'install'], io, createDependencies())
 
     expect(aiderInstallExitCode).toBe(0)
     expect(installGeminiExitCode).toBe(0)
@@ -1384,6 +1386,7 @@ describe('cli main', () => {
     expect(codexExitCode).toBe(0)
     expect(logs).toContain('aider local rules installed')
     expect(logs).toContain('gemini local rules installed')
+    expect(opencodeExitCode).toBe(0)
     expect(logs).toContain('installed codex')
     expect(logs).toContain('claude local rules installed')
     expect(logs).toContain('cursor local rules installed')
@@ -1392,6 +1395,7 @@ describe('cli main', () => {
     expect(logs).toContain('installed copilot')
     expect(logs).toContain('removed copilot')
     expect(logs).toContain('codex local rules removed')
+    expect(logs).toContain('opencode local rules installed')
   })
 
   it('executes watch and serve commands via injected dependencies', async () => {
