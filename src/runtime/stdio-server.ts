@@ -650,10 +650,10 @@ export function handleStdioRequest(
 export async function serveGraphStdio(options: ServeGraphStdioOptions): Promise<void> {
   const input = options.input ?? process.stdin
   const output = options.output ?? process.stdout
-  const logger = options.logger ?? console
+  const errorOutput = options.errorOutput ?? process.stderr
   const sessionState = createSessionState()
 
-  logger.log(`[graphify serve] stdio ready for ${options.graphPath}`)
+  errorOutput.write(`[graphify serve] stdio ready for ${options.graphPath}\n`)
 
   const readline = createInterface({ input, crlfDelay: Infinity })
 

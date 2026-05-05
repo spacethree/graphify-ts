@@ -1088,10 +1088,15 @@ describe('stdio runtime', () => {
       const graphPath = join(root, 'graph.json')
       const input = new PassThrough()
       const output = new PassThrough()
-      const loggerMessages: string[] = []
+      const errorOutput = new PassThrough()
+      const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => {})
       let outputText = ''
+      let errorText = ''
       output.on('data', (chunk) => {
         outputText += chunk.toString('utf8')
+      })
+      errorOutput.on('data', (chunk) => {
+        errorText += chunk.toString('utf8')
       })
 
       input.end(
@@ -1103,42 +1108,38 @@ describe('stdio runtime', () => {
         ].join('\n'),
       )
 
-      await serveGraphStdio({
-        graphPath,
-        input,
-        output,
-        logger: {
-          log(message?: string) {
-            loggerMessages.push(String(message ?? ''))
-          },
-          error() {},
-        },
-      })
+      try {
+        await serveGraphStdio({ graphPath, input, output, errorOutput })
 
-      const responses = outputText
-        .trim()
-        .split('\n')
-        .map((line) => JSON.parse(line))
-      const rpcResponses = responses.filter((message) => 'id' in message)
-      const notifications = responses.filter((message) => message.method === 'notifications/message')
+        const responses = outputText
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line))
+        const rpcResponses = responses.filter((message) => 'id' in message)
+        const notifications = responses.filter((message) => message.method === 'notifications/message')
 
-      expect(loggerMessages[0]).toContain('[graphify serve] stdio ready')
-      expect(notifications).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            jsonrpc: '2.0',
-            method: 'notifications/message',
-            params: expect.objectContaining({
-              level: 'error',
+        expect(consoleLog).not.toHaveBeenCalled()
+        expect(errorText).toContain('[graphify serve] stdio ready')
+        expect(outputText).not.toContain('[graphify serve]')
+        expect(notifications).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              jsonrpc: '2.0',
+              method: 'notifications/message',
+              params: expect.objectContaining({
+                level: 'error',
+              }),
             }),
-          }),
-        ]),
-      )
-      expect(rpcResponses[0]).toMatchObject({ jsonrpc: '2.0', id: 1 })
-      expect(rpcResponses[0].result).toContain('Nodes: 3')
-      expect(rpcResponses[1]).toEqual({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } })
-      expect(rpcResponses[2]).toMatchObject({ jsonrpc: '2.0', id: 2 })
-      expect(rpcResponses[2].result).toContain('Node: AuthService')
+          ]),
+        )
+        expect(rpcResponses[0]).toMatchObject({ jsonrpc: '2.0', id: 1 })
+        expect(rpcResponses[0].result).toContain('Nodes: 3')
+        expect(rpcResponses[1]).toEqual({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } })
+        expect(rpcResponses[2]).toMatchObject({ jsonrpc: '2.0', id: 2 })
+        expect(rpcResponses[2].result).toContain('Node: AuthService')
+      } finally {
+        consoleLog.mockRestore()
+      }
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -223,8 +223,11 @@ IMPORTANT: This project has a graphify-ts knowledge graph. You MUST follow these
 
 const SKILL_REGISTRATION_MARKER = '- **graphify-ts**'
 const LOCAL_SKILL_ASSET_DIRECTORY = join('assets', 'skills')
+const CLI_BIN_NAME = 'graphify-ts'
 const OPENCODE_PLUGIN_RELATIVE_PATH = '.opencode/plugins/graphify-ts.js'
-const OPENCODE_CONFIG_PATH = 'opencode.json'
+const OPENCODE_JSON_CONFIG_PATH = 'opencode.json'
+const OPENCODE_JSONC_CONFIG_PATH = 'opencode.jsonc'
+const OPENCODE_MCP_SERVER_NAME = 'graphify'
 const CURSOR_RULE_RELATIVE_PATH = '.cursor/rules/graphify-ts.mdc'
 const OPENCODE_PLUGIN_JS = `// graphify-ts OpenCode plugin
 // Injects a knowledge graph reminder before bash tool calls when the graph exists.
@@ -295,9 +298,648 @@ function readJsonObject(filePath: string): Record<string, unknown> {
   }
 }
 
+function stripJsonc(content: string): string {
+  let output = ''
+  let inString = false
+  let escaped = false
+
+  for (let index = 0; index < content.length; index += 1) {
+    const character = content[index]
+    const nextCharacter = content[index + 1]
+
+    if (inString) {
+      output += character
+      if (escaped) {
+        escaped = false
+      } else if (character === '\\') {
+        escaped = true
+      } else if (character === '"') {
+        inString = false
+      }
+      continue
+    }
+
+    if (character === '"') {
+      inString = true
+      output += character
+      continue
+    }
+
+    if (character === '/' && nextCharacter === '/') {
+      while (index < content.length && content[index] !== '\n') {
+        index += 1
+      }
+      output += '\n'
+      continue
+    }
+
+    if (character === '/' && nextCharacter === '*') {
+      index += 2
+      while (index < content.length && !(content[index] === '*' && content[index + 1] === '/')) {
+        output += content[index] === '\n' ? '\n' : ' '
+        index += 1
+      }
+      index += 1
+      continue
+    }
+
+    output += character
+  }
+
+  return output
+}
+
+function removeTrailingCommas(content: string): string {
+  let output = ''
+  let inString = false
+  let escaped = false
+
+  for (let index = 0; index < content.length; index += 1) {
+    const character = content[index]
+
+    if (inString) {
+      output += character
+      if (escaped) {
+        escaped = false
+      } else if (character === '\\') {
+        escaped = true
+      } else if (character === '"') {
+        inString = false
+      }
+      continue
+    }
+
+    if (character === '"') {
+      inString = true
+      output += character
+      continue
+    }
+
+    if (character === ',') {
+      let lookahead = index + 1
+      while (lookahead < content.length && /\s/.test(content[lookahead] ?? '')) {
+        lookahead += 1
+      }
+      if (content[lookahead] === '}' || content[lookahead] === ']') {
+        continue
+      }
+    }
+
+    output += character
+  }
+
+  return output
+}
+
+function readJsoncObject(filePath: string): Record<string, unknown> {
+  if (!existsSync(filePath)) {
+    return {}
+  }
+
+  try {
+    const content = readFileSync(filePath, 'utf8')
+    const parsed = JSON.parse(removeTrailingCommas(stripJsonc(content)))
+    if (!isRecord(parsed)) {
+      throw new Error(`Failed to parse ${filePath}: expected a JSON object at the top level.`)
+    }
+    return parsed
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('Failed to parse')) {
+      throw error
+    }
+    throw new Error(`Failed to parse ${filePath}: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
 function writeJson(filePath: string, value: Record<string, unknown>): void {
   ensureParentDirectory(filePath)
   writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
+}
+
+function resolveOpencodeConfigPath(projectDir: string): string {
+  const jsonPath = join(projectDir, OPENCODE_JSON_CONFIG_PATH)
+  if (existsSync(jsonPath)) {
+    return jsonPath
+  }
+
+  const jsoncPath = join(projectDir, OPENCODE_JSONC_CONFIG_PATH)
+  if (existsSync(jsoncPath)) {
+    return jsoncPath
+  }
+
+  return jsonPath
+}
+
+function readOpencodeConfig(filePath: string): Record<string, unknown> {
+  return filePath.endsWith('.jsonc') ? readJsoncObject(filePath) : readJsonObject(filePath)
+}
+
+interface JsoncPropertyRange {
+  key: string
+  propertyStart: number
+  valueStart: number
+  valueEnd: number
+  commaStart: number | undefined
+  commaEnd: number | undefined
+}
+
+interface JsoncObjectRange {
+  start: number
+  end: number
+  properties: JsoncPropertyRange[]
+}
+
+interface JsoncArrayElementRange {
+  value: unknown
+  elementStart: number
+  valueStart: number
+  valueEnd: number
+  commaStart: number | undefined
+  commaEnd: number | undefined
+}
+
+interface JsoncArrayRange {
+  start: number
+  end: number
+  elements: JsoncArrayElementRange[]
+}
+
+function isJsoncConfigPath(filePath: string): boolean {
+  return filePath.endsWith('.jsonc')
+}
+
+function skipJsoncWhitespaceAndComments(content: string, start: number, end = content.length): number {
+  let index = start
+  while (index < end) {
+    const character = content[index]
+    const nextCharacter = content[index + 1]
+
+    if (/\s/.test(character ?? '')) {
+      index += 1
+      continue
+    }
+
+    if (character === '/' && nextCharacter === '/') {
+      index += 2
+      while (index < end && content[index] !== '\n') {
+        index += 1
+      }
+      continue
+    }
+
+    if (character === '/' && nextCharacter === '*') {
+      index += 2
+      while (index < end && !(content[index] === '*' && content[index + 1] === '/')) {
+        index += 1
+      }
+      index = Math.min(index + 2, end)
+      continue
+    }
+
+    break
+  }
+  return index
+}
+
+function readJsoncStringEnd(content: string, start: number): number {
+  if (content[start] !== '"') {
+    throw new Error('Expected JSON string')
+  }
+
+  let escaped = false
+  for (let index = start + 1; index < content.length; index += 1) {
+    const character = content[index]
+    if (escaped) {
+      escaped = false
+    } else if (character === '\\') {
+      escaped = true
+    } else if (character === '"') {
+      return index + 1
+    }
+  }
+
+  throw new Error('Unterminated JSON string')
+}
+
+function readJsoncString(content: string, start: number): { value: string; end: number } {
+  const end = readJsoncStringEnd(content, start)
+  const value = JSON.parse(content.slice(start, end)) as unknown
+  if (typeof value !== 'string') {
+    throw new Error('Expected JSON string')
+  }
+  return { value, end }
+}
+
+function skipJsoncComment(content: string, start: number): number {
+  const nextCharacter = content[start + 1]
+  if (content[start] === '/' && nextCharacter === '/') {
+    let index = start + 2
+    while (index < content.length && content[index] !== '\n') {
+      index += 1
+    }
+    return index
+  }
+
+  if (content[start] === '/' && nextCharacter === '*') {
+    let index = start + 2
+    while (index < content.length && !(content[index] === '*' && content[index + 1] === '/')) {
+      index += 1
+    }
+    return Math.min(index + 2, content.length)
+  }
+
+  return start
+}
+
+function findMatchingJsoncBracket(content: string, start: number, open: string, close: string): number {
+  let depth = 0
+  for (let index = start; index < content.length; index += 1) {
+    const character = content[index]
+
+    if (character === '"') {
+      index = readJsoncStringEnd(content, index) - 1
+      continue
+    }
+
+    if (character === '/' && (content[index + 1] === '/' || content[index + 1] === '*')) {
+      index = skipJsoncComment(content, index) - 1
+      continue
+    }
+
+    if (character === open) {
+      depth += 1
+    } else if (character === close) {
+      depth -= 1
+      if (depth === 0) {
+        return index
+      }
+    }
+  }
+
+  throw new Error(`Unterminated JSONC ${open}${close} block`)
+}
+
+function readJsoncValueEnd(content: string, start: number): number {
+  const valueStart = skipJsoncWhitespaceAndComments(content, start)
+  const character = content[valueStart]
+
+  if (character === '{') {
+    return findMatchingJsoncBracket(content, valueStart, '{', '}') + 1
+  }
+  if (character === '[') {
+    return findMatchingJsoncBracket(content, valueStart, '[', ']') + 1
+  }
+  if (character === '"') {
+    return readJsoncStringEnd(content, valueStart)
+  }
+
+  let index = valueStart
+  while (index < content.length) {
+    const current = content[index]
+    if (current === ',' || current === '}' || current === ']' || (current === '/' && (content[index + 1] === '/' || content[index + 1] === '*'))) {
+      break
+    }
+    index += 1
+  }
+
+  return index
+}
+
+function readJsoncObjectRange(content: string, start: number): JsoncObjectRange {
+  const objectStart = skipJsoncWhitespaceAndComments(content, start)
+  if (content[objectStart] !== '{') {
+    throw new Error('Expected JSONC object')
+  }
+
+  const objectEnd = findMatchingJsoncBracket(content, objectStart, '{', '}')
+  const properties: JsoncPropertyRange[] = []
+  let index = objectStart + 1
+
+  while (index < objectEnd) {
+    index = skipJsoncWhitespaceAndComments(content, index, objectEnd)
+    if (index >= objectEnd || content[index] === '}') {
+      break
+    }
+    if (content[index] === ',') {
+      index += 1
+      continue
+    }
+
+    const propertyStart = index
+    const key = readJsoncString(content, index)
+    index = skipJsoncWhitespaceAndComments(content, key.end, objectEnd)
+    if (content[index] !== ':') {
+      throw new Error('Expected JSONC property separator')
+    }
+
+    const valueStart = skipJsoncWhitespaceAndComments(content, index + 1, objectEnd)
+    const valueEnd = readJsoncValueEnd(content, valueStart)
+    index = skipJsoncWhitespaceAndComments(content, valueEnd, objectEnd)
+
+    let commaStart: number | undefined
+    let commaEnd: number | undefined
+    if (content[index] === ',') {
+      commaStart = index
+      commaEnd = index + 1
+      index = commaEnd
+    }
+
+    properties.push({ key: key.value, propertyStart, valueStart, valueEnd, commaStart, commaEnd })
+  }
+
+  return { start: objectStart, end: objectEnd, properties }
+}
+
+function readRootJsoncObject(content: string): JsoncObjectRange {
+  return readJsoncObjectRange(content, 0)
+}
+
+function readJsoncArrayRange(content: string, start: number): JsoncArrayRange {
+  const arrayStart = skipJsoncWhitespaceAndComments(content, start)
+  if (content[arrayStart] !== '[') {
+    throw new Error('Expected JSONC array')
+  }
+
+  const arrayEnd = findMatchingJsoncBracket(content, arrayStart, '[', ']')
+  const elements: JsoncArrayElementRange[] = []
+  let index = arrayStart + 1
+
+  while (index < arrayEnd) {
+    index = skipJsoncWhitespaceAndComments(content, index, arrayEnd)
+    if (index >= arrayEnd || content[index] === ']') {
+      break
+    }
+    if (content[index] === ',') {
+      index += 1
+      continue
+    }
+
+    const elementStart = index
+    const valueStart = index
+    const valueEnd = readJsoncValueEnd(content, valueStart)
+    let value: unknown
+    try {
+      value = JSON.parse(removeTrailingCommas(stripJsonc(content.slice(valueStart, valueEnd))))
+    } catch {
+      value = undefined
+    }
+
+    index = skipJsoncWhitespaceAndComments(content, valueEnd, arrayEnd)
+    let commaStart: number | undefined
+    let commaEnd: number | undefined
+    if (content[index] === ',') {
+      commaStart = index
+      commaEnd = index + 1
+      index = commaEnd
+    }
+
+    elements.push({ value, elementStart, valueStart, valueEnd, commaStart, commaEnd })
+  }
+
+  return { start: arrayStart, end: arrayEnd, elements }
+}
+
+function lineIndentAt(content: string, index: number): string {
+  const lineStart = content.lastIndexOf('\n', Math.max(index - 1, 0)) + 1
+  let cursor = lineStart
+  while (cursor < content.length && (content[cursor] === ' ' || content[cursor] === '\t')) {
+    cursor += 1
+  }
+  return content.slice(lineStart, cursor)
+}
+
+function rangeUsesNewlines(content: string, range: { start: number; end: number }): boolean {
+  return content.slice(range.start, range.end).includes('\n')
+}
+
+function closeLineInsertPosition(content: string, range: { start: number; end: number }): number {
+  const lineStart = content.lastIndexOf('\n', range.end - 1)
+  return lineStart > range.start ? lineStart + 1 : range.end
+}
+
+function stringifyJsoncValue(value: unknown, indent: string): string {
+  const serialized = JSON.stringify(value, null, 2)
+  if (serialized === undefined) {
+    throw new Error('Cannot write undefined JSONC value')
+  }
+  return serialized.replace(/\n/g, `\n${indent}`)
+}
+
+function findJsoncProperty(object: JsoncObjectRange, key: string): JsoncPropertyRange | undefined {
+  return object.properties.find((property) => property.key === key)
+}
+
+function objectChildIndent(content: string, object: JsoncObjectRange): string {
+  const firstProperty = object.properties[0]
+  return firstProperty ? lineIndentAt(content, firstProperty.propertyStart) : `${lineIndentAt(content, object.start)}  `
+}
+
+function arrayChildIndent(content: string, array: JsoncArrayRange): string {
+  const firstElement = array.elements[0]
+  return firstElement ? lineIndentAt(content, firstElement.elementStart) : `${lineIndentAt(content, array.start)}  `
+}
+
+function setJsoncObjectProperty(content: string, object: JsoncObjectRange, key: string, value: unknown): string {
+  const existingProperty = findJsoncProperty(object, key)
+  if (existingProperty) {
+    const propertyIndent = lineIndentAt(content, existingProperty.propertyStart)
+    const serializedValue = stringifyJsoncValue(value, propertyIndent)
+    return `${content.slice(0, existingProperty.valueStart)}${serializedValue}${content.slice(existingProperty.valueEnd)}`
+  }
+
+  const propertyIndent = objectChildIndent(content, object)
+  const propertyText = `${JSON.stringify(key)}: ${stringifyJsoncValue(value, propertyIndent)}`
+  const multiline = rangeUsesNewlines(content, object)
+
+  if (object.properties.length === 0) {
+    if (!multiline) {
+      return `${content.slice(0, object.start + 1)}${propertyText}${content.slice(object.end)}`
+    }
+
+    const insertPosition = closeLineInsertPosition(content, object)
+    return `${content.slice(0, insertPosition)}${propertyIndent}${propertyText}\n${content.slice(insertPosition)}`
+  }
+
+  const lastProperty = object.properties[object.properties.length - 1]!
+  if (!multiline) {
+    const insertion = lastProperty.commaStart !== undefined ? ` ${propertyText},` : `, ${propertyText}`
+    const insertPosition = lastProperty.commaStart !== undefined ? object.end : lastProperty.valueEnd
+    return `${content.slice(0, insertPosition)}${insertion}${content.slice(insertPosition)}`
+  }
+
+  const insertPosition = closeLineInsertPosition(content, object)
+  if (lastProperty.commaStart !== undefined) {
+    return `${content.slice(0, insertPosition)}${propertyIndent}${propertyText},\n${content.slice(insertPosition)}`
+  }
+
+  const withComma = `${content.slice(0, lastProperty.valueEnd)},${content.slice(lastProperty.valueEnd)}`
+  const shiftedInsertPosition = insertPosition > lastProperty.valueEnd ? insertPosition + 1 : insertPosition
+  return `${withComma.slice(0, shiftedInsertPosition)}${propertyIndent}${propertyText}\n${withComma.slice(shiftedInsertPosition)}`
+}
+
+function deleteJsoncObjectProperty(content: string, object: JsoncObjectRange, key: string): string {
+  const propertyIndex = object.properties.findIndex((property) => property.key === key)
+  if (propertyIndex === -1) {
+    return content
+  }
+
+  const property = object.properties[propertyIndex]!
+  if (property.commaEnd !== undefined) {
+    return `${content.slice(0, property.propertyStart)}${content.slice(property.commaEnd)}`
+  }
+
+  if (propertyIndex > 0) {
+    const previousProperty = object.properties[propertyIndex - 1]!
+    const deleteStart = previousProperty.commaStart ?? previousProperty.valueEnd
+    return `${content.slice(0, deleteStart)}${content.slice(property.valueEnd)}`
+  }
+
+  return `${content.slice(0, property.propertyStart)}${content.slice(property.valueEnd)}`
+}
+
+function insertJsoncStringArrayElement(content: string, array: JsoncArrayRange, value: string): string {
+  const serializedValue = JSON.stringify(value)
+  const multiline = rangeUsesNewlines(content, array)
+  const elementIndent = arrayChildIndent(content, array)
+
+  if (array.elements.length === 0) {
+    if (!multiline) {
+      return `${content.slice(0, array.start + 1)}${serializedValue}${content.slice(array.end)}`
+    }
+
+    const insertPosition = closeLineInsertPosition(content, array)
+    return `${content.slice(0, insertPosition)}${elementIndent}${serializedValue}\n${content.slice(insertPosition)}`
+  }
+
+  const lastElement = array.elements[array.elements.length - 1]!
+  if (!multiline) {
+    const insertion = lastElement.commaStart !== undefined ? ` ${serializedValue},` : `, ${serializedValue}`
+    const insertPosition = lastElement.commaStart !== undefined ? array.end : lastElement.valueEnd
+    return `${content.slice(0, insertPosition)}${insertion}${content.slice(insertPosition)}`
+  }
+
+  const insertPosition = closeLineInsertPosition(content, array)
+  if (lastElement.commaStart !== undefined) {
+    return `${content.slice(0, insertPosition)}${elementIndent}${serializedValue},\n${content.slice(insertPosition)}`
+  }
+
+  const withComma = `${content.slice(0, lastElement.valueEnd)},${content.slice(lastElement.valueEnd)}`
+  const shiftedInsertPosition = insertPosition > lastElement.valueEnd ? insertPosition + 1 : insertPosition
+  return `${withComma.slice(0, shiftedInsertPosition)}${elementIndent}${serializedValue}\n${withComma.slice(shiftedInsertPosition)}`
+}
+
+function deleteJsoncStringArrayElement(content: string, array: JsoncArrayRange, value: string): string {
+  const elementIndex = array.elements.findIndex((element) => element.value === value)
+  if (elementIndex === -1) {
+    return content
+  }
+
+  const element = array.elements[elementIndex]!
+  if (element.commaEnd !== undefined) {
+    return `${content.slice(0, element.elementStart)}${content.slice(element.commaEnd)}`
+  }
+
+  if (elementIndex > 0) {
+    const previousElement = array.elements[elementIndex - 1]!
+    const deleteStart = previousElement.commaStart ?? previousElement.valueEnd
+    return `${content.slice(0, deleteStart)}${content.slice(element.valueEnd)}`
+  }
+
+  return `${content.slice(0, element.elementStart)}${content.slice(element.valueEnd)}`
+}
+
+function writeOpencodePluginRegistration(configPath: string, config: Record<string, unknown>, pluginWasArray: boolean): void {
+  if (!isJsoncConfigPath(configPath) || !existsSync(configPath)) {
+    writeJson(configPath, config)
+    return
+  }
+
+  const content = readFileSync(configPath, 'utf8')
+  const root = readRootJsoncObject(content)
+  const pluginProperty = findJsoncProperty(root, 'plugin')
+  const pluginValueStart = pluginProperty ? skipJsoncWhitespaceAndComments(content, pluginProperty.valueStart) : -1
+  const updated = pluginWasArray && pluginProperty && content[pluginValueStart] === '['
+    ? insertJsoncStringArrayElement(content, readJsoncArrayRange(content, pluginValueStart), OPENCODE_PLUGIN_RELATIVE_PATH)
+    : setJsoncObjectProperty(content, root, 'plugin', config.plugin)
+
+  ensureParentDirectory(configPath)
+  writeFileSync(configPath, updated, 'utf8')
+}
+
+function writeOpencodePluginDeregistration(configPath: string, config: Record<string, unknown>): void {
+  if (!isJsoncConfigPath(configPath) || !existsSync(configPath)) {
+    writeJson(configPath, config)
+    return
+  }
+
+  const content = readFileSync(configPath, 'utf8')
+  const root = readRootJsoncObject(content)
+  const pluginProperty = findJsoncProperty(root, 'plugin')
+  if (!pluginProperty) {
+    return
+  }
+
+  const pluginValueStart = skipJsoncWhitespaceAndComments(content, pluginProperty.valueStart)
+  const updated = Object.hasOwn(config, 'plugin') && content[pluginValueStart] === '['
+    ? deleteJsoncStringArrayElement(content, readJsoncArrayRange(content, pluginValueStart), OPENCODE_PLUGIN_RELATIVE_PATH)
+    : deleteJsoncObjectProperty(content, root, 'plugin')
+
+  writeFileSync(configPath, updated, 'utf8')
+}
+
+function writeOpencodeMcpServerConfig(configPath: string, config: Record<string, unknown>, mcpWasRecord: boolean): void {
+  if (!isJsoncConfigPath(configPath) || !existsSync(configPath)) {
+    writeJson(configPath, config)
+    return
+  }
+
+  const mcpConfig = config.mcp
+  if (!isRecord(mcpConfig)) {
+    writeJson(configPath, config)
+    return
+  }
+
+  const serverConfig = mcpConfig[OPENCODE_MCP_SERVER_NAME]
+  const content = readFileSync(configPath, 'utf8')
+  const root = readRootJsoncObject(content)
+  const mcpProperty = findJsoncProperty(root, 'mcp')
+  const mcpValueStart = mcpProperty ? skipJsoncWhitespaceAndComments(content, mcpProperty.valueStart) : -1
+  const updated = mcpWasRecord && mcpProperty && content[mcpValueStart] === '{'
+    ? setJsoncObjectProperty(content, readJsoncObjectRange(content, mcpValueStart), OPENCODE_MCP_SERVER_NAME, serverConfig)
+    : setJsoncObjectProperty(content, root, 'mcp', mcpConfig)
+
+  ensureParentDirectory(configPath)
+  writeFileSync(configPath, updated, 'utf8')
+}
+
+function writeOpencodeMcpRemovalConfig(configPath: string, config: Record<string, unknown>): void {
+  if (!isJsoncConfigPath(configPath) || !existsSync(configPath)) {
+    writeJson(configPath, config)
+    return
+  }
+
+  const content = readFileSync(configPath, 'utf8')
+  const root = readRootJsoncObject(content)
+  const mcpProperty = findJsoncProperty(root, 'mcp')
+  if (!mcpProperty) {
+    return
+  }
+
+  if (!isRecord(config.mcp)) {
+    writeFileSync(configPath, deleteJsoncObjectProperty(content, root, 'mcp'), 'utf8')
+    return
+  }
+
+  const mcpValueStart = skipJsoncWhitespaceAndComments(content, mcpProperty.valueStart)
+  const updated = content[mcpValueStart] === '{'
+    ? deleteJsoncObjectProperty(content, readJsoncObjectRange(content, mcpValueStart), OPENCODE_MCP_SERVER_NAME)
+    : setJsoncObjectProperty(content, root, 'mcp', config.mcp)
+
+  writeFileSync(configPath, updated, 'utf8')
+}
+
+function opencodeConfigDisplayPath(configPath: string): string {
+  return basename(configPath)
 }
 
 function ensureRecord(parent: Record<string, unknown>, key: string): Record<string, unknown> {
@@ -441,6 +1083,43 @@ function readPackageVersion(packageRoot: string): string {
   }
 
   return 'unknown'
+}
+
+function resolvePackageCliPath(packageRoot = findPackageRoot()): string {
+  const packageJsonPath = join(packageRoot, 'package.json')
+  const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8'))
+  if (!isRecord(packageJson)) {
+    throw new Error(`Failed to parse ${packageJsonPath}: expected a JSON object at the top level.`)
+  }
+
+  const bin = packageJson.bin
+  let relativeBinPath: string | undefined
+  if (typeof bin === 'string') {
+    relativeBinPath = bin
+  } else if (isRecord(bin)) {
+    const namedBin = bin[CLI_BIN_NAME]
+    if (typeof namedBin === 'string') {
+      relativeBinPath = namedBin
+    } else {
+      relativeBinPath = Object.values(bin).find((value): value is string => typeof value === 'string')
+    }
+  }
+
+  if (!relativeBinPath) {
+    throw new Error(`Could not locate ${CLI_BIN_NAME} bin entry in ${packageJsonPath}`)
+  }
+
+  const cliPath = join(packageRoot, relativeBinPath)
+  let cliPathIsFile = false
+  try {
+    cliPathIsFile = existsSync(cliPath) && statSync(cliPath).isFile()
+  } catch {
+    cliPathIsFile = false
+  }
+  if (!cliPathIsFile) {
+    throw new Error(`Could not locate ${CLI_BIN_NAME} CLI at ${cliPath} declared by ${packageJsonPath}`)
+  }
+  return cliPath
 }
 
 function resolveSkillSourcePath(platform: SkillInstallPlatform, packageRoot: string): string | undefined {
@@ -675,21 +1354,46 @@ function installOpencodePlugin(projectDir: string): string[] {
   ensureParentDirectory(pluginPath)
   writeFileSync(pluginPath, OPENCODE_PLUGIN_JS, 'utf8')
 
-  const configPath = join(projectDir, OPENCODE_CONFIG_PATH)
-  const config = readJsonObject(configPath)
+  const configPath = resolveOpencodeConfigPath(projectDir)
+  const configDisplayPath = opencodeConfigDisplayPath(configPath)
+  const config = readOpencodeConfig(configPath)
+  const pluginWasArray = Array.isArray(config.plugin)
   const plugins = ensureArray(config, 'plugin')
   const messages = ['.opencode/plugins/graphify-ts.js -> tool.execute.before hook written']
 
   if (!plugins.includes(OPENCODE_PLUGIN_RELATIVE_PATH)) {
     plugins.push(OPENCODE_PLUGIN_RELATIVE_PATH)
-    writeJson(configPath, config)
-    messages.push('opencode.json -> plugin registered')
+    writeOpencodePluginRegistration(configPath, config, pluginWasArray)
+    messages.push(`${configDisplayPath} -> plugin registered`)
     return messages
   }
 
-  writeJson(configPath, config)
-  messages.push('opencode.json -> plugin already registered (no change)')
+  messages.push(`${configDisplayPath} -> plugin already registered (no change)`)
   return messages
+}
+
+function installOpencodeMcpServer(projectDir: string, packageRoot?: string): string {
+  const configPath = resolveOpencodeConfigPath(projectDir)
+  const configDisplayPath = opencodeConfigDisplayPath(configPath)
+  const config = readOpencodeConfig(configPath)
+  const mcpWasRecord = isRecord(config.mcp)
+  const mcp = ensureRecord(config, 'mcp')
+  const existingServer = isRecord(mcp[OPENCODE_MCP_SERVER_NAME]) ? (mcp[OPENCODE_MCP_SERVER_NAME] as Record<string, unknown>) : null
+  const graphPath = join(projectDir, 'graphify-out', 'graph.json')
+  const serverConfig: Record<string, unknown> = {
+    type: 'local',
+    command: [process.execPath, resolvePackageCliPath(packageRoot), 'serve', '--stdio', graphPath],
+    enabled: true,
+  }
+
+  if (existingServer && isRecord(existingServer.environment)) {
+    serverConfig.environment = existingServer.environment
+  }
+
+  mcp[OPENCODE_MCP_SERVER_NAME] = serverConfig
+  writeOpencodeMcpServerConfig(configPath, config, mcpWasRecord)
+
+  return existingServer ? `${configDisplayPath} -> MCP server updated` : `${configDisplayPath} -> MCP server registered`
 }
 
 function uninstallOpencodePlugin(projectDir: string): string[] {
@@ -701,12 +1405,13 @@ function uninstallOpencodePlugin(projectDir: string): string[] {
     messages.push('.opencode/plugins/graphify-ts.js -> removed')
   }
 
-  const configPath = join(projectDir, OPENCODE_CONFIG_PATH)
+  const configPath = resolveOpencodeConfigPath(projectDir)
+  const configDisplayPath = opencodeConfigDisplayPath(configPath)
   if (!existsSync(configPath)) {
     return messages
   }
 
-  const config = readJsonObject(configPath)
+  const config = readOpencodeConfig(configPath)
   const plugins = ensureArray(config, 'plugin')
   const filtered = plugins.filter((entry) => entry !== OPENCODE_PLUGIN_RELATIVE_PATH)
 
@@ -720,9 +1425,30 @@ function uninstallOpencodePlugin(projectDir: string): string[] {
     config.plugin = filtered
   }
 
-  writeJson(configPath, config)
-  messages.push('opencode.json -> plugin deregistered')
+  writeOpencodePluginDeregistration(configPath, config)
+  messages.push(`${configDisplayPath} -> plugin deregistered`)
   return messages
+}
+
+function uninstallOpencodeMcpServer(projectDir: string): string | undefined {
+  const configPath = resolveOpencodeConfigPath(projectDir)
+  const configDisplayPath = opencodeConfigDisplayPath(configPath)
+  if (!existsSync(configPath)) {
+    return undefined
+  }
+
+  const config = readOpencodeConfig(configPath)
+  if (!isRecord(config.mcp) || !(OPENCODE_MCP_SERVER_NAME in config.mcp)) {
+    return undefined
+  }
+
+  delete config.mcp[OPENCODE_MCP_SERVER_NAME]
+  if (Object.keys(config.mcp).length === 0) {
+    delete config.mcp
+  }
+
+  writeOpencodeMcpRemovalConfig(configPath, config)
+  return `${configDisplayPath} -> MCP server removed`
 }
 
 function writeSection(targetPath: string, section: string): string {
@@ -923,8 +1649,9 @@ export function claudeUninstall(projectDir = '.'): string {
   return messages.join('\n')
 }
 
-export function agentsInstall(projectDir = '.', platform: AgentPlatform): string {
+export function agentsInstall(projectDir = '.', platform: AgentPlatform, options: Pick<InstallSkillOptions, 'packageRoot'> = {}): string {
   const resolvedProjectDir = resolve(projectDir)
+  const packageRoot = options.packageRoot ? resolve(options.packageRoot) : undefined
   const displayName = formatPlatformDisplayName(platform)
   const messages = [writeSection(join(resolvedProjectDir, 'AGENTS.md'), AGENTS_MD_SECTION)]
 
@@ -932,6 +1659,7 @@ export function agentsInstall(projectDir = '.', platform: AgentPlatform): string
     messages.push(installCodexHook(resolvedProjectDir))
   } else if (platform === 'opencode') {
     messages.push(...installOpencodePlugin(resolvedProjectDir))
+    messages.push(installOpencodeMcpServer(resolvedProjectDir, packageRoot))
   }
 
   messages.push('', `${displayName} will now check the knowledge graph before answering`, 'codebase questions and rebuild it after code changes.')
@@ -952,6 +1680,10 @@ export function agentsUninstall(projectDir = '.', platform: AgentPlatform): stri
     }
   } else if (platform === 'opencode') {
     messages.push(...uninstallOpencodePlugin(resolvedProjectDir))
+    const mcpMessage = uninstallOpencodeMcpServer(resolvedProjectDir)
+    if (mcpMessage) {
+      messages.push(mcpMessage)
+    }
   }
 
   return messages.join('\n')

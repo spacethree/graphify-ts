@@ -42,7 +42,7 @@ graphify-ts claude install      # wires Claude Code to use it
 
 Now ask Claude something about your codebase. It calls `retrieve` once, gets back labeled snippets with file paths and community context, and answers — instead of running multiple `Read` / `Grep` / `Glob` calls and accumulating tokens at every turn.
 
-Other agents: `cursor install`, `copilot install`, `gemini install`, `aider install`.
+Other agents: `cursor install`, `copilot install`, `gemini install`, `aider install`, `opencode install`.
 
 ---
 

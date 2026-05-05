@@ -345,7 +345,7 @@ export function formatHelp(binaryName = 'graphify-ts'): string {
     '  gemini <install|uninstall>  manage local GEMINI.md rules and Gemini CLI hook config',
     '  copilot <install|uninstall> install or remove the GitHub Copilot skill',
     '  codex <install|uninstall>   manage local AGENTS.md + Codex hook rules',
-    '  opencode <install|uninstall> manage local AGENTS.md + OpenCode plugin rules',
+    '  opencode <install|uninstall> manage local AGENTS.md + OpenCode plugin/MCP rules',
     '  claw <install|uninstall>    manage local AGENTS.md rules',
     '  droid <install|uninstall>   manage local AGENTS.md rules',
     '  trae <install|uninstall>    manage local AGENTS.md rules',
